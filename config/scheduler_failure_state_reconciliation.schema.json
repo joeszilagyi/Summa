@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/scheduler_failure_state_reconciliation.schema.json",
+  "title": "scheduler-failure-state-reconciliation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "registry_path",
+    "workspace_count",
+    "changed_count",
+    "unchanged_count",
+    "updated_registry_path",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "scheduler-failure-state-reconciliation.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registry_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "changed_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unchanged_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "updated_registry_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "workspace_id",
+          "ledger_path",
+          "ledger_event_count",
+          "terminal_run_count",
+          "registry_failure_state",
+          "derived_failure_state",
+          "recommendation",
+          "reasons",
+          "latest_success_at",
+          "latest_failure_at"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "scheduler-failure-state-entry.v1"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          },
+          "ledger_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ledger_event_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "terminal_run_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "registry_failure_state": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "derived_failure_state": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "recommendation": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "replace"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "latest_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latest_failure_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
