@@ -1,0 +1,68 @@
+{
+  "schema_version": "knowledge-tree-export.v1",
+  "export_id": "demo_tree",
+  "display_name": "Demo knowledge tree",
+  "workspace_id": "alpha_subject",
+  "export_profile": "public_release",
+  "generated_at": "2026-06-02T18:00:00Z",
+  "landing_page_id": "home",
+  "page_families": [
+    "home"
+  ],
+  "input_sources": [
+    {
+      "source_id": "country_sqlite",
+      "source_kind": "sqlite_db",
+      "logical_name": "Example Subject source.sqlite",
+      "locator_path": "dbs/sources/Example Subject/source.sqlite",
+      "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "storage_policy_class": "tracked_release",
+      "rights_posture": "redistributable",
+      "required_for_freshness": true
+    }
+  ],
+  "pages": [
+    {
+      "page_id": "home",
+      "page_family": "home",
+      "route": "index.html",
+      "title": "Home",
+      "lede": "Claim-bearing page.",
+      "review_posture": "needs_review",
+      "publication_state": "public_safe",
+      "source_ids": [
+        "country_sqlite"
+      ],
+      "related_page_ids": [],
+      "summary_cards": [
+        {
+          "label": "Pages",
+          "value": "1"
+        }
+      ],
+      "sections": [
+        {
+          "heading": "Overview",
+          "paragraphs": [
+            "This page still carries an unresolved claim."
+          ]
+        }
+      ],
+      "authority_basis": {
+        "content_class": "authoritative_claims",
+        "review_queue_refs": [
+          "claim:17"
+        ],
+        "field_review_entries": [
+          {
+            "entry_id": "frs:summary:claim17",
+            "field_path": "summary",
+            "state": "unreviewed",
+            "review_queue_ref": "claim:17"
+          }
+        ],
+        "metadata_exception_reason": null
+      }
+    }
+  ]
+}
