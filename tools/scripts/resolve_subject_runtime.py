@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.common.llm_source_text_wrapper import default_template_id
+
 PHASE_KEYS = ("01a", "01r")
 
 
@@ -111,6 +116,16 @@ def _normalize_template_files(bundle: dict[str, Any]) -> list[str]:
     return template_files
 
 
+def _normalize_source_text_wrapper_template_id(bundle: dict[str, Any], *, facet: str, bundle_key: str) -> str:
+    raw = bundle.get("source_text_wrapper_template_id")
+    if raw is None:
+        return default_template_id()
+    return _require_nonblank_string(
+        raw,
+        field_name=f"prompt bundle {bundle_key} source_text_wrapper_template_id",
+    )
+
+
 def _default_legacy_output_stem(bundle_id: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", bundle_id.lower()).strip("_")
 
@@ -170,6 +185,11 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
             "resolved_phase_prompt_files": resolved_phase_prompt_files,
             "legacy_01a_output_stem": legacy_01a_output_stem,
             "template_files": _normalize_template_files(bundle_value),
+            "source_text_wrapper_template_id": _normalize_source_text_wrapper_template_id(
+                bundle_value,
+                facet=facet,
+                bundle_key=bundle_key,
+            ),
         }
 
     return resolved

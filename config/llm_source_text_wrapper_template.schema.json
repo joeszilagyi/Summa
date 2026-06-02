@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/llm_source_text_wrapper_template.schema.json",
+  "title": "llm-source-text-wrapper-template.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "template_id",
+    "begin_delimiter",
+    "end_delimiter",
+    "body_separator",
+    "instruction_negation_guidance",
+    "metadata_fields"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "llm-source-text-wrapper-template.v1"
+    },
+    "template_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "begin_delimiter": {
+      "type": "string",
+      "minLength": 1
+    },
+    "end_delimiter": {
+      "type": "string",
+      "minLength": 1
+    },
+    "body_separator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instruction_negation_guidance": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metadata_fields": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
