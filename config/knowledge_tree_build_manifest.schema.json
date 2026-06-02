@@ -11,6 +11,8 @@
     "landing_page_id",
     "export_path",
     "export_sha256",
+    "presentation_path",
+    "presentation_sha256",
     "built_at",
     "output_root",
     "page_count",
@@ -40,6 +42,14 @@
       "minLength": 1
     },
     "export_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "presentation_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "presentation_sha256": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
