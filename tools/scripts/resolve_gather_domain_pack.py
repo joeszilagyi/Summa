@@ -112,6 +112,7 @@ def resolve_gather_domain_pack(pack_id: str, raw_facets: str | None) -> dict[str
             "01a_prompt": bundle["resolved_phase_prompt_files"]["01a"],
             "01r_prompt": bundle["resolved_phase_prompt_files"]["01r"],
             "prompt_bundle_id": bundle["bundle_id"],
+            "source_text_wrapper_template_id": bundle["source_text_wrapper_template_id"],
         }
 
     return {
@@ -134,6 +135,7 @@ def render_shell_assignments(payload: dict[str, Any]) -> str:
         env_map[f"INDEX_FACET_01A_PROMPT_{suffix}"] = config["01a_prompt"]
         env_map[f"INDEX_FACET_01R_PROMPT_{suffix}"] = config["01r_prompt"]
         env_map[f"INDEX_FACET_PROMPT_BUNDLE_ID_{suffix}"] = config["prompt_bundle_id"]
+        env_map[f"INDEX_FACET_SOURCE_TEXT_WRAPPER_ID_{suffix}"] = config["source_text_wrapper_template_id"]
 
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in env_map.items())
 

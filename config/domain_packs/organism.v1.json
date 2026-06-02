@@ -22,6 +22,7 @@
   "prompt_bundles": {
     "gather.taxonomy": {
       "bundle_id": "organism.gather.taxonomy.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "taxonomy.seed",
         "taxonomy.review"
@@ -29,6 +30,7 @@
     },
     "gather.range": {
       "bundle_id": "organism.gather.range.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "range.seed",
         "range.review"
@@ -36,6 +38,7 @@
     },
     "gather.habitat": {
       "bundle_id": "organism.gather.habitat.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "habitat.seed",
         "habitat.review"
@@ -43,6 +46,7 @@
     },
     "gather.observations": {
       "bundle_id": "organism.gather.observations.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "observations.seed",
         "observations.review"

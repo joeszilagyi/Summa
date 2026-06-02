@@ -1,0 +1,146 @@
+"""Shared wrapper contract and parser for untrusted source text in LLM prompts."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE_PATH = REPO_ROOT / "config" / "llm_source_text_wrapper_template.json"
+TEMPLATE_SCHEMA_VERSION = "llm-source-text-wrapper-template.v1"
+DEFAULT_TEMPLATE_ID = "default.untrusted_source_text.v1"
+REQUIRED_METADATA_FIELDS = ("source_ref", "provenance", "hazard_flags", "instruction_negation")
+
+
+class WrapperContractError(RuntimeError):
+    """Raised when the checked-in wrapper contract is unreadable or malformed."""
+
+
+@dataclass(frozen=True)
+class WrapperTemplate:
+    template_id: str
+    begin_delimiter: str
+    end_delimiter: str
+    body_separator: str
+    instruction_negation_guidance: str
+    metadata_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WrappedSourceBlock:
+    source_ref: str
+    provenance: str
+    hazard_flags: tuple[str, ...]
+    instruction_negation: str
+    source_text: str
+    raw_text: str
+    start_offset: int
+    end_offset: int
+
+
+def _require_nonblank_string(payload: dict[str, object], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise WrapperContractError(f"{field} must be a non-blank string")
+    return value.strip()
+
+
+def load_template(path: Path = TEMPLATE_PATH) -> WrapperTemplate:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WrapperContractError(f"could not read wrapper template: {path}") from exc
+    if not isinstance(payload, dict):
+        raise WrapperContractError("wrapper template must be a JSON object")
+    if payload.get("schema_version") != TEMPLATE_SCHEMA_VERSION:
+        raise WrapperContractError(f"schema_version must equal {TEMPLATE_SCHEMA_VERSION}")
+
+    metadata_fields = payload.get("metadata_fields")
+    if not isinstance(metadata_fields, list) or any(not isinstance(item, str) or not item.strip() for item in metadata_fields):
+        raise WrapperContractError("metadata_fields must be an array of non-blank strings")
+    normalized_metadata_fields = tuple(item.strip() for item in metadata_fields)
+    if normalized_metadata_fields != REQUIRED_METADATA_FIELDS:
+        raise WrapperContractError(
+            "metadata_fields must match the required wrapper order: "
+            + ", ".join(REQUIRED_METADATA_FIELDS)
+        )
+
+    return WrapperTemplate(
+        template_id=_require_nonblank_string(payload, "template_id"),
+        begin_delimiter=_require_nonblank_string(payload, "begin_delimiter"),
+        end_delimiter=_require_nonblank_string(payload, "end_delimiter"),
+        body_separator=_require_nonblank_string(payload, "body_separator"),
+        instruction_negation_guidance=_require_nonblank_string(payload, "instruction_negation_guidance"),
+        metadata_fields=normalized_metadata_fields,
+    )
+
+
+def _header_pattern(template: WrapperTemplate) -> re.Pattern[str]:
+    begin = re.escape(template.begin_delimiter)
+    separator = re.escape(template.body_separator)
+    end = re.escape(template.end_delimiter)
+    return re.compile(
+        begin
+        + r"\n"
+        + r"source_ref: (?P<source_ref>[^\n]+)\n"
+        + r"provenance: (?P<provenance>[^\n]+)\n"
+        + r"hazard_flags: (?P<hazard_flags>[^\n]*)\n"
+        + r"instruction_negation: (?P<instruction_negation>[^\n]+)\n"
+        + separator
+        + r"\n"
+        + r"(?P<source_text>.*?)\n"
+        + end,
+        re.DOTALL,
+    )
+
+
+def parse_wrapped_blocks(prompt_text: str, *, template: WrapperTemplate | None = None) -> list[WrappedSourceBlock]:
+    active_template = load_template() if template is None else template
+    blocks: list[WrappedSourceBlock] = []
+    for match in _header_pattern(active_template).finditer(prompt_text):
+        hazard_flags_text = match.group("hazard_flags").strip()
+        hazard_flags = tuple(
+            item.strip() for item in hazard_flags_text.split(",") if item.strip()
+        )
+        blocks.append(
+            WrappedSourceBlock(
+                source_ref=match.group("source_ref").strip(),
+                provenance=match.group("provenance").strip(),
+                hazard_flags=hazard_flags,
+                instruction_negation=match.group("instruction_negation").strip(),
+                source_text=match.group("source_text"),
+                raw_text=match.group(0),
+                start_offset=match.start(),
+                end_offset=match.end(),
+            )
+        )
+    return blocks
+
+
+def default_template_id() -> str:
+    return load_template().template_id
+
+
+def render_wrapped_block(
+    *,
+    source_ref: str,
+    provenance: str,
+    hazard_flags: list[str] | tuple[str, ...],
+    source_text: str,
+    template: WrapperTemplate | None = None,
+) -> str:
+    active_template = load_template() if template is None else template
+    normalized_flags = ", ".join(item.strip() for item in hazard_flags if item.strip())
+    return (
+        f"{active_template.begin_delimiter}\n"
+        f"source_ref: {source_ref.strip()}\n"
+        f"provenance: {provenance.strip()}\n"
+        f"hazard_flags: {normalized_flags}\n"
+        f"instruction_negation: {active_template.instruction_negation_guidance}\n"
+        f"{active_template.body_separator}\n"
+        f"{source_text}\n"
+        f"{active_template.end_delimiter}"
+    )

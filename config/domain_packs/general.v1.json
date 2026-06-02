@@ -31,6 +31,7 @@
   "prompt_bundles": {
     "gather.sources": {
       "bundle_id": "general.gather.sources.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.sources.seed",
         "general.sources.review"
@@ -38,6 +39,7 @@
     },
     "gather.timeline": {
       "bundle_id": "general.gather.timeline.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.timeline.seed",
         "general.timeline.review"
@@ -45,6 +47,7 @@
     },
     "gather.people": {
       "bundle_id": "general.gather.people.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.people.seed",
         "general.people.review"
@@ -52,6 +55,7 @@
     },
     "gather.places": {
       "bundle_id": "general.gather.places.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.places.seed",
         "general.places.review"
@@ -59,6 +63,7 @@
     },
     "gather.works": {
       "bundle_id": "general.gather.works.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.works.seed",
         "general.works.review"
@@ -66,6 +71,7 @@
     },
     "gather.open_questions": {
       "bundle_id": "general.gather.open_questions.v1",
+      "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
       "template_ids": [
         "general.open_questions.seed",
         "general.open_questions.review"

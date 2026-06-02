@@ -162,6 +162,7 @@ def facet_entries(manifest: dict[str, Any], pack: dict[str, Any]) -> list[dict[s
                         "prompt_bundle_id": bundle.get("bundle_id"),
                         "legacy_01a_output_stem": bundle.get("legacy_01a_output_stem"),
                         "phase_templates": bundle.get("phase_templates"),
+                        "source_text_wrapper_template_id": bundle.get("source_text_wrapper_template_id"),
                         "template_files": template_files,
                         "template_file_statuses": template_status_entries(template_files),
                     }

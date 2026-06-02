@@ -79,6 +79,7 @@ def test_resolve_gather_domain_pack_general_facets_are_runtime_resolvable() -> N
         "open_questions",
     ]
     assert payload["facets"]["sources"]["prompt_bundle_id"] == "general.gather.sources.v1"
+    assert payload["facets"]["sources"]["source_text_wrapper_template_id"] == "default.untrusted_source_text.v1"
     assert payload["facets"]["sources"]["01a_prompt"] == "general.sources.seed"
     assert payload["facets"]["sources"]["01r_prompt"] == "general.sources.review"
     assert payload["facets"]["open_questions"]["prompt_bundle_id"] == "general.gather.open_questions.v1"
@@ -97,6 +98,7 @@ def test_resolve_gather_domain_pack_organism_shape_defaults_all_enabled_facets()
     assert payload["facets"]["taxonomy"]["01a_prompt"] == "taxonomy.seed"
     assert payload["facets"]["range"]["01r_prompt"] == "range.review"
     assert payload["facets"]["habitat"]["prompt_bundle_id"] == "organism.gather.habitat.v1"
+    assert payload["facets"]["habitat"]["source_text_wrapper_template_id"] == "default.untrusted_source_text.v1"
     assert payload["facets"]["observations"]["01a_output_stem"] == "organism_gather_observations_v1"
 
 
@@ -124,6 +126,7 @@ def test_subject_detail_view_uses_normalized_prompt_bundle_metadata(tmp_path: Pa
     assert facets["taxonomy"]["prompt_bundle_id"] == "organism.gather.taxonomy.v1"
     assert facets["taxonomy"]["legacy_01a_output_stem"] == "organism_gather_taxonomy_v1"
     assert facets["taxonomy"]["phase_templates"] == {"01a": "taxonomy.seed", "01r": "taxonomy.review"}
+    assert facets["taxonomy"]["source_text_wrapper_template_id"] == "default.untrusted_source_text.v1"
     assert facets["habitat"]["prompt_bundle_status"] == "ok"
     assert facets["habitat"]["prompt_bundle_key"] == "gather.habitat"
     assert facets["habitat"]["phase_templates"] == {"01a": "habitat.seed", "01r": "habitat.review"}
