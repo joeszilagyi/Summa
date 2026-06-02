@@ -162,6 +162,7 @@
         "type": "object",
         "required": [
           "rank",
+          "result_class",
           "result_id",
           "object_type",
           "object_id",
@@ -176,6 +177,18 @@
           "rank": {
             "type": "integer",
             "minimum": 1
+          },
+          "result_class": {
+            "type": "string",
+            "enum": [
+              "source",
+              "work",
+              "entity",
+              "claim",
+              "facet",
+              "relationship",
+              "event"
+            ]
           },
           "result_id": {
             "type": "string"

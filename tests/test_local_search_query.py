@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
+QUERY_TOOL = REPO_ROOT / "tools" / "scripts" / "query_local_search.py"
+VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_local_search_results.py"
+
+spec = importlib.util.spec_from_file_location("local_search_results_validator_for_tests", VALIDATOR_PATH)
+validator = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(validator)
+
+
+def create_search_db(tmp_path: Path) -> Path:
+    db = tmp_path / "search.sqlite"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE work (
+              work_id INTEGER PRIMARY KEY,
+              work_type TEXT,
+              title TEXT,
+              review_state TEXT,
+              publication_state TEXT,
+              authority_level TEXT,
+              public_blocker TEXT,
+              workspace_id TEXT
+            );
+            CREATE TABLE source_claim (
+              source_claim_id INTEGER PRIMARY KEY,
+              claim_text TEXT NOT NULL,
+              public_summary TEXT,
+              claim_type TEXT,
+              review_state TEXT,
+              publication_state TEXT,
+              authority_level TEXT,
+              public_blocker TEXT,
+              workspace_id TEXT
+            );
+            CREATE TABLE source_access (
+              source_access_id INTEGER PRIMARY KEY,
+              original_locator TEXT,
+              canonical_url TEXT,
+              access_class TEXT,
+              review_state TEXT,
+              publication_state TEXT,
+              authority_level TEXT,
+              public_blocker TEXT,
+              workspace_id TEXT
+            );
+            INSERT INTO work (
+              work_id, work_type, title, review_state, publication_state,
+              authority_level, public_blocker, workspace_id
+            ) VALUES
+              (1, 'book', 'Public Work', 'reviewed', 'public_release_allowed', 'primary', NULL, 'alpha_subject'),
+              (2, 'book', 'Supplemental Work', 'reviewed', 'public_release_allowed', 'primary', NULL, 'alpha_subject');
+            INSERT INTO source_claim (
+              source_claim_id, claim_text, public_summary, claim_type, review_state,
+              publication_state, authority_level, public_blocker, workspace_id
+            ) VALUES
+              (1, 'localclaimmarker internal review text', 'Public claim summary', 'factual', 'reviewed', 'public_preview', 'primary', NULL, 'alpha_subject'),
+              (2, 'second internal claim text', 'Supplemental public summary', 'interpretive', 'reviewed', 'public_preview', 'primary', NULL, 'alpha_subject');
+            INSERT INTO source_access (
+              source_access_id, original_locator, canonical_url, access_class, review_state,
+              publication_state, authority_level, public_blocker, workspace_id
+            ) VALUES
+              (1, '/Users/joe/cacheprivatemarker/source.pdf', 'https://example.org/source.pdf', 'web_capture', 'reviewed', 'public_release_allowed', 'primary', NULL, 'alpha_subject');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def run_builder(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(BUILDER), *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_query(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(QUERY_TOOL), *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def validate_results(path: Path) -> tuple[dict[str, object], int]:
+    return validator.validate_local_search_results(path)
+
+
+def build_local_index(tmp_path: Path) -> Path:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    output_json = tmp_path / "local_projection.json"
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return index_db
+
+
+def test_query_cli_normalizes_plain_text_and_validates_json(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+    results_json = tmp_path / "results.json"
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        ' Public!!! +claim? "summary" ',
+        "--output-json",
+        str(results_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["query"]["normalized_query"] == 'Public!!! +claim? "summary"'
+    assert payload["query"]["terms"] == ["public", "claim", "summary"]
+    assert payload["counts"]["returned"] == 2
+    assert payload["results"][0]["object_id"] == "claim:1"
+    assert payload["results"][0]["result_class"] == "claim"
+
+    report, exit_code = validate_results(results_json)
+    assert exit_code == validator.EXIT_PASS, report
+
+
+def test_query_cli_paginates_and_scopes_results(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "work",
+        "--scope",
+        "source_work",
+        "--limit",
+        "1",
+        "--offset",
+        "1",
+        "--format",
+        "text",
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "scope=source_work" in result.stdout
+    assert "returned=1" in result.stdout
+    assert "truncated=false" in result.stdout
+    assert "result[2].object_id=work:2" in result.stdout
+
+
+def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+    results_json = tmp_path / "private_path_results.json"
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "cacheprivatemarker",
+        "--output-json",
+        str(results_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["counts"]["returned"] == 1
+    snippet = payload["results"][0]["snippets"][0]
+    assert snippet["display_policy"] == "suppressed"
+    assert snippet["text"] == "[suppressed private path]"
+    assert payload["policy"]["private_paths_exposed"] is False
