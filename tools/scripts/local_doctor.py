@@ -41,6 +41,7 @@ if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
 import validate_topic_workspace_registry  # noqa: E402
+import validate_migration_ledger  # noqa: E402
 
 
 def redact(value: Any) -> Any:
@@ -321,6 +322,91 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
     return posture, findings
 
 
+def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    ledger_root = repo_root / "runtime" / "ledgers"
+    posture = {
+        "ledger_root": str(ledger_root),
+        "ledger_count": 0,
+        "event_count": 0,
+        "latest_event_id": None,
+        "latest_workspace_id": None,
+        "latest_migration_type": None,
+        "latest_occurred_at": None,
+        "latest_tool_surface": None,
+        "latest_input_version": None,
+        "latest_output_version": None,
+        "latest_backup_ref": None,
+        "latest_snapshot_ref": None,
+        "latest_rollback_of_event_id": None,
+        "status": "unknown",
+    }
+    findings: list[dict[str, Any]] = []
+    if not ledger_root.exists():
+        posture["status"] = "warn"
+        findings.append(
+            finding(
+                "MIGRATION_LEDGER_EVIDENCE_MISSING",
+                "advisory_only",
+                "no migration ledger files were found under the local ledger root",
+                ledger_root=str(ledger_root),
+            )
+        )
+        return posture, findings
+
+    ledger_paths = sorted(path for path in ledger_root.glob("*.migration-ledger.jsonl") if path.is_file())
+    posture["ledger_count"] = len(ledger_paths)
+    if not ledger_paths:
+        posture["status"] = "warn"
+        findings.append(
+            finding(
+                "MIGRATION_LEDGER_EVIDENCE_MISSING",
+                "advisory_only",
+                "no migration ledger files were found under the local ledger root",
+                ledger_root=str(ledger_root),
+            )
+        )
+        return posture, findings
+
+    latest_event: dict[str, Any] | None = None
+    for path in ledger_paths:
+        result, exit_code = validate_migration_ledger.validate_migration_ledger(path)
+        if exit_code != validate_migration_ledger.EXIT_PASS:
+            findings.append(
+                finding(
+                    "MIGRATION_LEDGER_INVALID",
+                    "operator_action_required",
+                    "migration ledger failed validation",
+                    path=str(path),
+                    errors=result.get("errors", [])[:5],
+                )
+            )
+            continue
+        posture["event_count"] += result["counts"]["accepted"]
+        candidate = result.get("latest_event")
+        if candidate is not None and (
+            latest_event is None or candidate["occurred_at"] > latest_event["occurred_at"]
+        ):
+            latest_event = candidate
+
+    if findings:
+        posture["status"] = "fail"
+        return posture, findings
+
+    posture["status"] = "pass"
+    if latest_event is not None:
+        posture["latest_event_id"] = latest_event["event_id"]
+        posture["latest_workspace_id"] = latest_event["workspace_id"]
+        posture["latest_migration_type"] = latest_event["migration_type"]
+        posture["latest_occurred_at"] = latest_event["occurred_at"]
+        posture["latest_tool_surface"] = latest_event["tool_surface"]
+        posture["latest_input_version"] = latest_event["input_version"]
+        posture["latest_output_version"] = latest_event["output_version"]
+        posture["latest_backup_ref"] = latest_event.get("backup_ref")
+        posture["latest_snapshot_ref"] = latest_event.get("snapshot_ref")
+        posture["latest_rollback_of_event_id"] = latest_event.get("rollback_of_event_id")
+    return posture, findings
+
+
 def inspect_scheduler(repo_root: Path, registry_path: Path, registry_status: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     scheduler = {
         "selector_path": str(repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py"),
@@ -416,6 +502,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
 
     validators = [
         "tools/validators/validate_knowledge_tree_export.py",
+        "tools/validators/validate_migration_ledger.py",
         "tools/validators/validate_static_knowledge_tree_output.py",
         "tools/validators/validate_topic_workspace_registry.py",
         "tools/validators/validate_crown_jewel_backup_manifest.py",
@@ -438,6 +525,8 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
     findings.extend(backup_findings)
+    migration_posture, migration_findings = inspect_migration_posture(repo_root)
+    findings.extend(migration_findings)
     scheduler, scheduler_findings = inspect_scheduler(repo_root, registry_path, registry_status)
     findings.extend(scheduler_findings)
     public_gates, public_findings = inspect_public_gates(repo_root)
@@ -450,6 +539,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
         "workspaces": "pass" if workspaces and not workspace_findings else ("warn" if not workspaces else "fail"),
         "scheduler_eligibility": scheduler["status"],
         "crown_jewel_backup_posture": backup_posture["status"],
+        "migration_ledger_posture": migration_posture["status"],
         "db_integrity_smoke": status_from_findings(
             database_findings,
             fail_codes={"DB_INTEGRITY_CHECK_FAILED"},
@@ -479,6 +569,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
             "databases": databases,
             "locks": locks,
             "backup_posture": backup_posture,
+            "migration_posture": migration_posture,
             "scheduler": scheduler,
             "public_gates": public_gates,
             "findings": findings,
