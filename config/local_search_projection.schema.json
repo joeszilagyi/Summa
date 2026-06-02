@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/subject-index/local_search_projection.schema.json",
+  "title": "local-search-projection.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "source",
+    "profile",
+    "policy",
+    "counts",
+    "excluded_records",
+    "records",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "local-search-projection.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "database_name",
+        "schema_version",
+        "correction_ledger_applied"
+      ],
+      "properties": {
+        "database_name": {
+          "type": "string"
+        },
+        "database_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "correction_ledger_applied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "local",
+        "public_preview",
+        "public_release"
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "raw_payload_indexed",
+        "full_text_indexed",
+        "private_paths_exposed",
+        "superseded_records_included",
+        "blocked_records_included"
+      ],
+      "properties": {
+        "raw_payload_indexed": {
+          "type": "boolean",
+          "const": false
+        },
+        "full_text_indexed": {
+          "type": "boolean",
+          "const": false
+        },
+        "private_paths_exposed": {
+          "type": "boolean"
+        },
+        "superseded_records_included": {
+          "type": "boolean"
+        },
+        "blocked_records_included": {
+          "type": "boolean"
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": [
+        "candidate_records",
+        "projected_records",
+        "excluded_records",
+        "indexed_rows"
+      ],
+      "properties": {
+        "candidate_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projected_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "indexed_rows": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "excluded_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "object_ref",
+          "reason"
+        ],
+        "properties": {
+          "object_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "projection_id",
+          "object_ref",
+          "object_type",
+          "object_pk",
+          "title",
+          "subtitle",
+          "review_state",
+          "publication_state",
+          "authority_level",
+          "public_blocker",
+          "lineage_state",
+          "visible_profiles",
+          "suppressed_fields",
+          "indexed_fields"
+        ],
+        "properties": {
+          "projection_id": {
+            "type": "string"
+          },
+          "object_ref": {
+            "type": "string"
+          },
+          "object_type": {
+            "type": "string",
+            "enum": [
+              "work",
+              "authority",
+              "controlled_subject",
+              "source_access",
+              "relationship",
+              "claim",
+              "provenance_event",
+              "topic_extension"
+            ]
+          },
+          "object_pk": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_state": {
+            "type": "string"
+          },
+          "publication_state": {
+            "type": "string",
+            "enum": [
+              "private_working",
+              "local_only",
+              "public_preview",
+              "public_release_candidate",
+              "public_release_allowed",
+              "blocked"
+            ]
+          },
+          "authority_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_blocker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lineage_state": {
+            "type": "string",
+            "enum": [
+              "current",
+              "superseded"
+            ]
+          },
+          "visible_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "local",
+                "public_preview",
+                "public_release"
+              ]
+            }
+          },
+          "suppressed_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "indexed_fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "field",
+                "text",
+                "display_policy"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "display_policy": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "local_only"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "errors": {
+      "type": "array"
+    }
+  }
+}
