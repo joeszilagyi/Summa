@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/source_adapter.schema.json",
+  "title": "source-adapter.v1",
+  "description": "Checked-in JSON schema for source-adapter manifests aligned to the executable validator contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_id",
+    "display_name",
+    "workspace_id",
+    "input_family",
+    "locator",
+    "content_profile",
+    "provenance",
+    "rights_and_storage",
+    "automation_posture",
+    "normalized_handoff",
+    "transform_lineage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "source-adapter.v1"
+    },
+    "adapter_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "display_name": {
+      "$ref": "#/$defs/nonblank_string"
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "description": {
+      "$ref": "#/$defs/nonblank_string"
+    },
+    "input_family": {
+      "type": "string",
+      "enum": [
+        "local_directory",
+        "local_file",
+        "local_git_repo",
+        "remote_archive_collection",
+        "remote_git_repo",
+        "remote_url_manifest"
+      ]
+    },
+    "locator": {
+      "type": "object"
+    },
+    "content_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_kinds",
+        "hazard_flags"
+      ],
+      "properties": {
+        "content_kinds": {
+          "$ref": "#/$defs/nonempty_string_array"
+        },
+        "hazard_flags": {
+          "$ref": "#/$defs/string_array"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discovery_provenance",
+        "acquisition_method",
+        "source_description"
+      ],
+      "properties": {
+        "discovery_provenance": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "acquisition_method": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "source_description": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "upstream_reference": {
+          "$ref": "#/$defs/nonblank_string"
+        }
+      }
+    },
+    "rights_and_storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload_storage_policy_class",
+        "metadata_storage_policy_class",
+        "rights_posture"
+      ],
+      "properties": {
+        "payload_storage_policy_class": {
+          "type": "string",
+          "enum": [
+            "external_later",
+            "legacy_private_export",
+            "never_publish",
+            "private_only",
+            "tracked_derived",
+            "tracked_source"
+          ]
+        },
+        "metadata_storage_policy_class": {
+          "type": "string",
+          "enum": [
+            "external_later",
+            "legacy_private_export",
+            "never_publish",
+            "private_only",
+            "tracked_derived",
+            "tracked_source"
+          ]
+        },
+        "rights_posture": {
+          "type": "string",
+          "enum": [
+            "private_local_only",
+            "quote_limited",
+            "redistributable",
+            "unknown_review_required"
+          ]
+        },
+        "contains_personal_data": {
+          "type": "boolean"
+        }
+      }
+    },
+    "automation_posture": {
+      "type": "string",
+      "enum": [
+        "operator_review_required",
+        "unattended_safe"
+      ]
+    },
+    "normalized_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_family",
+        "batch_unit",
+        "preserve_fields",
+        "source_specific_fields"
+      ],
+      "properties": {
+        "record_family": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "batch_unit": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "preserve_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "authority_records",
+              "byte_retention_status",
+              "controlled_subjects",
+              "discard_metadata",
+              "discovery_provenance",
+              "durable_source_record",
+              "extraction_metadata",
+              "original_locator",
+              "refetchability_status",
+              "rights_posture",
+              "source_metadata",
+              "transform_lineage"
+            ]
+          }
+        },
+        "source_specific_fields": {
+          "$ref": "#/$defs/string_array"
+        }
+      }
+    },
+    "transform_lineage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step_id",
+          "step_kind",
+          "description",
+          "deterministic",
+          "review_required"
+        ],
+        "properties": {
+          "step_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "step_kind": {
+            "$ref": "#/$defs/nonblank_string"
+          },
+          "description": {
+            "$ref": "#/$defs/nonblank_string"
+          },
+          "deterministic": {
+            "type": "boolean"
+          },
+          "review_required": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "local_file"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/local_file_locator"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "local_directory"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/local_directory_locator"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "local_git_repo"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/local_git_repo_locator"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "remote_git_repo"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/remote_git_repo_locator"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "remote_url_manifest"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/remote_url_manifest_locator"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_family": {
+            "const": "remote_archive_collection"
+          }
+        },
+        "required": [
+          "input_family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "locator": {
+            "$ref": "#/$defs/remote_archive_collection_locator"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "nonblank_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "string_array": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonblank_string"
+      }
+    },
+    "nonempty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonblank_string"
+      }
+    },
+    "url_string": {
+      "type": "string",
+      "pattern": "^https?://.+"
+    },
+    "glob_array": {
+      "$ref": "#/$defs/string_array"
+    },
+    "format_hint": {
+      "type": "string",
+      "enum": [
+        "csv",
+        "json",
+        "jsonl",
+        "xml"
+      ]
+    },
+    "local_file_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_path"
+      ],
+      "properties": {
+        "local_path": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "format_hint": {
+          "$ref": "#/$defs/format_hint"
+        },
+        "record_path": {
+          "$ref": "#/$defs/nonblank_string"
+        }
+      }
+    },
+    "local_directory_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_path"
+      ],
+      "properties": {
+        "local_path": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "include_globs": {
+          "$ref": "#/$defs/glob_array"
+        },
+        "exclude_globs": {
+          "$ref": "#/$defs/glob_array"
+        },
+        "format_hint": {
+          "$ref": "#/$defs/format_hint"
+        },
+        "record_path": {
+          "$ref": "#/$defs/nonblank_string"
+        }
+      }
+    },
+    "local_git_repo_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_path"
+      ],
+      "properties": {
+        "local_path": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/nonblank_string"
+        },
+        "include_globs": {
+          "$ref": "#/$defs/glob_array"
+        },
+        "exclude_globs": {
+          "$ref": "#/$defs/glob_array"
+        }
+      }
+    },
+    "remote_git_repo_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_url"
+      ],
+      "properties": {
+        "repo_url": {
+          "$ref": "#/$defs/url_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/nonblank_string"
+        }
+      }
+    },
+    "remote_url_manifest_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_url"
+      ],
+      "properties": {
+        "manifest_url": {
+          "$ref": "#/$defs/url_string"
+        }
+      }
+    },
+    "remote_archive_collection_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_url"
+      ],
+      "properties": {
+        "base_url": {
+          "$ref": "#/$defs/url_string"
+        }
+      }
+    }
+  }
+}

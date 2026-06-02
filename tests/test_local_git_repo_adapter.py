@@ -196,6 +196,5 @@ def test_local_git_repo_refuses_remote_clone_behavior(tmp_path: Path) -> None:
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    payload = json.loads(proc.stdout)
-    assert "remote clone behavior is not allowed; planner inspects already-local checkouts only" in payload["blockers"]
+    assert proc.returncode == 1
+    assert "locator field repo_url is not allowed for input_family local_git_repo" in proc.stderr

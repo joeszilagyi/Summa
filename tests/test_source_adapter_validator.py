@@ -12,6 +12,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "source_adapter"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_adapter.py"
 SOURCE_INTAKE_VIEW = REPO_ROOT / "tools" / "scripts" / "build_source_intake_status_view.py"
+SOURCE_ADAPTER_SCHEMA = REPO_ROOT / "config" / "source_adapter.schema.json"
+
+sys.path.insert(0, str(REPO_ROOT))
+from tools.common.source_adapter_contract import (  # noqa: E402
+    INPUT_FAMILIES,
+    INPUT_FAMILY_ALLOWED_LOCATOR_KEYS,
+    INPUT_FAMILY_LOCATOR_KEYS,
+)
 
 EXIT_PASS = 0
 EXIT_VALIDATION_FAILED = 1
@@ -62,6 +70,20 @@ def assert_matches_golden(scenario_dir: Path) -> None:
     expected_text = (expected_dir / "report.txt").read_text(encoding="utf-8")
     actual_text = (actual_dir / "report.txt").read_text(encoding="utf-8")
     assert actual_text == expected_text
+
+
+def schema_locator_contracts() -> dict[str, dict[str, object]]:
+    schema = json.loads(SOURCE_ADAPTER_SCHEMA.read_text(encoding="utf-8"))
+    defs = schema["$defs"]
+    families = {}
+    for family in INPUT_FAMILIES:
+        ref_name = f"{family}_locator"
+        locator_def = defs[ref_name]
+        families[family] = {
+            "required": set(locator_def.get("required", [])),
+            "allowed": set(locator_def.get("properties", {}).keys()),
+        }
+    return families
 
 
 def test_source_adapter_validator_fixtures_match_golden(tmp_path: Path) -> None:
@@ -130,6 +152,92 @@ def test_source_intake_status_view_round_trips_valid_and_invalid_adapters(tmp_pa
     assert invalid_entry["contract_status"] == "fail"
     assert invalid_entry["intake_state"] == "failed"
     assert invalid_entry["validation"]["error_count"] == 1
+
+
+def test_source_adapter_schema_locator_families_match_validator_contract() -> None:
+    families = schema_locator_contracts()
+
+    for family in sorted(INPUT_FAMILIES):
+        assert families[family]["required"] == {INPUT_FAMILY_LOCATOR_KEYS[family]}
+        assert families[family]["allowed"] == INPUT_FAMILY_ALLOWED_LOCATOR_KEYS[family]
+
+
+def test_source_adapter_validator_rejects_remote_manifest_globs(tmp_path: Path) -> None:
+    target = tmp_path / "source_adapter.json"
+    target.write_text(
+        json.dumps(
+            {
+                "schema_version": "source-adapter.v1",
+                "adapter_id": "remote_manifest_glob_fixture",
+                "display_name": "Remote manifest glob fixture",
+                "workspace_id": "alpha_subject",
+                "description": "Remote URL manifest should reject local glob fields.",
+                "input_family": "remote_url_manifest",
+                "locator": {
+                    "manifest_url": "https://archives.example.gov/subject/alpha/manifest.jsonl",
+                    "include_globs": ["**/*.pdf"],
+                },
+                "content_profile": {
+                    "content_kinds": ["pdf"],
+                    "hazard_flags": [],
+                },
+                "provenance": {
+                    "discovery_provenance": "validator test",
+                    "acquisition_method": "manual_list",
+                    "source_description": "Remote manifest fixture for locator-family validation.",
+                },
+                "rights_and_storage": {
+                    "payload_storage_policy_class": "external_later",
+                    "metadata_storage_policy_class": "tracked_derived",
+                    "rights_posture": "quote_limited",
+                },
+                "automation_posture": "operator_review_required",
+                "normalized_handoff": {
+                    "record_family": "url_observation",
+                    "batch_unit": "per_reference",
+                    "preserve_fields": [
+                        "original_locator",
+                        "discovery_provenance",
+                        "rights_posture",
+                    ],
+                    "source_specific_fields": [
+                        "manifest_url",
+                    ],
+                },
+                "transform_lineage": [
+                    {
+                        "step_id": "manifest",
+                        "step_kind": "read_manifest_snapshot",
+                        "description": "Read the remote manifest snapshot.",
+                        "deterministic": True,
+                        "review_required": False,
+                    },
+                    {
+                        "step_id": "handoff",
+                        "step_kind": "emit_handoff",
+                        "description": "Emit URL observations.",
+                        "deterministic": True,
+                        "review_required": True,
+                    },
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(target)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == EXIT_VALIDATION_FAILED, proc.stdout + proc.stderr
+    assert "LOCATOR_FIELD_NOT_ALLOWED" in proc.stdout
 
 
 def test_source_adapter_validator_accepts_structured_locator_hints(tmp_path: Path) -> None:
