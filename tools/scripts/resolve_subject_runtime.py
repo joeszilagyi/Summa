@@ -173,4 +173,3 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
         }
 
     return resolved
-
