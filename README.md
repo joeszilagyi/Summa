@@ -1,19 +1,21 @@
 # Summa
 
-Summa is a local-first indexing toolbase for organizing source records, review state, and export-ready metadata. The repository contains generic schemas, validators, scripts, and tests. It does not include fed inputs, generated databases, runtime outputs, topic corpora, or prior-run fixtures.
+## What This Is
 
-## Repository Shape
+Have you ever wondered if you could read everything ever written about something?
 
-- `config/` contains generic schema contracts.
-- `tools/` contains validators, scripts, and reusable helpers.
-- `tests/` contains synthetic tests that create any needed inputs at runtime.
+Have you ever read more than one book, article, newspaper story, television segment, or film about a topic and wanted to keep going? You tell Indexer what you want to learn about, and it runs in the background using your own tools, like ChatGPT or Claude, as research helpers. Say your topic is trout fly fishing in Montana. Indexer first finds and records the most well-known people, places, books, terms, sources, and loose threads around that topic, including things you may already recognize. Then each time it runs, it uses what it found before to look a little farther out, adding smaller details and new leads as it goes. Over time, you end up with a map of what can be found about that subject and where each trail seems to lead.
 
-Generated material belongs outside the repository. Do not commit local databases, runtime output, generated bundles, binary inputs, or staged source drops.
+Install the app, tell it your topic, choose whether to run it by hand or automatically, and it will handle the rest. As it searches, it collects information in databases on your own computer. You can browse those databases as local websites, without publishing your research online.
 
-## Verification
+Think of it like building a shareable map of everything on your topic, scattered across old reports, databases, websites, books, television, films, newspapers, PDFs, notes, and half-forgotten references. It keeps track of the names, places, records, sources, and loose threads so you can see what exists, what has support behind it, and what still needs checking.
 
-Run the test suite with:
+## Technical Overview
 
-```bash
-python3 -m pytest -q
-```
+Local-first subject indexing and bibliography workspace.
+
+This repository's public core is a topic-neutral indexing and bibliography system. It uses LLMs only for candidate enumeration, multilingual query planning, and source-lead discovery. LLM outputs are not sources, citations, reviewed facts, or publishable prose. Every usable source must be manually opened and read by a human before it can become an accepted work, evidence record, or public-safe export artifact.
+
+Indexer is not a raw-payload archive. Raw PDFs, HTML pages, screenshots, WARC files, page images, audio/video captures, OCR text, and full extracted text are transient processing inputs by default. The durable object is the canonical source/work database record plus variant identity, controlled subjects, first-class authority records, capture, and extraction metadata.
+
+The goal of the project is: where should I look next?
