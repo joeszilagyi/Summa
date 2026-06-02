@@ -36,6 +36,7 @@ from tools.common.local_search_contract import (
 )
 from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS
 from tools.validators.validate_correction_ledger import validate_correction_ledger
+from tools.validators.validate_local_search_projection import validate_local_search_projection_payload
 
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
@@ -583,6 +584,14 @@ def main() -> int:
     args = parse_args()
     try:
         payload = build_projection_payload(args)
+        if is_public_profile(args.profile):
+            validation_errors = validate_local_search_projection_payload(payload)
+            if validation_errors:
+                summary = "; ".join(
+                    f"{error['code']} {error.get('path') or error['message']}"
+                    for error in validation_errors[:5]
+                )
+                raise SearchProjectionError(f"public search leak validation failed: {summary}")
         write_index(resolve_path(args.index_db), payload)
         if args.output_json:
             atomic_write_json(resolve_path(args.output_json), payload)

@@ -227,3 +227,52 @@ def test_local_projection_includes_superseded_and_local_only_fields(tmp_path: Pa
     assert fts_matches(index_db, "cacheprivatemarker") == ["source_access:1"]
     assert fts_matches(index_db, "localclaimmarker") == ["claim:1"]
     assert fts_matches(index_db, "Superseded") == ["work:2"]
+
+
+def test_public_projection_builder_blocks_secret_like_leaks(tmp_path: Path) -> None:
+    db = tmp_path / "search.sqlite"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE work (
+              work_id INTEGER PRIMARY KEY,
+              work_type TEXT,
+              title TEXT,
+              review_state TEXT,
+              publication_state TEXT,
+              authority_level TEXT,
+              public_blocker TEXT,
+              workspace_id TEXT
+            );
+            INSERT INTO work (
+              work_id, work_type, title, review_state, publication_state,
+              authority_level, public_blocker, workspace_id
+            ) VALUES
+              (1, 'book', 'api_key=leaked Public Work', 'reviewed', 'public_release_allowed', 'primary', NULL, 'alpha_subject');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    output_json = tmp_path / "public_projection.json"
+    index_db = tmp_path / "public_projection.sqlite"
+
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "public_preview",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "public search leak validation failed" in combined
+    assert "SECRET_MARKER_EXPOSED" in combined

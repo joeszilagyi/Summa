@@ -42,6 +42,13 @@ from tools.common.local_search_contract import (  # noqa: E402
     SEARCH_SCOPE_TO_OBJECT_TYPES,
     VISIBILITY_PROFILES,
 )
+from tools.common.search_leak_policy import (  # noqa: E402
+    contains_private_path,
+    contains_secret_marker,
+    is_private_note_field,
+    is_raw_payload_field,
+    is_restricted_public_field,
+)
 
 
 VALIDATOR_NAME = "local_search_results"
@@ -74,8 +81,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def add_error(errors: list[dict[str, Any]], *, code: str, message: str, line: int | None = None) -> None:
-    errors.append({"code": code, "line": line, "message": message})
+def add_error(
+    errors: list[dict[str, Any]],
+    *,
+    code: str,
+    message: str,
+    line: int | None = None,
+    path: str | None = None,
+) -> None:
+    payload = {"code": code, "line": line, "message": message}
+    if path is not None:
+        payload["path"] = path
+    errors.append(payload)
 
 
 def reject_json_constant(value: str) -> None:
@@ -147,6 +164,7 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
             add_error(errors, code="INVALID_SOURCE_FIELD", message="source.schema_version must be a string, integer, or null")
 
     query = payload.get("query")
+    query_visibility_profile = None
     if not isinstance(query, dict):
         add_error(errors, code="QUERY_NOT_OBJECT", message="query must be an object")
     else:
@@ -163,7 +181,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
         offset = query.get("offset")
         if offset is not None and (not isinstance(offset, int) or offset < 0):
             add_error(errors, code="INVALID_QUERY_FIELD", message="query.offset must be an integer >= 0 when present")
-        if query.get("visibility_profile") not in VISIBILITY_PROFILES:
+        query_visibility_profile = query.get("visibility_profile")
+        if query_visibility_profile not in VISIBILITY_PROFILES:
             add_error(errors, code="INVALID_QUERY_FIELD", message="query.visibility_profile must be a known visibility profile")
 
     result_rows = payload.get("results")
@@ -219,7 +238,18 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
             if object_type in RESULT_CLASS_BY_OBJECT_TYPE and item.get("result_class") != RESULT_CLASS_BY_OBJECT_TYPE[object_type]:
                 add_error(errors, code="RESULT_CLASS_MISMATCH", message=f"{label}.result_class does not match object_type")
             validate_nonblank_string(item.get("object_id"), field_name=f"{label}.object_id", errors=errors, code="INVALID_RESULT_FIELD")
-            validate_nonblank_string(item.get("title"), field_name=f"{label}.title", errors=errors, code="INVALID_RESULT_FIELD")
+            title = validate_nonblank_string(item.get("title"), field_name=f"{label}.title", errors=errors, code="INVALID_RESULT_FIELD")
+            subtitle = item.get("subtitle")
+            if isinstance(title, str):
+                if contains_secret_marker(title):
+                    add_error(errors, code="SECRET_MARKER_EXPOSED", message=f"{label}.title contains a secret-looking value", path=f"{label}.title")
+                if contains_private_path(title):
+                    add_error(errors, code="PRIVATE_PATH_EXPOSED", message=f"{label}.title must not expose a private path", path=f"{label}.title")
+            if isinstance(subtitle, str):
+                if contains_secret_marker(subtitle):
+                    add_error(errors, code="SECRET_MARKER_EXPOSED", message=f"{label}.subtitle contains a secret-looking value", path=f"{label}.subtitle")
+                if contains_private_path(subtitle):
+                    add_error(errors, code="PRIVATE_PATH_EXPOSED", message=f"{label}.subtitle must not expose a private path", path=f"{label}.subtitle")
 
             matched_fields = item.get("matched_fields")
             if not isinstance(matched_fields, list) or not all(isinstance(field, str) and field.strip() for field in matched_fields):
@@ -234,21 +264,71 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
                         add_error(errors, code="INVALID_RESULT_FIELD", message=f"{snippet_label} must be an object")
                         continue
                     validate_nonblank_string(snippet.get("field"), field_name=f"{snippet_label}.field", errors=errors, code="INVALID_RESULT_FIELD")
-                    validate_nonblank_string(snippet.get("text"), field_name=f"{snippet_label}.text", errors=errors, code="INVALID_RESULT_FIELD")
+                    field_name = validate_nonblank_string(snippet.get("field"), field_name=f"{snippet_label}.field", errors=errors, code="INVALID_RESULT_FIELD")
+                    text = validate_nonblank_string(snippet.get("text"), field_name=f"{snippet_label}.text", errors=errors, code="INVALID_RESULT_FIELD")
                     if snippet.get("display_policy") not in {"public", "local_only", "suppressed"}:
                         add_error(errors, code="INVALID_RESULT_FIELD", message=f"{snippet_label}.display_policy must be public, local_only, or suppressed")
-                    if isinstance(snippet.get("text"), str) and snippet["text"].startswith("/"):
-                        add_error(errors, code="PRIVATE_PATH_EXPOSED", message=f"{snippet_label}.text must not expose a private path")
+                    if field_name is not None and is_raw_payload_field(field_name):
+                        add_error(
+                            errors,
+                            code="RAW_PAYLOAD_FIELD_EXPOSED",
+                            message=f"{snippet_label}.field must not expose raw payload or full-text fields in search results",
+                            path=f"{snippet_label}.field",
+                        )
+                    if field_name is not None and is_private_note_field(field_name):
+                        add_error(
+                            errors,
+                            code="PRIVATE_NOTE_FIELD_EXPOSED",
+                            message=f"{snippet_label}.field must not expose private note fields in search results",
+                            path=f"{snippet_label}.field",
+                        )
+                    if field_name is not None and is_restricted_public_field(field_name) and query_visibility_profile in {"public_preview", "public_release"}:
+                        add_error(
+                            errors,
+                            code="RESTRICTED_EVIDENCE_FIELD_IN_PUBLIC_RESULTS",
+                            message=f"{snippet_label}.field must not expose restricted evidence fields in public search results",
+                            path=f"{snippet_label}.field",
+                        )
+                    if text is not None and contains_secret_marker(text):
+                        add_error(
+                            errors,
+                            code="SECRET_MARKER_EXPOSED",
+                            message=f"{snippet_label}.text contains a secret-looking value",
+                            path=f"{snippet_label}.text",
+                        )
+                    if text is not None and contains_private_path(text):
+                        add_error(
+                            errors,
+                            code="PRIVATE_PATH_EXPOSED",
+                            message=f"{snippet_label}.text must not expose a private path",
+                            path=f"{snippet_label}.text",
+                        )
 
             visibility = item.get("visibility")
             if not isinstance(visibility, dict):
                 add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.visibility must be an object")
             else:
-                if visibility.get("profile") not in VISIBILITY_PROFILES:
+                visibility_profile = visibility.get("profile")
+                if visibility_profile not in VISIBILITY_PROFILES:
                     add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.visibility.profile must be a known visibility profile")
+                if query_visibility_profile in VISIBILITY_PROFILES and visibility_profile != query_visibility_profile:
+                    add_error(
+                        errors,
+                        code="VISIBILITY_PROFILE_MISMATCH",
+                        message=f"{label}.visibility.profile must match query.visibility_profile",
+                        path=f"{label}.visibility.profile",
+                    )
                 suppressed = visibility.get("suppressed_fields")
                 if not isinstance(suppressed, list) or not all(isinstance(field, str) for field in suppressed):
                     add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.visibility.suppressed_fields must be an array of strings")
+                publication_state = item.get("publication_state")
+                if visibility_profile in {"public_preview", "public_release"} and publication_state in {"private_working", "local_only", "blocked"}:
+                    add_error(
+                        errors,
+                        code="PUBLIC_VISIBILITY_CONTRADICTION",
+                        message=f"{label} cannot be visible in {visibility_profile} with publication_state {publication_state}",
+                        path=f"{label}.publication_state",
+                    )
 
     if not isinstance(payload.get("warnings"), list):
         add_error(errors, code="WARNINGS_NOT_ARRAY", message="warnings must be an array")
