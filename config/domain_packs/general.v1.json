@@ -32,6 +32,10 @@
     "gather.sources": {
       "bundle_id": "general.gather.sources.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.sources.seed.prompt",
+        "tools/prompts/general/general.sources.review.prompt"
+      ],
       "template_ids": [
         "general.sources.seed",
         "general.sources.review"
@@ -40,6 +44,10 @@
     "gather.timeline": {
       "bundle_id": "general.gather.timeline.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.timeline.seed.prompt",
+        "tools/prompts/general/general.timeline.review.prompt"
+      ],
       "template_ids": [
         "general.timeline.seed",
         "general.timeline.review"
@@ -48,6 +56,10 @@
     "gather.people": {
       "bundle_id": "general.gather.people.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.people.seed.prompt",
+        "tools/prompts/general/general.people.review.prompt"
+      ],
       "template_ids": [
         "general.people.seed",
         "general.people.review"
@@ -56,6 +68,10 @@
     "gather.places": {
       "bundle_id": "general.gather.places.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.places.seed.prompt",
+        "tools/prompts/general/general.places.review.prompt"
+      ],
       "template_ids": [
         "general.places.seed",
         "general.places.review"
@@ -64,6 +80,10 @@
     "gather.works": {
       "bundle_id": "general.gather.works.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.works.seed.prompt",
+        "tools/prompts/general/general.works.review.prompt"
+      ],
       "template_ids": [
         "general.works.seed",
         "general.works.review"
@@ -72,6 +92,10 @@
     "gather.open_questions": {
       "bundle_id": "general.gather.open_questions.v1",
       "source_text_wrapper_template_id": "default.untrusted_source_text.v1",
+      "template_files": [
+        "tools/prompts/general/general.open_questions.seed.prompt",
+        "tools/prompts/general/general.open_questions.review.prompt"
+      ],
       "template_ids": [
         "general.open_questions.seed",
         "general.open_questions.review"
@@ -80,6 +104,6 @@
   },
   "notes": [
     "This pack gives the first-run topic bootstrap flow a neutral starter target for ordinary topics.",
-    "Prompt template IDs are reserved here, but this branch has not yet restored the archived general gather prompt files."
+    "Prompt templates for the active gather bundles are restored under tools/prompts/general and audited for topic-neutral candidate discovery wording."
   ]
 }
