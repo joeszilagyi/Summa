@@ -1,0 +1,75 @@
+{
+  "schema_version": "canonical-graph-model-outline.v1",
+  "contract_doc": "docs/project/CANONICAL_GRAPH_MODEL.md",
+  "summary": {
+    "canonical_layer_name": "durable_knowledge_map",
+    "presentations_downstream": true
+  },
+  "canonical_record_families": [
+    {
+      "record_family": "entity",
+      "description": "entity",
+      "current_sqlite_tables": ["authority_record", "extraction_detected_entity"],
+      "provenance_strategy": "entity provenance",
+      "review_strategy": "entity review"
+    },
+    {
+      "record_family": "relationship",
+      "description": "relationship",
+      "current_sqlite_tables": ["source_relationship"],
+      "provenance_strategy": "relationship provenance",
+      "review_strategy": "relationship review"
+    },
+    {
+      "record_family": "assertion",
+      "description": "assertion",
+      "current_sqlite_tables": ["source_claim"],
+      "provenance_strategy": "assertion provenance",
+      "review_strategy": "assertion review"
+    },
+    {
+      "record_family": "provenance_event",
+      "description": "provenance_event",
+      "current_sqlite_tables": ["provenance_event"],
+      "provenance_strategy": "provenance event provenance",
+      "review_strategy": "provenance event review"
+    },
+    {
+      "record_family": "confidence_assessment",
+      "description": "confidence_assessment",
+      "current_sqlite_tables": ["source_claim"],
+      "provenance_strategy": "confidence provenance",
+      "review_strategy": "confidence review"
+    },
+    {
+      "record_family": "review_annotation",
+      "description": "review_annotation",
+      "current_sqlite_tables": ["review_state_history"],
+      "provenance_strategy": "review provenance",
+      "review_strategy": "review annotation review"
+    }
+  ],
+  "append_only_sidecars": [
+    {
+      "sidecar": "correction_ledger",
+      "schema_version": "correction-ledger.v1",
+      "applies_to_record_families": ["entity"],
+      "purpose": "correction"
+    },
+    {
+      "sidecar": "field_review_state",
+      "schema_version": "field-review-state.v1",
+      "applies_to_record_families": ["entity"],
+      "purpose": "field review"
+    }
+  ],
+  "migration_stages": [
+    {
+      "stage_id": "graph-outline.v1",
+      "title": "outline",
+      "current_inputs": ["authority_record"],
+      "target_record_families": ["entity"],
+      "notes": "outline"
+    }
+  ]
+}
