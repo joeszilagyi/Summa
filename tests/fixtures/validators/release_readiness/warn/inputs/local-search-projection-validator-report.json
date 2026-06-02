@@ -1,0 +1,19 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 1,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 0
+  },
+  "errors": [],
+  "output_artifacts": {
+    "report_json": null,
+    "report_text": null
+  },
+  "scenario": "warn_bundle",
+  "status": "pass",
+  "target": "inputs/local-search-projection.json",
+  "validator": "local_search_projection",
+  "warnings": []
+}

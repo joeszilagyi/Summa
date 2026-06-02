@@ -1,0 +1,14 @@
+{
+  "counts": {
+    "allowlist_entries": 0,
+    "files_scanned": 3,
+    "findings": 0,
+    "suppressed_findings": 0
+  },
+  "findings": [],
+  "profile": "public_bundle",
+  "root": "bundle",
+  "schema_version": "leak-scan-report.v1",
+  "status": "pass",
+  "suppressed_findings": []
+}

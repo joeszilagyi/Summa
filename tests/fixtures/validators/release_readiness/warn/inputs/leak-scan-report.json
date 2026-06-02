@@ -1,0 +1,23 @@
+{
+  "counts": {
+    "allowlist_entries": 1,
+    "files_scanned": 3,
+    "findings": 0,
+    "suppressed_findings": 1
+  },
+  "findings": [],
+  "profile": "public_bundle",
+  "root": "bundle",
+  "schema_version": "leak-scan-report.v1",
+  "status": "pass",
+  "suppressed_findings": [
+    {
+      "allowlist_approved_by": "operator",
+      "allowlist_entry_id": "allowlisted-note",
+      "allowlist_reason": "documented false positive",
+      "code": "PRIVATE_NOTE_MARKER",
+      "message": "private-note marker remains in scanned output",
+      "path": "site/index.html"
+    }
+  ]
+}

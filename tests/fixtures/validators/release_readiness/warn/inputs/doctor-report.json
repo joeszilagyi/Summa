@@ -1,0 +1,31 @@
+{
+  "schema_version": "local-doctor-report.v1",
+  "summary": {
+    "status": "warn",
+    "check_count": 10,
+    "finding_count": 1,
+    "operator_action_required_count": 0
+  },
+  "checks": {
+    "repo_hygiene": "clean",
+    "validator_availability": "available",
+    "topic_workspace_registry": "pass",
+    "workspaces": "pass",
+    "scheduler_eligibility": "pass",
+    "crown_jewel_backup_posture": "warn",
+    "migration_ledger_posture": "pass",
+    "db_integrity_smoke": "pass",
+    "workspace_locks": "pass",
+    "public_private_sharing_gate": "pass"
+  },
+  "findings": [
+    {
+      "code": "CROWN_JEWEL_BACKUP_EVIDENCE_MISSING",
+      "class": "advisory_only",
+      "message": "no local crown-jewel backup evidence was found under the configured backup root",
+      "details": {
+        "backup_root": "[redacted-path]"
+      }
+    }
+  ]
+}
