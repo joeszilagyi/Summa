@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import re
 import shutil
 import sys
 import tempfile
@@ -25,7 +24,7 @@ for candidate in (
         sys.path.insert(0, candidate_text)
 
 from tools.common.atomic_write import atomic_write_json
-from tools.common.search_leak_policy import contains_private_path, contains_secret_marker
+from tools.common.leak_scanner import scan_directory
 from tools.validators.validate_static_knowledge_tree_output import (
     EXIT_PASS as EXIT_STATIC_OUTPUT_PASS,
     validate_static_knowledge_tree_output,
@@ -35,14 +34,6 @@ from tools.validators.validate_static_knowledge_tree_output import (
 SCRIPT_PATH = "tools/scripts/build_public_sharing_bundle.py"
 BUNDLE_SCHEMA_VERSION = "public-sharing-bundle.v1"
 REPORT_SCHEMA_VERSION = "public-sharing-bundle-report.v1"
-TEXT_SUFFIXES = {".json", ".txt", ".md", ".html", ".css"}
-
-PROMPT_OUTPUT_BODY_RE = re.compile(r"(?i)\b(prompt_output|raw_prompt_output|01a_prompt|01r_prompt|prompt_bundle_id)\b")
-RESTRICTED_TEXT_BODY_RE = re.compile(
-    r"(?i)\b(full_extracted_text|raw_payload|raw_text|full_text|operator_excerpt_text|public_excerpt_text)\b"
-)
-RUNTIME_LOG_PATH_RE = re.compile(r"(?i)(?:^|/)(?:logs?|runtime-logs?|index-actions\.log)(?:/|$)")
-PRIVATE_NOTE_BODY_RE = re.compile(r"(?i)\b(internal_note|private_note|operator_note|note_text)\b")
 
 
 class PublicSharingBundleError(RuntimeError):
@@ -177,31 +168,8 @@ def included_site_entries(build_manifest: dict[str, Any]) -> list[str]:
 
 
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    for path in sorted(bundle_root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_path = path.relative_to(bundle_root).as_posix()
-        if RUNTIME_LOG_PATH_RE.search(rel_path):
-            findings.append({"path": rel_path, "code": "RUNTIME_LOG_PATH", "message": "runtime log path is not public-safe"})
-        if path.suffix.lower() not in TEXT_SUFFIXES:
-            continue
-        try:
-            body = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if contains_secret_marker(body):
-            findings.append({"path": rel_path, "code": "SECRET_MARKER", "message": "secret-looking token remains in bundle output"})
-        if contains_private_path(body):
-            findings.append({"path": rel_path, "code": "PRIVATE_PATH", "message": "private absolute path remains in bundle output"})
-        if rel_path.startswith("site/") or rel_path == "metadata/export-summary.json":
-            if PROMPT_OUTPUT_BODY_RE.search(body):
-                findings.append({"path": rel_path, "code": "PROMPT_OUTPUT_MARKER", "message": "prompt-output marker appears in public site content"})
-            if RESTRICTED_TEXT_BODY_RE.search(body):
-                findings.append({"path": rel_path, "code": "RESTRICTED_TEXT_MARKER", "message": "restricted text marker appears in public site content"})
-            if PRIVATE_NOTE_BODY_RE.search(body):
-                findings.append({"path": rel_path, "code": "PRIVATE_NOTE_MARKER", "message": "private-note marker appears in public site content"})
-    return findings
+    report = scan_directory(bundle_root, profile="public_bundle")
+    return report["findings"]
 
 
 def bundle_manifest_payload(

@@ -96,7 +96,7 @@ def test_public_sharing_bundle_builder_blocks_restricted_text_marker(tmp_path: P
     try:
         sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle", generated_at="2026-06-02T20:03:00Z")
     except sharing_builder.PublicSharingBundleError as exc:
-        assert "RESTRICTED_TEXT_MARKER" in str(exc)
+        assert "RAW_PAYLOAD_MARKER" in str(exc)
     else:
         raise AssertionError("expected restricted text gate failure")
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": "leak-scan-allowlist.v1",
+  "entries": [
+    {
+      "entry_id": "allow-doc-literal-token",
+      "finding_code": "SECRET_MARKER",
+      "path_glob": "site/*.html",
+      "match_substring": "token=",
+      "reason": "Documentation fixture shows a literal token marker example without a real credential.",
+      "approved_by": "operator.alex"
+    }
+  ]
+}

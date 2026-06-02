@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import sys
 import tempfile
@@ -21,12 +20,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import local_doctor  # noqa: E402
+from tools.common.leak_scanner import scan_directory  # noqa: E402
 
 
 MANIFEST_SCHEMA_VERSION = "redacted-support-bundle.v1"
-SECRET_RE = re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)")
-PRIVATE_PATH_RE = re.compile(r"/(?:home|Users|tmp)/[A-Za-z0-9._~/-]+")
-TEXT_SUFFIXES = {".json", ".md", ".txt", ".log"}
 MAX_LOG_LINES = 200
 
 
@@ -135,20 +132,8 @@ def redacted_recent_log(repo_root: Path) -> str | None:
 
 
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    for path in sorted(bundle_root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
-            continue
-        try:
-            body = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        rel_path = path.relative_to(bundle_root).as_posix()
-        if SECRET_RE.search(body):
-            findings.append({"path": rel_path, "code": "SECRET_MARKER", "message": "secret-looking token remains after redaction"})
-        if PRIVATE_PATH_RE.search(body):
-            findings.append({"path": rel_path, "code": "PRIVATE_PATH", "message": "private absolute path remains after redaction"})
-    return findings
+    report = scan_directory(bundle_root, profile="support_bundle")
+    return report["findings"]
 
 
 def manifest_payload(included: list[dict[str, Any]], excluded: list[dict[str, str]], leak_findings: list[dict[str, str]]) -> dict[str, Any]:
