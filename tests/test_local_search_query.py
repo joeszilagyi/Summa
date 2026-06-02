@@ -202,3 +202,73 @@ def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
     assert snippet["display_policy"] == "suppressed"
     assert snippet["text"] == "[suppressed private path]"
     assert payload["policy"]["private_paths_exposed"] is False
+
+
+def test_results_validator_rejects_secret_and_private_note_findings(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+    results_json = tmp_path / "results.json"
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "Supplemental",
+        "--output-json",
+        str(results_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(results_json.read_text(encoding="utf-8"))
+    payload["query"]["visibility_profile"] = "public_preview"
+    for row in payload["results"]:
+        row["visibility"]["profile"] = "public_preview"
+    payload["results"][0]["snippets"][0]["field"] = "private_note"
+    payload["results"][0]["snippets"][0]["text"] = "authorization: Bearer leaked-token"
+    results_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report, exit_code = validate_results(results_json)
+
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert [error["code"] for error in report["errors"]] == [
+        "PRIVATE_NOTE_FIELD_EXPOSED",
+        "SECRET_MARKER_EXPOSED",
+    ]
+    assert report["errors"][0]["path"] == "results[0].snippets[0].field"
+    assert report["errors"][1]["path"] == "results[0].snippets[0].text"
+
+
+def test_results_validator_rejects_private_path_and_public_visibility_contradiction(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+    results_json = tmp_path / "results.json"
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "Supplemental",
+        "--output-json",
+        str(results_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(results_json.read_text(encoding="utf-8"))
+    payload["query"]["visibility_profile"] = "public_preview"
+    for row in payload["results"]:
+        row["visibility"]["profile"] = "public_preview"
+    payload["results"][0]["publication_state"] = "local_only"
+    payload["results"][0]["snippets"][0]["text"] = "/Users/joe/private.txt"
+    results_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report, exit_code = validate_results(results_json)
+
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert [error["code"] for error in report["errors"]] == [
+        "PRIVATE_PATH_EXPOSED",
+        "PUBLIC_VISIBILITY_CONTRADICTION",
+    ]
+    assert report["errors"][0]["path"] == "results[0].snippets[0].text"
+    assert report["errors"][1]["path"] == "results[0].publication_state"

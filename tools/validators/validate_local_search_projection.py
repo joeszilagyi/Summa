@@ -48,13 +48,19 @@ from tools.common.local_search_contract import (
     VISIBILITY_PROFILES,
     is_public_profile,
 )
+from tools.common.search_leak_policy import (
+    contains_private_path,
+    contains_secret_marker,
+    is_private_note_field,
+    is_raw_payload_field,
+    is_restricted_public_field,
+)
 
 
 VALIDATOR_NAME = "local_search_projection"
 CONTRACT_VERSION = "1"
 SCHEMA_PATH = "config/local_search_projection.schema.json"
 OBJECT_REF_PATTERN = re.compile(r"^[a-z_]+:[0-9]+$")
-PRIVATE_PATH_PATTERN = re.compile(r"^(?:/|~|file://|[A-Za-z]:\\\\)")
 
 REQUIRED_KEYS = {
     "schema_version",
@@ -119,8 +125,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def add_error(errors: list[dict[str, Any]], *, code: str, message: str, line: int | None = None) -> None:
-    errors.append({"code": code, "line": line, "message": message})
+def add_error(
+    errors: list[dict[str, Any]],
+    *,
+    code: str,
+    message: str,
+    line: int | None = None,
+    path: str | None = None,
+) -> None:
+    payload = {"code": code, "line": line, "message": message}
+    if path is not None:
+        payload["path"] = path
+    errors.append(payload)
 
 
 def reject_json_constant(value: str) -> None:
@@ -175,10 +191,6 @@ def validate_nonblank_string(value: Any, field_name: str, errors: list[dict[str,
     return value
 
 
-def looks_like_private_path(value: Any) -> bool:
-    return isinstance(value, str) and bool(PRIVATE_PATH_PATTERN.match(value.strip()))
-
-
 def validate_string_list(value: Any, field_name: str, errors: list[dict[str, Any]], *, code: str) -> list[str]:
     if not isinstance(value, list):
         add_error(errors, code=code, message=f"{field_name} must be an array")
@@ -230,9 +242,45 @@ def validate_indexed_fields(
                 errors,
                 code="LOCAL_ONLY_FIELD_IN_PUBLIC_PROFILE",
                 message=f"{field_label} cannot use local_only display_policy in profile {profile}",
+                path=f"{field_label}.display_policy",
             )
-        if text is not None and looks_like_private_path(text):
+        if field_name is not None and is_raw_payload_field(field_name):
+            add_error(
+                errors,
+                code="RAW_PAYLOAD_FIELD_INDEXED",
+                message=f"{field_label}.field must not expose raw payload or full-text fields in search artifacts",
+                path=f"{field_label}.field",
+            )
+        if field_name is not None and is_private_note_field(field_name):
+            add_error(
+                errors,
+                code="PRIVATE_NOTE_FIELD_INDEXED",
+                message=f"{field_label}.field must not expose private note fields in search artifacts",
+                path=f"{field_label}.field",
+            )
+        if field_name is not None and is_restricted_public_field(field_name) and is_public_profile(profile):
+            add_error(
+                errors,
+                code="RESTRICTED_EVIDENCE_FIELD_IN_PUBLIC_PROFILE",
+                message=f"{field_label}.field must not expose restricted evidence fields in public search artifacts",
+                path=f"{field_label}.field",
+            )
+        if text is not None and contains_secret_marker(text):
+            add_error(
+                errors,
+                code="SECRET_MARKER_EXPOSED",
+                message=f"{field_label}.text contains a secret-looking value",
+                path=f"{field_label}.text",
+            )
+        if text is not None and contains_private_path(text):
             private_path_found = True
+            if is_public_profile(profile) or policy == "public":
+                add_error(
+                    errors,
+                    code="PRIVATE_PATH_EXPOSED",
+                    message=f"{field_label}.text must not expose a private path in public-visible search artifacts",
+                    path=f"{field_label}.text",
+                )
         if field_name is not None and text is not None and policy in INDEXED_FIELD_POLICIES:
             validated.append({"field": field_name, "text": text, "display_policy": policy})
     return validated, private_path_found
@@ -260,6 +308,15 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
     subtitle = record.get("subtitle")
     if subtitle is not None and (not isinstance(subtitle, str) or not subtitle.strip()):
         add_error(errors, code="INVALID_SUBTITLE", message=f"{label}.subtitle must be null or a non-blank string")
+    if title is not None and contains_secret_marker(title):
+        add_error(errors, code="SECRET_MARKER_EXPOSED", message=f"{label}.title contains a secret-looking value", path=f"{label}.title")
+    if title is not None and contains_private_path(title):
+        add_error(errors, code="PRIVATE_PATH_EXPOSED", message=f"{label}.title must not expose a private path", path=f"{label}.title")
+    if isinstance(subtitle, str):
+        if contains_secret_marker(subtitle):
+            add_error(errors, code="SECRET_MARKER_EXPOSED", message=f"{label}.subtitle contains a secret-looking value", path=f"{label}.subtitle")
+        if contains_private_path(subtitle):
+            add_error(errors, code="PRIVATE_PATH_EXPOSED", message=f"{label}.subtitle must not expose a private path", path=f"{label}.subtitle")
     review_state = validate_nonblank_string(record.get("review_state"), f"{label}.review_state", errors, code="INVALID_REVIEW_STATE")
     publication_state = validate_nonblank_string(
         record.get("publication_state"),
@@ -289,6 +346,28 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
     )
     if not indexed_fields:
         add_error(errors, code="INDEXED_FIELDS_EMPTY", message=f"{label}.indexed_fields must contain at least one field")
+    if profile in visible_profiles:
+        if is_public_profile(profile) and publication_state in {"private_working", "local_only", "blocked"}:
+            add_error(
+                errors,
+                code="PUBLIC_VISIBILITY_CONTRADICTION",
+                message=f"{label} cannot be visible in {profile} with publication_state {publication_state}",
+                path=f"{label}.publication_state",
+            )
+        if is_public_profile(profile) and record.get("public_blocker") not in {None, ""}:
+            add_error(
+                errors,
+                code="PUBLIC_BLOCKER_VISIBLE",
+                message=f"{label} cannot remain visible in {profile} while public_blocker is set",
+                path=f"{label}.public_blocker",
+            )
+        if is_public_profile(profile) and lineage_state == "superseded":
+            add_error(
+                errors,
+                code="SUPERSEDED_PUBLIC_RECORD",
+                message=f"{label} cannot remain visible in {profile} while lineage_state is superseded",
+                path=f"{label}.lineage_state",
+            )
     if title is not None and projection_id is not None and object_ref is not None and object_type is not None and review_state is not None and publication_state is not None and lineage_state is not None and isinstance(object_pk, int) and object_pk >= 1:
         return (
             {
@@ -312,7 +391,7 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
     return None, private_path_found
 
 
-def validate_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for key in sorted(REQUIRED_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required key: {key}")
@@ -415,7 +494,7 @@ def validate_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def validate_local_search_projection(target: Path) -> tuple[dict[str, Any], int]:
     payload, errors, load_exit = load_json_object(target)
     if payload is not None and load_exit == EXIT_PASS:
-        errors.extend(validate_payload(payload))
+        errors.extend(validate_local_search_projection_payload(payload))
 
     if load_exit == EXIT_INPUT_UNAVAILABLE:
         exit_code = EXIT_INPUT_UNAVAILABLE
