@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/public_safekeeping_manifest.schema.json",
+  "title": "public-safekeeping-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "bundle_root",
+    "bundle_manifest_path",
+    "bundle_manifest_sha256",
+    "bundle_schema_version",
+    "upload_attempted",
+    "preservation_targets",
+    "manual_operator_steps",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "public-safekeeping-manifest.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "bundle_schema_version": {
+      "const": "public-sharing-bundle.v1"
+    },
+    "upload_attempted": {
+      "const": false
+    },
+    "preservation_targets": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "git_handoff",
+          "archive_export",
+          "manual_copy"
+        ]
+      }
+    },
+    "manual_operator_steps": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "excluded_families": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/excluded_family"
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "artifact_family",
+        "sha256",
+        "size_bytes",
+        "rights_posture",
+        "preservation_channels"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_family": {
+          "type": "string",
+          "enum": [
+            "site_page",
+            "site_asset",
+            "bundle_manifest",
+            "export_summary",
+            "presentation_summary"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rights_posture": {
+          "type": "string",
+          "enum": [
+            "public_safe",
+            "metadata_only"
+          ]
+        },
+        "preservation_channels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "git_handoff",
+              "archive_export",
+              "manual_copy"
+            ]
+          }
+        }
+      }
+    },
+    "excluded_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "reason"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
