@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "INVALID_PRESERVE_FIELD",
+      "line": null,
+      "message": "preserve_fields contains unsupported value: unknown_payload_marker"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_preserve_field_unknown",
+  "status": "fail",
+  "target": "inputs/source_adapter.json",
+  "validator": "source_adapter",
+  "warnings": []
+}

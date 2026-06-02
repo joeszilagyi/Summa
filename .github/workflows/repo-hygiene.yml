@@ -1,0 +1,56 @@
+name: Repo Hygiene
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  hygiene:
+    name: Static Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Git whitespace check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_BASE_SHA" ]; then
+            git diff --check "$PR_BASE_SHA"..HEAD
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$PUSH_BEFORE"..HEAD
+          else
+            git diff --check HEAD~1..HEAD
+          fi
+      - name: Shell syntax check
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(find tools/scripts tools/source_db_tools -type f -name '*.sh' -print)
+      - name: Python compile check
+        run: python -m compileall -q tools tests
+
+  validators:
+    name: Validator Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test runner
+        run: python -m pip install pytest
+      - name: Run schema and validator regression smoke
+        run: python -m pytest -q

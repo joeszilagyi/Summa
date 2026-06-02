@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_unattended_with_review_step
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=REVIEW_REQUIRED_STEP_NOT_ALLOWED message=unattended_safe adapters must not declare transform steps with review_required=true

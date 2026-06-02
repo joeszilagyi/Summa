@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-query-plan.schema.json",
+  "title": "Source Query Plan",
+  "description": "Phase 3B planning-only query plan derived from a source_locus. Query plans are never executed by this contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "query_plan_id",
+    "topic_id",
+    "locus_id",
+    "query_family",
+    "locus_type",
+    "plan_status",
+    "query_text",
+    "query_language",
+    "query_target",
+    "query_mode",
+    "expected_source_type",
+    "expected_access_class",
+    "expected_rights_posture",
+    "expected_refetchability",
+    "risk_level",
+    "cost_level",
+    "manual_review_required",
+    "rationale",
+    "generated_from",
+    "generated_at",
+    "generated_by",
+    "confidence_score",
+    "review_state",
+    "notes"
+  ],
+  "properties": {
+    "query_plan_id": {
+      "type": "string",
+      "pattern": "^qplan:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "locus_id": {
+      "type": "string",
+      "pattern": "^locus:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "query_family": {
+      "type": "string",
+      "minLength": 1
+    },
+    "locus_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_status": {
+      "type": "string",
+      "enum": ["proposed", "needs_review", "accepted", "rejected", "deprecated"]
+    },
+    "query_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_language": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_mode": {
+      "type": "string",
+      "enum": [
+        "site_search",
+        "catalog_search",
+        "archive_search",
+        "bibliographic_search",
+        "newspaper_search",
+        "local_search",
+        "manual_search",
+        "unknown"
+      ]
+    },
+    "expected_source_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_access_class": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_rights_posture": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_refetchability": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "cost_level": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high", "unknown"]
+    },
+    "manual_review_required": {
+      "type": "boolean"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_from": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "review_state": {
+      "type": "string",
+      "enum": ["accepted", "needs_review", "demoted", "deprecated", "rejected"]
+    },
+    "notes": {
+      "type": ["string", "null"]
+    }
+  }
+}

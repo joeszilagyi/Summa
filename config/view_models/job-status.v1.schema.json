@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "view-model://job-status.v1",
+  "title": "job-status.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "active", "failed", "retryable", "canceled", "completed"],
+  "properties": {
+    "schema_version": {"const": "job-status.v1"},
+    "active": {"type": "array"},
+    "failed": {"type": "array"},
+    "retryable": {"type": "array"},
+    "canceled": {"type": "array"},
+    "completed": {"type": "array"}
+  }
+}

@@ -1,0 +1,7 @@
+validator=knowledge_tree_export
+scenario=invalid_missing_required_key
+target=inputs/knowledge_tree_export.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=MISSING_REQUIRED_KEY message=missing required key: export_profile

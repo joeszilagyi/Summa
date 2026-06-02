@@ -1,0 +1,7 @@
+validator=jsonl_syntax
+scenario=invalid_malformed
+target=inputs/demo.jsonl
+status=fail
+inspected=2 accepted=1 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=JSONL_PARSE_ERROR line=2 message=invalid JSON syntax

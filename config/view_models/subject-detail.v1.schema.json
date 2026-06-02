@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "view-model://subject-detail.v1",
+  "title": "subject-detail.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "subject_manifest_path",
+    "subject",
+    "domain_pack",
+    "facets",
+    "legacy_substrates",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "subject-detail.v1"
+    },
+    "subject_manifest_path": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "object"
+    },
+    "domain_pack": {
+      "type": "object"
+    },
+    "facets": {
+      "type": "array"
+    },
+    "legacy_substrates": {
+      "type": "array"
+    },
+    "status": {
+      "type": "object"
+    }
+  }
+}

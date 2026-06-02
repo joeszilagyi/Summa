@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "view-model://review-queue.v1",
+  "title": "review-queue.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "database_path",
+    "filters",
+    "counts",
+    "truncated",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "review-queue.v1"
+    },
+    "database_path": {
+      "type": "string"
+    },
+    "filters": {
+      "type": "object"
+    },
+    "counts": {
+      "type": "object"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "items": {
+      "type": "array"
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": "source-adapter.v0",
+  "adapter_id": "alpha_subject_bad_schema_version",
+  "display_name": "Bad schema version adapter",
+  "workspace_id": "alpha_subject",
+  "description": "Mixed local drop of PDF and JSON material for the Example Subject workspace.",
+  "input_family": "local_directory",
+  "locator": {
+    "local_path": "../../incoming/sample",
+    "include_globs": [
+      "**/*.pdf",
+      "**/*.json"
+    ]
+  },
+  "content_profile": {
+    "content_kinds": [
+      "pdf",
+      "json"
+    ],
+    "hazard_flags": [
+      "prompt_injection_text",
+      "rights_restricted_payloads"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "operator supplied local batch",
+    "acquisition_method": "manual_drop",
+    "source_description": "Local staged directory for Example Subject-related research files."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "private_only",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "unknown_review_required",
+    "contains_personal_data": false
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "capture",
+    "batch_unit": "per_file",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "extraction_metadata",
+      "durable_source_record",
+      "controlled_subjects",
+      "authority_records",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "relative_path",
+      "source_filename"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "enumerate",
+      "step_kind": "enumerate_members",
+      "description": "Enumerate input files.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit capture-ready records.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

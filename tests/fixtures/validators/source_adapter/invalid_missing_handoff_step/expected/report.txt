@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_missing_handoff_step
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=MISSING_HANDOFF_STEP message=transform_lineage must contain an emit_handoff step

@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-query-execution-simulation.schema.json",
+  "title": "Source Query Execution Simulation",
+  "description": "Phase 3C simulation-only execution report for a source_query_plan. No live query execution is represented by this object.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "simulation_id",
+    "query_plan_id",
+    "topic_id",
+    "locus_id",
+    "query_family",
+    "query_mode",
+    "simulation_status",
+    "is_simulated",
+    "execution_attempted",
+    "external_calls_attempted",
+    "network_access",
+    "simulated_result_count",
+    "simulated_unique_result_count",
+    "simulated_duplicate_count",
+    "simulated_failure_count",
+    "simulated_lead_candidate_count",
+    "source_leads_created",
+    "captures_created",
+    "source_access_rows_created",
+    "payloads_created",
+    "started_at",
+    "completed_at",
+    "simulated_by",
+    "confidence_score",
+    "review_state",
+    "notes"
+  ],
+  "properties": {
+    "simulation_id": {
+      "type": "string",
+      "pattern": "^qsim:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "query_plan_id": {
+      "type": "string",
+      "pattern": "^qplan:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "locus_id": {
+      "type": "string",
+      "pattern": "^locus:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "query_family": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "simulation_status": {
+      "type": "string",
+      "enum": [
+        "simulated_completed",
+        "simulated_zero_results",
+        "simulated_high_noise",
+        "simulated_access_blocked",
+        "review_blocked",
+        "manual_review",
+        "skipped_deprecated"
+      ]
+    },
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "simulation_scenario": {
+      "type": "string",
+      "minLength": 1
+    },
+    "is_simulated": {
+      "const": true
+    },
+    "execution_attempted": {
+      "const": false
+    },
+    "external_calls_attempted": {
+      "const": false
+    },
+    "network_access": {
+      "const": false
+    },
+    "simulated_result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "simulated_unique_result_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "simulated_duplicate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "simulated_failure_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "simulated_lead_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_leads_created": {
+      "const": 0
+    },
+    "captures_created": {
+      "const": 0
+    },
+    "source_access_rows_created": {
+      "const": 0
+    },
+    "payloads_created": {
+      "const": 0
+    },
+    "started_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completed_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "simulated_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "review_state": {
+      "type": "string",
+      "enum": ["accepted", "needs_review", "demoted", "deprecated", "rejected"]
+    },
+    "notes": {
+      "type": ["string", "null"]
+    }
+  }
+}

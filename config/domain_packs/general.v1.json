@@ -1,0 +1,79 @@
+{
+  "schema_version": "domain-pack.v1",
+  "pack_id": "general.v1",
+  "display_name": "General topic starter domain pack",
+  "status": "partial-runtime",
+  "subject_kinds": [
+    "topic.general",
+    "topic.person_or_group",
+    "topic.place_scope",
+    "topic.work_or_media",
+    "topic.event_or_thread"
+  ],
+  "enabled_facets": [
+    "sources",
+    "timeline",
+    "people",
+    "places",
+    "works",
+    "open_questions"
+  ],
+  "query_families": [
+    "web_search",
+    "book_catalogs",
+    "newspaper_archives",
+    "film_and_video_records",
+    "broadcast_records",
+    "archive_catalogs",
+    "local_document_ingest",
+    "reference_chaining"
+  ],
+  "prompt_bundles": {
+    "gather.sources": {
+      "bundle_id": "general.gather.sources.v1",
+      "template_ids": [
+        "general.sources.seed",
+        "general.sources.review"
+      ]
+    },
+    "gather.timeline": {
+      "bundle_id": "general.gather.timeline.v1",
+      "template_ids": [
+        "general.timeline.seed",
+        "general.timeline.review"
+      ]
+    },
+    "gather.people": {
+      "bundle_id": "general.gather.people.v1",
+      "template_ids": [
+        "general.people.seed",
+        "general.people.review"
+      ]
+    },
+    "gather.places": {
+      "bundle_id": "general.gather.places.v1",
+      "template_ids": [
+        "general.places.seed",
+        "general.places.review"
+      ]
+    },
+    "gather.works": {
+      "bundle_id": "general.gather.works.v1",
+      "template_ids": [
+        "general.works.seed",
+        "general.works.review"
+      ]
+    },
+    "gather.open_questions": {
+      "bundle_id": "general.gather.open_questions.v1",
+      "template_ids": [
+        "general.open_questions.seed",
+        "general.open_questions.review"
+      ]
+    }
+  },
+  "notes": [
+    "This pack gives the first-run topic bootstrap flow a neutral starter target for ordinary topics.",
+    "Prompt template IDs are reserved here, but this branch has not yet restored the archived general gather prompt files."
+  ]
+}

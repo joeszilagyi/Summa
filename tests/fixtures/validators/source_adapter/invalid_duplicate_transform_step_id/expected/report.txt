@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_duplicate_transform_step_id
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=DUPLICATE_STEP_ID message=duplicate transform step_id: enumerate

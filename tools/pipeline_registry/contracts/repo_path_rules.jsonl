@@ -1,0 +1,54 @@
+{"rule_key":"rule.tools_pipeline_registry_contracts","priority":10,"glob":"tools/pipeline_registry/contracts/*.jsonl","path_kind":"contract","artifact_key":"artifact.pipeline_registry_contract_jsonl","description":"Editable JSONL registry contract files."}
+{"rule_key":"rule.tools_pipeline_registry_schema","priority":11,"glob":"tools/pipeline_registry/schema.sql","path_kind":"contract","artifact_key":"artifact.pipeline_registry_schema_sql","description":"Registry SQLite schema."}
+{"rule_key":"rule.tools_pipeline_registry_builder","priority":12,"glob":"tools/pipeline_registry/*.py","path_kind":"surface","description":"Live pipeline-registry builder tooling."}
+{"rule_key":"rule.github_repo_automation","priority":13,"glob":".github/**","path_kind":"config","description":"GitHub issue templates, pull request template, security policy, and workflow automation."}
+{"rule_key":"rule.tools_scripts_live_lib","priority":20,"glob":"tools/scripts/lib/*.sh","path_kind":"surface","description":"Live shared shell helpers."}
+{"rule_key":"rule.tools_scripts_live","priority":21,"glob":"tools/scripts/*.sh","path_kind":"surface","description":"Live shell entrypoints and manual helpers."}
+{"rule_key":"rule.tools_scripts_python","priority":22,"glob":"tools/scripts/*.py","path_kind":"surface","description":"Live Python helpers and entrypoints under tools/scripts/."}
+{"rule_key":"rule.tools_prompts_old","priority":30,"glob":"tools/prompts/**/old/**","path_kind":"legacy","description":"Archived prompt backups retained under archive-first rules."}
+{"rule_key":"rule.tools_prompts_live","priority":31,"glob":"tools/prompts/**/*.prompt","path_kind":"surface","description":"Live gather and search prompt files."}
+{"rule_key":"rule.tools_scripts_legacy","priority":40,"glob":"tools/scripts/legacy/**","path_kind":"legacy","description":"Retained non-current shell material."}
+{"rule_key":"rule.tools_scripts_artifacts","priority":41,"glob":"tools/scripts/artifacts/**","path_kind":"legacy","description":"Transient retained script artifacts outside the live path."}
+{"rule_key":"rule.tools_legacy","priority":42,"glob":"tools/legacy/**","path_kind":"legacy","description":"Historical code baselines retained under archive-first rules."}
+{"rule_key":"rule.tools_sqlite_current_tests","priority":50,"glob":"tools/source_db_tools/tests/**","path_kind":"test","description":"Current SQLite test suite."}
+{"rule_key":"rule.tools_sqlite_current_surface","priority":51,"glob":"tools/source_db_tools/*.py","path_kind":"surface","description":"Current SQLite Python tools."}
+{"rule_key":"rule.tools_sqlite_current_wrapper","priority":52,"glob":"tools/source_db_tools/*.sh","path_kind":"surface","description":"Current SQLite shell wrappers."}
+{"rule_key":"rule.tools_sqlite_export_profiles","priority":53,"glob":"tools/source_db_tools/export_profiles/*.yml","path_kind":"contract","artifact_key":"artifact.sqlite_export_profile","description":"Manifest-driven export profiles for downstream serializer loss accounting."}
+{"rule_key":"rule.tools_sqlite_schema_profiles","priority":53,"glob":"tools/source_db_tools/schema_profiles.json","path_kind":"contract","description":"Profile-boundary validation rules for canonical source/work records and downstream exports."}
+{"rule_key":"rule.tools_sqlite_source_types","priority":54,"glob":"tools/source_db_tools/source_types.yml","path_kind":"contract","artifact_key":"artifact.sqlite_source_type_registry","description":"Registry-controlled canonical work_type mappings for source/export type normalization."}
+{"rule_key":"rule.tools_sqlite_rights_retention_policies","priority":55,"glob":"tools/source_db_tools/rights_retention_policies.yml","path_kind":"contract","artifact_key":"artifact.sqlite_rights_retention_policy_registry","description":"Registry-controlled rights and retention policies for transient payload handling, retention overrides, visibility, and quote eligibility."}
+{"rule_key":"rule.tools_sqlite_relationship_predicates","priority":56,"glob":"tools/source_db_tools/relationship_predicates.yml","path_kind":"contract","artifact_key":"artifact.sqlite_relationship_predicate_registry","description":"Registry-controlled source relationship predicates for strict graph validation and full-fidelity export definitions."}
+{"rule_key":"rule.tools_sqlite_claim_types","priority":56,"glob":"tools/source_db_tools/claim_types.yml","path_kind":"contract","artifact_key":"artifact.sqlite_claim_type_registry","description":"Registry-controlled source claim types for strict claim validation and full-fidelity export definitions."}
+{"rule_key":"rule.tools_collateral_python","priority":60,"glob":"tools/collateral/*.py","path_kind":"surface","description":"Live collateral extraction Python tooling."}
+{"rule_key":"rule.tools_collateral_requirements","priority":61,"glob":"tools/collateral/requirements.txt","path_kind":"environment","description":"Collateral extraction Python dependency manifest."}
+{"rule_key":"rule.tools_common_python","priority":62,"glob":"tools/common/*.py","path_kind":"surface","description":"Live shared Python helpers."}
+{"rule_key":"rule.tools_validators_python","priority":63,"glob":"tools/validators/*.py","path_kind":"surface","description":"Current local validation runners."}
+{"rule_key":"rule.tools_markdown","priority":70,"glob":"tools/**/*.md","path_kind":"documentation","description":"Tool usage or baseline documentation under tools/."}
+{"rule_key":"rule.tests","priority":80,"glob":"tests/**","path_kind":"test","description":"Automated tests and fixture trees."}
+{"rule_key":"rule.runtime","priority":90,"glob":"runtime/**","path_kind":"operational","description":"Local runtime state and retained local backup artifacts."}
+{"rule_key":"rule.dbs_sqlite_sidecars","priority":103,"glob":"dbs/**/*.sqlite-*","path_kind":"database","description":"SQLite sidecar files such as WAL and SHM artifacts under dbs/."}
+{"rule_key":"rule.dbs_other","priority":104,"glob":"dbs/**","path_kind":"database","description":"Other database artifacts under dbs/."}
+{"rule_key":"rule.index_bibliography","priority":114,"glob":"index/sources/bibliography/**","path_kind":"source_data","description":"Bibliography/source-authority substrate."}
+{"rule_key":"rule.index_topics","priority":115,"glob":"index/Topics/**","path_kind":"source_data","description":"Topic-neutral workspace source scaffolds and retained topic-local state placeholders."}
+{"rule_key":"rule.index_dates","priority":127,"glob":"index/Dates/**","path_kind":"source_data","description":"Date and era index scaffold."}
+{"rule_key":"rule.config_view_model_schemas","priority":128,"glob":"config/view_models/*.schema.json","path_kind":"contract","artifact_key":"artifact.product_view_model_schema_json","description":"Top-level JSON Schema contracts for product/API view-model outputs."}
+{"rule_key":"rule.config_schemas","priority":128,"glob":"config/*.schema.json","path_kind":"contract","description":"Typed JSON schema contracts for subject manifests and compiled execution manifests."}
+{"rule_key":"rule.docs_project_claude_tomorrow_internal","priority":129,"glob":"docs/project/claude-tomorrow.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant-facing continuity note; private/internal by default and excluded from public bundles."}
+{"rule_key":"rule.docs_project_llm_usage_offload_internal","priority":129,"glob":"docs/project/llm-usage-offload-audit.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant/operator audit note; private/internal by default and excluded from public bundles."}
+{"rule_key":"rule.config_domain_packs","priority":129,"glob":"config/domain_packs/*.json","path_kind":"config","description":"Domain-pack configuration files for topic-specific runtime behavior."}
+{"rule_key":"rule.config_durability_policies","priority":129,"glob":"config/durability_policies/*.json","path_kind":"config","description":"Tracked local durability-policy manifests for crown-jewel store families."}
+{"rule_key":"rule.config_examples","priority":130,"glob":"config/examples/*.json","path_kind":"config","description":"Example subject-manifest and related configuration payloads."}
+{"rule_key":"rule.docs","priority":130,"glob":"docs/**","path_kind":"documentation","description":"Project, release, and operations documentation."}
+{"rule_key":"rule.review_notes","priority":131,"glob":"REVIEW_NOTES/**","path_kind":"documentation","description":"Tracked review notes and configuration audit writeups kept with the repo."}
+{"rule_key":"rule.root_claude_internal_doc","priority":139,"glob":"CLAUDE.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant-facing root handoff doc; private/internal by default and excluded from public bundles."}
+{"rule_key":"rule.root_continuity_internal_doc","priority":139,"glob":"CONTINUITY.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant-facing continuity doc; private/internal by default and excluded from public bundles."}
+{"rule_key":"rule.root_bug_fixer","priority":141,"glob":"Bug_Fixer.sh","path_kind":"operational","description":"Repo-root one-shot GitHub bug worker wrapper."}
+{"rule_key":"rule.root_license","priority":141,"glob":"LICENSE","path_kind":"documentation","description":"Repository license declaration."}
+{"rule_key":"rule.root_pyproject","priority":141,"glob":"pyproject.toml","path_kind":"config","description":"Python project metadata, dependency-group declarations, and pytest configuration."}
+{"rule_key":"rule.root_markdown","priority":141,"glob":"*.md","path_kind":"documentation","description":"Top-level Markdown context and guide files."}
+{"rule_key":"rule.root_dot_claude","priority":142,"glob":".claude/**","path_kind":"config","description":"Local Claude-oriented helper state tracked in the repo."}
+{"rule_key":"rule.root_dotcodex","priority":143,"glob":".codex","path_kind":"config","description":"Top-level Codex marker file."}
+{"rule_key":"rule.root_dotfiles","priority":144,"glob":".*","path_kind":"config","description":"Other tracked top-level dotfiles."}
+{"rule_key":"rule.root_project_metadata","priority":145,"glob":".project_metadata","path_kind":"config","description":"Local project metadata marker."}
+{"rule_key":"rule.root_pycache","priority":150,"glob":"**/__pycache__/**","path_kind":"environment","description":"Tracked Python cache artifacts that still need cleanup attention."}
+{"rule_key":"rule.root_unknown","priority":999,"glob":"**","path_kind":"unknown","description":"Fallback classification for tracked files without a more specific rule."}

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/subject-index/knowledge_tree_build_manifest.schema.json",
+  "title": "Knowledge Tree Build Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "build_id",
+    "export_id",
+    "landing_page_id",
+    "export_path",
+    "export_sha256",
+    "built_at",
+    "output_root",
+    "page_count",
+    "asset_count",
+    "input_sources",
+    "assets",
+    "pages"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "knowledge-tree-build-manifest.v1"
+    },
+    "build_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "export_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "landing_page_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "export_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "export_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "built_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "asset_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "input_sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/input_source"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "notes": {
+      "$ref": "#/$defs/string_array"
+    }
+  },
+  "$defs": {
+    "string_array": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "input_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "fingerprint",
+        "required_for_freshness"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "required_for_freshness": {
+          "type": "boolean"
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_id",
+        "page_family",
+        "route",
+        "title",
+        "sha256",
+        "source_ids",
+        "related_page_ids"
+      ],
+      "properties": {
+        "page_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "page_family": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "route": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          }
+        },
+        "related_page_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          }
+        }
+      }
+    }
+  }
+}

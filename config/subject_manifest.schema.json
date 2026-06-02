@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/subject-index/subject_manifest.schema.json",
+  "title": "Subject Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "subject_id",
+    "display_name",
+    "domain_pack",
+    "scope_statement",
+    "languages",
+    "aliases",
+    "disambiguation_terms",
+    "excluded_senses",
+    "enabled_facets",
+    "query_families"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "subject-manifest.v1"
+    },
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain_pack": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "scope_statement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "languages": {
+      "$ref": "#/$defs/string_array",
+      "minItems": 1
+    },
+    "aliases": {
+      "$ref": "#/$defs/string_array"
+    },
+    "disambiguation_terms": {
+      "$ref": "#/$defs/string_array"
+    },
+    "excluded_senses": {
+      "$ref": "#/$defs/string_array"
+    },
+    "enabled_facets": {
+      "$ref": "#/$defs/string_array",
+      "minItems": 1
+    },
+    "query_families": {
+      "$ref": "#/$defs/string_array",
+      "minItems": 1
+    },
+    "notes": {
+      "$ref": "#/$defs/string_array"
+    },
+    "legacy_substrate_paths": {
+      "$ref": "#/$defs/string_array"
+    },
+    "public_export_default": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "string_array": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "topic-index-lifecycle.schema.json",
+  "title": "Topic Index Lifecycle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_doc", "states", "transitions", "examples"],
+  "properties": {
+    "schema_version": {"const": "topic-index-lifecycle.v1"},
+    "contract_doc": {"const": "docs/project/TOPIC_INDEX_LIFECYCLE_CONTRACT.md"},
+    "states": {
+      "type": "array",
+      "minItems": 8,
+      "items": {"type": "object"},
+      "uniqueItems": true
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 8,
+      "items": {"type": "object"}
+    },
+    "examples": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"type": "object"}
+    }
+  }
+}

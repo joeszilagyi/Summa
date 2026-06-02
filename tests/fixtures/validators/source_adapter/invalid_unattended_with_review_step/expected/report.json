@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "REVIEW_REQUIRED_STEP_NOT_ALLOWED",
+      "line": null,
+      "message": "unattended_safe adapters must not declare transform steps with review_required=true"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_unattended_with_review_step",
+  "status": "fail",
+  "target": "inputs/source_adapter.json",
+  "validator": "source_adapter",
+  "warnings": []
+}

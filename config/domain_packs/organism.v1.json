@@ -1,0 +1,42 @@
+{
+  "schema_version": "domain-pack.v1",
+  "pack_id": "organism.v1",
+  "display_name": "Organism example domain pack",
+  "status": "example",
+  "subject_kinds": [
+    "organism.taxon",
+    "organism.common_name_scope"
+  ],
+  "enabled_facets": [
+    "taxonomy",
+    "range",
+    "habitat",
+    "observations"
+  ],
+  "query_families": [
+    "taxonomy_references",
+    "field_guides",
+    "regional_observations",
+    "museum_or_specimen_records"
+  ],
+  "prompt_bundles": {
+    "gather.taxonomy": {
+      "bundle_id": "organism.gather.taxonomy.v1",
+      "template_ids": [
+        "taxonomy.seed",
+        "taxonomy.review"
+      ]
+    },
+    "gather.observations": {
+      "bundle_id": "organism.gather.observations.v1",
+      "template_ids": [
+        "observations.seed",
+        "observations.review"
+      ]
+    }
+  },
+  "notes": [
+    "This pack is illustrative scaffolding only.",
+    "It exists to prove that topic-neutral does not mean ontology-neutral."
+  ]
+}

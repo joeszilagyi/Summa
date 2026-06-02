@@ -1,0 +1,35 @@
+name: Serviceability
+description: Track repo hygiene, docs, tooling, CI, or operator workflow improvements.
+title: "[Serviceability] "
+labels:
+  - serviceability
+body:
+  - type: textarea
+    id: gap
+    attributes:
+      label: Gap
+      description: What repo or operator workflow surface is unclear, missing, or brittle?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Suggested Scope
+      description: What should this change include, and what should stay out of scope?
+    validations:
+      required: true
+  - type: textarea
+    id: related_surfaces
+    attributes:
+      label: Related Surfaces
+      description: Link files, scripts, docs, issues, or workflow paths that define the current behavior.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      placeholder: |
+        - [ ] Repo-visible policy or tool surface exists
+        - [ ] Local-only/generated artifacts remain out of tracked history
+        - [ ] Relevant validation is documented or automated
+    validations:
+      required: true

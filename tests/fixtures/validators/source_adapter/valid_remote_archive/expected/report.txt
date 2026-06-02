@@ -1,0 +1,6 @@
+validator=source_adapter
+scenario=valid_remote_archive
+target=inputs/source_adapter.json
+status=pass
+inspected=1 accepted=1 rejected=0 deferred=0
+errors=0 warnings=0

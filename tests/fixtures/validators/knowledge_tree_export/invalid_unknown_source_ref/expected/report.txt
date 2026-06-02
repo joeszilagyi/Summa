@@ -1,0 +1,7 @@
+validator=knowledge_tree_export
+scenario=invalid_unknown_source_ref
+target=inputs/knowledge_tree_export.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=UNKNOWN_SOURCE_REFERENCE message=page references unknown source_id: missing_source

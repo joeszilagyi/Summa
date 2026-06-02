@@ -1,0 +1,19 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 2,
+    "deferred": 0,
+    "inspected": 2,
+    "rejected": 0
+  },
+  "errors": [],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "valid_minimal",
+  "status": "pass",
+  "target": "inputs/demo.jsonl",
+  "validator": "jsonl_syntax",
+  "warnings": []
+}

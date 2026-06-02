@@ -1,0 +1,6 @@
+validator=jsonl_syntax
+scenario=valid_minimal
+target=inputs/demo.jsonl
+status=pass
+inspected=2 accepted=2 rejected=0 deferred=0
+errors=0 warnings=0

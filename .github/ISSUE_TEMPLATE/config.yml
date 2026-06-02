@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation Map
+    url: https://github.com/joeszilagyi/Summa/blob/main/docs/README.md
+    about: Start here for current architecture, operations, and migration docs.

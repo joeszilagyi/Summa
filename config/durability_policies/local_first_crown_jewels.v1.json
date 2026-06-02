@@ -1,0 +1,63 @@
+{
+  "schema_version": "crown-jewel-store-policy.v1",
+  "policy_id": "local_first_crown_jewels.v1",
+  "backup_root": "runtime/backups/crown_jewels",
+  "notes": [
+    "This policy is intentionally current-tree grounded. It names the first store families that already behave like crown-jewel local state in the repo.",
+    "The goal of this first slice is to make backup and restore assumptions explicit before convenience rebuild flows silently normalize data loss."
+  ],
+  "store_families": [
+    {
+      "store_key": "local_topic_workspace_registry",
+      "display_name": "Local topic workspace registry",
+      "path_globs": [
+        "runtime/config/topic_workspaces.local.json"
+      ],
+      "durability_class": "non_rebuildable_local",
+      "storage_policy_class": "private_only",
+      "backup_frequency_expectation": "after any topic bootstrap or workspace mutation batch",
+      "restore_expectation": "restore the last known-good snapshot, then run the topic workspace registry validator before any scheduler use",
+      "integrity_check_method": "validate_topic_workspace_registry",
+      "silent_replace_forbidden": true,
+      "missing_ok": true,
+      "notes": [
+        "This file is local operator state, not Git-backed truth.",
+        "If it grows to include months of local workspace routing decisions, convenience regeneration is not an acceptable recovery story."
+      ]
+    },
+    {
+      "store_key": "source_sqlite_store",
+      "display_name": "Source SQLite query stores",
+      "path_globs": [
+        "dbs/sources/*/source.sqlite"
+      ],
+      "durability_class": "expensive_rebuildable",
+      "storage_policy_class": "tracked_release",
+      "backup_frequency_expectation": "after ingest, reconciliation, or manual enrichment batches",
+      "restore_expectation": "restore the latest clean snapshot and run SQLite integrity checks before any publication or rebuild bridge",
+      "integrity_check_method": "sqlite_integrity_check",
+      "silent_replace_forbidden": true,
+      "missing_ok": true,
+      "notes": [
+        "These DBs may be rebuildable in principle, but once local curation and review-adjacent rows matter they should not be silently replaced by convenience rebuilds."
+      ]
+    },
+    {
+      "store_key": "global_sqlite_indexes",
+      "display_name": "Derived global SQLite indexes",
+      "path_globs": [
+        "dbs/rollups/*.sqlite"
+      ],
+      "durability_class": "expensive_rebuildable",
+      "storage_policy_class": "tracked_release",
+      "backup_frequency_expectation": "after successful rollup rebuilds or release-candidate refreshes",
+      "restore_expectation": "restore a clean snapshot and verify integrity before treating the DB as a current release surface",
+      "integrity_check_method": "sqlite_integrity_check",
+      "silent_replace_forbidden": true,
+      "missing_ok": true,
+      "notes": [
+        "These DBs are derived, but they can still represent hours or days of operator time, compute, and staged validation."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+* text=auto
+
+# Repo-native text surfaces should normalize to LF.
+*.sh text eol=lf
+*.bash text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.prompt text eol=lf
+*.schema text eol=lf
+*.csv text eol=lf
+
+# Generated or non-diffable artifacts should not be treated as normal text.
+*.sqlite binary
+*.sqlite3 binary
+*.db binary
+*.db3 binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.tif binary
+*.tiff binary
+*.mp3 binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.zip binary
+*.tar binary
+*.tar.gz binary
+*.tgz binary
+*.gz binary
+*.warc binary
+*.warc.gz binary

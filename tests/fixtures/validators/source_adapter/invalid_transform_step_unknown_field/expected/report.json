@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "UNKNOWN_TRANSFORM_STEP_FIELD",
+      "line": null,
+      "message": "unexpected transform_lineage field: unexpected_field"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_transform_step_unknown_field",
+  "status": "fail",
+  "target": "inputs/source_adapter.json",
+  "validator": "source_adapter",
+  "warnings": []
+}

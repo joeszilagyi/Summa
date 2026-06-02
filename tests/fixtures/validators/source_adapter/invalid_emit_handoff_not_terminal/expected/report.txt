@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_emit_handoff_not_terminal
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=EMIT_HANDOFF_NOT_TERMINAL message=emit_handoff must be the final transform step

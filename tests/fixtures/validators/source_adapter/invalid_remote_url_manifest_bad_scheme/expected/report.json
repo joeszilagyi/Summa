@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "INVALID_REMOTE_URL",
+      "line": null,
+      "message": "manifest_url must be an absolute http or https URL"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_remote_url_manifest_bad_scheme",
+  "status": "fail",
+  "target": "inputs/source_adapter.json",
+  "validator": "source_adapter",
+  "warnings": []
+}

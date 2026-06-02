@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "summa-indexer"
+version = "0.0.0"
+description = "Local-first topic indexing, bibliography, source-lead, and public-safe publication tooling."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Summa contributors" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+adapters = []
+llm-runners = []
+
+[dependency-groups]
+test = [
+  "pytest>=8"
+]
+dev = [
+  "pytest>=8"
+]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+pythonpath = [
+  ".",
+  "tools/source_db_tools/tests"
+]
+testpaths = [
+  "tests",
+  "tools/source_db_tools/tests"
+]
+
+[tool.setuptools]
+py-modules = []

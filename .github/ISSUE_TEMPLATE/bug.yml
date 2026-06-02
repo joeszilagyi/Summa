@@ -1,0 +1,35 @@
+name: Bug
+description: Report a reproducible implementation bug or behavioral regression.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior
+      description: What happens now? Include commands, paths, inputs, and outputs where useful.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste concise logs, traceback snippets, validator output, or file references.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: What must be true before this issue can close?
+      placeholder: |
+        - [ ] Regression is covered by a test or validator
+        - [ ] Existing workflow still passes
+    validations:
+      required: true

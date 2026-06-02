@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-locus.schema.json",
+  "title": "Source Locus",
+  "description": "Phase 3A manually seeded source-locus discovery object. A source locus describes where targeted discovery may look; it is not a harvested source record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "locus_id",
+    "topic_id",
+    "display_name",
+    "locus_type",
+    "query_family",
+    "parent_locus_id",
+    "parent_org_id",
+    "jurisdiction_place_id",
+    "languages",
+    "time_coverage_start",
+    "time_coverage_end",
+    "access_class",
+    "access_url",
+    "catalog_url",
+    "archive_url",
+    "access_notes",
+    "rights_posture",
+    "refetchability_status",
+    "discovery_method",
+    "discovery_source",
+    "discovered_at",
+    "discovered_by",
+    "confidence_score",
+    "review_state",
+    "productivity_queries_run",
+    "productivity_leads_returned",
+    "productivity_unique_leads",
+    "productivity_captures_made",
+    "productivity_works_promoted",
+    "productivity_score",
+    "last_queried_at",
+    "last_productive_at",
+    "cooldown_until",
+    "is_deprecated",
+    "deprecation_reason",
+    "notes"
+  ],
+  "properties": {
+    "locus_id": {
+      "type": "string",
+      "pattern": "^locus:[a-z0-9][a-z0-9:_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "locus_type": {
+      "type": "string",
+      "enum": [
+        "government_agency",
+        "archive",
+        "library",
+        "museum",
+        "university_repository",
+        "journal",
+        "magazine",
+        "newspaper",
+        "publisher_catalog",
+        "database",
+        "forum",
+        "podcast",
+        "broadcaster",
+        "video_platform",
+        "map_repository",
+        "bibliography",
+        "search_engine",
+        "aggregator",
+        "local_collection",
+        "unknown"
+      ]
+    },
+    "query_family": {
+      "type": "string",
+      "enum": [
+        "government_records",
+        "academic_literature",
+        "newspapers",
+        "magazines",
+        "books",
+        "archives",
+        "libraries",
+        "maps",
+        "film_tv_documentary",
+        "radio_podcast",
+        "forums_community",
+        "web_general",
+        "bibliography_chaining",
+        "local_document_ingest",
+        "unknown"
+      ]
+    },
+    "parent_locus_id": {
+      "type": ["string", "null"]
+    },
+    "parent_org_id": {
+      "type": ["string", "null"]
+    },
+    "jurisdiction_place_id": {
+      "type": ["string", "null"]
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "time_coverage_start": {
+      "type": ["string", "null"]
+    },
+    "time_coverage_end": {
+      "type": ["string", "null"]
+    },
+    "access_class": {
+      "type": "string",
+      "minLength": 1
+    },
+    "access_url": {
+      "type": ["string", "null"]
+    },
+    "catalog_url": {
+      "type": ["string", "null"]
+    },
+    "archive_url": {
+      "type": ["string", "null"]
+    },
+    "access_notes": {
+      "type": ["string", "null"]
+    },
+    "rights_posture": {
+      "type": "string",
+      "minLength": 1
+    },
+    "refetchability_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "discovery_method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "discovery_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "discovered_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "discovered_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "review_state": {
+      "type": "string",
+      "enum": ["accepted", "needs_review", "demoted", "deprecated", "rejected"]
+    },
+    "productivity_queries_run": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "productivity_leads_returned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "productivity_unique_leads": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "productivity_captures_made": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "productivity_works_promoted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "productivity_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "last_queried_at": {
+      "type": ["string", "null"]
+    },
+    "last_productive_at": {
+      "type": ["string", "null"]
+    },
+    "cooldown_until": {
+      "type": ["string", "null"]
+    },
+    "is_deprecated": {
+      "type": "boolean"
+    },
+    "deprecation_reason": {
+      "type": ["string", "null"]
+    },
+    "notes": {
+      "type": ["string", "null"]
+    }
+  }
+}

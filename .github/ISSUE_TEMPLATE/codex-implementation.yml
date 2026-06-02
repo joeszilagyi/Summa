@@ -1,0 +1,99 @@
+name: Codex Implementation
+description: File a focused, Codex-ready implementation issue with verifiable scope.
+title: "[Codex] "
+labels:
+  - codex-ready
+body:
+  - type: textarea
+    id: source_evidence
+    attributes:
+      label: Source Evidence
+      description: Link repo paths, docs, tests, prior issues, or command output that prove the gap exists.
+      placeholder: |
+        - `path/to/file.py:123` currently ...
+        - `docs/project/CONTRACT.md` requires ...
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: State the concrete behavior, contract gap, or missing artifact to address.
+    validations:
+      required: true
+  - type: textarea
+    id: implementation_outline
+    attributes:
+      label: Implementation Outline
+      description: Name the likely files, commands, schemas, or scripts to touch.
+      placeholder: |
+        - Add or update ...
+        - Wire ...
+        - Keep ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist of externally verifiable outcomes.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests
+      description: Exact local or CI commands that should pass before closing.
+      placeholder: |
+        - `python3 -m pytest ... -q`
+        - `python3 tools/validators/...`
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of Scope
+      description: What should not be changed in this issue.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Blocking issues, decisions, migrations, or prerequisite artifacts. Use "None" when not applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback
+      description: How to revert or disable the change if it fails.
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+    validations:
+      required: true
+  - type: input
+    id: milestone_area
+    attributes:
+      label: Milestone Area
+      description: Use the local area code when known, such as M0, M1, M2, or "none".
+    validations:
+      required: true
+  - type: input
+    id: work_type_labels
+    attributes:
+      label: Work-Type Labels
+      description: List expected labels such as runtime, validation, docs, serviceability, frontend, or source-intake.
+    validations:
+      required: true

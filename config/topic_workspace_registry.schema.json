@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/subject-index/topic_workspace_registry.schema.json",
+  "title": "Topic Workspace Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workspaces"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "topic-workspace-registry.v1"
+    },
+    "default_workspace_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "notes": {
+      "$ref": "#/$defs/string_array"
+    },
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workspace"
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "topic_label",
+        "workspace_root",
+        "domain_pack",
+        "lifecycle_state",
+        "schedule_posture",
+        "workspace_policy_class"
+      ],
+      "properties": {
+        "workspace_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "topic_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domain_pack": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "default_subject_manifest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle_state": {
+          "type": "string",
+          "enum": [
+            "bootstrap",
+            "active",
+            "paused",
+            "archived"
+          ]
+        },
+        "schedule_posture": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "scheduled",
+            "paused"
+          ]
+        },
+        "workspace_policy_class": {
+          "type": "string",
+          "enum": [
+            "private_local",
+            "mixed_private_public",
+            "public_safe_release"
+          ]
+        },
+        "notes": {
+          "$ref": "#/$defs/string_array"
+        }
+      }
+    },
+    "string_array": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  }
+}

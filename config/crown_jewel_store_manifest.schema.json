@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/crown_jewel_store_manifest.schema.json",
+  "title": "crown-jewel-store-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "backup_posture",
+    "assets"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "crown-jewel-store-manifest.v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "backup_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "latest_verified_backup_at": {
+          "type": "string"
+        },
+        "latest_verified_backup_manifest": {
+          "type": "string"
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "asset_id",
+          "asset_class",
+          "path_glob",
+          "rebuildability",
+          "mutation_policy"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "asset_class": {
+            "type": "string",
+            "enum": [
+              "sqlite_db",
+              "jsonl_ledger",
+              "source_record",
+              "review_state",
+              "manifest",
+              "metadata_sidecar",
+              "other"
+            ]
+          },
+          "path_glob": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rebuildability": {
+            "type": "string",
+            "enum": [
+              "non_rebuildable",
+              "rebuildable_from_crown_jewels"
+            ]
+          },
+          "mutation_policy": {
+            "type": "string",
+            "enum": [
+              "requires_fresh_backup",
+              "allows_without_backup"
+            ]
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

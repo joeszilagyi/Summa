@@ -1,0 +1,72 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "alpha_subject_archive_urls",
+  "display_name": "Remote archive collection",
+  "workspace_id": "alpha_subject",
+  "description": "Archive collection that emits URL observations for later review.",
+  "input_family": "remote_archive_collection",
+  "locator": {
+    "base_url": "https://archives.example.gov/subject/alpha"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "pdf",
+      "html"
+    ],
+    "hazard_flags": [
+      "hostile_markup",
+      "oversized_payloads"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "public archive collection discovered during bibliography expansion",
+    "acquisition_method": "remote_fetch",
+    "source_description": "Remote archive collection with landing pages and downloadable PDFs.",
+    "upstream_reference": "https://archives.example.gov/subject/alpha"
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "external_later",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "quote_limited",
+    "contains_personal_data": false
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "url_observation",
+    "batch_unit": "per_url",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "extraction_metadata",
+      "durable_source_record",
+      "controlled_subjects",
+      "authority_records",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "archive_collection_id",
+      "landing_page_url"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "fetch",
+      "step_kind": "fetch_payload",
+      "description": "Fetch collection pages.",
+      "deterministic": false,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit URL observations.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

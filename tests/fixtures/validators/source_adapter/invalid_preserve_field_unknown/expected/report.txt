@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_preserve_field_unknown
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=INVALID_PRESERVE_FIELD message=preserve_fields contains unsupported value: unknown_payload_marker

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "view-model://workspace-overview.v1",
+  "title": "workspace-overview.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "registry_path",
+    "requested_workspace_ids",
+    "counts",
+    "workspaces"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "workspace-overview.v1"
+    },
+    "registry_path": {
+      "type": "string"
+    },
+    "requested_workspace_ids": {
+      "type": "array"
+    },
+    "counts": {
+      "type": "object"
+    },
+    "workspaces": {
+      "type": "array"
+    }
+  }
+}

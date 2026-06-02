@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 1,
+    "deferred": 0,
+    "inspected": 2,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "JSONL_PARSE_ERROR",
+      "line": 2,
+      "message": "invalid JSON syntax"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_malformed",
+  "status": "fail",
+  "target": "inputs/demo.jsonl",
+  "validator": "jsonl_syntax",
+  "warnings": []
+}

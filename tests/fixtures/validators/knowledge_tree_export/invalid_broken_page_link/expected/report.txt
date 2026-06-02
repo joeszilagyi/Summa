@@ -1,0 +1,8 @@
+validator=knowledge_tree_export
+scenario=invalid_broken_page_link
+target=inputs/knowledge_tree_export.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=2 warnings=0
+error[0]=BROKEN_PAGE_LINK message=page home references unknown related_page_id: missing_page
+error[1]=BROKEN_SECTION_LINK message=page home references unknown section link_page_id: missing_page

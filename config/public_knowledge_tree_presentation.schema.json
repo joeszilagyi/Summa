@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "public-knowledge-tree-presentation.schema.json",
+  "title": "Public Knowledge Tree Presentation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_doc", "page_inventory", "never_publish"],
+  "properties": {
+    "schema_version": {"const": "public-presentation.v1"},
+    "contract_doc": {"const": "docs/project/PUBLIC_KNOWLEDGE_TREE_PRESENTATION_CONTRACT.md"},
+    "page_inventory": {
+      "type": "array",
+      "minItems": 7,
+      "items": {"$ref": "#/$defs/page"}
+    },
+    "never_publish": {
+      "type": "array",
+      "minItems": 8,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_family",
+        "route",
+        "navigation_parent",
+        "reader_state",
+        "review_state",
+        "validation_state",
+        "publication_state",
+        "source_transparency",
+        "summary_cards",
+        "empty_state",
+        "redaction_gate_refs",
+        "navigation_children",
+        "related_routes",
+        "breadcrumbs"
+      ],
+      "properties": {
+        "page_family": {
+          "enum": ["home", "facet", "entity", "source", "collection", "timeline", "validation"]
+        },
+        "route": {"type": "string", "minLength": 1},
+        "navigation_parent": {"type": "string"},
+        "reader_state": {"enum": ["ready", "sparse", "empty", "blocked"]},
+        "review_state": {"enum": ["reviewed", "needs_review", "unreviewed", "not_applicable"]},
+        "validation_state": {"enum": ["passing", "warning", "blocked", "unknown"]},
+        "publication_state": {"enum": ["public_safe", "draft", "blocked", "previewable", "published"]},
+        "source_transparency": {"type": "string", "minLength": 1},
+        "summary_cards": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "empty_state": {"type": "string"},
+        "redaction_gate_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "navigation_children": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "related_routes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "breadcrumbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

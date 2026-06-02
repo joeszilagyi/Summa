@@ -1,0 +1,30 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "BROKEN_PAGE_LINK",
+      "line": null,
+      "message": "page home references unknown related_page_id: missing_page"
+    },
+    {
+      "code": "BROKEN_SECTION_LINK",
+      "line": null,
+      "message": "page home references unknown section link_page_id: missing_page"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_broken_page_link",
+  "status": "fail",
+  "target": "inputs/knowledge_tree_export.json",
+  "validator": "knowledge_tree_export",
+  "warnings": []
+}

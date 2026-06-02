@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+.env
+.env.*
+
+# Generated files
+*.sqlite
+*.sqlite3
+*.db
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+
+# Local output roots
+runtime/**
+dbs/**
+test_[c]orpora/**
+index/[P]laces/**
+.local/**
+out/**
+build/
+dist/

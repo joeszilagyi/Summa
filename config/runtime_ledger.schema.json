@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/runtime_ledger.schema.json",
+  "title": "runtime-ledger.v1 event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "event_id",
+    "run_id",
+    "workspace_id",
+    "event_type",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime-ledger.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "command_start",
+        "command_end",
+        "command_failure",
+        "lock_acquired",
+        "lock_released",
+        "validation",
+        "artifact_written",
+        "backup_created",
+        "restore_verified"
+      ]
+    },
+    "occurred_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "command": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array"
+    },
+    "artifact_refs": {
+      "type": "array"
+    },
+    "lock_event": {
+      "type": "object"
+    },
+    "validation_posture": {
+      "type": "object"
+    },
+    "failure": {
+      "type": "object"
+    }
+  }
+}

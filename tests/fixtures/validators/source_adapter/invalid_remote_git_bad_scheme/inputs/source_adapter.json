@@ -1,0 +1,59 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "alpha_subject_bad_remote_repo",
+  "display_name": "Broken remote git adapter",
+  "workspace_id": "alpha_subject",
+  "input_family": "remote_git_repo",
+  "locator": {
+    "repo_url": "ssh://git@example.com/private/subject-records.git",
+    "ref": "main"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "json",
+      "git_history"
+    ],
+    "hazard_flags": []
+  },
+  "provenance": {
+    "discovery_provenance": "upstream repo discovered from operator notes",
+    "acquisition_method": "remote_clone",
+    "source_description": "Remote Git repository that should fail URL policy."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "tracked_source",
+    "metadata_storage_policy_class": "tracked_source",
+    "rights_posture": "redistributable"
+  },
+  "automation_posture": "unattended_safe",
+  "normalized_handoff": {
+    "record_family": "source_lead",
+    "batch_unit": "per_snapshot",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "transform_lineage"
+    ],
+    "source_specific_fields": [
+      "git_ref",
+      "git_commit"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "clone",
+      "step_kind": "clone_repo",
+      "description": "Clone the repository.",
+      "deterministic": false,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit source-lead records.",
+      "deterministic": true,
+      "review_required": false
+    }
+  ]
+}

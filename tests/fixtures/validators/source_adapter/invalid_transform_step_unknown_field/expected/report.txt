@@ -1,0 +1,7 @@
+validator=source_adapter
+scenario=invalid_transform_step_unknown_field
+target=inputs/source_adapter.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=UNKNOWN_TRANSFORM_STEP_FIELD message=unexpected transform_lineage field: unexpected_field

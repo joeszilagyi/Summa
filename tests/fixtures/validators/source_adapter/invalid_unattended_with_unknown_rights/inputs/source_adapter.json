@@ -1,0 +1,60 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "alpha_subject_unattended_unknown_rights",
+  "display_name": "Unattended adapter with unknown rights posture",
+  "workspace_id": "alpha_subject",
+  "description": "Unattended adapter that carries unresolved legal posture and should be rejected.",
+  "input_family": "local_directory",
+  "locator": {
+    "local_path": "../subject-records"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "pdf"
+    ],
+    "hazard_flags": [
+      "path_traversal_filenames"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "operator-maintained local batch",
+    "acquisition_method": "local_drop",
+    "source_description": "Local directory with unresolved review posture for unattended extraction."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "tracked_source",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "unknown_review_required"
+  },
+  "automation_posture": "unattended_safe",
+  "normalized_handoff": {
+    "record_family": "capture",
+    "batch_unit": "per_file",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "extraction_metadata",
+      "durable_source_record",
+      "controlled_subjects",
+      "authority_records",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "relative_path"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit capture records for unattended processing.",
+      "deterministic": true,
+      "review_required": false
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "view-model://source-intake-status.v1",
+  "title": "source-intake-status.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "inputs",
+    "counts",
+    "adapters"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "source-intake-status.v1"
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "counts": {
+      "type": "object"
+    },
+    "adapters": {
+      "type": "array"
+    }
+  }
+}

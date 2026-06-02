@@ -1,0 +1,38 @@
+name: Prompt Contract
+description: Track changes to prompt templates, prompt bundles, LLM boundaries, or validator contracts.
+title: "[Prompt Contract] "
+labels:
+  - runtime
+  - validation
+body:
+  - type: textarea
+    id: contract_gap
+    attributes:
+      label: Contract Gap
+      description: What prompt, bundle, manifest, or validator contract is missing or wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: affected_outputs
+    attributes:
+      label: Affected Outputs
+      description: Name any reports, catalogs, ledgers, execution manifests, sidecars, or DB records that consume this contract.
+    validations:
+      required: true
+  - type: textarea
+    id: llm_boundary
+    attributes:
+      label: LLM Boundary
+      description: State what the LLM may generate and what must be checked deterministically.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      placeholder: |
+        - [ ] Prompt or bundle change is explicit
+        - [ ] Validator or fixture coverage exists where practical
+        - [ ] Downstream artifact lock/stamp expectations remain clear
+    validations:
+      required: true

@@ -1,0 +1,72 @@
+name: Audit or Research
+description: File a bounded audit, design-decision, or research issue without implying implementation scope.
+title: "[Audit] "
+labels:
+  - research
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What needs to be learned, decided, or audited?
+    validations:
+      required: true
+  - type: textarea
+    id: source_evidence
+    attributes:
+      label: Source Evidence
+      description: Link repo paths, docs, issues, external primary sources, or command output that motivate the question.
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Method
+      description: How should the audit or research be performed?
+      placeholder: |
+        - Inspect ...
+        - Compare ...
+        - Produce ...
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Deliverable
+      description: What artifact should be produced, such as a decision memo, issue split, or risk inventory?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      placeholder: |
+        - [ ] Findings are tied to source evidence
+        - [ ] Follow-up implementation issues are filed only when needed
+        - [ ] No code path is changed unless explicitly in scope
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of Scope
+      description: What implementation work should wait for a separate issue?
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+    validations:
+      required: true
+  - type: input
+    id: decision_or_milestone
+    attributes:
+      label: Decision or Milestone Area
+      description: Link a decision record, milestone area, or "none".
+    validations:
+      required: true
