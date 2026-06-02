@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/leak_scan_allowlist.schema.json",
+  "title": "leak-scan-allowlist.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "leak-scan-allowlist.v1"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "finding_code",
+        "path_glob",
+        "match_substring",
+        "reason",
+        "approved_by"
+      ],
+      "properties": {
+        "entry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finding_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path_glob": {
+          "type": "string",
+          "minLength": 1
+        },
+        "match_substring": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

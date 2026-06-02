@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+COMMON_PATH = REPO_ROOT / "tools" / "common" / "leak_scanner.py"
+SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "scan_for_leaks.py"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "leak_scanner"
+
+common_spec = importlib.util.spec_from_file_location("leak_scanner_common_for_tests", COMMON_PATH)
+scanner = importlib.util.module_from_spec(common_spec)
+assert common_spec.loader is not None
+sys.modules[common_spec.name] = scanner
+common_spec.loader.exec_module(scanner)
+
+
+def stage_fixture(tmp_path: Path, name: str) -> Path:
+    target = tmp_path / name
+    shutil.copytree(FIXTURE_ROOT / name, target)
+    return target
+
+
+def test_public_bundle_leak_fixture_fails_with_machine_readable_findings(tmp_path: Path) -> None:
+    root = stage_fixture(tmp_path, "public_bundle_leak")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    codes = {item["code"] for item in report["findings"]}
+    assert {"SECRET_MARKER", "PRIVATE_PATH", "PROMPT_OUTPUT_MARKER", "RAW_PAYLOAD_MARKER", "PRIVATE_NOTE_MARKER"} <= codes
+
+
+def test_clean_public_bundle_fixture_passes(tmp_path: Path) -> None:
+    root = stage_fixture(tmp_path, "public_bundle_clean")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "pass"
+    assert report["findings"] == []
+
+
+def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Path) -> None:
+    root = stage_fixture(tmp_path, "public_bundle_allowlisted")
+    allowlist = root / "allowlist.json"
+
+    payload = scanner.load_allowlist(allowlist)
+    report = scanner.scan_directory(root / "bundle", profile="public_bundle", allowlist_payload=payload)
+
+    assert report["status"] == "pass"
+    assert report["findings"] == []
+    assert report["counts"]["suppressed_findings"] == 1
+    suppressed = report["suppressed_findings"][0]
+    assert suppressed["allowlist_entry_id"] == "allow-doc-literal-token"
+    assert suppressed["allowlist_approved_by"] == "operator.alex"
+
+
+def test_leak_scanner_cli_writes_reports(tmp_path: Path) -> None:
+    root = stage_fixture(tmp_path, "public_bundle_clean")
+    report_json = tmp_path / "report.json"
+    report_text = tmp_path / "report.txt"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            str(root),
+            "--profile",
+            "public_bundle",
+            "--report-json",
+            str(report_json),
+            "--report-text",
+            str(report_text),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    assert report["schema_version"] == "leak-scan-report.v1"
+    assert report["status"] == "pass"
+    assert "status=pass" in report_text.read_text(encoding="utf-8")
