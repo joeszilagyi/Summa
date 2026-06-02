@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/candidate_feedback_plan.schema.json",
+  "title": "candidate-feedback-plan.v1",
+  "description": "Dry-run ranked proposals that feed later reviewed discoveries back into earlier candidate records without destructive overwrite.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "source",
+    "counts",
+    "proposals",
+    "skipped",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "candidate-feedback-plan.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database_name",
+        "schema_version",
+        "correction_ledger_applied",
+        "field_review_state_count",
+        "evidence_locator_count",
+        "dry_run"
+      ],
+      "properties": {
+        "database_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "correction_ledger_applied": {
+          "type": "boolean"
+        },
+        "field_review_state_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_locator_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dry_run": {
+          "const": true
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earlier_candidates_considered",
+        "later_discoveries_considered",
+        "proposals_emitted",
+        "skipped_targets"
+      ],
+      "properties": {
+        "earlier_candidates_considered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "later_discoveries_considered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proposals_emitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_targets": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/proposal"
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skipped"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "object_ref": {
+      "type": "string",
+      "pattern": "^[a-z_]+:[0-9]+$"
+    },
+    "provenance_ref": {
+      "type": "string",
+      "pattern": "^prov:[a-z0-9-]+$"
+    },
+    "evidence_ref": {
+      "type": "string",
+      "pattern": "^evl:[a-z0-9][a-z0-9._:-]*$"
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "rank",
+        "proposal_kind",
+        "target_record_family",
+        "target_object_ref",
+        "source_object_refs",
+        "append_only_target",
+        "score",
+        "rationale",
+        "preserved_target_provenance_refs",
+        "preserved_source_provenance_refs",
+        "evidence_locator_refs",
+        "evidence_summaries",
+        "proposed_changes"
+      ],
+      "properties": {
+        "proposal_id": {
+          "type": "string",
+          "pattern": "^cfp:[a-z0-9][a-z0-9._:-]*$"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "proposal_kind": {
+          "type": "string",
+          "enum": [
+            "update_candidate",
+            "relationship_candidate",
+            "review_task"
+          ]
+        },
+        "target_record_family": {
+          "type": "string",
+          "enum": [
+            "entity",
+            "relationship",
+            "assertion"
+          ]
+        },
+        "target_object_ref": {
+          "$ref": "#/$defs/object_ref"
+        },
+        "source_object_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/object_ref"
+          }
+        },
+        "append_only_target": {
+          "type": "string",
+          "enum": [
+            "field_review_state",
+            "review_queue"
+          ]
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preserved_target_provenance_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provenance_ref"
+          }
+        },
+        "preserved_source_provenance_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provenance_ref"
+          }
+        },
+        "evidence_locator_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_ref"
+          }
+        },
+        "evidence_summaries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proposed_changes": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "skipped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_object_ref",
+        "reason"
+      ],
+      "properties": {
+        "target_object_ref": {
+          "$ref": "#/$defs/object_ref"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
