@@ -122,14 +122,15 @@ def template_status_entries(template_files: list[Any]) -> list[dict[str, Any]]:
 
 
 def prompt_bundle_for_facet(pack: dict[str, Any], facet: str) -> tuple[str, dict[str, Any] | None]:
-    prompt_bundles = pack.get("prompt_bundles")
-    if not isinstance(prompt_bundles, dict):
+    try:
+        resolved = resolve_subject_runtime.resolve_prompt_bundles(pack, [facet])
+    except resolve_subject_runtime.ResolutionError:
         return "", None
-    for candidate_key in resolve_subject_runtime.prompt_bundle_candidate_keys(facet):
-        candidate = prompt_bundles.get(candidate_key)
-        if isinstance(candidate, dict):
-            return candidate_key, candidate
-    return "", None
+    bundle = resolved.get(facet)
+    if not isinstance(bundle, dict):
+        return "", None
+    bundle_key = bundle.get("bundle_key")
+    return (bundle_key if isinstance(bundle_key, str) else "", bundle)
 
 
 def facet_entries(manifest: dict[str, Any], pack: dict[str, Any]) -> list[dict[str, Any]]:
