@@ -1,0 +1,165 @@
+{
+  "schema_version": "canonical-graph-model-outline.v1",
+  "contract_doc": "docs/project/CANONICAL_GRAPH_MODEL.md",
+  "summary": {
+    "canonical_layer_name": "durable_knowledge_map",
+    "presentations_downstream": true,
+    "notes": [
+      "Presentation, search, and public-export surfaces are downstream projections rather than canonical storage.",
+      "Append-only sidecars preserve correction, evidence, and review lineage around canonical graph records."
+    ]
+  },
+  "canonical_record_families": [
+    {
+      "record_family": "entity",
+      "description": "Canonical people, groups, places, works, and detected local entities after reconciliation.",
+      "current_sqlite_tables": [
+        "authority_record",
+        "extraction_detected_entity",
+        "work",
+        "work_subject"
+      ],
+      "provenance_strategy": "Link each entity to one or more provenance_event rows and preserve source-local identifiers separately.",
+      "review_strategy": "Record-level review_state plus field-review-state sidecars for durable labels, identifiers, and scoped facts."
+    },
+    {
+      "record_family": "relationship",
+      "description": "Directed, source-backed links between canonical entities and scoped subject assignments.",
+      "current_sqlite_tables": [
+        "source_relationship",
+        "work_subject"
+      ],
+      "provenance_strategy": "Preserve predicate registry semantics and evidence references for each asserted edge.",
+      "review_strategy": "Review queue refs and correction-ledger supersession preserve edge lineage without destructive overwrite."
+    },
+    {
+      "record_family": "assertion",
+      "description": "Source-backed claims and extracted statements that may later support entity or relationship promotion.",
+      "current_sqlite_tables": [
+        "source_claim",
+        "topic_extension"
+      ],
+      "provenance_strategy": "Retain source-backed claim provenance and link field-level evidence snapshots through evidence locators.",
+      "review_strategy": "Field-review-state determines whether assertion content can contribute to authoritative downstream surfaces."
+    },
+    {
+      "record_family": "provenance_event",
+      "description": "Append-only operational and object-level events that explain discovery, import, review, merge, and export actions.",
+      "current_sqlite_tables": [
+        "provenance_event",
+        "capture_event",
+        "extraction_record"
+      ],
+      "provenance_strategy": "This family is the provenance substrate for the rest of the canonical graph.",
+      "review_strategy": "Events remain append-only; review applies to the canonical records they describe rather than mutating historical events."
+    },
+    {
+      "record_family": "confidence_assessment",
+      "description": "Normalized confidence posture attached to entities, relationships, assertions, and topic extensions without erasing original score context.",
+      "current_sqlite_tables": [
+        "authority_record",
+        "source_relationship",
+        "source_claim",
+        "topic_extension"
+      ],
+      "provenance_strategy": "Confidence values keep source and tool context and may point back to the provenance events that produced them.",
+      "review_strategy": "Confidence alone never promotes material; reviewed canonical records may still retain lower-confidence history."
+    },
+    {
+      "record_family": "review_annotation",
+      "description": "Operator review, demotion, ambiguity, and acceptance posture for canonical graph records and record fields.",
+      "current_sqlite_tables": [
+        "review_state_history",
+        "authority_reconciliation"
+      ],
+      "provenance_strategy": "Review annotations link back to reviewed object refs and related provenance events when available.",
+      "review_strategy": "Record review history and field-review-state sidecars are append-only and remain distinct from canonical entity content."
+    }
+  ],
+  "append_only_sidecars": [
+    {
+      "sidecar": "correction_ledger",
+      "schema_version": "correction-ledger.v1",
+      "applies_to_record_families": [
+        "entity",
+        "relationship",
+        "assertion"
+      ],
+      "purpose": "Preserve dedupe, merge, split, and supersession lineage over canonical graph object refs."
+    },
+    {
+      "sidecar": "field_review_state",
+      "schema_version": "field-review-state.v1",
+      "applies_to_record_families": [
+        "entity",
+        "relationship",
+        "assertion"
+      ],
+      "purpose": "Preserve append-only review posture for durable fields and authoritative downstream decisions."
+    },
+    {
+      "sidecar": "evidence_locator",
+      "schema_version": "evidence-locator.v1",
+      "applies_to_record_families": [
+        "relationship",
+        "assertion",
+        "review_annotation"
+      ],
+      "purpose": "Preserve stable evidence spans and redaction posture without turning presentation excerpts into canonical storage."
+    }
+  ],
+  "migration_stages": [
+    {
+      "stage_id": "graph-outline.v1",
+      "title": "Map current durable SQLite families into canonical record families",
+      "current_inputs": [
+        "authority_record",
+        "extraction_detected_entity",
+        "source_relationship",
+        "source_claim",
+        "topic_extension",
+        "provenance_event"
+      ],
+      "target_record_families": [
+        "entity",
+        "relationship",
+        "assertion",
+        "provenance_event"
+      ],
+      "notes": "This stage is non-destructive and documents canonical ownership without changing current runtime tables."
+    },
+    {
+      "stage_id": "graph-sidecars.v1",
+      "title": "Treat correction, evidence, and field review as first-class sidecars to canonical graph records",
+      "current_inputs": [
+        "correction-ledger.v1",
+        "field-review-state.v1",
+        "evidence-locator.v1"
+      ],
+      "target_record_families": [
+        "entity",
+        "relationship",
+        "assertion",
+        "review_annotation"
+      ],
+      "notes": "Downstream search and publication surfaces should read these sidecars instead of embedding ad hoc review and evidence state."
+    },
+    {
+      "stage_id": "graph-runtime-followon.v1",
+      "title": "Use the canonical graph layer as the substrate for feedback loops and future read models",
+      "current_inputs": [
+        "local-search-projection.v1",
+        "knowledge-tree-export.v1",
+        "review-queue.v1"
+      ],
+      "target_record_families": [
+        "entity",
+        "relationship",
+        "assertion",
+        "confidence_assessment",
+        "review_annotation"
+      ],
+      "notes": "Later runtime work such as candidate feedback and public-safe projections should consume canonical graph records rather than importer-specific row shapes."
+    }
+  ]
+}
