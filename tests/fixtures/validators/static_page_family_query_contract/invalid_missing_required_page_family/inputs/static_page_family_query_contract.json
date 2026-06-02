@@ -1,0 +1,54 @@
+{
+  "schema_version": "static-page-family-query-contract.v1",
+  "contract_doc": "docs/project/STATIC_PAGE_FAMILY_QUERY_CONTRACT.md",
+  "page_families": [
+    {
+      "page_family": "home",
+      "query_contract_id": "page-query.home.v1",
+      "description": "home",
+      "inputs": [
+        {
+          "input_name": "home_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "home"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "nav"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "headline"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "headline"
+        ],
+        "hidden_sections": []
+      }
+    }
+  ]
+}
