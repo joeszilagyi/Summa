@@ -17,6 +17,7 @@ venv/
 *.sqlite3
 *.db
 *.pdf
+!tests/fixtures/source_adapter_runtime/**/*.pdf
 *.zip
 *.tar
 *.tar.gz
