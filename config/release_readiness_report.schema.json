@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/release_readiness_report.schema.json",
+  "title": "release-readiness-report.v1",
+  "description": "Aggregated release-readiness checklist report built from current machine-readable operator and validator outputs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "target_bundle",
+    "validator",
+    "contract_version",
+    "summary",
+    "inputs",
+    "checks",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "release-readiness-report.v1"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "warn",
+        "block"
+      ]
+    },
+    "target_bundle": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "validator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "report_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_count",
+        "pass_count",
+        "warn_count",
+        "block_count",
+        "finding_count"
+      ],
+      "properties": {
+        "check_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pass_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warn_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finding_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "doctor_report",
+        "knowledge_tree_export_report",
+        "static_output_report",
+        "local_search_projection_report",
+        "leak_scan_report"
+      ],
+      "properties": {
+        "doctor_report": {
+          "type": "string",
+          "minLength": 1
+        },
+        "knowledge_tree_export_report": {
+          "type": "string",
+          "minLength": 1
+        },
+        "static_output_report": {
+          "type": "string",
+          "minLength": 1
+        },
+        "local_search_projection_report": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leak_scan_report": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_key",
+          "source",
+          "status",
+          "message"
+        ],
+        "properties": {
+          "check_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "warn",
+              "block"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "severity",
+          "source",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warn",
+              "block"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

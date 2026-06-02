@@ -503,6 +503,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
     validators = [
         "tools/validators/validate_knowledge_tree_export.py",
         "tools/validators/validate_migration_ledger.py",
+        "tools/validators/validate_release_readiness.py",
         "tools/validators/validate_static_knowledge_tree_output.py",
         "tools/validators/validate_topic_workspace_registry.py",
         "tools/validators/validate_crown_jewel_backup_manifest.py",

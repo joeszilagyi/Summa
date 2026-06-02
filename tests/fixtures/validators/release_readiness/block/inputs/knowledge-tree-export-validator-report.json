@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "FIELD_REVIEW_NOT_REVIEWED",
+      "line": null,
+      "message": "public authoritative export references an unreviewed field-review entry"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": null,
+    "report_text": null
+  },
+  "scenario": "block_bundle",
+  "status": "fail",
+  "target": "inputs/export.json",
+  "validator": "knowledge_tree_export",
+  "warnings": []
+}

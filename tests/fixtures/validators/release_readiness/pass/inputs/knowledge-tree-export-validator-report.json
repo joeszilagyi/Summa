@@ -1,0 +1,19 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 1,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 0
+  },
+  "errors": [],
+  "output_artifacts": {
+    "report_json": null,
+    "report_text": null
+  },
+  "scenario": "pass_bundle",
+  "status": "pass",
+  "target": "inputs/export.json",
+  "validator": "knowledge_tree_export",
+  "warnings": []
+}

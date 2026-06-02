@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "RAW_PAYLOAD_FIELD_INDEXED",
+      "line": null,
+      "message": "records[0].indexed_fields[0].field must not expose raw payload or full-text fields in search artifacts"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": null,
+    "report_text": null
+  },
+  "scenario": "block_bundle",
+  "status": "fail",
+  "target": "inputs/local-search-projection.json",
+  "validator": "local_search_projection",
+  "warnings": []
+}

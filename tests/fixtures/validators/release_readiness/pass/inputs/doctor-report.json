@@ -1,0 +1,22 @@
+{
+  "schema_version": "local-doctor-report.v1",
+  "summary": {
+    "status": "pass",
+    "check_count": 10,
+    "finding_count": 0,
+    "operator_action_required_count": 0
+  },
+  "checks": {
+    "repo_hygiene": "clean",
+    "validator_availability": "available",
+    "topic_workspace_registry": "pass",
+    "workspaces": "pass",
+    "scheduler_eligibility": "pass",
+    "crown_jewel_backup_posture": "pass",
+    "migration_ledger_posture": "pass",
+    "db_integrity_smoke": "pass",
+    "workspace_locks": "pass",
+    "public_private_sharing_gate": "pass"
+  },
+  "findings": []
+}
