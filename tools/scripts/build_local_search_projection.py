@@ -467,6 +467,17 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
         conn.executescript(
             """
             PRAGMA journal_mode=DELETE;
+            CREATE TABLE projection_metadata (
+              projection_schema_version TEXT NOT NULL,
+              source_database_name TEXT NOT NULL,
+              source_database_fingerprint TEXT NOT NULL,
+              source_schema_version TEXT,
+              profile TEXT NOT NULL,
+              generated_at TEXT NOT NULL,
+              raw_payload_indexed INTEGER NOT NULL,
+              full_text_indexed INTEGER NOT NULL,
+              private_paths_exposed INTEGER NOT NULL
+            );
             CREATE TABLE search_projection (
               projection_id TEXT PRIMARY KEY,
               object_ref TEXT NOT NULL,
@@ -493,6 +504,32 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
               indexed_text
             );
             """
+        )
+        conn.execute(
+            """
+            INSERT INTO projection_metadata (
+              projection_schema_version,
+              source_database_name,
+              source_database_fingerprint,
+              source_schema_version,
+              profile,
+              generated_at,
+              raw_payload_indexed,
+              full_text_indexed,
+              private_paths_exposed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["schema_version"],
+                payload["source"]["database_name"],
+                payload["source"]["database_fingerprint"],
+                None if payload["source"]["schema_version"] is None else str(payload["source"]["schema_version"]),
+                payload["profile"],
+                payload["generated_at"],
+                int(bool(payload["policy"]["raw_payload_indexed"])),
+                int(bool(payload["policy"]["full_text_indexed"])),
+                int(bool(payload["policy"]["private_paths_exposed"])),
+            ),
         )
         for record in payload["records"]:
             indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])

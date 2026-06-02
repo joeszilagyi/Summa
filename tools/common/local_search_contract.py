@@ -69,6 +69,29 @@ PUBLICATION_STATE_ALIASES = {
     "published": "public_release_allowed",
 }
 
+RESULT_CLASS_BY_OBJECT_TYPE = {
+    "authority": "entity",
+    "claim": "claim",
+    "controlled_subject": "facet",
+    "provenance_event": "event",
+    "relationship": "relationship",
+    "source_access": "source",
+    "topic_extension": "facet",
+    "work": "work",
+}
+
+SEARCH_SCOPE_TO_OBJECT_TYPES = {
+    "all": set(RESULT_CLASS_BY_OBJECT_TYPE),
+    "source_work": {"source_access", "work"},
+    "authority": {"authority"},
+    "controlled_subject": {"controlled_subject"},
+    "source_access": {"source_access"},
+    "relationship": {"relationship"},
+    "claim": {"claim"},
+    "provenance_event": {"provenance_event"},
+    "topic_extension": {"topic_extension"},
+}
+
 
 def is_public_profile(profile: str | None) -> bool:
     return profile in PUBLIC_VISIBILITY_PROFILES
