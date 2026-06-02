@@ -1,0 +1,52 @@
+{
+  "schema_version": "field-review-state.v1",
+  "record_locator": {
+    "record_family": "source_lead",
+    "relative_path": "records.jsonl",
+    "source_filename": "records.jsonl",
+    "structured_format": "jsonl",
+    "record_locator": "line:1"
+  },
+  "field_reviews": [
+    {
+      "entry_id": "frs:title:reviewed",
+      "field_path": "title",
+      "state": "reviewed",
+      "reviewed_by": "reviewer.alex",
+      "reviewed_at": "2026-06-01T10:00:00Z",
+      "value_fingerprint": "sha256:title:v1",
+      "evidence_ref": {
+        "evidence_type": "field_snapshot",
+        "reference": "line:1#title@sha256:title:v1",
+        "excerpt_locator": "field:title",
+        "evidence_note": "Reviewed title."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Valid baseline review.",
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "entry_id": "frs:summary:demoted",
+      "field_path": "summary",
+      "state": "demoted",
+      "reviewed_by": "reviewer.blair",
+      "reviewed_at": "2026-06-01T10:30:00Z",
+      "value_fingerprint": "sha256:summary:v1",
+      "evidence_ref": {
+        "evidence_type": "operator_note",
+        "reference": "review-note:summary-1",
+        "excerpt_locator": null,
+        "evidence_note": "Summary needs demotion."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": "frs:title:reviewed",
+      "note": "Broken fixture demotes the wrong field.",
+      "tags": [
+        "invalid"
+      ]
+    }
+  ]
+}
