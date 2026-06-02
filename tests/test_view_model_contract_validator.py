@@ -29,6 +29,10 @@ MINIMAL_PAYLOADS: dict[str, dict[str, object]] = {
         "schema_version": "review-queue.v1",
         "database_path": "source.sqlite",
         "filters": {},
+        "writer": {
+            "surface_path": "tools/source_db_tools/review_queue.py",
+            "supported_actions": [],
+        },
         "counts": {},
         "truncated": False,
         "items": [],

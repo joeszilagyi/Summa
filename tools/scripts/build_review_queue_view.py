@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sqlite3
 import sys
 from collections import Counter
@@ -51,6 +52,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-confidence", type=float)
     parser.add_argument("--max-confidence", type=float)
     parser.add_argument("--source-type")
+    parser.add_argument("--workspace-id", help="Exact workspace_id filter for rows that carry workspace metadata.")
+    parser.add_argument(
+        "--authority-level",
+        help="Exact authority level/tier filter for rows that carry authority metadata.",
+    )
+    parser.add_argument(
+        "--public-blocker",
+        help="Filter by public blocker reason, or use 'any' / 'none'.",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -111,16 +121,37 @@ def count_by(rows: list[dict[str, Any]], field_name: str) -> dict[str, int]:
 
 
 def normalize_item(row: dict[str, Any]) -> dict[str, Any]:
+    object_ref = row.get("object_ref")
     return {
-        "object_ref": row.get("object_ref"),
+        "object_ref": object_ref,
         "object_type": row.get("object_type"),
         "object_namespace": row.get("object_namespace"),
         "object_pk": row.get("object_pk"),
         "review_state": row.get("review_state"),
         "confidence_score": row.get("confidence_score"),
         "source_type": row.get("source_type"),
+        "workspace_id": row.get("workspace_id"),
+        "authority_level": row.get("authority_level"),
+        "public_blocker": row.get("public_blocker"),
         "label": row.get("label"),
+        "available_actions": {
+            "writer_surface": review_queue.SCRIPT_PATH,
+            "commands": {
+                "accept": review_command("accept", object_ref),
+                "reject": review_command("reject", object_ref),
+                "demote": review_command("demote", object_ref),
+                "mark_ambiguous": review_command("mark-ambiguous", object_ref),
+            },
+        },
     }
+
+
+def review_command(action: str, object_ref: Any) -> str | None:
+    if object_ref in (None, ""):
+        return None
+    quoted_db = shlex.quote("__DB_PATH__")
+    quoted_object = shlex.quote(str(object_ref))
+    return f"python3 {shlex.quote(review_queue.SCRIPT_PATH)} {quoted_db} {action} {quoted_object}"
 
 
 def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -135,6 +166,9 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
             min_confidence=args.min_confidence,
             max_confidence=args.max_confidence,
             source_type=args.source_type,
+            workspace_id=args.workspace_id,
+            authority_level=args.authority_level,
+            public_blocker=args.public_blocker,
             limit=None,
         )
     finally:
@@ -148,17 +182,27 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
         "min_confidence": args.min_confidence,
         "max_confidence": args.max_confidence,
         "source_type": args.source_type,
+        "workspace_id": args.workspace_id,
+        "authority_level": args.authority_level,
+        "public_blocker": args.public_blocker,
         "limit": args.limit,
     }
     return {
         "schema_version": SCHEMA_VERSION,
         "database_path": str(db_path),
         "filters": filters,
+        "writer": {
+            "surface_path": review_queue.SCRIPT_PATH,
+            "supported_actions": ["accept", "reject", "demote", "mark-ambiguous"],
+        },
         "counts": {
             "total_items": len(all_rows),
             "returned_items": len(items),
             "by_review_state": count_by(all_rows, "review_state"),
             "by_object_type": count_by(all_rows, "object_type"),
+            "by_workspace_id": count_by(all_rows, "workspace_id"),
+            "by_authority_level": count_by(all_rows, "authority_level"),
+            "by_public_blocker": count_by(all_rows, "public_blocker"),
         },
         "truncated": len(items) < len(all_rows),
         "items": items,
@@ -177,9 +221,13 @@ def render_text(payload: dict[str, Any]) -> str:
         f"database_path={payload['database_path']}",
         f"state_filter={payload['filters']['state']}",
         f"object_type_filter={text_value(payload['filters']['object_type'])}",
+        f"workspace_id_filter={text_value(payload['filters']['workspace_id'])}",
+        f"authority_level_filter={text_value(payload['filters']['authority_level'])}",
+        f"public_blocker_filter={text_value(payload['filters']['public_blocker'])}",
         f"total_items={payload['counts']['total_items']}",
         f"returned_items={payload['counts']['returned_items']}",
         f"truncated={str(payload['truncated']).lower()}",
+        f"writer_surface={payload['writer']['surface_path']}",
     ]
     for index, item in enumerate(payload["items"]):
         confidence = item.get("confidence_score")
@@ -188,6 +236,9 @@ def render_text(payload: dict[str, Any]) -> str:
         lines.append(f"item[{index}].review_state={text_value(item['review_state'])}")
         lines.append(f"item[{index}].confidence_score={confidence_text}")
         lines.append(f"item[{index}].source_type={text_value(item['source_type'])}")
+        lines.append(f"item[{index}].workspace_id={text_value(item['workspace_id'])}")
+        lines.append(f"item[{index}].authority_level={text_value(item['authority_level'])}")
+        lines.append(f"item[{index}].public_blocker={text_value(item['public_blocker'])}")
         lines.append(f"item[{index}].label={text_value(item['label'])}")
     return "\n".join(lines) + "\n"
 

@@ -27,6 +27,7 @@ SCRIPT_PATH = "tools/source_db_tools/review_queue.py"
 DEFAULT_PENDING_STATES = {"", "unreviewed", "machine_extracted", "proposed", "needs_review", "ambiguous", "demoted"}
 ACCEPTED_STATES = {"accepted", "approved", "curated", "reviewed"}
 TRANSITION_STATES = {"accepted", "rejected", "demoted", "ambiguous"}
+PUBLICATION_BLOCKING_STATES = {"blocked", "draft", "local_only", "private_working"}
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,37 @@ def pending_filter_sql(state: str | None) -> tuple[str, list[Any]]:
     return "COALESCE(review_state, '') = ?", [state]
 
 
+def optional_column_expr(columns: set[str], *candidate_names: str) -> str:
+    for name in candidate_names:
+        if name in columns:
+            return name
+    return "NULL"
+
+
+def public_blocker_expr(columns: set[str]) -> str:
+    if "public_blocker" in columns:
+        return "NULLIF(public_blocker, '')"
+    if "public_blocked" in columns:
+        return "CASE WHEN COALESCE(public_blocked, 0) THEN 'blocked' ELSE NULL END"
+    if "publication_state" in columns:
+        states = ", ".join(f"'{value}'" for value in sorted(PUBLICATION_BLOCKING_STATES))
+        return f"CASE WHEN publication_state IN ({states}) THEN publication_state ELSE NULL END"
+    return "NULL"
+
+
+def apply_optional_filter(where: str, params: list[Any], expr: str, value: str | None) -> tuple[str, list[Any]]:
+    if value is None:
+        return where, params
+    if expr == "NULL":
+        return "0=1", params
+    if value == "any":
+        return f"({where}) AND {expr} IS NOT NULL", params
+    if value == "none":
+        return f"({where}) AND {expr} IS NULL", params
+    params.append(value)
+    return f"({where}) AND {expr} = ?", params
+
+
 def list_review_items(
     conn: sqlite3.Connection,
     *,
@@ -168,6 +200,9 @@ def list_review_items(
     min_confidence: float | None = None,
     max_confidence: float | None = None,
     source_type: str | None = None,
+    workspace_id: str | None = None,
+    authority_level: str | None = None,
+    public_blocker: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     if limit is not None and limit < 0:
@@ -186,6 +221,9 @@ def list_review_items(
             continue
         confidence_expr = target.confidence_column if target.confidence_column in columns else "NULL"
         source_type_expr = target.source_type_sql
+        workspace_expr = optional_column_expr(columns, "workspace_id")
+        authority_level_expr = optional_column_expr(columns, "authority_level", "authority_tier", "authority_status")
+        public_blocker_value_expr = public_blocker_expr(columns)
         where, params = pending_filter_sql(state)
         if target.extra_where:
             where = f"({where}) AND ({target.extra_where})"
@@ -200,6 +238,9 @@ def list_review_items(
         if source_type is not None and source_type_expr != "NULL":
             where = f"({where}) AND {source_type_expr} = ?"
             params.append(source_type)
+        where, params = apply_optional_filter(where, params, workspace_expr, workspace_id)
+        where, params = apply_optional_filter(where, params, authority_level_expr, authority_level)
+        where, params = apply_optional_filter(where, params, public_blocker_value_expr, public_blocker)
         query = f"""
             SELECT
               ? AS object_type,
@@ -208,7 +249,10 @@ def list_review_items(
               COALESCE({target.state_column}, '') AS review_state,
               {confidence_expr} AS confidence_score,
               {target.label_sql} AS label,
-              {source_type_expr} AS source_type
+              {source_type_expr} AS source_type,
+              {workspace_expr} AS workspace_id,
+              {authority_level_expr} AS authority_level,
+              {public_blocker_value_expr} AS public_blocker
             FROM {target.table}
             WHERE {where}
             ORDER BY COALESCE({confidence_expr}, 2.0), {target.pk_column}
@@ -406,7 +450,13 @@ def render_list_text(rows: list[dict[str, Any]]) -> None:
         confidence = "" if row.get("confidence_score") is None else f"{float(row['confidence_score']):.2f}"
         source_type = row.get("source_type") or ""
         label = row.get("label") or ""
-        print(f"{row['object_ref']}\t{row['review_state']}\t{confidence}\t{source_type}\t{label}")
+        workspace_id = row.get("workspace_id") or ""
+        authority_level = row.get("authority_level") or ""
+        public_blocker = row.get("public_blocker") or ""
+        print(
+            f"{row['object_ref']}\t{row['review_state']}\t{confidence}\t{source_type}\t"
+            f"{workspace_id}\t{authority_level}\t{public_blocker}\t{label}"
+        )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -425,6 +475,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     list_p.add_argument("--min-confidence", type=float)
     list_p.add_argument("--max-confidence", type=float)
     list_p.add_argument("--source-type")
+    list_p.add_argument("--workspace-id", help="Exact workspace_id match for targets that carry workspace metadata.")
+    list_p.add_argument(
+        "--authority-level",
+        help="Exact authority level/tier match for targets that carry authority metadata.",
+    )
+    list_p.add_argument(
+        "--public-blocker",
+        help="Filter by public blocker reason, or use 'any' / 'none'.",
+    )
     list_p.add_argument("--limit", type=int)
     list_p.add_argument("--format", choices=["text", "json"], default="text")
 
@@ -463,6 +522,9 @@ def main(argv: list[str] | None = None) -> int:
                     min_confidence=args.min_confidence,
                     max_confidence=args.max_confidence,
                     source_type=args.source_type,
+                    workspace_id=args.workspace_id,
+                    authority_level=args.authority_level,
+                    public_blocker=args.public_blocker,
                     limit=args.limit,
                 )
                 if args.format == "json":
