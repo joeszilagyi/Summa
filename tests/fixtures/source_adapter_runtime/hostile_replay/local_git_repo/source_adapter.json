@@ -1,0 +1,72 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "hostile_local_git_repo_replay",
+  "display_name": "Hostile local git repo replay",
+  "workspace_id": "alpha_subject",
+  "description": "Hostile replay fixture for local git planning.",
+  "input_family": "local_git_repo",
+  "locator": {
+    "local_path": "repo",
+    "ref": "main",
+    "include_globs": [
+      "**/*.md",
+      "**/*.json"
+    ]
+  },
+  "content_profile": {
+    "content_kinds": [
+      "markdown",
+      "json",
+      "git_history"
+    ],
+    "hazard_flags": [
+      "prompt_injection_text",
+      "oversized_payloads"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "hostile replay fixture",
+    "acquisition_method": "local_clone",
+    "source_description": "Local hostile replay git checkout."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "tracked_source",
+    "metadata_storage_policy_class": "tracked_source",
+    "rights_posture": "redistributable"
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "source_lead",
+    "batch_unit": "per_snapshot",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "git_ref",
+      "git_commit"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "inspect",
+      "step_kind": "inspect_local_repo",
+      "description": "Inspect a hostile local git checkout without mutating it.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit one source-lead handoff record for the local checkout.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "hostile_structured_data_replay",
+  "display_name": "Hostile structured data replay",
+  "workspace_id": "alpha_subject",
+  "description": "Hostile replay fixture for structured-data planning.",
+  "input_family": "local_directory",
+  "locator": {
+    "local_path": "corpus"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "structured_data",
+      "json",
+      "jsonl",
+      "xml"
+    ],
+    "hazard_flags": [
+      "prompt_injection_text",
+      "hostile_markup",
+      "malformed_encoding",
+      "oversized_payloads"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "hostile replay fixture",
+    "acquisition_method": "manual_drop",
+    "source_description": "Local hostile replay corpus for structured-data parsing."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "private_only",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "private_local_only"
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "source_lead",
+    "batch_unit": "per_record",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "relative_path",
+      "source_filename",
+      "structured_format",
+      "record_locator",
+      "record_kind"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "parse",
+      "step_kind": "parse_structured_data",
+      "description": "Parse hostile structured local source inputs without retaining raw payload.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit one source-lead handoff record per parsed structured record.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

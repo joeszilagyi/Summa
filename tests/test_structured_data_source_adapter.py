@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_structured_data_source_adapter.py"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "structured_data"
+
+
+def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def write_adapter(
+    path: Path,
+    *,
+    input_family: str,
+    local_path: str,
+    format_hint: str | None = None,
+    record_path: str | None = None,
+) -> Path:
+    locator: dict[str, object] = {"local_path": local_path}
+    if format_hint is not None:
+        locator["format_hint"] = format_hint
+    if record_path is not None:
+        locator["record_path"] = record_path
+
+    adapter_path = path / "source_adapter.json"
+    adapter_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "source-adapter.v1",
+                "adapter_id": "runtime_structured_data",
+                "display_name": "Runtime structured data",
+                "workspace_id": "alpha_subject",
+                "description": "Runtime fixture for structured-data planning.",
+                "input_family": input_family,
+                "locator": locator,
+                "content_profile": {
+                    "content_kinds": ["structured_data", "json", "jsonl", "csv", "xml"],
+                    "hazard_flags": ["prompt_injection_text"],
+                },
+                "provenance": {
+                    "discovery_provenance": "runtime fixture corpus",
+                    "acquisition_method": "manual_drop",
+                    "source_description": "Local structured-data runtime fixtures.",
+                },
+                "rights_and_storage": {
+                    "payload_storage_policy_class": "private_only",
+                    "metadata_storage_policy_class": "tracked_derived",
+                    "rights_posture": "private_local_only",
+                },
+                "automation_posture": "operator_review_required",
+                "normalized_handoff": {
+                    "record_family": "source_lead",
+                    "batch_unit": "per_record",
+                    "preserve_fields": [
+                        "original_locator",
+                        "discovery_provenance",
+                        "rights_posture",
+                        "byte_retention_status",
+                        "discard_metadata",
+                        "refetchability_status",
+                        "transform_lineage",
+                        "source_metadata",
+                    ],
+                    "source_specific_fields": [
+                        "relative_path",
+                        "source_filename",
+                        "structured_format",
+                        "record_locator",
+                        "record_kind",
+                    ],
+                },
+                "transform_lineage": [
+                    {
+                        "step_id": "parse",
+                        "step_kind": "parse_structured_data",
+                        "description": "Parse structured local source inputs without retaining raw payload.",
+                        "deterministic": True,
+                        "review_required": False,
+                    },
+                    {
+                        "step_id": "handoff",
+                        "step_kind": "emit_handoff",
+                        "description": "Emit one source-lead handoff record per parsed structured record.",
+                        "deterministic": True,
+                        "review_required": True,
+                    },
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return adapter_path
+
+
+def test_structured_data_directory_plans_csv_json_jsonl_and_xml_without_payload_leakage(tmp_path: Path) -> None:
+    adapter_path = write_adapter(tmp_path, input_family="local_directory", local_path=str(FIXTURE_ROOT))
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+    input_paths = sorted(path for path in FIXTURE_ROOT.rglob("*") if path.is_file())
+    input_paths.append(adapter_path)
+    mtimes_before = {path: path.stat().st_mtime_ns for path in input_paths}
+
+    proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert {path: path.stat().st_mtime_ns for path in input_paths} == mtimes_before
+
+    payload = json.loads(proc.stdout)
+    assert payload["schema_version"] == "structured-data-source-adapter-plan.v1"
+    assert payload["source_count"] == 6
+    assert payload["parsed_record_count"] == 10
+    assert payload["parse_error_count"] == 1
+    assert payload["handoff_record_count"] == 10
+    assert payload["handoff_validation"]["ok"] is True
+    assert any(entry["reason"] == "unsupported_format" for entry in payload["skipped_entries"])
+    assert {entry["structured_format"] for entry in payload["parsed_sources"]} == {"csv", "json", "jsonl", "xml"}
+
+    records = [json.loads(line) for line in handoff_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert records == payload["handoff_records"]
+    assert {record["source_specific"]["structured_format"] for record in records} == {"csv", "json", "jsonl", "xml"}
+    assert all("record_locator" in record["source_specific"] for record in records)
+    assert all(record["preserved"]["refetchability_status"] == "local_replayable" for record in records)
+
+    combined_output = proc.stdout + handoff_jsonl.read_text(encoding="utf-8")
+    for secret in (
+        "SECRET-CSV-ALPHA",
+        "SECRET-JSON-ONE",
+        "SECRET-JSONL-ONE",
+        "SECRET-XML-ONE",
+        "SECRET-NESTED-ONE",
+    ):
+        assert secret not in combined_output
+
+
+def test_structured_data_local_file_honors_record_path_hint(tmp_path: Path) -> None:
+    adapter_path = write_adapter(
+        tmp_path,
+        input_family="local_file",
+        local_path=str(FIXTURE_ROOT / "nested_records.json"),
+        format_hint="json",
+        record_path="records",
+    )
+
+    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["parsed_record_count"] == 2
+    assert payload["parse_error_count"] == 0
+    assert payload["record_path"] == "records"
+    assert [record["source_specific"]["record_locator"] for record in payload["handoff_records"]] == ["index:1", "index:2"]
+    assert all(record["source_specific"]["source_filename"] == "nested_records.json" for record in payload["handoff_records"])
+
+
+def test_structured_data_reports_malformed_jsonl_with_line_context_and_no_payload_leakage(tmp_path: Path) -> None:
+    adapter_path = write_adapter(
+        tmp_path,
+        input_family="local_file",
+        local_path=str(FIXTURE_ROOT / "invalid.jsonl"),
+        format_hint="jsonl",
+    )
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["parsed_record_count"] == 1
+    assert payload["parse_error_count"] == 1
+    assert payload["blocker_count"] == 0
+    assert payload["parse_errors"][0]["relative_path"] == "invalid.jsonl"
+    assert payload["parse_errors"][0]["context"].startswith("line:2,")
+    assert payload["parse_errors"][0]["reason"]
+
+    combined_output = proc.stdout + handoff_jsonl.read_text(encoding="utf-8")
+    assert "SECRET-JSONL-GOOD" not in combined_output
+    assert "SECRET-JSONL-BAD" not in combined_output

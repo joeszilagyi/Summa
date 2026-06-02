@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "schema": "demo"
+  },
+  "records": [
+    {"id": "nested-1", "title": "Alpha", "secret": "SECRET-NESTED-ONE"},
+    {"id": "nested-2", "title": "Beta", "secret": "SECRET-NESTED-TWO"}
+  ]
+}

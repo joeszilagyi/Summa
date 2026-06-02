@@ -1,0 +1,50 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "runtime_local_file",
+  "display_name": "Runtime local file",
+  "workspace_id": "alpha_subject",
+  "description": "Runtime fixture for local file planning.",
+  "input_family": "local_file",
+  "locator": {
+    "local_path": "single.pdf"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "pdf"
+    ],
+    "hazard_flags": []
+  },
+  "provenance": {
+    "discovery_provenance": "runtime fixture file",
+    "acquisition_method": "manual_drop",
+    "source_description": "Single local file for runtime planning tests."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "private_only",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "private_local_only"
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "capture",
+    "batch_unit": "per_file",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "transform_lineage"
+    ],
+    "source_specific_fields": [
+      "source_filename"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit one capture record.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

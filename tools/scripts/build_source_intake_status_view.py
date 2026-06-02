@@ -13,11 +13,14 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
 import validate_source_adapter  # type: ignore  # noqa: E402
-
+from tools.common.source_adapter_contract import LOCAL_INPUT_FAMILIES  # type: ignore  # noqa: E402
+from tools.source_db_tools import rights_retention  # type: ignore  # noqa: E402
 
 SCHEMA_VERSION = "source-intake-status.v1"
 ADAPTER_SCAN_PATTERNS = (
@@ -25,10 +28,6 @@ ADAPTER_SCAN_PATTERNS = (
     "**/*source_adapter*.json",
     "**/*source-adapter*.json",
 )
-LOCAL_INPUT_FAMILIES = {"local_file", "local_directory", "local_git_repo"}
-REVIEW_RIGHTS_POSTURES = {"unknown_review_required"}
-PUBLIC_BLOCKING_RIGHTS = {"private_local_only", "unknown_review_required"}
-PUBLIC_BLOCKING_STORAGE = {"private_only", "legacy_private_export", "never_publish"}
 
 
 class SourceIntakeStatusError(RuntimeError):
@@ -202,11 +201,11 @@ def review_required_reasons(payload: dict[str, Any]) -> list[str]:
         reasons.append("automation_posture:operator_review_required")
 
     rights = dict_value(payload.get("rights_and_storage"))
-    rights_posture = string_value(rights.get("rights_posture"))
-    if rights_posture in REVIEW_RIGHTS_POSTURES:
-        reasons.append(f"rights_posture:{rights_posture}")
-    if rights.get("contains_personal_data") is True:
-        reasons.append("contains_personal_data:true")
+    policy_facts = rights_retention.derive_adapter_policy_facts(
+        rights,
+        input_family=string_value(payload.get("input_family")),
+    )
+    reasons.extend(policy_facts["review_reasons"])
 
     for step in list_value(payload.get("transform_lineage")):
         if isinstance(step, dict) and step.get("review_required") is True:
@@ -216,18 +215,11 @@ def review_required_reasons(payload: dict[str, Any]) -> list[str]:
 
 
 def public_use_blockers(payload: dict[str, Any]) -> list[str]:
-    blockers: list[str] = []
     rights = dict_value(payload.get("rights_and_storage"))
-    rights_posture = string_value(rights.get("rights_posture"))
-    payload_policy = string_value(rights.get("payload_storage_policy_class"))
-    metadata_policy = string_value(rights.get("metadata_storage_policy_class"))
-    if rights_posture in PUBLIC_BLOCKING_RIGHTS:
-        blockers.append(f"rights_posture:{rights_posture}")
-    if payload_policy in PUBLIC_BLOCKING_STORAGE:
-        blockers.append(f"payload_storage_policy_class:{payload_policy}")
-    if metadata_policy in PUBLIC_BLOCKING_STORAGE:
-        blockers.append(f"metadata_storage_policy_class:{metadata_policy}")
-    return blockers
+    return rights_retention.derive_adapter_policy_facts(
+        rights,
+        input_family=string_value(payload.get("input_family")),
+    )["public_export_blockers"]
 
 
 def intake_state_for(
@@ -275,6 +267,8 @@ def invalid_entry(path: Path, adapter_status: str, detail: str | None, contract_
         "transform_lineage": {"step_count": 0, "review_required_step_count": 0, "final_step_kind": None},
         "review_required_reasons": [],
         "public_use_blockers": [],
+        "public_export_eligibility": None,
+        "quote_eligibility": None,
         "validation": {
             "counts": dict_value(contract_result.get("counts")),
             "error_count": len(list_value(contract_result.get("errors"))),
@@ -297,6 +291,10 @@ def adapter_entry(path: Path) -> dict[str, Any]:
     content_profile = dict_value(payload.get("content_profile"))
     rights = dict_value(payload.get("rights_and_storage"))
     handoff = dict_value(payload.get("normalized_handoff"))
+    policy_facts = rights_retention.derive_adapter_policy_facts(
+        rights,
+        input_family=string_value(payload.get("input_family")),
+    )
     intake_state = intake_state_for(
         adapter_status=adapter_status,
         contract_status=contract_status,
@@ -334,6 +332,8 @@ def adapter_entry(path: Path) -> dict[str, Any]:
         "transform_lineage": transform_summary(payload),
         "review_required_reasons": review_reasons,
         "public_use_blockers": blockers,
+        "public_export_eligibility": policy_facts["public_export_eligibility"],
+        "quote_eligibility": policy_facts["quote_eligibility"],
         "validation": {
             "counts": dict_value(contract_result.get("counts")),
             "error_count": len(list_value(contract_result.get("errors"))),

@@ -1,0 +1,4 @@
+<records>
+  <record id="xml-1"><title>Alpha</title><secret>SECRET-XML-ONE</secret></record>
+  <record id="xml-2"><title>Beta</title><secret>SECRET-XML-TWO</secret></record>
+</records>

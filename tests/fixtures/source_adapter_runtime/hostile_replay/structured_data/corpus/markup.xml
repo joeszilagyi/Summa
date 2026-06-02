@@ -1,0 +1,6 @@
+<records>
+  <record id="markup-1">
+    <body>&lt;script&gt;alert('hazard')&lt;/script&gt;</body>
+    <secret>SECRET-MARKUP-ONE</secret>
+  </record>
+</records>
