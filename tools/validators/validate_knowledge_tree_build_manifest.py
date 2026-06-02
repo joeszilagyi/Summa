@@ -43,6 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import tools.validators.validate_knowledge_tree_export as validate_knowledge_tree_export  # noqa: E402
+import tools.validators.validate_public_knowledge_tree_presentation as validate_public_knowledge_tree_presentation  # noqa: E402
 
 VALIDATOR_NAME = "knowledge_tree_build_manifest"
 CONTRACT_VERSION = "1"
@@ -58,6 +59,8 @@ REQUIRED_KEYS = {
     "landing_page_id",
     "export_path",
     "export_sha256",
+    "presentation_path",
+    "presentation_sha256",
     "built_at",
     "output_root",
     "page_count",
@@ -311,7 +314,7 @@ def validate_build_manifest(
         if field in payload and (not isinstance(value, str) or not ID_PATTERN.fullmatch(value)):
             add_error(errors, code="INVALID_IDENTIFIER", message=f"{field} must match ^[a-z0-9][a-z0-9._-]*$")
 
-    for field in ("export_path", "output_root"):
+    for field in ("export_path", "presentation_path", "output_root"):
         validate_nonblank_string(payload, field, errors, code="INVALID_STRING")
     validate_timestamp(payload, "built_at", errors)
     validate_string_array(payload, "notes", errors, code="INVALID_NOTES")
@@ -319,6 +322,15 @@ def validate_build_manifest(
     export_sha256 = payload.get("export_sha256")
     if "export_sha256" in payload and (not isinstance(export_sha256, str) or not SHA256_PATTERN.fullmatch(export_sha256)):
         add_error(errors, code="INVALID_EXPORT_SHA256", message="export_sha256 must use sha256:<64-hex>")
+    presentation_sha256 = payload.get("presentation_sha256")
+    if "presentation_sha256" in payload and (
+        not isinstance(presentation_sha256, str) or not SHA256_PATTERN.fullmatch(presentation_sha256)
+    ):
+        add_error(
+            errors,
+            code="INVALID_PRESENTATION_SHA256",
+            message="presentation_sha256 must use sha256:<64-hex>",
+        )
 
     input_sources = payload.get("input_sources")
     seen_source_ids: set[str] = set()
@@ -580,6 +592,36 @@ def validate_build_manifest(
                         add_error(errors, code="PAGE_SOURCE_IDS_MISMATCH", message=f"source_ids mismatch for page_id: {page_id}")
                     if page_related_refs.get(page_id, []) != export_page.get("related_page_ids", []):
                         add_error(errors, code="PAGE_RELATED_IDS_MISMATCH", message=f"related_page_ids mismatch for page_id: {page_id}")
+
+    resolved_presentation_path: Path | None = None
+    if isinstance(payload.get("presentation_path"), str) and str(payload.get("presentation_path")).strip():
+        resolved_presentation_path = resolve_path(str(payload.get("presentation_path")), target.parent)
+
+    if resolved_presentation_path is not None:
+        presentation_result, presentation_exit = (
+            validate_public_knowledge_tree_presentation.validate_public_knowledge_tree_presentation(
+                resolved_presentation_path
+            )
+        )
+        if presentation_exit != validate_public_knowledge_tree_presentation.EXIT_PASS:
+            first_error = (
+                presentation_result["errors"][0]["message"]
+                if presentation_result["errors"]
+                else "validation failed"
+            )
+            add_error(
+                errors,
+                code="PRESENTATION_INVALID",
+                message=f"referenced presentation failed validation: {first_error}",
+            )
+        elif resolved_presentation_path.is_file():
+            actual_presentation_sha = hash_file(resolved_presentation_path)
+            if payload.get("presentation_sha256") != actual_presentation_sha:
+                add_error(
+                    errors,
+                    code="PRESENTATION_HASH_MISMATCH",
+                    message="presentation_sha256 does not match the presentation file on disk",
+                )
 
     if errors:
         counts["rejected"] = 1
