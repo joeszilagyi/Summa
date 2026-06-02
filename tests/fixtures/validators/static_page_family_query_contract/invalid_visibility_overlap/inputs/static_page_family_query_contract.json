@@ -1,0 +1,391 @@
+{
+  "schema_version": "static-page-family-query-contract.v1",
+  "contract_doc": "docs/project/STATIC_PAGE_FAMILY_QUERY_CONTRACT.md",
+  "page_families": [
+    {
+      "page_family": "home",
+      "query_contract_id": "page-query.home.v1",
+      "description": "home",
+      "inputs": [
+        {
+          "input_name": "home_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "home"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "nav"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "headline",
+          "shared_field"
+        ],
+        "private_fields": [
+          "shared_field"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "headline"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "facet",
+      "query_contract_id": "page-query.facet.v1",
+      "description": "facet",
+      "inputs": [
+        {
+          "input_name": "facet_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "facet"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "facet"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "facet_title"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "facet_title"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "entity",
+      "query_contract_id": "page-query.entity.v1",
+      "description": "entity",
+      "inputs": [
+        {
+          "input_name": "entity_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "entity"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "entity"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "preferred_label"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "preferred_label"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "source",
+      "query_contract_id": "page-query.source.v1",
+      "description": "source",
+      "inputs": [
+        {
+          "input_name": "source_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "source"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "source"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "title"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "title"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "collection",
+      "query_contract_id": "page-query.collection.v1",
+      "description": "collection",
+      "inputs": [
+        {
+          "input_name": "collection_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "collection"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "collection"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "collection_title"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "collection_title"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "timeline",
+      "query_contract_id": "page-query.timeline.v1",
+      "description": "timeline",
+      "inputs": [
+        {
+          "input_name": "timeline_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "timeline"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "timeline"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "event_rows"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "event_rows"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "validation",
+      "query_contract_id": "page-query.validation.v1",
+      "description": "validation",
+      "inputs": [
+        {
+          "input_name": "validation_query",
+          "kind": "query",
+          "upstream_contract_ref": "validation-health.v1",
+          "required": true,
+          "purpose": "validation"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "validation"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "health_summary"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "health_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "search_results",
+      "query_contract_id": "page-query.search-results.v1",
+      "description": "search_results",
+      "inputs": [
+        {
+          "input_name": "search_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-results.v1",
+          "required": true,
+          "purpose": "search_results"
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "sparse"
+        ],
+        "retained_sections": [
+          "search"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "result_rows"
+        ],
+        "private_fields": [
+          "private_path"
+        ],
+        "conditional_public_fields": []
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "empty",
+        "visible_sections": [
+          "empty_state"
+        ],
+        "hidden_sections": []
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "ready",
+        "visible_sections": [
+          "result_rows"
+        ],
+        "hidden_sections": []
+      }
+    }
+  ]
+}

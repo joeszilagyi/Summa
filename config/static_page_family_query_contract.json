@@ -1,0 +1,581 @@
+{
+  "schema_version": "static-page-family-query-contract.v1",
+  "contract_doc": "docs/project/STATIC_PAGE_FAMILY_QUERY_CONTRACT.md",
+  "page_families": [
+    {
+      "page_family": "home",
+      "query_contract_id": "page-query.home.v1",
+      "description": "Top-level landing page built from reviewed/current overview counts and curated recent updates.",
+      "inputs": [
+        {
+          "input_name": "home_overview_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Produces reviewed/current counts, top facets, and recent public-safe highlights."
+        },
+        {
+          "input_name": "home_blocker_sidecar",
+          "kind": "sidecar",
+          "upstream_contract_ref": "correction-ledger.v1",
+          "required": false,
+          "purpose": "Explains corrected or superseded IDs without surfacing private lineage details as primary page content."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "overview counts available but recent highlights missing",
+          "public-safe lineage note available without facet rollups"
+        ],
+        "retained_sections": [
+          "headline summary",
+          "navigation",
+          "public-safe recent updates"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "headline",
+          "summary_cards",
+          "top_facets",
+          "recent_entities",
+          "lineage_summary"
+        ],
+        "private_fields": [
+          "private_path",
+          "operator_note",
+          "raw_payload_excerpt",
+          "restricted_evidence_text"
+        ],
+        "conditional_public_fields": [
+          "evidence_summary",
+          "public_blocker_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "no reviewed/current public-safe rows",
+        "visible_sections": [
+          "empty_state_message",
+          "navigation"
+        ],
+        "hidden_sections": [
+          "summary_cards",
+          "recent_entities"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "reviewed/current overview rows available",
+        "visible_sections": [
+          "summary_cards",
+          "top_facets",
+          "recent_entities",
+          "lineage_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "facet",
+      "query_contract_id": "page-query.facet.v1",
+      "description": "Facet rollup page showing reviewed/current members, related facets, and sparse public-safe context.",
+      "inputs": [
+        {
+          "input_name": "facet_member_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Returns reviewed/current member rows for one facet with authority and publication posture."
+        },
+        {
+          "input_name": "facet_evidence_summary",
+          "kind": "sidecar",
+          "upstream_contract_ref": "evidence-locator.v1",
+          "required": false,
+          "purpose": "Allows public-safe evidence summaries without quoting restricted text."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "facet title resolved but no reviewed member rows",
+          "members available but related facet links missing"
+        ],
+        "retained_sections": [
+          "facet heading",
+          "member count summary",
+          "related facet placeholders"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "facet_title",
+          "facet_summary",
+          "member_rows",
+          "related_facet_routes"
+        ],
+        "private_fields": [
+          "local_workspace_path",
+          "operator_triage_note",
+          "raw_member_payload"
+        ],
+        "conditional_public_fields": [
+          "evidence_summary",
+          "lineage_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "facet exists but no current public-safe members",
+        "visible_sections": [
+          "facet_heading",
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "member_rows"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "facet members and related routes available",
+        "visible_sections": [
+          "facet_heading",
+          "member_rows",
+          "related_facet_routes",
+          "evidence_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "entity",
+      "query_contract_id": "page-query.entity.v1",
+      "description": "Entity detail page built from reviewed/current canonical rows with optional public-safe lineage and evidence summaries.",
+      "inputs": [
+        {
+          "input_name": "entity_detail_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Returns one reviewed/current entity plus public-safe related relationships and claims."
+        },
+        {
+          "input_name": "entity_field_review_sidecar",
+          "kind": "sidecar",
+          "upstream_contract_ref": "field-review-state.v1",
+          "required": false,
+          "purpose": "Explains why specific fields are public-safe, disputed, or omitted."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "entity identity row available but no reviewed related rows",
+          "entity row available with public blockers on derivative sections"
+        ],
+        "retained_sections": [
+          "identity_summary",
+          "public-safe metadata",
+          "blocked section notices"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "preferred_label",
+          "entity_type",
+          "public_summary",
+          "related_relationships",
+          "public_sources"
+        ],
+        "private_fields": [
+          "local_identifier_note",
+          "private_evidence_quote",
+          "operator_merge_note"
+        ],
+        "conditional_public_fields": [
+          "lineage_summary",
+          "evidence_summary",
+          "public_blocker_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "entity route reserved but no reviewed/current public-safe entity row",
+        "visible_sections": [
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "identity_summary",
+          "related_relationships"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "entity row and related public-safe sections available",
+        "visible_sections": [
+          "identity_summary",
+          "public_summary",
+          "related_relationships",
+          "evidence_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "source",
+      "query_contract_id": "page-query.source.v1",
+      "description": "Source page built from reviewed/current source/work metadata without exposing private paths or full extracted text.",
+      "inputs": [
+        {
+          "input_name": "source_detail_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Returns public-safe source/work metadata, access posture, and linked entity summaries."
+        },
+        {
+          "input_name": "source_rights_sidecar",
+          "kind": "sidecar",
+          "upstream_contract_ref": "evidence-locator.v1",
+          "required": false,
+          "purpose": "Carries public-safe evidence or rights summaries when excerpts cannot be shown."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "source metadata present but linked works missing",
+          "access summary available without public-safe evidence summary"
+        ],
+        "retained_sections": [
+          "source_metadata",
+          "access_summary"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "title",
+          "creator_summary",
+          "publication_summary",
+          "access_summary",
+          "linked_entities"
+        ],
+        "private_fields": [
+          "original_locator",
+          "private_download_path",
+          "full_extracted_text"
+        ],
+        "conditional_public_fields": [
+          "rights_summary",
+          "evidence_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "source route known but no reviewed/current public-safe metadata",
+        "visible_sections": [
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "source_metadata",
+          "linked_entities"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "source metadata and linked public-safe rows available",
+        "visible_sections": [
+          "source_metadata",
+          "access_summary",
+          "linked_entities",
+          "rights_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "collection",
+      "query_contract_id": "page-query.collection.v1",
+      "description": "Collection page aggregating reviewed/current sources or entities into one public-safe grouping.",
+      "inputs": [
+        {
+          "input_name": "collection_members_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Returns reviewed/current members and collection-level counts."
+        },
+        {
+          "input_name": "collection_lineage_sidecar",
+          "kind": "sidecar",
+          "upstream_contract_ref": "correction-ledger.v1",
+          "required": false,
+          "purpose": "Allows public-safe notes about merged or renamed collections."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "collection header available but fewer than expected members",
+          "member rows present with blocked derivative sections"
+        ],
+        "retained_sections": [
+          "collection_header",
+          "member_rows"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "collection_title",
+          "collection_summary",
+          "member_rows",
+          "related_routes"
+        ],
+        "private_fields": [
+          "private_membership_note",
+          "raw_membership_payload"
+        ],
+        "conditional_public_fields": [
+          "lineage_summary",
+          "public_blocker_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "collection route exists but no current public-safe members",
+        "visible_sections": [
+          "collection_header",
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "member_rows"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "collection header and member rows available",
+        "visible_sections": [
+          "collection_header",
+          "member_rows",
+          "related_routes",
+          "lineage_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "timeline",
+      "query_contract_id": "page-query.timeline.v1",
+      "description": "Timeline page built from reviewed/current dated events with optional sparse chronology when evidence is partial.",
+      "inputs": [
+        {
+          "input_name": "timeline_events_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": true,
+          "purpose": "Returns dated reviewed/current event rows and attached public-safe summaries."
+        },
+        {
+          "input_name": "timeline_evidence_sidecar",
+          "kind": "sidecar",
+          "upstream_contract_ref": "evidence-locator.v1",
+          "required": false,
+          "purpose": "Supplies public-safe evidence summaries and date-confidence notes."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "at least one dated event available but chronology gaps remain",
+          "events available with unresolved ordering confidence"
+        ],
+        "retained_sections": [
+          "timeline_header",
+          "event_rows",
+          "gap_notice"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "event_rows",
+          "date_label",
+          "event_summary",
+          "related_routes"
+        ],
+        "private_fields": [
+          "private_date_note",
+          "restricted_evidence_text"
+        ],
+        "conditional_public_fields": [
+          "date_confidence_summary",
+          "evidence_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "no reviewed/current dated public-safe events",
+        "visible_sections": [
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "event_rows"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "dated event rows available",
+        "visible_sections": [
+          "timeline_header",
+          "event_rows",
+          "date_confidence_summary"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "validation",
+      "query_contract_id": "page-query.validation.v1",
+      "description": "Validation page built from validator reports and public-safe release posture summaries.",
+      "inputs": [
+        {
+          "input_name": "validation_health_query",
+          "kind": "query",
+          "upstream_contract_ref": "validation-health.v1",
+          "required": true,
+          "purpose": "Returns pass/warn/block status over current validator reports."
+        },
+        {
+          "input_name": "public_release_gate_query",
+          "kind": "query",
+          "upstream_contract_ref": "knowledge-tree-build-manifest.v1",
+          "required": false,
+          "purpose": "Provides build freshness and page coverage posture without exposing local runtime paths."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "high-level health summary available but some detailed reports unreadable",
+          "release gate status known but per-page findings incomplete"
+        ],
+        "retained_sections": [
+          "health_summary",
+          "blocked_checks",
+          "report_inventory"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "health_summary",
+          "blocked_checks",
+          "warning_checks",
+          "release_status"
+        ],
+        "private_fields": [
+          "absolute_report_path",
+          "secret_finding_excerpt",
+          "raw_support_bundle"
+        ],
+        "conditional_public_fields": [
+          "validator_names",
+          "public_blocker_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "no validator reports published for this build",
+        "visible_sections": [
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "health_summary",
+          "blocked_checks"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "validation summary and release status available",
+        "visible_sections": [
+          "health_summary",
+          "blocked_checks",
+          "warning_checks",
+          "release_status"
+        ],
+        "hidden_sections": []
+      }
+    },
+    {
+      "page_family": "search_results",
+      "query_contract_id": "page-query.search-results.v1",
+      "description": "Search results page built from validated local search results with explicit visibility and result-class posture.",
+      "inputs": [
+        {
+          "input_name": "search_results_query",
+          "kind": "query",
+          "upstream_contract_ref": "local-search-results.v1",
+          "required": true,
+          "purpose": "Returns ranked validated result rows with result class, snippets, and visibility posture."
+        },
+        {
+          "input_name": "search_projection_reference",
+          "kind": "projection",
+          "upstream_contract_ref": "local-search-projection.v1",
+          "required": false,
+          "purpose": "Explains visibility and lineage posture when results need public-safe suppression notes."
+        }
+      ],
+      "sparse_state": {
+        "reader_state": "sparse",
+        "trigger_signals": [
+          "ranked rows available but result snippets suppressed",
+          "total count known but page contains only one result class"
+        ],
+        "retained_sections": [
+          "query_summary",
+          "result_rows",
+          "suppression_notice"
+        ]
+      },
+      "field_visibility": {
+        "public_fields": [
+          "query_summary",
+          "result_rows",
+          "result_class",
+          "visibility_notice"
+        ],
+        "private_fields": [
+          "private_path_snippet",
+          "secret_like_snippet",
+          "raw_payload_snippet"
+        ],
+        "conditional_public_fields": [
+          "suppressed_field_summary",
+          "lineage_summary"
+        ]
+      },
+      "empty_example": {
+        "reader_state": "empty",
+        "query_status": "validated search returned zero rows",
+        "visible_sections": [
+          "query_summary",
+          "empty_state_message"
+        ],
+        "hidden_sections": [
+          "result_rows"
+        ]
+      },
+      "populated_example": {
+        "reader_state": "ready",
+        "query_status": "validated search returned ranked rows",
+        "visible_sections": [
+          "query_summary",
+          "result_rows",
+          "visibility_notice"
+        ],
+        "hidden_sections": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/subject-index/static_page_family_query_contract.schema.json",
+  "title": "static-page-family-query-contract.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "contract_doc",
+    "page_families"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "static-page-family-query-contract.v1"
+    },
+    "contract_doc": {
+      "type": "string",
+      "const": "docs/project/STATIC_PAGE_FAMILY_QUERY_CONTRACT.md"
+    },
+    "page_families": {
+      "type": "array",
+      "minItems": 8
+    }
+  }
+}
