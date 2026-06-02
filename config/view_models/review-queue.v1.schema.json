@@ -8,6 +8,7 @@
     "schema_version",
     "database_path",
     "filters",
+    "writer",
     "counts",
     "truncated",
     "items"
@@ -21,7 +22,31 @@
       "type": "string"
     },
     "filters": {
-      "type": "object"
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "object_type": {"type": ["string", "null"]},
+        "state": {"type": ["string", "null"]},
+        "min_confidence": {"type": ["number", "null"]},
+        "max_confidence": {"type": ["number", "null"]},
+        "source_type": {"type": ["string", "null"]},
+        "workspace_id": {"type": ["string", "null"]},
+        "authority_level": {"type": ["string", "null"]},
+        "public_blocker": {"type": ["string", "null"]},
+        "limit": {"type": ["integer", "null"]}
+      }
+    },
+    "writer": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["surface_path", "supported_actions"],
+      "properties": {
+        "surface_path": {"type": "string"},
+        "supported_actions": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
     },
     "counts": {
       "type": "object"
@@ -30,7 +55,25 @@
       "type": "boolean"
     },
     "items": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "object_ref": {"type": ["string", "null"]},
+          "object_type": {"type": ["string", "null"]},
+          "object_namespace": {"type": ["string", "null"]},
+          "object_pk": {"type": ["integer", "null"]},
+          "review_state": {"type": ["string", "null"]},
+          "confidence_score": {"type": ["number", "null"]},
+          "source_type": {"type": ["string", "null"]},
+          "workspace_id": {"type": ["string", "null"]},
+          "authority_level": {"type": ["string", "null"]},
+          "public_blocker": {"type": ["string", "null"]},
+          "label": {"type": ["string", "null"]},
+          "available_actions": {"type": "object"}
+        }
+      }
     }
   }
 }
