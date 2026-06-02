@@ -30,3 +30,5 @@ EVIDENCE_TYPES = {
     "source_excerpt",
     "structured_record_field",
 }
+
+EVIDENCE_LOCATOR_REF_PREFIX = "evl:"

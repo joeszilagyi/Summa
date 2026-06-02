@@ -1,0 +1,9 @@
+validator=evidence_locator
+scenario=invalid_private_text_leak
+target=inputs/evidence_locator.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=3 warnings=0
+error[0]=PUBLIC_EXCERPT_REDACTION_CONFLICT message=public_excerpt_text is only allowed when redaction_posture is public_text_allowed
+error[1]=PUBLIC_EXCERPT_QUOTE_CONFLICT message=public_excerpt_text requires quote_eligibility of eligible or limited_excerpt
+error[2]=PRIVATE_TEXT_LEAK message=private_only evidence must not expose public_excerpt_text

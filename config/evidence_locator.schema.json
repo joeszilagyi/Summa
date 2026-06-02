@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/evidence_locator.schema.json",
+  "title": "evidence-locator.v1",
+  "description": "Stable evidence locator and highlight metadata for review workflows and export-safe references.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_locator_id",
+    "record_locator",
+    "span",
+    "highlight"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evidence-locator.v1"
+    },
+    "evidence_locator_id": {
+      "type": "string",
+      "pattern": "^evl:[a-z0-9][a-z0-9._:-]*$"
+    },
+    "record_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_family",
+        "relative_path",
+        "source_filename",
+        "record_locator"
+      ],
+      "properties": {
+        "workspace_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "structured_format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "csv",
+            "json",
+            "jsonl",
+            "xml",
+            null
+          ]
+        },
+        "record_locator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "span_kind",
+        "page_start",
+        "page_end",
+        "line_start",
+        "line_end",
+        "byte_start",
+        "byte_end",
+        "field_path",
+        "metadata_fields",
+        "locator_note"
+      ],
+      "properties": {
+        "span_kind": {
+          "type": "string",
+          "enum": [
+            "page_span",
+            "line_span",
+            "byte_range",
+            "structured_field",
+            "metadata_only"
+          ]
+        },
+        "page_start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "page_end": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "line_start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "line_end": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "byte_start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "byte_end": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "field_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "locator_note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "highlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "highlight_kind",
+        "rights_posture",
+        "quote_eligibility",
+        "redaction_posture",
+        "operator_excerpt_text",
+        "public_excerpt_text",
+        "public_summary",
+        "highlight_note"
+      ],
+      "properties": {
+        "highlight_kind": {
+          "type": "string",
+          "enum": [
+            "exact_quote",
+            "summary",
+            "metadata_note"
+          ]
+        },
+        "rights_posture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote_eligibility": {
+          "type": "string",
+          "enum": [
+            "blocked",
+            "review_required",
+            "limited_excerpt",
+            "eligible"
+          ]
+        },
+        "redaction_posture": {
+          "type": "string",
+          "enum": [
+            "public_text_allowed",
+            "public_summary_only",
+            "private_only"
+          ]
+        },
+        "operator_excerpt_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_excerpt_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "highlight_note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

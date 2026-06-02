@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.field_review_state_contract import (
+    EVIDENCE_LOCATOR_REF_PREFIX,
     EVIDENCE_TYPES,
     FIELD_REVIEW_STATES,
     RECORD_REVIEW_STATES,
@@ -73,6 +74,7 @@ FIELD_REVIEW_REQUIRED_KEYS = {
 }
 
 EVIDENCE_REF_REQUIRED_KEYS = {"evidence_type", "reference", "excerpt_locator", "evidence_note"}
+EVIDENCE_REF_OPTIONAL_KEYS = {"evidence_locator_ref"}
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -254,7 +256,7 @@ def validate_evidence_ref(entry: dict[str, Any], errors: list[dict[str, Any]], *
     if not isinstance(evidence_ref, dict):
         add_error(errors, code="EVIDENCE_REF_NOT_OBJECT", message=f"field_reviews[{index}].evidence_ref must be an object")
         return
-    unknown_keys = sorted(set(evidence_ref) - EVIDENCE_REF_REQUIRED_KEYS)
+    unknown_keys = sorted(set(evidence_ref) - (EVIDENCE_REF_REQUIRED_KEYS | EVIDENCE_REF_OPTIONAL_KEYS))
     for key in unknown_keys:
         add_error(errors, code="UNKNOWN_EVIDENCE_REF_FIELD", message=f"unexpected evidence_ref field: {key}")
     for key in sorted(EVIDENCE_REF_REQUIRED_KEYS):
@@ -268,6 +270,14 @@ def validate_evidence_ref(entry: dict[str, Any], errors: list[dict[str, Any]], *
         validate_nullable_string(evidence_ref, "excerpt_locator", errors)
     if "evidence_note" in evidence_ref:
         validate_nullable_string(evidence_ref, "evidence_note", errors)
+    if "evidence_locator_ref" in evidence_ref:
+        value = evidence_ref.get("evidence_locator_ref")
+        if value is not None and (not isinstance(value, str) or not value.startswith(EVIDENCE_LOCATOR_REF_PREFIX) or not value.strip()):
+            add_error(
+                errors,
+                code="INVALID_EVIDENCE_LOCATOR_REF",
+                message=f"field_reviews[{index}].evidence_ref.evidence_locator_ref must be null or start with {EVIDENCE_LOCATOR_REF_PREFIX}",
+            )
 
 
 def validate_field_reviews(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:

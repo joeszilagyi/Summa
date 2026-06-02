@@ -1,0 +1,6 @@
+validator=evidence_locator
+scenario=valid_page_span
+target=inputs/evidence_locator.json
+status=pass
+inspected=1 accepted=1 rejected=0 deferred=0
+errors=0 warnings=0

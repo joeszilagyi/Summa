@@ -1,0 +1,19 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 1,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 0
+  },
+  "errors": [],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "valid_page_span",
+  "status": "pass",
+  "target": "inputs/evidence_locator.json",
+  "validator": "evidence_locator",
+  "warnings": []
+}
