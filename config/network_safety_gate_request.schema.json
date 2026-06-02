@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/network_safety_gate_request.schema.json",
+  "title": "network-safety-gate-request.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "executor_name",
+    "dry_run",
+    "allowlist",
+    "rate_limits",
+    "side_effect_budget",
+    "network_policy",
+    "dirty_worktree_policy",
+    "planned_actions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "network-safety-gate-request.v1"
+    },
+    "executor_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hosts", "url_prefixes"],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "url_prefixes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "rate_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_requests_per_minute", "min_interval_seconds"],
+      "properties": {
+        "max_requests_per_minute": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_interval_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "side_effect_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_actions", "max_side_effect_units"],
+      "properties": {
+        "max_actions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_side_effect_units": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "network_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_agent", "robots_mode", "allow_http"],
+      "properties": {
+        "user_agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "robots_mode": {
+          "type": "string",
+          "enum": ["respect_robots", "not_applicable"]
+        },
+        "allow_http": {
+          "type": "boolean"
+        }
+      }
+    },
+    "dirty_worktree_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["require_clean_worktree", "repo_root"],
+      "properties": {
+        "require_clean_worktree": {
+          "type": "boolean"
+        },
+        "repo_root": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "planned_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/planned_action"
+      }
+    }
+  },
+  "$defs": {
+    "planned_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "action_kind",
+        "url",
+        "method",
+        "side_effect_units"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_kind": {
+          "type": "string",
+          "enum": [
+            "fetch_url",
+            "fetch_manifest",
+            "fetch_payload",
+            "download_archive",
+            "clone_repo",
+            "api_call",
+            "robots_check"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "HEAD"]
+        },
+        "side_effect_units": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
