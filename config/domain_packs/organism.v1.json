@@ -27,6 +27,20 @@
         "taxonomy.review"
       ]
     },
+    "gather.range": {
+      "bundle_id": "organism.gather.range.v1",
+      "template_ids": [
+        "range.seed",
+        "range.review"
+      ]
+    },
+    "gather.habitat": {
+      "bundle_id": "organism.gather.habitat.v1",
+      "template_ids": [
+        "habitat.seed",
+        "habitat.review"
+      ]
+    },
     "gather.observations": {
       "bundle_id": "organism.gather.observations.v1",
       "template_ids": [
