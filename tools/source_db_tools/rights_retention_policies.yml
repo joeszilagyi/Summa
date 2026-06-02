@@ -1,0 +1,171 @@
+{
+  "schema_version": "rights-retention-policy.v1",
+  "rights_postures": {
+    "private_local_only": {
+      "review_required": false,
+      "public_export_eligibility": "blocked",
+      "quote_eligibility": "blocked",
+      "allowed_payload_storage_policy_classes": [
+        "private_only",
+        "tracked_source",
+        "tracked_derived",
+        "external_later",
+        "legacy_private_export",
+        "never_publish"
+      ],
+      "allowed_metadata_storage_policy_classes": [
+        "private_only",
+        "tracked_source",
+        "tracked_derived",
+        "legacy_private_export",
+        "never_publish"
+      ]
+    },
+    "unknown_review_required": {
+      "review_required": true,
+      "public_export_eligibility": "blocked",
+      "quote_eligibility": "review_required",
+      "allowed_payload_storage_policy_classes": [
+        "private_only",
+        "tracked_source",
+        "tracked_derived",
+        "external_later",
+        "legacy_private_export",
+        "never_publish"
+      ],
+      "allowed_metadata_storage_policy_classes": [
+        "private_only",
+        "tracked_source",
+        "tracked_derived",
+        "external_later",
+        "legacy_private_export",
+        "never_publish"
+      ]
+    },
+    "redistributable": {
+      "review_required": false,
+      "public_export_eligibility": "eligible",
+      "quote_eligibility": "eligible",
+      "allowed_payload_storage_policy_classes": [
+        "tracked_source",
+        "tracked_derived",
+        "external_later"
+      ],
+      "allowed_metadata_storage_policy_classes": [
+        "tracked_source",
+        "tracked_derived",
+        "external_later"
+      ]
+    },
+    "quote_limited": {
+      "review_required": false,
+      "public_export_eligibility": "metadata_only",
+      "quote_eligibility": "limited_excerpt",
+      "allowed_payload_storage_policy_classes": [
+        "private_only",
+        "external_later",
+        "never_publish"
+      ],
+      "allowed_metadata_storage_policy_classes": [
+        "private_only",
+        "tracked_derived",
+        "external_later",
+        "never_publish"
+      ]
+    }
+  },
+  "storage_policy_classes": {
+    "payload": {
+      "private_only": {
+        "byte_retention_status": "retained_private_only",
+        "public_export_blocked": true
+      },
+      "tracked_source": {
+        "byte_retention_status": "retained_tracked_source",
+        "public_export_blocked": false
+      },
+      "tracked_derived": {
+        "byte_retention_status": "retained_tracked_derived",
+        "public_export_blocked": false
+      },
+      "external_later": {
+        "byte_retention_status": "not_retained_local",
+        "public_export_blocked": false
+      },
+      "legacy_private_export": {
+        "byte_retention_status": "retained_legacy_private_export",
+        "public_export_blocked": true
+      },
+      "never_publish": {
+        "byte_retention_status": "retained_never_publish",
+        "public_export_blocked": true
+      }
+    },
+    "metadata": {
+      "private_only": {
+        "public_export_blocked": true
+      },
+      "tracked_source": {
+        "public_export_blocked": false
+      },
+      "tracked_derived": {
+        "public_export_blocked": false
+      },
+      "external_later": {
+        "public_export_blocked": false
+      },
+      "legacy_private_export": {
+        "public_export_blocked": true
+      },
+      "never_publish": {
+        "public_export_blocked": true
+      }
+    }
+  },
+  "refetchability_by_input_family": {
+    "local_file": "local_replayable",
+    "local_directory": "local_replayable",
+    "local_git_repo": "local_replayable",
+    "remote_git_repo": "configured_remote_repo",
+    "remote_url_manifest": "configured_remote_manifest",
+    "remote_archive_collection": "configured_remote_collection"
+  },
+  "record_policy": {
+    "rights_postures": [
+      "metadata",
+      "private_local_only",
+      "quote_limited",
+      "redistributable",
+      "unknown",
+      "unknown_review_required"
+    ],
+    "byte_retention_statuses": [
+      "not_applicable",
+      "not_retained_local",
+      "retained_legacy_private_export",
+      "retained_never_publish",
+      "retained_private_only",
+      "retained_tracked_derived",
+      "retained_tracked_source",
+      "temporary_processing_input",
+      "unknown"
+    ],
+    "full_text_retention_statuses": [
+      "not_retained_local",
+      "retained_never_publish",
+      "retained_private_only",
+      "retained_tracked_derived",
+      "temporary_processing_input",
+      "unknown"
+    ],
+    "refetchability_statuses": [
+      "configured_remote_collection",
+      "configured_remote_manifest",
+      "configured_remote_repo",
+      "local_replayable",
+      "not_checked",
+      "uncertain",
+      "unknown"
+    ]
+  }
+}

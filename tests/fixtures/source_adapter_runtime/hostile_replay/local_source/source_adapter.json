@@ -1,0 +1,71 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "hostile_local_source_replay",
+  "display_name": "Hostile local source replay",
+  "workspace_id": "alpha_subject",
+  "description": "Hostile replay fixture for local file enumeration.",
+  "input_family": "local_directory",
+  "locator": {
+    "local_path": "corpus",
+    "include_globs": [
+      "**/*.pdf"
+    ],
+    "exclude_globs": [
+      "ignored/**"
+    ]
+  },
+  "content_profile": {
+    "content_kinds": [
+      "pdf"
+    ],
+    "hazard_flags": [
+      "prompt_injection_text",
+      "oversized_payloads"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "hostile replay fixture",
+    "acquisition_method": "manual_drop",
+    "source_description": "Local hostile replay corpus for file enumeration."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "private_only",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "private_local_only"
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "capture",
+    "batch_unit": "per_file",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "relative_path",
+      "source_filename"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "inspect",
+      "step_kind": "inspect_local_drop",
+      "description": "Enumerate local file candidates without reading payload bytes.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit one capture handoff record per local file candidate.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

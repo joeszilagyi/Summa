@@ -1,0 +1,65 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "runtime_remote_url_manifest",
+  "display_name": "Runtime remote URL manifest",
+  "workspace_id": "alpha_subject",
+  "description": "Runtime fixture for read-only URL manifest planning.",
+  "input_family": "remote_url_manifest",
+  "locator": {
+    "manifest_url": "https://archives.example.gov/subject/alpha/manifest.jsonl"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "html",
+      "pdf"
+    ],
+    "hazard_flags": [
+      "hostile_markup"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "runtime fixture manifest",
+    "acquisition_method": "manual_list",
+    "source_description": "Local snapshot of a remote URL manifest for dry-run planning."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "external_later",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "quote_limited",
+    "contains_personal_data": false
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "url_observation",
+    "batch_unit": "per_url",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "manifest_url"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "manifest",
+      "step_kind": "read_manifest_snapshot",
+      "description": "Read a local snapshot of the configured URL manifest.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit configured remote URL observations.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

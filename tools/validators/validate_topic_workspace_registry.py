@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,7 @@ WORKSPACE_REQUIRED_KEYS = {
 
 WORKSPACE_OPTIONAL_KEYS = {
     "default_subject_manifest",
+    "scheduler_policy",
     "notes",
 }
 
@@ -74,6 +76,18 @@ ALLOWED_WORKSPACE_POLICY_CLASSES = {
     "private_local",
     "mixed_private_public",
     "public_safe_release",
+}
+ALLOWED_FAILURE_STATUSES = {"healthy", "retryable", "blocked"}
+SCHEDULER_POLICY_ALLOWED_KEYS = {"run_budget", "retry_policy", "failure_state"}
+RUN_BUDGET_ALLOWED_KEYS = {"max_attempts", "max_runtime_seconds"}
+RETRY_POLICY_ALLOWED_KEYS = {"max_retryable_failures", "backoff_seconds"}
+FAILURE_STATE_ALLOWED_KEYS = {
+    "status",
+    "attempt_count",
+    "last_failure_at",
+    "next_retry_at",
+    "last_failure_reason",
+    "blocked_reason",
 }
 
 
@@ -264,6 +278,193 @@ def validate_enum_string(
         )
 
 
+def validate_positive_integer(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    errors: list[dict[str, Any]],
+    code: str,
+) -> None:
+    value = payload.get(field)
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        add_error(errors, code=code, message=f"{field} must be an integer >= 1")
+
+
+def validate_nonnegative_integer(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    errors: list[dict[str, Any]],
+    code: str,
+) -> None:
+    value = payload.get(field)
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        add_error(errors, code=code, message=f"{field} must be an integer >= 0")
+
+
+def validate_timestamp_string(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    errors: list[dict[str, Any]],
+    code: str,
+) -> None:
+    value = payload.get(field)
+    if value is None:
+        return
+    if not isinstance(value, str) or not value.strip():
+        add_error(errors, code=code, message=f"{field} must be a non-blank timestamp string")
+        return
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        add_error(errors, code=code, message=f"{field} must be an ISO-8601 timestamp")
+
+
+def validate_scheduler_policy(
+    workspace: dict[str, Any],
+    *,
+    errors: list[dict[str, Any]],
+) -> None:
+    scheduler_policy = workspace.get("scheduler_policy")
+    if scheduler_policy is None:
+        return
+    if not isinstance(scheduler_policy, dict):
+        add_error(errors, code="INVALID_SCHEDULER_POLICY", message="scheduler_policy must be an object")
+        return
+
+    unknown_policy_keys = sorted(set(scheduler_policy) - SCHEDULER_POLICY_ALLOWED_KEYS)
+    for key in unknown_policy_keys:
+        add_error(
+            errors,
+            code="UNKNOWN_SCHEDULER_POLICY_FIELD",
+            message=f"unexpected scheduler_policy field: {key}",
+        )
+
+    run_budget = scheduler_policy.get("run_budget")
+    if run_budget is not None:
+        if not isinstance(run_budget, dict):
+            add_error(errors, code="INVALID_RUN_BUDGET", message="scheduler_policy.run_budget must be an object")
+        else:
+            unknown_run_budget_keys = sorted(set(run_budget) - RUN_BUDGET_ALLOWED_KEYS)
+            for key in unknown_run_budget_keys:
+                add_error(
+                    errors,
+                    code="UNKNOWN_RUN_BUDGET_FIELD",
+                    message=f"unexpected scheduler_policy.run_budget field: {key}",
+                )
+            if not ({"max_attempts", "max_runtime_seconds"} & set(run_budget)):
+                add_error(
+                    errors,
+                    code="RUN_BUDGET_EMPTY",
+                    message="scheduler_policy.run_budget must include max_attempts or max_runtime_seconds",
+                )
+            validate_positive_integer(
+                run_budget,
+                "max_attempts",
+                errors=errors,
+                code="INVALID_RUN_BUDGET_MAX_ATTEMPTS",
+            )
+            validate_positive_integer(
+                run_budget,
+                "max_runtime_seconds",
+                errors=errors,
+                code="INVALID_RUN_BUDGET_MAX_RUNTIME_SECONDS",
+            )
+
+    retry_policy = scheduler_policy.get("retry_policy")
+    if retry_policy is not None:
+        if not isinstance(retry_policy, dict):
+            add_error(errors, code="INVALID_RETRY_POLICY", message="scheduler_policy.retry_policy must be an object")
+        else:
+            unknown_retry_keys = sorted(set(retry_policy) - RETRY_POLICY_ALLOWED_KEYS)
+            for key in unknown_retry_keys:
+                add_error(
+                    errors,
+                    code="UNKNOWN_RETRY_POLICY_FIELD",
+                    message=f"unexpected scheduler_policy.retry_policy field: {key}",
+                )
+            if not ({"max_retryable_failures", "backoff_seconds"} & set(retry_policy)):
+                add_error(
+                    errors,
+                    code="RETRY_POLICY_EMPTY",
+                    message="scheduler_policy.retry_policy must include max_retryable_failures or backoff_seconds",
+                )
+            validate_positive_integer(
+                retry_policy,
+                "max_retryable_failures",
+                errors=errors,
+                code="INVALID_MAX_RETRYABLE_FAILURES",
+            )
+            validate_positive_integer(
+                retry_policy,
+                "backoff_seconds",
+                errors=errors,
+                code="INVALID_BACKOFF_SECONDS",
+            )
+
+    failure_state = scheduler_policy.get("failure_state")
+    if failure_state is not None:
+        if not isinstance(failure_state, dict):
+            add_error(errors, code="INVALID_FAILURE_STATE", message="scheduler_policy.failure_state must be an object")
+        else:
+            unknown_failure_keys = sorted(set(failure_state) - FAILURE_STATE_ALLOWED_KEYS)
+            for key in unknown_failure_keys:
+                add_error(
+                    errors,
+                    code="UNKNOWN_FAILURE_STATE_FIELD",
+                    message=f"unexpected scheduler_policy.failure_state field: {key}",
+                )
+            for key in ("status", "attempt_count"):
+                if key not in failure_state:
+                    add_error(
+                        errors,
+                        code="MISSING_FAILURE_STATE_KEY",
+                        message=f"missing scheduler_policy.failure_state key: {key}",
+                    )
+            validate_enum_string(
+                failure_state,
+                "status",
+                ALLOWED_FAILURE_STATUSES,
+                errors,
+                code="INVALID_FAILURE_STATUS",
+            )
+            validate_nonnegative_integer(
+                failure_state,
+                "attempt_count",
+                errors=errors,
+                code="INVALID_FAILURE_ATTEMPT_COUNT",
+            )
+            validate_timestamp_string(
+                failure_state,
+                "last_failure_at",
+                errors=errors,
+                code="INVALID_LAST_FAILURE_AT",
+            )
+            validate_timestamp_string(
+                failure_state,
+                "next_retry_at",
+                errors=errors,
+                code="INVALID_NEXT_RETRY_AT",
+            )
+            validate_nonblank_string(
+                failure_state,
+                "last_failure_reason",
+                errors,
+                code="INVALID_LAST_FAILURE_REASON",
+            )
+            validate_nonblank_string(
+                failure_state,
+                "blocked_reason",
+                errors,
+                code="INVALID_BLOCKED_REASON",
+            )
+
+
 def load_domain_pack(
     domain_pack: str,
     errors: list[dict[str, Any]],
@@ -406,6 +607,7 @@ def validate_workspace_record(
     validate_identifier(workspace, "domain_pack", errors)
     validate_nonblank_string(workspace, "default_subject_manifest", errors)
     validate_string_array(workspace, "notes", errors=errors)
+    validate_scheduler_policy(workspace, errors=errors)
 
     validate_enum_string(
         workspace,

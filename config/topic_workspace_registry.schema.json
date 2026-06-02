@@ -86,8 +86,108 @@
             "public_safe_release"
           ]
         },
+        "scheduler_policy": {
+          "$ref": "#/$defs/scheduler_policy"
+        },
         "notes": {
           "$ref": "#/$defs/string_array"
+        }
+      }
+    },
+    "scheduler_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_budget": {
+          "$ref": "#/$defs/run_budget"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/retry_policy"
+        },
+        "failure_state": {
+          "$ref": "#/$defs/failure_state"
+        }
+      }
+    },
+    "run_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "anyOf": [
+        {
+          "required": ["max_attempts"]
+        },
+        {
+          "required": ["max_runtime_seconds"]
+        }
+      ]
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_retryable_failures": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "backoff_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "anyOf": [
+        {
+          "required": ["max_retryable_failures"]
+        },
+        {
+          "required": ["backoff_seconds"]
+        }
+      ]
+    },
+    "failure_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "attempt_count"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "retryable",
+            "blocked"
+          ]
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_failure_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "next_retry_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "last_failure_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocked_reason": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

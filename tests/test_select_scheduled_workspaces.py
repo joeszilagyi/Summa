@@ -54,6 +54,7 @@ def workspace_record(
     schedule_posture: str = "scheduled",
     lifecycle_state: str = "active",
     manifest_path: Path | None,
+    scheduler_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     record: dict[str, object] = {
         "workspace_id": workspace_id,
@@ -66,6 +67,8 @@ def workspace_record(
     }
     if manifest_path is not None:
         record["default_subject_manifest"] = str(manifest_path)
+    if scheduler_policy is not None:
+        record["scheduler_policy"] = scheduler_policy
     return record
 
 
@@ -305,3 +308,149 @@ def test_selector_rejects_invalid_run_budget() -> None:
 
     assert proc.returncode == 2
     assert "--run-budget-max-attempts must be at least 1" in proc.stderr
+
+
+def test_selector_skips_workspace_over_attempt_budget(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "budgeted"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.budgeted")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="budgeted_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+                scheduler_policy={
+                    "run_budget": {"max_attempts": 2},
+                    "failure_state": {
+                        "status": "retryable",
+                        "attempt_count": 2,
+                        "last_failure_at": "2026-01-01T00:00:00Z",
+                        "last_failure_reason": "fixture failure",
+                    },
+                },
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-budget",
+            "--planned-at",
+            "2026-01-01T00:05:00Z",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["selected_count"] == 0
+    assert payload["skipped_count"] == 1
+    record = payload["planned_run_records"][0]
+    assert record["decision"] == "skipped"
+    assert record["skipped_reason"] == "attempt_count 2 reached run_budget.max_attempts 2"
+    assert record["failure_state"]["status"] == "retryable"
+    assert record["run_budget"] == {"max_attempts": 2}
+
+
+def test_selector_skips_retryable_workspace_in_backoff_window(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "backoff"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.backoff")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="backoff_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+                scheduler_policy={
+                    "run_budget": {"max_attempts": 3},
+                    "retry_policy": {"max_retryable_failures": 2, "backoff_seconds": 900},
+                    "failure_state": {
+                        "status": "retryable",
+                        "attempt_count": 1,
+                        "last_failure_at": "2026-01-01T00:00:00Z",
+                        "last_failure_reason": "fixture failure",
+                    },
+                },
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-backoff",
+            "--planned-at",
+            "2026-01-01T00:10:00Z",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["selected_count"] == 0
+    assert payload["skipped_count"] == 1
+    record = payload["planned_run_records"][0]
+    assert record["decision"] == "skipped"
+    assert record["skipped_reason"] == "retry backoff active until 2026-01-01T00:15:00Z"
+    assert record["retry_policy"] == {"backoff_seconds": 900, "max_retryable_failures": 2}
+
+
+def test_selector_skips_blocked_workspace_and_surfaces_failure_state(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "blocked"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.blocked")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="blocked_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+                scheduler_policy={
+                    "run_budget": {"max_attempts": 5},
+                    "failure_state": {
+                        "status": "blocked",
+                        "attempt_count": 3,
+                        "blocked_reason": "manual investigation required",
+                    },
+                },
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-blocked",
+            "--planned-at",
+            "2026-01-01T00:20:00Z",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["selected_count"] == 0
+    assert payload["skipped_count"] == 1
+    record = payload["planned_run_records"][0]
+    assert record["decision"] == "skipped"
+    assert record["skipped_reason"] == "failure_state is blocked: manual investigation required"
+    assert record["failure_state"] == {
+        "attempt_count": 3,
+        "blocked_reason": "manual investigation required",
+        "status": "blocked",
+    }

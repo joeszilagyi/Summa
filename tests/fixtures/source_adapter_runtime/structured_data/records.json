@@ -1,0 +1,4 @@
+[
+  {"id": "json-1", "title": "Alpha", "secret": "SECRET-JSON-ONE"},
+  {"id": "json-2", "title": "Beta", "secret": "SECRET-JSON-TWO"}
+]

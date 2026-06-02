@@ -1,0 +1,339 @@
+{
+  "adapter_id": "hostile_structured_data_replay",
+  "adapter_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/source_adapter.json",
+  "blocker_count": 0,
+  "blockers": [],
+  "dry_run": true,
+  "format_hint": null,
+  "handoff_record_count": 4,
+  "handoff_records": [
+    {
+      "adapter_id": "hostile_structured_data_replay",
+      "adapter_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/source_adapter.json",
+      "batch_unit": "per_record",
+      "emitted_at": "<emitted-at>",
+      "preserved": {
+        "byte_retention_status": "retained_private_only",
+        "discard_metadata": {
+          "discard_reason": null,
+          "discard_required": false
+        },
+        "discovery_provenance": "hostile replay fixture",
+        "original_locator": {
+          "adapter_local_path": "corpus",
+          "relative_path": "injection.jsonl",
+          "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/injection.jsonl"
+        },
+        "refetchability_status": "local_replayable",
+        "rights_posture": "private_local_only",
+        "source_metadata": {
+          "content_kinds": [
+            "structured_data",
+            "json",
+            "jsonl",
+            "xml"
+          ],
+          "description": "Hostile replay fixture for structured-data planning.",
+          "display_name": "Hostile structured data replay",
+          "hazard_flags": [
+            "prompt_injection_text",
+            "hostile_markup",
+            "malformed_encoding",
+            "oversized_payloads"
+          ]
+        },
+        "transform_lineage": [
+          {
+            "description": "Parse hostile structured local source inputs without retaining raw payload.",
+            "deterministic": true,
+            "review_required": false,
+            "step_id": "parse",
+            "step_kind": "parse_structured_data"
+          },
+          {
+            "description": "Emit one source-lead handoff record per parsed structured record.",
+            "deterministic": true,
+            "review_required": true,
+            "step_id": "handoff",
+            "step_kind": "emit_handoff"
+          }
+        ]
+      },
+      "record_family": "source_lead",
+      "relative_path": "injection.jsonl",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/injection.jsonl",
+      "schema_version": "source-adapter-handoff.v1",
+      "sequence": 1,
+      "source_specific": {
+        "record_kind": "object",
+        "record_locator": "line:1",
+        "relative_path": "injection.jsonl",
+        "source_filename": "injection.jsonl",
+        "structured_format": "jsonl"
+      },
+      "workspace_id": "alpha_subject"
+    },
+    {
+      "adapter_id": "hostile_structured_data_replay",
+      "adapter_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/source_adapter.json",
+      "batch_unit": "per_record",
+      "emitted_at": "<emitted-at>",
+      "preserved": {
+        "byte_retention_status": "retained_private_only",
+        "discard_metadata": {
+          "discard_reason": null,
+          "discard_required": false
+        },
+        "discovery_provenance": "hostile replay fixture",
+        "original_locator": {
+          "adapter_local_path": "corpus",
+          "relative_path": "injection.jsonl",
+          "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/injection.jsonl"
+        },
+        "refetchability_status": "local_replayable",
+        "rights_posture": "private_local_only",
+        "source_metadata": {
+          "content_kinds": [
+            "structured_data",
+            "json",
+            "jsonl",
+            "xml"
+          ],
+          "description": "Hostile replay fixture for structured-data planning.",
+          "display_name": "Hostile structured data replay",
+          "hazard_flags": [
+            "prompt_injection_text",
+            "hostile_markup",
+            "malformed_encoding",
+            "oversized_payloads"
+          ]
+        },
+        "transform_lineage": [
+          {
+            "description": "Parse hostile structured local source inputs without retaining raw payload.",
+            "deterministic": true,
+            "review_required": false,
+            "step_id": "parse",
+            "step_kind": "parse_structured_data"
+          },
+          {
+            "description": "Emit one source-lead handoff record per parsed structured record.",
+            "deterministic": true,
+            "review_required": true,
+            "step_id": "handoff",
+            "step_kind": "emit_handoff"
+          }
+        ]
+      },
+      "record_family": "source_lead",
+      "relative_path": "injection.jsonl",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/injection.jsonl",
+      "schema_version": "source-adapter-handoff.v1",
+      "sequence": 2,
+      "source_specific": {
+        "record_kind": "object",
+        "record_locator": "line:2",
+        "relative_path": "injection.jsonl",
+        "source_filename": "injection.jsonl",
+        "structured_format": "jsonl"
+      },
+      "workspace_id": "alpha_subject"
+    },
+    {
+      "adapter_id": "hostile_structured_data_replay",
+      "adapter_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/source_adapter.json",
+      "batch_unit": "per_record",
+      "emitted_at": "<emitted-at>",
+      "preserved": {
+        "byte_retention_status": "retained_private_only",
+        "discard_metadata": {
+          "discard_reason": null,
+          "discard_required": false
+        },
+        "discovery_provenance": "hostile replay fixture",
+        "original_locator": {
+          "adapter_local_path": "corpus",
+          "relative_path": "markup.xml",
+          "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/markup.xml"
+        },
+        "refetchability_status": "local_replayable",
+        "rights_posture": "private_local_only",
+        "source_metadata": {
+          "content_kinds": [
+            "structured_data",
+            "json",
+            "jsonl",
+            "xml"
+          ],
+          "description": "Hostile replay fixture for structured-data planning.",
+          "display_name": "Hostile structured data replay",
+          "hazard_flags": [
+            "prompt_injection_text",
+            "hostile_markup",
+            "malformed_encoding",
+            "oversized_payloads"
+          ]
+        },
+        "transform_lineage": [
+          {
+            "description": "Parse hostile structured local source inputs without retaining raw payload.",
+            "deterministic": true,
+            "review_required": false,
+            "step_id": "parse",
+            "step_kind": "parse_structured_data"
+          },
+          {
+            "description": "Emit one source-lead handoff record per parsed structured record.",
+            "deterministic": true,
+            "review_required": true,
+            "step_id": "handoff",
+            "step_kind": "emit_handoff"
+          }
+        ]
+      },
+      "record_family": "source_lead",
+      "relative_path": "markup.xml",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/markup.xml",
+      "schema_version": "source-adapter-handoff.v1",
+      "sequence": 3,
+      "source_specific": {
+        "record_kind": "element",
+        "record_locator": "/records[1]/record[1]",
+        "relative_path": "markup.xml",
+        "source_filename": "markup.xml",
+        "structured_format": "xml"
+      },
+      "workspace_id": "alpha_subject"
+    },
+    {
+      "adapter_id": "hostile_structured_data_replay",
+      "adapter_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/source_adapter.json",
+      "batch_unit": "per_record",
+      "emitted_at": "<emitted-at>",
+      "preserved": {
+        "byte_retention_status": "retained_private_only",
+        "discard_metadata": {
+          "discard_reason": null,
+          "discard_required": false
+        },
+        "discovery_provenance": "hostile replay fixture",
+        "original_locator": {
+          "adapter_local_path": "corpus",
+          "relative_path": "oversize.json",
+          "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/oversize.json"
+        },
+        "refetchability_status": "local_replayable",
+        "rights_posture": "private_local_only",
+        "source_metadata": {
+          "content_kinds": [
+            "structured_data",
+            "json",
+            "jsonl",
+            "xml"
+          ],
+          "description": "Hostile replay fixture for structured-data planning.",
+          "display_name": "Hostile structured data replay",
+          "hazard_flags": [
+            "prompt_injection_text",
+            "hostile_markup",
+            "malformed_encoding",
+            "oversized_payloads"
+          ]
+        },
+        "transform_lineage": [
+          {
+            "description": "Parse hostile structured local source inputs without retaining raw payload.",
+            "deterministic": true,
+            "review_required": false,
+            "step_id": "parse",
+            "step_kind": "parse_structured_data"
+          },
+          {
+            "description": "Emit one source-lead handoff record per parsed structured record.",
+            "deterministic": true,
+            "review_required": true,
+            "step_id": "handoff",
+            "step_kind": "emit_handoff"
+          }
+        ]
+      },
+      "record_family": "source_lead",
+      "relative_path": "oversize.json",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/oversize.json",
+      "schema_version": "source-adapter-handoff.v1",
+      "sequence": 4,
+      "source_specific": {
+        "record_kind": "object",
+        "record_locator": "index:1",
+        "relative_path": "oversize.json",
+        "source_filename": "oversize.json",
+        "structured_format": "json"
+      },
+      "workspace_id": "alpha_subject"
+    }
+  ],
+  "handoff_validation": {
+    "error_count": 0,
+    "errors": [],
+    "ok": true
+  },
+  "input_family": "local_directory",
+  "parse_error_count": 1,
+  "parse_errors": [
+    {
+      "context": "file",
+      "reason": "file is not valid UTF-8",
+      "relative_path": "bad_utf8.jsonl",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/bad_utf8.jsonl",
+      "structured_format": "jsonl"
+    }
+  ],
+  "parsed_record_count": 4,
+  "parsed_sources": [
+    {
+      "parse_error_count": 1,
+      "record_count": 0,
+      "relative_path": "bad_utf8.jsonl",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/bad_utf8.jsonl",
+      "size_bytes": 30,
+      "structured_format": "jsonl"
+    },
+    {
+      "parse_error_count": 0,
+      "record_count": 2,
+      "relative_path": "injection.jsonl",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/injection.jsonl",
+      "size_bytes": 169,
+      "structured_format": "jsonl"
+    },
+    {
+      "parse_error_count": 0,
+      "record_count": 1,
+      "relative_path": "markup.xml",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/markup.xml",
+      "size_bytes": 159,
+      "structured_format": "xml"
+    },
+    {
+      "parse_error_count": 0,
+      "record_count": 1,
+      "relative_path": "oversize.json",
+      "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/oversize.json",
+      "size_bytes": 65563,
+      "structured_format": "json"
+    }
+  ],
+  "record_path": null,
+  "resolved_root": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus",
+  "schema_version": "structured-data-source-adapter-plan.v1",
+  "skipped_count": 1,
+  "skipped_entries": [
+    {
+      "path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/structured_data/corpus/notes.txt",
+      "reason": "unsupported_format",
+      "relative_path": "notes.txt"
+    }
+  ],
+  "source_count": 4,
+  "workspace_id": "alpha_subject"
+}

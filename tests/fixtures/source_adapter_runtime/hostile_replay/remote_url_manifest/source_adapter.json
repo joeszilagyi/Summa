@@ -1,0 +1,64 @@
+{
+  "schema_version": "source-adapter.v1",
+  "adapter_id": "hostile_remote_url_manifest_replay",
+  "display_name": "Hostile remote URL manifest replay",
+  "workspace_id": "alpha_subject",
+  "description": "Hostile replay fixture for remote URL-manifest planning without network access.",
+  "input_family": "remote_url_manifest",
+  "locator": {
+    "manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"
+  },
+  "content_profile": {
+    "content_kinds": [
+      "web_reference"
+    ],
+    "hazard_flags": [
+      "prompt_injection_text",
+      "hostile_markup"
+    ]
+  },
+  "provenance": {
+    "discovery_provenance": "hostile replay fixture",
+    "acquisition_method": "manual_manifest_capture",
+    "source_description": "Local JSONL snapshot of hostile remote references."
+  },
+  "rights_and_storage": {
+    "payload_storage_policy_class": "external_later",
+    "metadata_storage_policy_class": "tracked_derived",
+    "rights_posture": "quote_limited"
+  },
+  "automation_posture": "operator_review_required",
+  "normalized_handoff": {
+    "record_family": "source_lead",
+    "batch_unit": "per_reference",
+    "preserve_fields": [
+      "original_locator",
+      "discovery_provenance",
+      "rights_posture",
+      "byte_retention_status",
+      "discard_metadata",
+      "refetchability_status",
+      "transform_lineage",
+      "source_metadata"
+    ],
+    "source_specific_fields": [
+      "manifest_url"
+    ]
+  },
+  "transform_lineage": [
+    {
+      "step_id": "parse_manifest",
+      "step_kind": "inspect_manifest_rows",
+      "description": "Inspect remote URL manifest rows without fetching remote content.",
+      "deterministic": true,
+      "review_required": false
+    },
+    {
+      "step_id": "handoff",
+      "step_kind": "emit_handoff",
+      "description": "Emit one source-lead handoff record per accepted manifest row.",
+      "deterministic": true,
+      "review_required": true
+    }
+  ]
+}

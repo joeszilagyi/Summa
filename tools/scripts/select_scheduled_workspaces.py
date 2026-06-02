@@ -9,11 +9,12 @@ operators can audit unattended scheduling decisions before a later runner acts.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,13 @@ def positive_int(raw_value: str, *, option_name: str) -> int:
 
 def positive_int_arg(option_name: str):
     return lambda raw_value: positive_int(raw_value, option_name=option_name)
+
+
+def parse_timestamp(raw_value: str, *, label: str) -> datetime:
+    try:
+        return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SelectionError(f"{label} must be an ISO-8601 timestamp") from exc
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,7 +129,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-budget-max-attempts",
         type=positive_int_arg("--run-budget-max-attempts"),
-        default=1,
         help="Maximum runner attempts to record in each planned-run budget.",
     )
     parser.add_argument(
@@ -159,17 +166,49 @@ def workspace_output_entry(workspace: dict[str, Any]) -> dict[str, Any]:
         payload["default_subject_manifest"] = workspace["default_subject_manifest"]
     if "resolved_default_subject_manifest" in workspace:
         payload["resolved_default_subject_manifest"] = str(workspace["resolved_default_subject_manifest"])
+    if "scheduler_policy" in workspace:
+        payload["scheduler_policy"] = copy.deepcopy(workspace["scheduler_policy"])
 
     return payload
 
 
-def build_run_budget(args: argparse.Namespace) -> dict[str, Any]:
-    budget: dict[str, Any] = {
-        "max_attempts": args.run_budget_max_attempts,
-    }
+def effective_scheduler_policy(workspace: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    raw_policy = workspace.get("scheduler_policy")
+    policy = copy.deepcopy(raw_policy) if isinstance(raw_policy, dict) else {}
+
+    run_budget = dict(policy.get("run_budget", {}))
+    max_attempts = args.run_budget_max_attempts
+    if max_attempts is None:
+        max_attempts = run_budget.get("max_attempts", 1)
+    run_budget["max_attempts"] = max_attempts
+
     if args.run_budget_max_runtime_seconds is not None:
-        budget["max_runtime_seconds"] = args.run_budget_max_runtime_seconds
-    return budget
+        run_budget["max_runtime_seconds"] = args.run_budget_max_runtime_seconds
+    elif "max_runtime_seconds" not in run_budget:
+        run_budget.pop("max_runtime_seconds", None)
+
+    policy["run_budget"] = run_budget
+    return policy
+
+
+def derived_next_retry_at(policy: dict[str, Any]) -> str | None:
+    failure_state = policy.get("failure_state")
+    retry_policy = policy.get("retry_policy")
+    if not isinstance(failure_state, dict):
+        return None
+    explicit_next_retry = failure_state.get("next_retry_at")
+    if isinstance(explicit_next_retry, str) and explicit_next_retry:
+        return explicit_next_retry
+    if not isinstance(retry_policy, dict):
+        return None
+    backoff_seconds = retry_policy.get("backoff_seconds")
+    last_failure_at = failure_state.get("last_failure_at")
+    if not isinstance(backoff_seconds, int) or not isinstance(last_failure_at, str) or not last_failure_at:
+        return None
+    retry_at = parse_timestamp(last_failure_at, label="scheduler_policy.failure_state.last_failure_at") + timedelta(
+        seconds=backoff_seconds
+    )
+    return retry_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def scheduler_ineligibility_reasons(workspace: dict[str, Any], *, include_manual: bool) -> list[str]:
@@ -198,6 +237,59 @@ def scheduler_ineligibility_reasons(workspace: dict[str, Any], *, include_manual
     return reasons
 
 
+def scheduler_policy_ineligibility_reasons(
+    workspace: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    planned_at: datetime,
+) -> list[str]:
+    policy = effective_scheduler_policy(workspace, args)
+    failure_state = policy.get("failure_state")
+    if not isinstance(failure_state, dict):
+        return []
+
+    reasons: list[str] = []
+    status = failure_state.get("status")
+    attempt_count = failure_state.get("attempt_count")
+    run_budget = policy.get("run_budget", {})
+    retry_policy = policy.get("retry_policy", {})
+
+    if status == "blocked":
+        blocked_reason = failure_state.get("blocked_reason")
+        if isinstance(blocked_reason, str) and blocked_reason:
+            reasons.append(f"failure_state is blocked: {blocked_reason}")
+        else:
+            reasons.append("failure_state is blocked")
+
+    max_attempts = run_budget.get("max_attempts")
+    if isinstance(max_attempts, int) and isinstance(attempt_count, int) and attempt_count >= max_attempts:
+        reasons.append(
+            f"attempt_count {attempt_count} reached run_budget.max_attempts {max_attempts}"
+        )
+
+    max_retryable_failures = retry_policy.get("max_retryable_failures")
+    if (
+        status == "retryable"
+        and isinstance(max_retryable_failures, int)
+        and isinstance(attempt_count, int)
+        and attempt_count > max_retryable_failures
+    ):
+        reasons.append(
+            "retryable failure count "
+            f"{attempt_count} exceeded retry_policy.max_retryable_failures {max_retryable_failures}"
+        )
+
+    if status == "retryable":
+        next_retry_at = derived_next_retry_at(policy)
+        if next_retry_at is not None and planned_at < parse_timestamp(
+            next_retry_at,
+            label="scheduler_policy.failure_state.next_retry_at",
+        ):
+            reasons.append(f"retry backoff active until {next_retry_at}")
+
+    return reasons
+
+
 def cadence_reason(entry: dict[str, Any]) -> str:
     schedule_posture = entry.get("schedule_posture")
     if not isinstance(schedule_posture, str) or not schedule_posture:
@@ -213,6 +305,8 @@ def planned_run_record(
     planner_run_id: str,
     planned_at: str,
     run_budget: dict[str, Any],
+    retry_policy: dict[str, Any] | None,
+    failure_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     reasons = list(entry.get("reasons", []))
     record = {
@@ -227,6 +321,8 @@ def planned_run_record(
         "skipped_reason": reasons[0] if reasons else None,
         "skipped_reasons": reasons,
         "run_budget": dict(run_budget),
+        "retry_policy": copy.deepcopy(retry_policy) if retry_policy is not None else None,
+        "failure_state": copy.deepcopy(failure_state) if failure_state is not None else None,
         "workspace_root": entry.get("workspace_root"),
         "resolved_workspace_root": entry.get("resolved_workspace_root"),
         "default_subject_manifest": entry.get("default_subject_manifest"),
@@ -243,29 +339,21 @@ def build_planned_run_records(
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
     planned_at = args.planned_at or utc_now()
-    run_budget = build_run_budget(args)
-    records = [
-        planned_run_record(
-            entry=entry,
-            decision="selected",
-            registry_path=registry_path,
-            planner_run_id=args.planner_run_id,
-            planned_at=planned_at,
-            run_budget=run_budget,
+    records = []
+    for entry, decision in [(entry, "selected") for entry in selected] + [(entry, "skipped") for entry in skipped]:
+        policy = effective_scheduler_policy(entry, args)
+        records.append(
+            planned_run_record(
+                entry=entry,
+                decision=decision,
+                registry_path=registry_path,
+                planner_run_id=args.planner_run_id,
+                planned_at=planned_at,
+                run_budget=policy["run_budget"],
+                retry_policy=policy.get("retry_policy") if isinstance(policy.get("retry_policy"), dict) else None,
+                failure_state=policy.get("failure_state") if isinstance(policy.get("failure_state"), dict) else None,
+            )
         )
-        for entry in selected
-    ]
-    records.extend(
-        planned_run_record(
-            entry=entry,
-            decision="skipped",
-            registry_path=registry_path,
-            planner_run_id=args.planner_run_id,
-            planned_at=planned_at,
-            run_budget=run_budget,
-        )
-        for entry in skipped
-    )
     return records
 
 
@@ -288,6 +376,10 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         raise SelectionError("--limit must be at least 1")
 
     validate_registry_or_raise(registry_path)
+    planned_at = parse_timestamp(args.planned_at, label="--planned-at") if args.planned_at else parse_timestamp(
+        utc_now(),
+        label="generated planned_at",
+    )
 
     try:
         resolved_workspaces = resolve_workspaces(
@@ -305,6 +397,13 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         except (KeyError, TypeError) as exc:
             raise SelectionError(f"workspace record is invalid: {exc}") from exc
         reasons = scheduler_ineligibility_reasons(workspace, include_manual=args.include_manual)
+        reasons.extend(
+            scheduler_policy_ineligibility_reasons(
+                workspace,
+                args=args,
+                planned_at=planned_at,
+            )
+        )
         if reasons:
             entry["reasons"] = reasons
             skipped.append(entry)
