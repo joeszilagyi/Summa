@@ -30,4 +30,3 @@ EVIDENCE_TYPES = {
     "source_excerpt",
     "structured_record_field",
 }
-
