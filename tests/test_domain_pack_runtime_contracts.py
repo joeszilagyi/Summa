@@ -82,6 +82,10 @@ def test_resolve_gather_domain_pack_general_facets_are_runtime_resolvable() -> N
     assert payload["facets"]["sources"]["source_text_wrapper_template_id"] == "default.untrusted_source_text.v1"
     assert payload["facets"]["sources"]["01a_prompt"] == "general.sources.seed"
     assert payload["facets"]["sources"]["01r_prompt"] == "general.sources.review"
+    assert payload["facets"]["sources"]["template_files"] == [
+        "tools/prompts/general/general.sources.seed.prompt",
+        "tools/prompts/general/general.sources.review.prompt",
+    ]
     assert payload["facets"]["open_questions"]["prompt_bundle_id"] == "general.gather.open_questions.v1"
     assert payload["facets"]["open_questions"]["01a_output_stem"] == "general_gather_open_questions_v1"
 
@@ -127,9 +131,11 @@ def test_subject_detail_view_uses_normalized_prompt_bundle_metadata(tmp_path: Pa
     assert facets["taxonomy"]["legacy_01a_output_stem"] == "organism_gather_taxonomy_v1"
     assert facets["taxonomy"]["phase_templates"] == {"01a": "taxonomy.seed", "01r": "taxonomy.review"}
     assert facets["taxonomy"]["source_text_wrapper_template_id"] == "default.untrusted_source_text.v1"
+    assert [item["status"] for item in facets["taxonomy"]["template_file_statuses"]] == ["ok", "ok"]
     assert facets["habitat"]["prompt_bundle_status"] == "ok"
     assert facets["habitat"]["prompt_bundle_key"] == "gather.habitat"
     assert facets["habitat"]["phase_templates"] == {"01a": "habitat.seed", "01r": "habitat.review"}
+    assert [item["status"] for item in facets["habitat"]["template_file_statuses"]] == ["ok", "ok"]
 
 
 def test_domain_pack_runtime_tools_compile_and_cli_runs() -> None:

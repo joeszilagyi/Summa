@@ -113,6 +113,7 @@ def resolve_gather_domain_pack(pack_id: str, raw_facets: str | None) -> dict[str
             "01r_prompt": bundle["resolved_phase_prompt_files"]["01r"],
             "prompt_bundle_id": bundle["bundle_id"],
             "source_text_wrapper_template_id": bundle["source_text_wrapper_template_id"],
+            "template_files": bundle["template_files"],
         }
 
     return {
