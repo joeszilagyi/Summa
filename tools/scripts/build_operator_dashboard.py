@@ -119,6 +119,7 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
     checks = report.get("checks", {})
     summary = report.get("summary", {})
     backup = report.get("backup_posture", {})
+    migration = report.get("migration_posture", {})
     scheduler = report.get("scheduler", {})
     public_gates = report.get("public_gates", {})
     public_surfaces = public_gates.get("surfaces", {})
@@ -181,6 +182,7 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
         <table><tbody>
           {render_status_row('backup_policy', backup.get('policy_status'))}
           {render_status_row('backup_status', backup.get('status'))}
+          {render_status_row('migration_status', migration.get('status'))}
           {render_status_row('scheduler_selector', scheduler.get('selector_status'))}
           {render_status_row('scheduler_status', scheduler.get('status'))}
         </tbody></table>

@@ -13,6 +13,8 @@ SCRIPT = REPO_ROOT / "tools" / "scripts" / "local_doctor.py"
 
 sys.path.insert(0, str(REPO_ROOT / "tools" / "scripts"))
 import local_doctor
+sys.path.insert(0, str(REPO_ROOT / "tools" / "common"))
+import migration_ledger
 
 
 def test_local_doctor_report_is_read_only_and_redacted() -> None:
@@ -29,6 +31,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
         "workspaces",
         "scheduler_eligibility",
         "crown_jewel_backup_posture",
+        "migration_ledger_posture",
         "db_integrity_smoke",
         "workspace_locks",
         "public_private_sharing_gate",
@@ -38,6 +41,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
     assert isinstance(report["databases"], list)
     assert isinstance(report["locks"], list)
     assert set(report["backup_posture"]).issuperset({"policy_status", "status"})
+    assert set(report["migration_posture"]).issuperset({"ledger_count", "status"})
     assert set(report["scheduler"]).issuperset({"selector_status", "status"})
     assert set(report["public_gates"]).issuperset({"surfaces", "status"})
     assert report["redaction"]["raw_payloads_included"] is False
@@ -156,6 +160,38 @@ def test_local_doctor_reports_stale_workspace_lock(tmp_path: Path) -> None:
         }
     ]
     assert [entry["code"] for entry in findings] == ["STALE_WORKSPACE_LOCK"]
+
+
+def test_local_doctor_reports_latest_migration_posture(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    ledger_path = repo_root / "runtime" / "ledgers" / "fixture_workspace.migration-ledger.jsonl"
+    migration_ledger.append_event(
+        ledger_path,
+        migration_ledger.build_event(
+            workspace_id="fixture_workspace",
+            migration_id="mig:build-manifest.v2",
+            migration_type="artifact_contract_migration",
+            subject_ref="contract/knowledge_tree_build_manifest",
+            tool_surface="tool.build_static_knowledge_tree_py",
+            tool_version="2026.06.02",
+            input_version="knowledge-tree-build-manifest.v1",
+            output_version="knowledge-tree-build-manifest.v2",
+            input_artifact_refs=[{"role": "schema_contract", "path": "config/knowledge_tree_build_manifest.schema.json", "version": "knowledge-tree-build-manifest.v1"}],
+            output_artifact_refs=[{"role": "schema_contract", "path": "config/knowledge_tree_build_manifest.schema.json", "version": "knowledge-tree-build-manifest.v2"}],
+            occurred_at="2026-06-02T15:00:00Z",
+            event_id="mle:build-manifest.001",
+            note="Promote publish-root hash coverage.",
+        ),
+    )
+
+    posture, findings = local_doctor.inspect_migration_posture(repo_root)
+
+    assert posture["status"] == "pass"
+    assert posture["ledger_count"] == 1
+    assert posture["event_count"] == 1
+    assert posture["latest_event_id"] == "mle:build-manifest.001"
+    assert posture["latest_tool_surface"] == "tool.build_static_knowledge_tree_py"
+    assert findings == []
 
 
 def test_local_doctor_text_summary_cli(tmp_path: Path) -> None:
