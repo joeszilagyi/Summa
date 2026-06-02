@@ -20,6 +20,14 @@ INPUT_FAMILY_LOCATOR_KEYS = {
     "remote_archive_collection": "base_url",
 }
 LOCATOR_GLOB_KEYS = {"include_globs", "exclude_globs"}
+INPUT_FAMILY_ALLOWED_LOCATOR_KEYS = {
+    "local_file": {"local_path", "format_hint", "record_path"},
+    "local_directory": {"local_path", "include_globs", "exclude_globs", "format_hint", "record_path"},
+    "local_git_repo": {"local_path", "ref", "include_globs", "exclude_globs"},
+    "remote_git_repo": {"repo_url", "ref"},
+    "remote_url_manifest": {"manifest_url"},
+    "remote_archive_collection": {"base_url"},
+}
 STRUCTURED_DATA_FORMATS = {"csv", "json", "jsonl", "xml"}
 
 AUTOMATION_POSTURES = {"operator_review_required", "unattended_safe"}

@@ -30,8 +30,8 @@ from tools.common.source_adapter_contract import (  # noqa: E402
     AUTOMATION_POSTURES,
     EMIT_HANDOFF_STEP_KIND,
     INPUT_FAMILIES,
+    INPUT_FAMILY_ALLOWED_LOCATOR_KEYS,
     INPUT_FAMILY_LOCATOR_KEYS,
-    LOCATOR_GLOB_KEYS,
     METADATA_STORAGE_POLICY_CLASSES,
     PAYLOAD_STORAGE_POLICY_CLASSES,
     REVIEW_RIGHTS_POSTURES,
@@ -63,7 +63,6 @@ REQUIRED_KEYS = {
 OPTIONAL_KEYS = {"description"}
 ALLOWED_KEYS = REQUIRED_KEYS | OPTIONAL_KEYS
 
-LOCATOR_ALLOWED_KEYS = {"local_path", "repo_url", "manifest_url", "base_url", "ref", "format_hint", "record_path"} | LOCATOR_GLOB_KEYS
 CONTENT_PROFILE_REQUIRED_KEYS = {"content_kinds", "hazard_flags"}
 PROVENANCE_REQUIRED_KEYS = {"discovery_provenance", "acquisition_method", "source_description"}
 PROVENANCE_OPTIONAL_KEYS = {"upstream_reference"}
@@ -250,13 +249,19 @@ def validate_locator(payload: dict[str, Any], errors: list[dict[str, Any]]) -> N
         add_error(errors, code="LOCATOR_NOT_OBJECT", message="locator must be an object")
         return
 
-    unknown_locator_keys = sorted(set(locator) - LOCATOR_ALLOWED_KEYS)
-    for key in unknown_locator_keys:
-        add_error(errors, code="UNKNOWN_LOCATOR_FIELD", message=f"unexpected locator field: {key}")
-
     input_family = payload.get("input_family")
     if not isinstance(input_family, str):
         return
+    allowed_locator_keys = INPUT_FAMILY_ALLOWED_LOCATOR_KEYS.get(input_family)
+    if allowed_locator_keys is None:
+        return
+    for key in sorted(locator):
+        if key not in allowed_locator_keys:
+            add_error(
+                errors,
+                code="LOCATOR_FIELD_NOT_ALLOWED",
+                message=f"locator field {key} is not allowed for input_family {input_family}",
+            )
     required_locator_key = INPUT_FAMILY_LOCATOR_KEYS.get(input_family)
     if required_locator_key is None:
         return
@@ -265,7 +270,7 @@ def validate_locator(payload: dict[str, Any], errors: list[dict[str, Any]]) -> N
         return
     if required_locator_key in {"repo_url", "manifest_url", "base_url"}:
         validate_url_field(locator, required_locator_key, errors)
-    for key in sorted(LOCATOR_GLOB_KEYS):
+    for key in ("include_globs", "exclude_globs"):
         if key in locator:
             validate_string_array(locator, key, errors)
     if "ref" in locator:
