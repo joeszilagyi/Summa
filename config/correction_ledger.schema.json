@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/correction_ledger.schema.json",
+  "title": "correction-ledger.v1",
+  "description": "Append-only correction ledger for dedupe, merge, split, and supersession events over durable object identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "correction-ledger.v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "action",
+          "changed_at",
+          "changed_by",
+          "rationale",
+          "source_object_refs",
+          "result_object_refs",
+          "review_queue_refs",
+          "provenance_event_refs",
+          "evidence_locator_refs",
+          "field_review_entry_refs",
+          "note"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "pattern": "^cle:[a-z0-9][a-z0-9._:-]*$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "dedupe",
+              "merge",
+              "split",
+              "supersede"
+            ]
+          },
+          "changed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "changed_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_object_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z_]+:[0-9]+$"
+            }
+          },
+          "result_object_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z_]+:[0-9]+$"
+            }
+          },
+          "review_queue_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z_]+:[0-9]+$"
+            }
+          },
+          "provenance_event_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^prov:[a-z0-9-]+$"
+            }
+          },
+          "evidence_locator_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^evl:[a-z0-9][a-z0-9._:-]*$"
+            }
+          },
+          "field_review_entry_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^frs:[a-z0-9][a-z0-9._:-]*$"
+            }
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

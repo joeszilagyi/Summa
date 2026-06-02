@@ -1,0 +1,32 @@
+{
+  "schema_version": "correction-ledger.v1",
+  "workspace_id": "alpha_subject",
+  "events": [
+    {
+      "event_id": "cle:work.split.1",
+      "action": "split",
+      "changed_at": "2026-06-02T10:05:00Z",
+      "changed_by": "reviewer.blair",
+      "rationale": "Broken fixture with only one split result.",
+      "source_object_refs": [
+        "work:9"
+      ],
+      "result_object_refs": [
+        "work:10"
+      ],
+      "review_queue_refs": [
+        "work:9"
+      ],
+      "provenance_event_refs": [
+        "prov:22222222-2222-2222-2222-222222222222"
+      ],
+      "evidence_locator_refs": [
+        "evl:ocr.line.44"
+      ],
+      "field_review_entry_refs": [
+        "frs:title:reviewed"
+      ],
+      "note": "This should fail."
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "INVALID_RESULT_CARDINALITY",
+      "line": null,
+      "message": "split actions require at least two result_object_refs"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "resolution": {
+    "current_object_refs": [
+      "work:10"
+    ],
+    "superseded_by_event_id": {
+      "work:9": "cle:work.split.1"
+    },
+    "superseded_object_refs": [
+      "work:9"
+    ]
+  },
+  "scenario": "invalid_split_wrong_result_count",
+  "status": "fail",
+  "target": "inputs/correction_ledger.json",
+  "validator": "correction_ledger",
+  "warnings": []
+}

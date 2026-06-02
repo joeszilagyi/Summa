@@ -1,0 +1,87 @@
+{
+  "schema_version": "correction-ledger.v1",
+  "workspace_id": "alpha_subject",
+  "events": [
+    {
+      "event_id": "cle:authority.dedupe.1",
+      "action": "dedupe",
+      "changed_at": "2026-06-02T10:00:00Z",
+      "changed_by": "reviewer.alex",
+      "rationale": "Duplicate authority records were confirmed to point at the same person.",
+      "source_object_refs": [
+        "authority:2",
+        "authority:3"
+      ],
+      "result_object_refs": [
+        "authority:1"
+      ],
+      "review_queue_refs": [
+        "authority:2",
+        "authority:3"
+      ],
+      "provenance_event_refs": [
+        "prov:11111111-1111-1111-1111-111111111111"
+      ],
+      "evidence_locator_refs": [
+        "evl:scan.page.12"
+      ],
+      "field_review_entry_refs": [
+        "frs:alternate_title:superseded"
+      ],
+      "note": "Keep authority:1 as the canonical survivor."
+    },
+    {
+      "event_id": "cle:work.split.1",
+      "action": "split",
+      "changed_at": "2026-06-02T10:05:00Z",
+      "changed_by": "reviewer.blair",
+      "rationale": "One work record actually represented two separate volumes.",
+      "source_object_refs": [
+        "work:9"
+      ],
+      "result_object_refs": [
+        "work:10",
+        "work:11"
+      ],
+      "review_queue_refs": [
+        "work:9"
+      ],
+      "provenance_event_refs": [
+        "prov:22222222-2222-2222-2222-222222222222"
+      ],
+      "evidence_locator_refs": [
+        "evl:ocr.line.44"
+      ],
+      "field_review_entry_refs": [
+        "frs:title:reviewed"
+      ],
+      "note": "Volumes separated after structured-field review."
+    },
+    {
+      "event_id": "cle:claim.supersede.1",
+      "action": "supersede",
+      "changed_at": "2026-06-02T10:10:00Z",
+      "changed_by": "reviewer.casey",
+      "rationale": "Claim wording was replaced by a corrected normalized claim record.",
+      "source_object_refs": [
+        "claim:7"
+      ],
+      "result_object_refs": [
+        "claim:8"
+      ],
+      "review_queue_refs": [
+        "claim:7"
+      ],
+      "provenance_event_refs": [
+        "prov:33333333-3333-3333-3333-333333333333"
+      ],
+      "evidence_locator_refs": [
+        "evl:metadata.publisher"
+      ],
+      "field_review_entry_refs": [
+        "frs:summary:disputed"
+      ],
+      "note": "Superseded by revised claim language."
+    }
+  ]
+}

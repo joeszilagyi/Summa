@@ -1,0 +1,58 @@
+{
+  "schema_version": "correction-ledger.v1",
+  "workspace_id": "alpha_subject",
+  "events": [
+    {
+      "event_id": "cle:claim.supersede.1",
+      "action": "supersede",
+      "changed_at": "2026-06-02T10:00:00Z",
+      "changed_by": "reviewer.casey",
+      "rationale": "Old claim replaced with corrected wording.",
+      "source_object_refs": [
+        "claim:7"
+      ],
+      "result_object_refs": [
+        "claim:8"
+      ],
+      "review_queue_refs": [
+        "claim:7"
+      ],
+      "provenance_event_refs": [
+        "prov:33333333-3333-3333-3333-333333333333"
+      ],
+      "evidence_locator_refs": [
+        "evl:metadata.publisher"
+      ],
+      "field_review_entry_refs": [
+        "frs:summary:disputed"
+      ],
+      "note": "First supersession is valid."
+    },
+    {
+      "event_id": "cle:claim.merge.2",
+      "action": "merge",
+      "changed_at": "2026-06-02T10:05:00Z",
+      "changed_by": "reviewer.casey",
+      "rationale": "Broken fixture attempts to correct a superseded claim as if it were current.",
+      "source_object_refs": [
+        "claim:7"
+      ],
+      "result_object_refs": [
+        "claim:9"
+      ],
+      "review_queue_refs": [
+        "claim:7"
+      ],
+      "provenance_event_refs": [
+        "prov:44444444-4444-4444-4444-444444444444"
+      ],
+      "evidence_locator_refs": [
+        "evl:metadata.publisher"
+      ],
+      "field_review_entry_refs": [
+        "frs:summary:disputed"
+      ],
+      "note": "This should fail."
+    }
+  ]
+}

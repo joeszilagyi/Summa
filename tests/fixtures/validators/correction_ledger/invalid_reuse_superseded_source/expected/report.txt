@@ -1,0 +1,7 @@
+validator=correction_ledger
+scenario=invalid_reuse_superseded_source
+target=inputs/correction_ledger.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=SOURCE_OBJECT_NOT_CURRENT message=claim:7 is already superseded by cle:claim.supersede.1 and cannot be corrected again as a current source

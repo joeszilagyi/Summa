@@ -1,0 +1,37 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "SOURCE_OBJECT_NOT_CURRENT",
+      "line": null,
+      "message": "claim:7 is already superseded by cle:claim.supersede.1 and cannot be corrected again as a current source"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "resolution": {
+    "current_object_refs": [
+      "claim:8",
+      "claim:9"
+    ],
+    "superseded_by_event_id": {
+      "claim:7": "cle:claim.merge.2"
+    },
+    "superseded_object_refs": [
+      "claim:7"
+    ]
+  },
+  "scenario": "invalid_reuse_superseded_source",
+  "status": "fail",
+  "target": "inputs/correction_ledger.json",
+  "validator": "correction_ledger",
+  "warnings": []
+}

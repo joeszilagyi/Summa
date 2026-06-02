@@ -1,0 +1,7 @@
+validator=correction_ledger
+scenario=invalid_split_wrong_result_count
+target=inputs/correction_ledger.json
+status=fail
+inspected=1 accepted=0 rejected=1 deferred=0
+errors=1 warnings=0
+error[0]=INVALID_RESULT_CARDINALITY message=split actions require at least two result_object_refs

@@ -1,0 +1,39 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 1,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 0
+  },
+  "errors": [],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "resolution": {
+    "current_object_refs": [
+      "authority:1",
+      "claim:8",
+      "work:10",
+      "work:11"
+    ],
+    "superseded_by_event_id": {
+      "authority:2": "cle:authority.dedupe.1",
+      "authority:3": "cle:authority.dedupe.1",
+      "claim:7": "cle:claim.supersede.1",
+      "work:9": "cle:work.split.1"
+    },
+    "superseded_object_refs": [
+      "authority:2",
+      "authority:3",
+      "claim:7",
+      "work:9"
+    ]
+  },
+  "scenario": "valid_lineage",
+  "status": "pass",
+  "target": "inputs/correction_ledger.json",
+  "validator": "correction_ledger",
+  "warnings": []
+}
