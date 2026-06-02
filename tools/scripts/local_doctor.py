@@ -370,6 +370,8 @@ def inspect_public_gates(repo_root: Path) -> tuple[dict[str, Any], list[dict[str
     required_paths = {
         "public_presentation_schema": repo_root / "config" / "public_knowledge_tree_presentation.schema.json",
         "public_presentation_validator": repo_root / "tools" / "validators" / "validate_public_knowledge_tree_presentation.py",
+        "static_output_validator": repo_root / "tools" / "validators" / "validate_static_knowledge_tree_output.py",
+        "public_sharing_bundle_builder": repo_root / "tools" / "scripts" / "build_public_sharing_bundle.py",
     }
     missing = [name for name, path in required_paths.items() if not path.exists()]
     status = "pass" if not missing else "fail"
