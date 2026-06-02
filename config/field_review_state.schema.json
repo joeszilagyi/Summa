@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/field_review_state.schema.json",
+  "title": "field-review-state.v1",
+  "description": "Append-only field-level review history for deterministic record fields and claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_locator",
+    "field_reviews"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "field-review-state.v1"
+    },
+    "record_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_family",
+        "relative_path",
+        "source_filename",
+        "structured_format",
+        "record_locator"
+      ],
+      "properties": {
+        "workspace_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "structured_format": {
+          "type": "string",
+          "enum": [
+            "csv",
+            "json",
+            "jsonl",
+            "xml"
+          ]
+        },
+        "record_locator": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "record_review_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_state",
+        "reviewed_by",
+        "reviewed_at"
+      ],
+      "properties": {
+        "review_state": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "deprecated",
+            "demoted",
+            "needs_review",
+            "not_applicable",
+            "rejected",
+            "reviewed",
+            "unreviewed"
+          ]
+        },
+        "reviewed_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "field_reviews": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry_id",
+          "field_path",
+          "state",
+          "reviewed_by",
+          "reviewed_at",
+          "value_fingerprint",
+          "evidence_ref",
+          "supersedes_entry_id",
+          "demotes_entry_id",
+          "note",
+          "tags"
+        ],
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "pattern": "^frs:[a-z0-9][a-z0-9._:-]*$"
+          },
+          "field_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unreviewed",
+              "reviewed",
+              "disputed",
+              "demoted",
+              "superseded"
+            ]
+          },
+          "reviewed_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "value_fingerprint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence_type",
+              "reference",
+              "excerpt_locator",
+              "evidence_note"
+            ],
+            "properties": {
+              "evidence_type": {
+                "type": "string",
+                "enum": [
+                  "field_snapshot",
+                  "operator_note",
+                  "source_excerpt",
+                  "structured_record_field"
+                ]
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1
+              },
+              "excerpt_locator": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "evidence_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "supersedes_entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "demotes_entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,158 @@
+{
+  "schema_version": "field-review-state.v1",
+  "record_locator": {
+    "workspace_id": "alpha_subject",
+    "record_family": "source_lead",
+    "relative_path": "records.jsonl",
+    "source_filename": "records.jsonl",
+    "structured_format": "jsonl",
+    "record_locator": "line:1"
+  },
+  "record_review_context": {
+    "review_state": "needs_review",
+    "reviewed_by": "operator.seed",
+    "reviewed_at": "2026-06-01T09:30:00Z"
+  },
+  "field_reviews": [
+    {
+      "entry_id": "frs:title:seed",
+      "field_path": "title",
+      "state": "unreviewed",
+      "reviewed_by": "system.seed",
+      "reviewed_at": "2026-06-01T10:00:00Z",
+      "value_fingerprint": "sha256:title:v1",
+      "evidence_ref": {
+        "evidence_type": "structured_record_field",
+        "reference": "line:1#title",
+        "excerpt_locator": "field:title",
+        "evidence_note": "Initial machine-captured field."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Seeded for later human review.",
+      "tags": [
+        "machine_seed"
+      ]
+    },
+    {
+      "entry_id": "frs:title:reviewed",
+      "field_path": "title",
+      "state": "reviewed",
+      "reviewed_by": "reviewer.alex",
+      "reviewed_at": "2026-06-01T10:15:00Z",
+      "value_fingerprint": "sha256:title:v1",
+      "evidence_ref": {
+        "evidence_type": "field_snapshot",
+        "reference": "line:1#title@sha256:title:v1",
+        "excerpt_locator": "field:title",
+        "evidence_note": "Matches the source title exactly."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Accepted as transcribed.",
+      "tags": [
+        "human_reviewed"
+      ]
+    },
+    {
+      "entry_id": "frs:summary:disputed",
+      "field_path": "summary",
+      "state": "disputed",
+      "reviewed_by": "reviewer.casey",
+      "reviewed_at": "2026-06-01T10:20:00Z",
+      "value_fingerprint": "sha256:summary:v1",
+      "evidence_ref": {
+        "evidence_type": "source_excerpt",
+        "reference": "line:1#summary",
+        "excerpt_locator": "sentence:1",
+        "evidence_note": "Summary contains ambiguous wording that needs escalation."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Meaning is unclear against the excerpt.",
+      "tags": [
+        "authority_check"
+      ]
+    },
+    {
+      "entry_id": "frs:subject:reviewed",
+      "field_path": "subjects[0].label",
+      "state": "reviewed",
+      "reviewed_by": "reviewer.alex",
+      "reviewed_at": "2026-06-01T10:25:00Z",
+      "value_fingerprint": "sha256:subject:v1",
+      "evidence_ref": {
+        "evidence_type": "field_snapshot",
+        "reference": "line:1#subjects[0].label@sha256:subject:v1",
+        "excerpt_locator": "field:subjects[0].label",
+        "evidence_note": "Subject label initially matched operator expectations."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Temporarily accepted pending authority review.",
+      "tags": [
+        "subject"
+      ]
+    },
+    {
+      "entry_id": "frs:subject:demoted",
+      "field_path": "subjects[0].label",
+      "state": "demoted",
+      "reviewed_by": "reviewer.blair",
+      "reviewed_at": "2026-06-01T10:40:00Z",
+      "value_fingerprint": "sha256:subject:v1",
+      "evidence_ref": {
+        "evidence_type": "operator_note",
+        "reference": "authority-ticket:subject-17",
+        "excerpt_locator": null,
+        "evidence_note": "Authority lookup showed the label is too broad."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": "frs:subject:reviewed",
+      "note": "Demoted until a narrower authority can be attached.",
+      "tags": [
+        "authority_gap"
+      ]
+    },
+    {
+      "entry_id": "frs:alternate_title:reviewed",
+      "field_path": "alternate_title",
+      "state": "reviewed",
+      "reviewed_by": "reviewer.alex",
+      "reviewed_at": "2026-06-01T10:50:00Z",
+      "value_fingerprint": "sha256:alternate-title:v1",
+      "evidence_ref": {
+        "evidence_type": "field_snapshot",
+        "reference": "line:1#alternate_title@sha256:alternate-title:v1",
+        "excerpt_locator": "field:alternate_title",
+        "evidence_note": "Old alternate title retained in first pass."
+      },
+      "supersedes_entry_id": null,
+      "demotes_entry_id": null,
+      "note": "Reviewed before later normalization.",
+      "tags": [
+        "title_variant"
+      ]
+    },
+    {
+      "entry_id": "frs:alternate_title:superseded",
+      "field_path": "alternate_title",
+      "state": "superseded",
+      "reviewed_by": "reviewer.casey",
+      "reviewed_at": "2026-06-01T11:05:00Z",
+      "value_fingerprint": "sha256:alternate-title:v2",
+      "evidence_ref": {
+        "evidence_type": "field_snapshot",
+        "reference": "line:1#alternate_title@sha256:alternate-title:v2",
+        "excerpt_locator": "field:alternate_title",
+        "evidence_note": "Normalized alternate title replaced the earlier value."
+      },
+      "supersedes_entry_id": "frs:alternate_title:reviewed",
+      "demotes_entry_id": null,
+      "note": "Superseded by a later normalized value while retaining review history.",
+      "tags": [
+        "history_preserved"
+      ]
+    }
+  ]
+}
