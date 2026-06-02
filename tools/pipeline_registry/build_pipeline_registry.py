@@ -127,7 +127,7 @@ ALLOWED_VALUES = {
         "io_direction": {"reads", "writes", "updates", "appends", "requires"},
     },
     "surface_dependency": {
-        "dependency_kind": {"loads_helper", "uses_prompt", "calls", "executes"},
+        "dependency_kind": {"loads_helper", "uses_prompt", "calls", "executes", "reads_artifact_contract"},
     },
 }
 

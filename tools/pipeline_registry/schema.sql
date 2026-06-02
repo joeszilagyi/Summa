@@ -171,7 +171,7 @@ CREATE TABLE surface_dependency (
   surface_key TEXT NOT NULL,
   dependency_surface_key TEXT NOT NULL,
   dependency_kind TEXT NOT NULL CHECK (
-    dependency_kind IN ('loads_helper', 'uses_prompt', 'calls', 'executes')
+    dependency_kind IN ('loads_helper', 'uses_prompt', 'calls', 'executes', 'reads_artifact_contract')
   ),
   condition_text TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
