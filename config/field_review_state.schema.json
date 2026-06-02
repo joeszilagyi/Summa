@@ -172,6 +172,13 @@
                   "string",
                   "null"
                 ]
+              },
+              "evidence_locator_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^evl:[a-z0-9][a-z0-9._:-]*$"
               }
             }
           },

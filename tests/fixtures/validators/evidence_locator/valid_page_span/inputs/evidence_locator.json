@@ -1,0 +1,34 @@
+{
+  "schema_version": "evidence-locator.v1",
+  "evidence_locator_id": "evl:scan.page.12",
+  "record_locator": {
+    "workspace_id": "alpha_subject",
+    "record_family": "capture",
+    "relative_path": "scans/source.pdf",
+    "source_filename": "source.pdf",
+    "structured_format": null,
+    "record_locator": null
+  },
+  "span": {
+    "span_kind": "page_span",
+    "page_start": 12,
+    "page_end": 13,
+    "line_start": null,
+    "line_end": null,
+    "byte_start": null,
+    "byte_end": null,
+    "field_path": null,
+    "metadata_fields": [],
+    "locator_note": "Two-page spread showing the relevant passage."
+  },
+  "highlight": {
+    "highlight_kind": "exact_quote",
+    "rights_posture": "quote_limited",
+    "quote_eligibility": "limited_excerpt",
+    "redaction_posture": "public_text_allowed",
+    "operator_excerpt_text": "The archive lists the title and publication year together.",
+    "public_excerpt_text": "The archive lists the title and publication year together.",
+    "public_summary": "Quoted excerpt retained for public-safe evidence display.",
+    "highlight_note": "Public-safe excerpt limited to a short quote."
+  }
+}

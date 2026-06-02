@@ -1,0 +1,35 @@
+{
+  "contract_version": "1",
+  "counts": {
+    "accepted": 0,
+    "deferred": 0,
+    "inspected": 1,
+    "rejected": 1
+  },
+  "errors": [
+    {
+      "code": "PUBLIC_EXCERPT_REDACTION_CONFLICT",
+      "line": null,
+      "message": "public_excerpt_text is only allowed when redaction_posture is public_text_allowed"
+    },
+    {
+      "code": "PUBLIC_EXCERPT_QUOTE_CONFLICT",
+      "line": null,
+      "message": "public_excerpt_text requires quote_eligibility of eligible or limited_excerpt"
+    },
+    {
+      "code": "PRIVATE_TEXT_LEAK",
+      "line": null,
+      "message": "private_only evidence must not expose public_excerpt_text"
+    }
+  ],
+  "output_artifacts": {
+    "report_json": "actual/report.json",
+    "report_text": "actual/report.txt"
+  },
+  "scenario": "invalid_private_text_leak",
+  "status": "fail",
+  "target": "inputs/evidence_locator.json",
+  "validator": "evidence_locator",
+  "warnings": []
+}

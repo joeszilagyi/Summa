@@ -1,0 +1,37 @@
+{
+  "schema_version": "evidence-locator.v1",
+  "evidence_locator_id": "evl:metadata.publisher",
+  "record_locator": {
+    "workspace_id": "alpha_subject",
+    "record_family": "source_lead",
+    "relative_path": "records/book.jsonl",
+    "source_filename": "book.jsonl",
+    "structured_format": "jsonl",
+    "record_locator": "line:1"
+  },
+  "span": {
+    "span_kind": "metadata_only",
+    "page_start": null,
+    "page_end": null,
+    "line_start": null,
+    "line_end": null,
+    "byte_start": null,
+    "byte_end": null,
+    "field_path": null,
+    "metadata_fields": [
+      "publisher",
+      "publication_date"
+    ],
+    "locator_note": "Metadata-only evidence from structured fields."
+  },
+  "highlight": {
+    "highlight_kind": "metadata_note",
+    "rights_posture": "redistributable",
+    "quote_eligibility": "eligible",
+    "redaction_posture": "public_summary_only",
+    "operator_excerpt_text": null,
+    "public_excerpt_text": null,
+    "public_summary": "Publisher metadata and publication date support the record.",
+    "highlight_note": "No excerpt text is required."
+  }
+}

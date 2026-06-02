@@ -1,0 +1,34 @@
+{
+  "schema_version": "evidence-locator.v1",
+  "evidence_locator_id": "evl:ocr.line.44",
+  "record_locator": {
+    "workspace_id": "alpha_subject",
+    "record_family": "source_lead",
+    "relative_path": "records/notes.txt",
+    "source_filename": "notes.txt",
+    "structured_format": null,
+    "record_locator": null
+  },
+  "span": {
+    "span_kind": "line_span",
+    "page_start": null,
+    "page_end": null,
+    "line_start": 44,
+    "line_end": 46,
+    "byte_start": null,
+    "byte_end": null,
+    "field_path": null,
+    "metadata_fields": [],
+    "locator_note": "OCR transcript line span."
+  },
+  "highlight": {
+    "highlight_kind": "summary",
+    "rights_posture": "private_local_only",
+    "quote_eligibility": "review_required",
+    "redaction_posture": "public_summary_only",
+    "operator_excerpt_text": "Line 44-46 contain a fuller transcription held locally.",
+    "public_excerpt_text": null,
+    "public_summary": "Relevant evidence exists in the OCR transcript and remains local-review-only.",
+    "highlight_note": "Public output carries only a summary."
+  }
+}
