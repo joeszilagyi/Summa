@@ -37,6 +37,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
         "public_private_sharing_gate",
     }
     assert report["summary"]["status"] in {"pass", "warn", "fail"}
+    assert report["checks"]["validator_availability"] == "available"
     assert isinstance(report["workspaces"], list)
     assert isinstance(report["databases"], list)
     assert isinstance(report["locks"], list)
