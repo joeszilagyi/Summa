@@ -42,6 +42,7 @@ if str(VALIDATORS_DIR) not in sys.path:
 
 import validate_topic_workspace_registry  # noqa: E402
 import validate_migration_ledger  # noqa: E402
+import validate_crown_jewel_store_policy  # noqa: E402
 
 
 def redact(value: Any) -> Any:
@@ -293,12 +294,19 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
         posture["status"] = "fail"
         findings.append(finding("CROWN_JEWEL_POLICY_MISSING", "operator_action_required", "crown-jewel backup policy missing"))
         return posture, findings
-    try:
-        policy = json.loads(policy_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    result, exit_code = validate_crown_jewel_store_policy.validate_crown_jewel_store_policy(policy_path)
+    if exit_code != validate_crown_jewel_store_policy.EXIT_PASS:
         posture["status"] = "fail"
-        findings.append(finding("CROWN_JEWEL_POLICY_INVALID", "operator_action_required", "crown-jewel backup policy could not be read", error=str(exc)))
+        findings.append(
+            finding(
+                "CROWN_JEWEL_POLICY_INVALID",
+                "operator_action_required",
+                "crown-jewel backup policy failed validation",
+                errors=result.get("errors", [])[:5],
+            )
+        )
         return posture, findings
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
 
     backup_root = repo_root / policy.get("backup_root", "runtime/backups/crown_jewels")
     posture["backup_root"] = str(backup_root)
@@ -507,6 +515,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
         "tools/validators/validate_static_knowledge_tree_output.py",
         "tools/validators/validate_topic_workspace_registry.py",
         "tools/validators/validate_crown_jewel_backup_manifest.py",
+        "tools/validators/validate_crown_jewel_store_policy.py",
         "tools/validators/validate_crown_jewel_store_manifest.py",
         "tools/validators/validate_public_knowledge_tree_presentation.py",
         "tools/validators/validate_source_adapter.py",
