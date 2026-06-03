@@ -1,0 +1,27 @@
+{
+  "schema_version": "claim-type-registry.v1",
+  "claim_types": [
+    {
+      "claim_type": "factual",
+      "label": "Factual claim",
+      "allowed_evidence_requirements": [
+        "locator",
+        "metadata"
+      ],
+      "evidence_mandatory": true,
+      "default_review_requirement": "human_review_required",
+      "export_visibility": "public_after_review"
+    },
+    {
+      "claim_type": "descriptive",
+      "label": "Descriptive claim",
+      "allowed_evidence_requirements": [
+        "locator",
+        "metadata"
+      ],
+      "evidence_mandatory": false,
+      "default_review_requirement": "review_recommended",
+      "export_visibility": "public_after_review"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": "relationship-predicate-registry.v1",
+  "predicates": [
+    {
+      "predicate": "cites",
+      "label": "cites",
+      "inverse_predicate": "cited_by",
+      "evidence_required": true,
+      "export_behavior": "eligible",
+      "review_requirement": "review_required"
+    },
+    {
+      "predicate": "cited_by",
+      "label": "cited by",
+      "inverse_predicate": "cites",
+      "evidence_required": true,
+      "export_behavior": "eligible",
+      "review_requirement": "review_required"
+    },
+    {
+      "predicate": "mentions",
+      "label": "mentions",
+      "inverse_predicate": "mentioned_by",
+      "evidence_required": false,
+      "export_behavior": "eligible",
+      "review_requirement": "review_required"
+    },
+    {
+      "predicate": "mentioned_by",
+      "label": "mentioned by",
+      "inverse_predicate": "mentions",
+      "evidence_required": false,
+      "export_behavior": "eligible",
+      "review_requirement": "review_required"
+    }
+  ]
+}
