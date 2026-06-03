@@ -35,6 +35,7 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     resolve_workspaces,
 )
+from tools.source_db_tools import canonical_store  # noqa: E402
 
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
@@ -244,6 +245,73 @@ def inspect_databases(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[
                 )
             )
     return databases, findings
+
+
+def inspect_canonical_store(
+    repo_root: Path,
+    *,
+    canonical_db: str | Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if canonical_db is not None:
+        configured_path = Path(canonical_db).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = (repo_root / configured_path).resolve()
+    else:
+        configured_path = repo_root / "canonical.sqlite"
+    summary = canonical_store.summarize_canonical_store_population(configured_path)
+    findings: list[dict[str, Any]] = []
+    if canonical_db is None and summary["status"] == "absent":
+        summary["warnings"].append(
+            "canonical store path not configured explicitly; local_doctor checked only the default repo-root canonical.sqlite path"
+        )
+    if summary["status"] == "absent":
+        findings.append(
+            finding(
+                "CANONICAL_STORE_ABSENT",
+                "advisory_only",
+                "no canonical store was found at the configured local path",
+                path=summary.get("path"),
+            )
+        )
+    elif summary["status"] == "uninitialized":
+        findings.append(
+            finding(
+                "CANONICAL_STORE_UNINITIALIZED",
+                "operator_action_required",
+                "canonical store path exists but the canonical schema is not initialized",
+                path=summary.get("path"),
+                errors=summary.get("errors", [])[:5],
+            )
+        )
+    elif summary["status"] == "invalid":
+        findings.append(
+            finding(
+                "CANONICAL_STORE_INVALID",
+                "operator_action_required",
+                "canonical store exists but failed validation",
+                path=summary.get("path"),
+                errors=summary.get("errors", [])[:5],
+            )
+        )
+    elif summary["status"] == "initialized_empty":
+        findings.append(
+            finding(
+                "CANONICAL_STORE_INITIALIZED_EMPTY",
+                "advisory_only",
+                "canonical store is initialized and valid, but contains no canonical records yet",
+                path=summary.get("path"),
+            )
+        )
+    elif summary["status"] == "populated" and summary.get("last_ingest_at") is None:
+        findings.append(
+            finding(
+                "CANONICAL_STORE_INGEST_PROVENANCE_MISSING",
+                "advisory_only",
+                "canonical store contains rows but no recognized ingest provenance events",
+                path=summary.get("path"),
+            )
+        )
+    return summary, findings
 
 
 def inspect_locks(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -500,7 +568,12 @@ def summarize(checks: dict[str, Any], findings: list[dict[str, Any]]) -> dict[st
     }
 
 
-def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict[str, Any]:
+def build_report(
+    repo_root: Path,
+    *,
+    registry: str | Path | None = None,
+    canonical_db: str | Path | None = None,
+) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     status, status_detail = git_status(repo_root)
     if status == "dirty":
@@ -531,6 +604,11 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
     findings.extend(workspace_findings)
     databases, database_findings = inspect_databases(repo_root)
     findings.extend(database_findings)
+    canonical_store_summary, canonical_store_findings = inspect_canonical_store(
+        repo_root,
+        canonical_db=canonical_db,
+    )
+    findings.extend(canonical_store_findings)
     locks, lock_findings = inspect_locks(repo_root)
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
@@ -556,6 +634,17 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
             warn_codes=set(),
             default="pass" if databases else "not_found",
         ),
+        "canonical_store_population": status_from_findings(
+            canonical_store_findings,
+            fail_codes={"CANONICAL_STORE_INVALID"},
+            warn_codes={
+                "CANONICAL_STORE_ABSENT",
+                "CANONICAL_STORE_UNINITIALIZED",
+                "CANONICAL_STORE_INITIALIZED_EMPTY",
+                "CANONICAL_STORE_INGEST_PROVENANCE_MISSING",
+            },
+            default="pass",
+        ),
         "workspace_locks": status_from_findings(
             lock_findings,
             fail_codes=set(),
@@ -577,6 +666,7 @@ def build_report(repo_root: Path, *, registry: str | Path | None = None) -> dict
             "checks": checks,
             "workspaces": workspaces,
             "databases": databases,
+            "canonical_store": canonical_store_summary,
             "locks": locks,
             "backup_posture": backup_posture,
             "migration_posture": migration_posture,
@@ -604,6 +694,11 @@ def render_text(report: dict[str, Any]) -> str:
     ]
     for name, status in report["checks"].items():
         lines.append(f"check.{name}={status}")
+    canonical_store_summary = report.get("canonical_store", {})
+    if isinstance(canonical_store_summary, dict):
+        lines.append(f"canonical_store.status={canonical_store_summary.get('status')}")
+        lines.append(f"canonical_store.total_rows={canonical_store_summary.get('total_rows')}")
+        lines.append(f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}")
     for index, entry in enumerate(report["findings"][:20]):
         lines.append(f"finding[{index}].code={entry['code']}")
         lines.append(f"finding[{index}].class={entry['class']}")
@@ -615,11 +710,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--registry", help="Optional topic workspace registry path.")
+    parser.add_argument(
+        "--canonical-db",
+        help="Optional canonical SQLite path to summarize read-only. Defaults to <repo-root>/canonical.sqlite.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
 
-    report = build_report(args.repo_root, registry=args.registry)
+    report = build_report(args.repo_root, registry=args.registry, canonical_db=args.canonical_db)
     body = (
         json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.format == "json"

@@ -80,7 +80,9 @@ def test_readme_flagship_example_points_to_runtime_general_pack() -> None:
     assert "topic.general" in general_pack["subject_kinds"]
 
     general_section = extract_pack_section(index_doc, "general.v1")
-    assert "README flagship example: safe for broad-topic examples" in general_section
+    assert "README flagship example: currently routes to `general.v1`" in general_section
+    assert "fixture-proven safe first-cycle coverage example for place-dominant recreation subjects" in general_section
+    assert "safe for broad-topic examples" not in general_section
 
 
 def test_domain_pack_operator_help_mentions_checked_in_pack_ids() -> None:

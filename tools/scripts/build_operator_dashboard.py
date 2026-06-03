@@ -38,9 +38,9 @@ def esc(value: Any) -> str:
 
 def status_class(value: Any) -> str:
     status = str(value).lower()
-    if status in {"pass", "available", "clean", "present", "ok"}:
+    if status in {"pass", "available", "clean", "present", "ok", "populated"}:
         return "status-pass"
-    if status in {"warn", "dirty", "not_found", "missing"}:
+    if status in {"warn", "dirty", "not_found", "missing", "absent", "uninitialized", "initialized_empty"}:
         return "status-warn"
     if status in {"fail", "invalid"}:
         return "status-fail"
@@ -49,6 +49,10 @@ def status_class(value: Any) -> str:
 
 def render_status_row(label: str, value: Any) -> str:
     return f"<tr><th>{esc(label)}</th><td><span class=\"pill {status_class(value)}\">{esc(value)}</span></td></tr>"
+
+
+def render_value_row(label: str, value: Any) -> str:
+    return f"<tr><th>{esc(label)}</th><td>{esc(value)}</td></tr>"
 
 
 def render_workspaces(report: dict[str, Any]) -> str:
@@ -115,6 +119,42 @@ def render_findings(report: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def render_canonical_family_counts(report: dict[str, Any]) -> str:
+    canonical_store = report.get("canonical_store", {})
+    rows = []
+    for family, count in sorted(canonical_store.get("family_counts", {}).items()):
+        rows.append(f"<tr><td>{esc(family)}</td><td>{esc(count)}</td></tr>")
+    if not rows:
+        rows.append("<tr><td colspan=\"2\" class=\"empty\">No canonical family counts available</td></tr>")
+    return "\n".join(rows)
+
+
+def render_canonical_table_counts(report: dict[str, Any]) -> str:
+    canonical_store = report.get("canonical_store", {})
+    rows = []
+    for table_name, count in sorted(canonical_store.get("table_counts", {}).items()):
+        rows.append(f"<tr><td>{esc(table_name)}</td><td>{esc(count)}</td></tr>")
+    if not rows:
+        rows.append("<tr><td colspan=\"2\" class=\"empty\">No canonical table counts available</td></tr>")
+    return "\n".join(rows)
+
+
+def render_canonical_notes(report: dict[str, Any]) -> str:
+    canonical_store = report.get("canonical_store", {})
+    warnings = canonical_store.get("warnings", [])
+    errors = canonical_store.get("errors", [])
+    notes = []
+    interpretation = canonical_store.get("recommended_interpretation")
+    if interpretation:
+        notes.append(f"interpretation: {interpretation}")
+    notes.extend(f"warning: {item}" for item in warnings)
+    notes.extend(f"error: {item}" for item in errors)
+    rows = [f"<tr><td colspan=\"2\">{esc(note)}</td></tr>" for note in notes if note]
+    if not rows:
+        rows.append("<tr><td colspan=\"2\" class=\"empty\">No canonical store notes</td></tr>")
+    return "\n".join(rows)
+
+
 def render_dashboard(report: dict[str, Any], *, title: str) -> str:
     checks = report.get("checks", {})
     summary = report.get("summary", {})
@@ -123,6 +163,7 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
     scheduler = report.get("scheduler", {})
     public_gates = report.get("public_gates", {})
     public_surfaces = public_gates.get("surfaces", {})
+    canonical_store = report.get("canonical_store", {})
     public_rows = "\n".join(render_status_row(name, value) for name, value in sorted(public_surfaces.items()))
 
     return f"""<!doctype html>
@@ -190,6 +231,28 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
           {public_rows}
         </tbody></table>
       </div>
+    </section>
+    <section>
+      <h2>Canonical Store</h2>
+      <div class="grid">
+        <table><tbody>
+          {render_status_row('status', canonical_store.get('status'))}
+          {render_value_row('schema_version', canonical_store.get('schema_version'))}
+          {render_value_row('total_rows', canonical_store.get('total_rows'))}
+          {render_value_row('last_ingest_type', canonical_store.get('last_ingest_event_type'))}
+          {render_value_row('last_ingest_at', canonical_store.get('last_ingest_at'))}
+          {render_value_row('last_provenance_at', canonical_store.get('last_provenance_event_at'))}
+        </tbody></table>
+        <table><thead><tr><th>Family</th><th>Rows</th></tr></thead><tbody>
+          {render_canonical_family_counts(report)}
+        </tbody></table>
+        <table><thead><tr><th>Table</th><th>Rows</th></tr></thead><tbody>
+          {render_canonical_table_counts(report)}
+        </tbody></table>
+      </div>
+      <table><tbody>
+        {render_canonical_notes(report)}
+      </tbody></table>
     </section>
     <section>
       <h2>Workspaces</h2>

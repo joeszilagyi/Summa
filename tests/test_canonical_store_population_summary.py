@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+from pathlib import Path
+
+from tools.source_db_tools import canonical_ingest, canonical_store
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
+
+
+def bootstrap_db(tmp_path: Path, *, name: str = "canonical.sqlite") -> Path:
+    db_path = tmp_path / name
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest.population_summary",
+    )
+    return db_path
+
+
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_population_summary_reports_absent_store(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.sqlite"
+
+    summary = canonical_store.summarize_canonical_store_population(missing)
+
+    assert summary["status"] == "absent"
+    assert summary["exists"] is False
+    assert summary["initialized"] is False
+    assert summary["valid"] is False
+    assert summary["total_rows"] == 0
+    assert summary["last_ingest_at"] is None
+
+
+def test_population_summary_reports_uninitialized_sqlite_file(tmp_path: Path) -> None:
+    db_path = tmp_path / "uninitialized.sqlite"
+    sqlite3.connect(db_path).close()
+
+    summary = canonical_store.summarize_canonical_store_population(db_path)
+
+    assert summary["status"] == "uninitialized"
+    assert summary["exists"] is True
+    assert summary["initialized"] is False
+    assert summary["valid"] is False
+    assert summary["errors"]
+
+
+def test_population_summary_reports_initialized_empty_store(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+
+    summary = canonical_store.summarize_canonical_store_population(db_path)
+
+    assert summary["status"] == "initialized_empty"
+    assert summary["exists"] is True
+    assert summary["initialized"] is True
+    assert summary["valid"] is True
+    assert summary["total_rows"] == 0
+    assert summary["family_counts"]["entity"] == 0
+    assert summary["family_counts"]["relationship"] == 0
+    assert summary["family_counts"]["assertion"] == 0
+    assert summary["family_counts"]["provenance_event"] == 0
+    assert summary["last_ingest_at"] is None
+
+
+def test_population_summary_reports_populated_store_and_last_ingest_without_mutation(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch, batch_hash = canonical_ingest.load_validated_candidate_batch(FIXTURE_BATCH)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    before = file_hash(db_path)
+    summary = canonical_store.summarize_canonical_store_population(db_path)
+    after = file_hash(db_path)
+
+    assert before == after
+    assert summary["status"] == "populated"
+    assert summary["exists"] is True
+    assert summary["initialized"] is True
+    assert summary["valid"] is True
+    assert summary["total_rows"] > 0
+    assert summary["table_counts"]["work"] >= 1
+    assert summary["table_counts"]["source_claim"] >= 1
+    assert summary["last_ingest_event_type"] == "gather_candidate_batch_ingest"
+    assert summary["last_ingest_at"] is not None
+    assert summary["last_provenance_event_at"] == summary["last_ingest_at"]
+
+
+def test_population_summary_warns_when_only_provenance_events_exist(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_store.record_provenance_event(
+                conn,
+                object_namespace="pytest",
+                object_id="provenance-only",
+                event_type="pytest_event",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:pytest:provenance-only",
+            )
+    finally:
+        conn.close()
+
+    summary = canonical_store.summarize_canonical_store_population(db_path)
+
+    assert summary["status"] == "populated"
+    assert summary["table_counts"]["provenance_event"] == 1
+    assert "provenance events exist, but no substantive canonical family rows were found" in summary[
+        "warnings"
+    ]

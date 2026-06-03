@@ -113,6 +113,10 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     for path in expected_paths:
         assert path.exists(), path
 
+    doctor_report = json.loads((workspace / "doctor-report.json").read_text(encoding="utf-8"))
+    assert doctor_report["canonical_store"]["status"] == "populated"
+    assert doctor_report["canonical_store"]["total_rows"] > 0
+
 
 def test_operator_path_smoke_json_failure_for_invalid_workspace_path(tmp_path: Path) -> None:
     invalid_workspace = tmp_path / "not-a-directory"

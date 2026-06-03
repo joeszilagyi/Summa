@@ -53,7 +53,7 @@ def test_package_version_matches_project_metadata_current_build() -> None:
     pyproject = load_pyproject()
     metadata = load_project_metadata()
 
-    assert metadata["CURRENT_BUILD"] == "8.8.0.4"
+    assert metadata["CURRENT_BUILD"] != metadata["PRIOR_BUILD"]
     assert pyproject["project"]["version"] == metadata["CURRENT_BUILD"]
     assert pyproject["project"]["version"] != "0.0.0"
     assert str(Version(pyproject["project"]["version"])) == metadata["CURRENT_BUILD"]

@@ -168,6 +168,12 @@ PRIOR_STATE_LEAD_REVIEW_STATES = frozenset(
     {"machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
 )
 PRIOR_STATE_EXCLUDED_REVIEW_STATES = frozenset({"demoted", "deprecated", "rejected"})
+RECOGNIZED_INGEST_EVENT_TYPES = frozenset(
+    {
+        "gather_candidate_batch_ingest",
+        "execution_artifact_ingest",
+    }
+)
 
 COUNTED_CANONICAL_TABLES = (
     "provenance_event",
@@ -2016,6 +2022,184 @@ def canonical_family_counts(conn: sqlite3.Connection) -> dict[str, int]:
         row = conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
         counts[table_name] = int(row["count"])
     return counts
+
+
+def _count_known_tables(
+    conn: sqlite3.Connection,
+    table_names: Iterable[str],
+    *,
+    existing_tables: set[str] | None = None,
+) -> dict[str, int]:
+    table_set = actual_tables(conn) if existing_tables is None else existing_tables
+    counts: dict[str, int] = {}
+    for table_name in sorted({name for name in table_names if name in table_set}):
+        row = conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+        counts[table_name] = int(row["count"])
+    return counts
+
+
+def _latest_provenance_event(
+    conn: sqlite3.Connection,
+    *,
+    event_types: Iterable[str] | None = None,
+) -> dict[str, Any] | None:
+    if not table_exists(conn, "provenance_event"):
+        return None
+    query = """
+        SELECT provenance_event_id, provenance_event_key_v1, event_type, event_timestamp
+        FROM provenance_event
+    """
+    params: tuple[Any, ...] = ()
+    if event_types is not None:
+        event_type_list = tuple(sorted({str(value) for value in event_types if str(value).strip()}))
+        if not event_type_list:
+            return None
+        placeholders = ", ".join("?" for _ in event_type_list)
+        query += f" WHERE event_type IN ({placeholders})"
+        params = event_type_list
+    query += " ORDER BY event_timestamp DESC, provenance_event_id DESC LIMIT 1"
+    row = conn.execute(query, params).fetchone()
+    if row is None:
+        return None
+    return {
+        "provenance_event_id": int(row["provenance_event_id"]),
+        "provenance_event_key": str(row["provenance_event_key_v1"]),
+        "event_type": str(row["event_type"]),
+        "event_timestamp": str(row["event_timestamp"]),
+    }
+
+
+def _recommended_store_interpretation(status: str) -> str:
+    interpretations = {
+        "absent": "No canonical store found. Initialize one before expecting durable accumulation.",
+        "uninitialized": "Canonical store path exists, but the canonical schema is not initialized yet.",
+        "invalid": "Canonical store exists but failed validation. Inspect schema drift or corruption before relying on it.",
+        "initialized_empty": "Store is initialized and valid, but contains no canonical records yet.",
+        "populated": "Store contains canonical records.",
+    }
+    return interpretations.get(status, "Canonical store state is unknown.")
+
+
+def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
+    path = resolve_db_path(db_path)
+    summary: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "initialized": False,
+        "valid": False,
+        "schema_version": None,
+        "current_migration_id": None,
+        "status": "absent",
+        "family_counts": {},
+        "table_counts": {},
+        "total_rows": 0,
+        "last_provenance_event_at": None,
+        "last_provenance_event_type": None,
+        "last_provenance_event_id": None,
+        "last_ingest_at": None,
+        "last_ingest_event_type": None,
+        "last_ingest_provenance_event_id": None,
+        "warnings": [],
+        "errors": [],
+        "recommended_interpretation": _recommended_store_interpretation("absent"),
+    }
+    if not path.exists():
+        return summary
+    if not path.is_file():
+        summary["status"] = "invalid"
+        summary["errors"].append(f"database path is not a file: {path}")
+        summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
+        return summary
+
+    try:
+        conn = connect_existing_read_only(path)
+    except (CanonicalStoreError, sqlite3.Error) as exc:
+        summary["status"] = "invalid"
+        summary["errors"].append(f"could not open canonical store read-only: {exc}")
+        summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
+        return summary
+
+    outline = load_canonical_outline()
+    family_mapping = family_table_mapping(outline)
+    expected_tables = expected_tables_from_outline(outline)
+    supporting_tables = supporting_tables_from_outline(outline)
+    substantive_tables = expected_tables | supporting_tables
+    try:
+        table_set = actual_tables(conn)
+        summary["table_counts"] = _count_known_tables(
+            conn,
+            substantive_tables | schema_metadata_tables_from_outline(outline),
+            existing_tables=table_set,
+        )
+        summary["family_counts"] = {
+            family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
+            for family, tables in sorted(family_mapping.items())
+        }
+        last_provenance = _latest_provenance_event(conn)
+        if last_provenance is not None:
+            summary["last_provenance_event_at"] = last_provenance["event_timestamp"]
+            summary["last_provenance_event_type"] = last_provenance["event_type"]
+            summary["last_provenance_event_id"] = last_provenance["provenance_event_id"]
+        last_ingest = _latest_provenance_event(conn, event_types=RECOGNIZED_INGEST_EVENT_TYPES)
+        if last_ingest is not None:
+            summary["last_ingest_at"] = last_ingest["event_timestamp"]
+            summary["last_ingest_event_type"] = last_ingest["event_type"]
+            summary["last_ingest_provenance_event_id"] = last_ingest["provenance_event_id"]
+
+        metadata_tables = schema_metadata_tables_from_outline(outline)
+        if not metadata_tables.issubset(table_set):
+            missing = ", ".join(sorted(metadata_tables - table_set))
+            summary["status"] = "uninitialized"
+            summary["errors"].append(f"missing canonical schema metadata tables: {missing}")
+            summary["recommended_interpretation"] = _recommended_store_interpretation("uninitialized")
+            return summary
+
+        schema_row = get_schema_version(conn)
+        if schema_row is None:
+            summary["status"] = "uninitialized"
+            summary["errors"].append(
+                "canonical schema metadata tables exist, but schema_version row for canonical_store is missing"
+            )
+            summary["recommended_interpretation"] = _recommended_store_interpretation("uninitialized")
+            return summary
+
+        summary["initialized"] = True
+        summary["schema_version"] = schema_row.schema_version
+        summary["current_migration_id"] = schema_row.current_migration_id
+
+        try:
+            validate_existing_store(conn, outline=outline)
+        except CanonicalStoreError as exc:
+            summary["status"] = "invalid"
+            summary["errors"].append(str(exc))
+            summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
+            return summary
+
+        summary["valid"] = True
+        substantive_total = sum(
+            summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
+        )
+        non_event_total = sum(
+            summary["table_counts"].get(table_name, 0)
+            for table_name in (substantive_tables - {"provenance_event"})
+        )
+        summary["total_rows"] = substantive_total
+        summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
+        if (
+            summary["table_counts"].get("provenance_event", 0) > 0
+            and non_event_total == 0
+        ):
+            summary["warnings"].append(
+                "provenance events exist, but no substantive canonical family rows were found"
+            )
+        if substantive_total > 0 and summary["last_ingest_at"] is None:
+            summary["warnings"].append("no recognized ingest provenance events were found")
+        summary["recommended_interpretation"] = _recommended_store_interpretation(
+            summary["status"]
+        )
+        return summary
+    finally:
+        conn.close()
 
 
 def _stringify_score(value: Any) -> str:

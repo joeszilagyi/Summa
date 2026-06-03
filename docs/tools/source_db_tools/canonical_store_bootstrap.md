@@ -59,3 +59,12 @@ records. `source_locus`, `source_query_execution_simulation`, and
 - F4 publication output is not implemented here.
 - This bootstrap only creates durable local storage; it does not import runtime
   artifacts into canonical rows by itself.
+
+## Operator Visibility
+
+- `tools/scripts/local_doctor.py` reports the canonical store as `absent`,
+  `uninitialized`, `invalid`, `initialized_empty`, or `populated`.
+- `initialized_empty` is distinct from `absent`; an empty valid store is not an
+  automatic operator failure.
+- Canonical family counts and last-ingest timestamps appear only when the store
+  contains recognized ingest provenance events.

@@ -30,6 +30,30 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
                 },
                 "backup_posture": {"policy_status": "pass", "status": "pass"},
                 "scheduler": {"selector_status": "pass", "status": "pass"},
+                "canonical_store": {
+                    "status": "initialized_empty",
+                    "schema_version": 1,
+                    "total_rows": 0,
+                    "last_ingest_event_type": None,
+                    "last_ingest_at": None,
+                    "last_provenance_event_at": None,
+                    "family_counts": {
+                        "entity": 0,
+                        "relationship": 0,
+                        "assertion": 0,
+                        "provenance_event": 0,
+                        "confidence_assessment": 0,
+                        "review_annotation": 0,
+                    },
+                    "table_counts": {
+                        "work": 0,
+                        "source_claim": 0,
+                        "provenance_event": 0,
+                    },
+                    "warnings": [],
+                    "errors": [],
+                    "recommended_interpretation": "Store is initialized and valid, but contains no canonical records yet.",
+                },
                 "public_gates": {
                     "surfaces": {
                         "public_presentation_schema": "present",
@@ -68,7 +92,7 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
     assert report["status"] == "pass"
     assert report["read_only"] is True
     assert "Summa Operator Health" in body
-    for label in ["Workspaces", "Databases", "Locks", "Findings"]:
+    for label in ["Canonical Store", "Workspaces", "Databases", "Locks", "Findings"]:
         assert f"<h2>{label}</h2>" in body
     for health in [
         "crown_jewel_backup_posture",
@@ -78,6 +102,8 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
         "workspace_locks",
     ]:
         assert health in body
+    assert "initialized_empty" in body
+    assert "contains no canonical records yet" in body
     assert "<form" not in body
     assert "<button" not in body
 

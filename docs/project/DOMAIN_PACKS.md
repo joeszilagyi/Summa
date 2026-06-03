@@ -19,10 +19,10 @@ the pack count and statuses documented here do not drift.
 - Query families (8): `web_search`, `book_catalogs`, `newspaper_archives`, `film_and_video_records`, `broadcast_records`, `archive_catalogs`, `local_document_ingest`, `reference_chaining`
 - Prompt bundles: 6
 - Wrapper template IDs: `default.untrusted_source_text.v1`
-- Runtime readiness: every enabled facet is exercised through `tools/scripts/run_topic_gather.py` in dry-run mode, and the live bridge path is covered in `tests/test_run_topic_gather.py`
+- Runtime readiness: every enabled facet is exercised through `tools/scripts/run_topic_gather.py` in dry-run mode, the live bridge path is covered in `tests/test_run_topic_gather.py`, and F19/F20 tests cover canonical ingest plus bounded cycle-two prior-state reuse for a place-shaped fixture after deterministic fixture ingestion
 - Topic-neutral: yes
-- README flagship example: safe for broad-topic examples such as `trout fly fishing in Montana`
-- Known limitations: this is still the neutral starter pack, not a specialized `person`, `place`, `work`, or `event` pack
+- README flagship example: currently routes to `general.v1`, but is not yet a fixture-proven safe first-cycle coverage example for place-dominant recreation subjects such as `trout fly fishing in Montana`
+- Known limitations: this is still the neutral starter pack, not a specialized `person`, `place`, `work`, or `event` pack; first-cycle place/recreation coverage remains unvalidated until a deterministic gather fixture proves usable place/work/open-lead output from `general.v1` itself
 
 ## `organism.v1`
 
@@ -43,4 +43,6 @@ the pack count and statuses documented here do not drift.
 The current tree does not yet ship separate `person`, `place`, `work`, or
 `event` packs. Those remain future specialization work. They are not checked in
 yet because the current prompt surface would make them renamed copies of
-`general.v1` rather than meaningfully narrower runtime packs.
+`general.v1` rather than meaningfully narrower runtime packs. If future
+deterministic fixture validation shows that place-dominant topics need a
+different first-cycle shape, `place.v1` is the next specialization to scope.
