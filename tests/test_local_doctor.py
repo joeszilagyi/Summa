@@ -7,9 +7,13 @@ import sys
 import time
 from pathlib import Path
 
+from tools.source_db_tools import canonical_ingest, canonical_store
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "local_doctor.py"
+FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 
 sys.path.insert(0, str(REPO_ROOT / "tools" / "scripts"))
 import local_doctor
@@ -33,6 +37,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
         "crown_jewel_backup_posture",
         "migration_ledger_posture",
         "db_integrity_smoke",
+        "canonical_store_population",
         "workspace_locks",
         "public_private_sharing_gate",
     }
@@ -40,13 +45,40 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
     assert report["checks"]["validator_availability"] == "available"
     assert isinstance(report["workspaces"], list)
     assert isinstance(report["databases"], list)
+    assert isinstance(report["canonical_store"], dict)
     assert isinstance(report["locks"], list)
     assert set(report["backup_posture"]).issuperset({"policy_status", "status"})
     assert set(report["migration_posture"]).issuperset({"ledger_count", "status"})
     assert set(report["scheduler"]).issuperset({"selector_status", "status"})
     assert set(report["public_gates"]).issuperset({"surfaces", "status"})
+    assert report["canonical_store"]["status"] == "absent"
     assert report["redaction"]["raw_payloads_included"] is False
     assert "/home/" not in body
+
+
+def bootstrap_db(tmp_path: Path, *, populated: bool = False) -> Path:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest.local_doctor",
+    )
+    if not populated:
+        return db_path
+    batch, batch_hash = canonical_ingest.load_validated_candidate_batch(FIXTURE_BATCH)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+    return db_path
 
 
 def test_local_doctor_redacts_sensitive_values() -> None:
@@ -207,6 +239,7 @@ def test_local_doctor_text_summary_cli(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "schema_version=local-doctor-report.v1" in proc.stdout
     assert "check.public_private_sharing_gate=" in proc.stdout
+    assert "canonical_store.status=" in proc.stdout
 
 
 def test_local_doctor_cli_writes_report_without_fixing(tmp_path: Path) -> None:
@@ -223,3 +256,26 @@ def test_local_doctor_cli_writes_report_without_fixing(tmp_path: Path) -> None:
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["read_only"] is True
     assert payload["auto_fix_performed"] is False
+
+
+def test_local_doctor_reports_initialized_empty_canonical_store(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+
+    report = local_doctor.build_report(REPO_ROOT, canonical_db=db_path)
+
+    assert report["canonical_store"]["status"] == "initialized_empty"
+    assert report["canonical_store"]["total_rows"] == 0
+    assert report["canonical_store"]["family_counts"]["entity"] == 0
+    assert report["checks"]["canonical_store_population"] == "warn"
+
+
+def test_local_doctor_reports_populated_canonical_store_and_last_ingest(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path, populated=True)
+
+    report = local_doctor.build_report(REPO_ROOT, canonical_db=db_path)
+
+    assert report["canonical_store"]["status"] == "populated"
+    assert report["canonical_store"]["total_rows"] > 0
+    assert report["canonical_store"]["last_ingest_event_type"] == "gather_candidate_batch_ingest"
+    assert report["canonical_store"]["last_ingest_at"] is not None
+    assert report["checks"]["canonical_store_population"] == "pass"

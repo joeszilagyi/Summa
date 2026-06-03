@@ -582,6 +582,8 @@ def smoke_local_doctor(ctx: SmokeContext) -> tuple[str | None, str]:
         "--format",
         "json",
     ]
+    if ctx.canonical_db_path is not None:
+        command.extend(["--canonical-db", str(ctx.canonical_db_path)])
     checked_command(command, cwd=ctx.repo_root, label="local doctor")
     payload = json.loads(doctor_report_path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != "local-doctor-report.v1":
@@ -594,6 +596,11 @@ def smoke_local_doctor(ctx: SmokeContext) -> tuple[str | None, str]:
     if summary_status not in {"pass", "warn"}:
         raise OperatorPathSmokeError(
             f"local doctor returned unexpected summary status: {summary_status!r}"
+        )
+    canonical_summary = payload.get("canonical_store", {})
+    if ctx.canonical_db_path is not None and canonical_summary.get("status") != "populated":
+        raise OperatorPathSmokeError(
+            "local doctor did not report the smoke canonical store as populated"
         )
     return str(doctor_report_path), f"local doctor completed with summary status {summary_status}"
 

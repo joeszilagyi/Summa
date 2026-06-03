@@ -6,9 +6,11 @@ Have you ever wondered if you could read everything ever written about something
 
 Have you ever read more than one book, article, newspaper story, television segment, or film about a topic and wanted to keep going? You tell Indexer what you want to learn about, and it runs in the background using your own tools, like ChatGPT or Claude, as research helpers. Say your topic is trout fly fishing in Montana. Indexer first finds and records the most well-known people, places, books, terms, sources, and loose threads around that topic, including things you may already recognize. Then each time it runs, it can use bounded prior canonical state from earlier cycles to look a little farther out, adding smaller details and new leads as it goes. Over time, you end up with a map of what can be found about that subject and where each trail seems to lead.
 
-Broad-topic examples like `trout fly fishing in Montana` currently use the
-checked-in `general.v1` domain pack. The current pack catalog, statuses, and
-runtime notes live in [docs/project/DOMAIN_PACKS.md](docs/project/DOMAIN_PACKS.md).
+Broad-topic examples like `trout fly fishing in Montana` currently route to the
+checked-in `general.v1` domain pack. That routing is not yet fixture proof that
+`general.v1` safely covers every place-dominant recreation shape end to end;
+the current tested-coverage note lives in
+[docs/project/DOMAIN_PACKS.md](docs/project/DOMAIN_PACKS.md).
 
 The current gather driver keeps one-shot mode as the default. Prior canonical
 state is injected only when `tools/scripts/run_topic_gather.py` is invoked with
