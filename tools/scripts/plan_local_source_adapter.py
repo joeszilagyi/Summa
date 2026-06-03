@@ -25,7 +25,7 @@ from tools.common.source_adapter_contract import (  # noqa: E402
 )
 from tools.common.source_adapter_handoff import (  # noqa: E402
     build_local_handoff_record,
-    validate_local_handoff_record,
+    validate_source_adapter_handoff_record,
 )
 
 import validate_source_adapter  # noqa: E402
@@ -150,7 +150,7 @@ def build_plan(adapter_path: Path, adapter_payload: dict[str, Any]) -> dict[str,
     validation_errors = [
         {
             "index": index,
-            "errors": validate_local_handoff_record(record, adapter_payload),
+            "errors": validate_source_adapter_handoff_record(record, adapter_payload),
         }
         for index, record in enumerate(handoff_records)
     ]

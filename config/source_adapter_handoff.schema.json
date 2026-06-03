@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/source_adapter_handoff.schema.json",
+  "title": "source-adapter-handoff.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_id",
+    "workspace_id",
+    "record_family",
+    "batch_unit",
+    "adapter_path",
+    "emitted_at",
+    "sequence",
+    "resolved_source_path",
+    "relative_path",
+    "preserved",
+    "source_specific"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "source-adapter-handoff.v1"
+    },
+    "adapter_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "record_family": {
+      "type": "string",
+      "minLength": 1
+    },
+    "batch_unit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "adapter_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "emitted_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resolved_source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remote_state": {
+      "type": "string",
+      "enum": [
+        "configured_remote",
+        "local_checkout"
+      ]
+    },
+    "network_access_attempted": {
+      "type": "boolean"
+    },
+    "preserved": {
+      "type": "object"
+    },
+    "source_specific": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "source_specific": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_filename": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "source_specific": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "structured_format",
+            "record_locator",
+            "record_kind"
+          ],
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_filename": {
+              "type": "string",
+              "minLength": 1
+            },
+            "structured_format": {
+              "type": "string",
+              "enum": [
+                "csv",
+                "json",
+                "jsonl",
+                "xml"
+              ]
+            },
+            "record_locator": {
+              "type": "string",
+              "minLength": 1
+            },
+            "record_kind": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "required": [
+        "remote_state",
+        "network_access_attempted"
+      ],
+      "properties": {
+        "remote_state": {
+          "const": "local_checkout"
+        },
+        "network_access_attempted": {
+          "const": false
+        },
+        "sequence": {
+          "const": 1
+        },
+        "source_specific": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "git_ref",
+            "git_commit"
+          ],
+          "properties": {
+            "git_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "git_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,64}$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "required": [
+        "remote_state",
+        "network_access_attempted"
+      ],
+      "properties": {
+        "remote_state": {
+          "const": "configured_remote"
+        },
+        "network_access_attempted": {
+          "const": false
+        },
+        "source_specific": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifest_url"
+          ],
+          "properties": {
+            "manifest_url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
