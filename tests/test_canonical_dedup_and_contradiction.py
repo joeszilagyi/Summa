@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from tools.source_db_tools import authority_reconciliation, canonical_ingest, canonical_store
+
+
+FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
+
+
+def bootstrap_db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest.canonical_dedup",
+    )
+    return db_path
+
+
+def batch_hash(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_batch(
+    candidates: list[dict[str, object]],
+    *,
+    run_id: str,
+    subject_id: str = "fixture_subject",
+) -> dict[str, object]:
+    return {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": run_id,
+        "created_at": FIXED_TIMESTAMP,
+        "subject": {"subject_id": subject_id},
+        "candidates": candidates,
+    }
+
+
+def work_candidate(
+    candidate_id: str,
+    *,
+    work_key: str,
+    title: str,
+    work_type: str = "article",
+    identifier_scheme: str | None = None,
+    identifier_value: str | None = None,
+    canonical_url: str | None = None,
+    original_locator: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "work_key": work_key,
+        "title": title,
+        "work_type": work_type,
+    }
+    if identifier_scheme and identifier_value:
+        payload["identifier_scheme"] = identifier_scheme
+        payload["identifier_value"] = identifier_value
+    if canonical_url:
+        payload["canonical_url"] = canonical_url
+    if original_locator:
+        payload["original_locator"] = original_locator
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": "work",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def entity_candidate(
+    candidate_id: str,
+    *,
+    label: str,
+    entity_type: str = "person",
+    identifiers: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "entity_label": label,
+        "normalized_label": label.casefold(),
+        "entity_type": entity_type,
+        "confidence_score": 0.41,
+    }
+    if identifiers:
+        payload["identifiers"] = identifiers
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": "person",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def structured_claim_candidate(
+    candidate_id: str,
+    *,
+    payload: dict[str, object],
+    candidate_type: str = "unknown",
+) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": candidate_type,
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def prose_claim_candidate(candidate_id: str, text: str) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": "open_question",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": text,
+    }
+
+
+def ingest_batch(
+    conn: sqlite3.Connection,
+    payload: dict[str, object],
+    *,
+    batch_name: str,
+    db_path: Path,
+) -> dict[str, object]:
+    return canonical_ingest.ingest_candidate_batch(
+        conn,
+        payload,
+        batch_path=db_path.parent / batch_name,
+        batch_hash=batch_hash(payload),
+        db_path=db_path,
+    )
+
+
+def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            work_candidate(
+                "cand:work.1",
+                work_key="work.fixture.example-work.a",
+                title="Example Work",
+                identifier_scheme="doi",
+                identifier_value="10.1234/example-work",
+                canonical_url="https://example.test/work/example-work",
+            )
+        ],
+        run_id="gather-work-a",
+    )
+    second_batch = build_batch(
+        [
+            work_candidate(
+                "cand:work.2",
+                work_key="work.fixture.example-work.b",
+                title="Example Work",
+                identifier_scheme="doi",
+                identifier_value="10.1234/example-work",
+                canonical_url="https://example.test/work/example-work",
+            )
+        ],
+        run_id="gather-work-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="batch-a.json", db_path=db_path)
+        with conn:
+            report = ingest_batch(conn, second_batch, batch_name="batch-b.json", db_path=db_path)
+        work_rows = conn.execute("SELECT work_id, work_key_v1 FROM work").fetchall()
+        duplicate_events = conn.execute(
+            "SELECT event_type FROM provenance_event WHERE event_type='work_duplicate_encountered'"
+        ).fetchall()
+        work_identifiers = conn.execute("SELECT scheme, value FROM work_identifier").fetchall()
+    finally:
+        conn.close()
+
+    assert len(work_rows) == 1
+    assert len(duplicate_events) == 1
+    assert len(work_identifiers) == 1
+    assert report["counts"]["deduped"]["work"] == 1
+
+
+def test_same_title_different_locator_does_not_collapse(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch_one = build_batch(
+        [
+            work_candidate(
+                "cand:similar.1",
+                work_key="work.fixture.similar.one",
+                title="Shared Title",
+                canonical_url="https://example.test/work/one",
+            )
+        ],
+        run_id="gather-similar-a",
+    )
+    batch_two = build_batch(
+        [
+            work_candidate(
+                "cand:similar.2",
+                work_key="work.fixture.similar.two",
+                title="Shared Title",
+                canonical_url="https://example.test/work/two",
+            )
+        ],
+        run_id="gather-similar-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch_one, batch_name="similar-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, batch_two, batch_name="similar-b.json", db_path=db_path)
+        count = conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 2
+
+
+def test_authority_label_match_creates_reviewable_reconciliation_candidate(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            report = ingest_batch(
+                conn,
+                build_batch(
+                    [entity_candidate("cand:entity.1", label="Jane Smith")],
+                    run_id="gather-entity-review",
+                ),
+                batch_name="entity-review.json",
+                db_path=db_path,
+            )
+        rec_row = conn.execute(
+            """
+            SELECT review_state, confidence_score
+            FROM authority_reconciliation
+            """
+        ).fetchone()
+        entity_row = conn.execute(
+            "SELECT authority_record_id, review_state FROM extraction_detected_entity"
+        ).fetchone()
+        merge_count = conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert rec_row["review_state"] == "needs_review"
+    assert rec_row["confidence_score"] == pytest.approx(0.75)
+    assert entity_row["authority_record_id"] is None
+    assert entity_row["review_state"] == "proposed"
+    assert merge_count == 0
+    assert report["counts"]["reconciled"]["authority_reconciliation"] == 1
+
+
+def test_exact_authority_identifier_match_records_merge_event_without_auto_accepting_claims(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith.orcid",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.add_authority_identifier(
+                conn,
+                authority_record_id=authority_id,
+                scheme="orcid",
+                value="0000-0002-1825-0097",
+                is_primary=1,
+                confidence_score=1.0,
+                review_state="accepted",
+                verified_at=FIXED_TIMESTAMP,
+            )
+            report = ingest_batch(
+                conn,
+                build_batch(
+                    [
+                        entity_candidate(
+                            "cand:entity.2",
+                            label="Jane Smith",
+                            identifiers=[
+                                {"scheme": "orcid", "value": "0000-0002-1825-0097"}
+                            ],
+                        )
+                    ],
+                    run_id="gather-entity-exact",
+                ),
+                batch_name="entity-exact.json",
+                db_path=db_path,
+            )
+        merge_rows = conn.execute(
+            "SELECT from_authority_record_id, into_authority_record_id FROM authority_merge_event"
+        ).fetchall()
+        linked_entity = conn.execute(
+            "SELECT authority_record_id FROM extraction_detected_entity"
+        ).fetchone()
+        authority_rows = conn.execute(
+            "SELECT authority_record_id, merged_into_authority_record_id FROM authority_record ORDER BY authority_record_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(merge_rows) == 1
+    assert linked_entity["authority_record_id"] == authority_id
+    assert any(
+        row["authority_record_id"] != authority_id
+        and row["merged_into_authority_record_id"] == authority_id
+        for row in authority_rows
+    )
+    assert report["counts"]["deduped"]["authority"] == 1
+
+
+def test_structured_taught_by_impossibility_creates_contradiction_and_review_history(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    contradiction_batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:birth.a",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                    "public_summary": "Person A birth year 1940.",
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.b",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                    "public_summary": "Person B death year 1938.",
+                },
+            ),
+            structured_claim_candidate(
+                "cand:taught-by",
+                payload={
+                    "claim_type": "taught_by",
+                    "about_object_ref": "authority:person-a",
+                    "from_object_ref": "authority:person-a",
+                    "to_object_ref": "authority:person-b",
+                    "predicate": "taught_by",
+                    "public_summary": "Person A was taught by Person B.",
+                },
+            ),
+        ],
+        run_id="gather-contradiction",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = ingest_batch(
+                conn,
+                contradiction_batch,
+                batch_name="contradiction.json",
+                db_path=db_path,
+            )
+        claims = conn.execute(
+            "SELECT claim_type, review_state FROM source_claim ORDER BY source_claim_id"
+        ).fetchall()
+        contradiction_rows = conn.execute(
+            """
+            SELECT predicate, evidence_note, review_state
+            FROM source_relationship
+            WHERE predicate='contradicts'
+            """
+        ).fetchall()
+        history_rows = conn.execute(
+            """
+            SELECT target_namespace, new_state, reason
+            FROM review_state_history
+            WHERE reason='structured_taught_by_impossible_life_overlap'
+            ORDER BY rowid
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(claims) == 3
+    assert any(row["review_state"] == "needs_review" for row in claims)
+    assert len(contradiction_rows) == 1
+    assert contradiction_rows[0]["review_state"] == "needs_review"
+    assert "birth year 1940 is after object death year 1938" in contradiction_rows[0]["evidence_note"]
+    assert history_rows
+    assert report["counts"]["contradicted"]["source_claim"] >= 1
+    assert report["counts"]["contradicted"]["source_relationship"] == 1
+    assert {"accepted", "verified"} & {row["review_state"] for row in claims} == set()
+
+
+def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:quantity.1",
+                payload={
+                    "claim_type": "quantity",
+                    "about_object_ref": "work:example",
+                    "value": 10,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:quantity.2",
+                payload={
+                    "claim_type": "quantity",
+                    "about_object_ref": "work:example",
+                    "value": 12,
+                },
+            ),
+        ],
+        run_id="gather-quantity-conflict",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="quantity.json", db_path=db_path)
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert contradiction_count == 1
+
+
+def test_reconciliation_and_contradictions_are_idempotent_on_reingest(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:birth.idempotent",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.idempotent",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:taught-by.idempotent",
+                payload={
+                    "claim_type": "taught_by",
+                    "about_object_ref": "authority:person-a",
+                    "from_object_ref": "authority:person-a",
+                    "to_object_ref": "authority:person-b",
+                    "predicate": "taught_by",
+                },
+            ),
+        ],
+        run_id="gather-contradiction-idempotent",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="idempotent.json", db_path=db_path)
+        first_counts = {
+            "contradictions": conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0],
+            "history": conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0],
+        }
+        with conn:
+            report = ingest_batch(conn, batch, batch_name="idempotent.json", db_path=db_path)
+        second_counts = {
+            "contradictions": conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0],
+            "history": conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+    assert first_counts == second_counts
+    assert report["counts"]["contradicted"]["source_relationship"] == 1
+
+
+def test_freeform_prose_does_not_trigger_structured_contradiction_detection(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:birth.prose",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.prose",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            prose_claim_candidate(
+                "cand:prose",
+                "Person A was taught by Person B before Person A was born.",
+            ),
+        ],
+        run_id="gather-prose-only",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="prose.json", db_path=db_path)
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+        prose_claim = conn.execute(
+            "SELECT review_state FROM source_claim WHERE claim_type='candidate_open_question'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert contradiction_count == 0
+    assert prose_claim["review_state"] == "proposed"
+
+
+def test_invalid_structured_year_rolls_back_ingest(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:invalid-year",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": "nineteen-forty",
+                },
+            )
+        ],
+        run_id="gather-invalid-year",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with pytest.raises(
+            canonical_ingest.CanonicalIngestError,
+            match="candidate-batch reconciliation failed",
+        ):
+            with conn:
+                ingest_batch(conn, batch, batch_name="invalid-year.json", db_path=db_path)
+        counts = canonical_store.canonical_family_counts(conn)
+    finally:
+        conn.close()
+
+    assert all(count == 0 for count in counts.values())

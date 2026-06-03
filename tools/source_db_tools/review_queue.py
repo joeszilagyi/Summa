@@ -51,7 +51,12 @@ TARGETS: dict[str, ReviewTarget] = {
     "work_subject": ReviewTarget("work_subject", "work_subject", "work_subject_id", label_sql="COALESCE(source_note, subject_role)"),
     "highlight": ReviewTarget("highlight", "extraction_highlight", "highlight_id", label_sql="substr(text_excerpt, 1, 120)"),
     "detected_entity": ReviewTarget("detected_entity", "extraction_detected_entity", "detected_entity_id", label_sql="entity_label", source_type_sql="entity_type"),
-    "relationship": ReviewTarget("relationship", "source_relationship", "source_relationship_id", label_sql="predicate || ' -> ' || COALESCE(target_label, to_id, '')"),
+    "relationship": ReviewTarget(
+        "relationship",
+        "source_relationship",
+        "source_relationship_id",
+        label_sql="predicate || ' -> ' || COALESCE(target_label, to_object_ref, '')",
+    ),
     "claim": ReviewTarget("claim", "source_claim", "source_claim_id", label_sql="substr(claim_text, 1, 120)", source_type_sql="claim_type"),
     "topic_extension": ReviewTarget("topic_extension", "topic_extension", "topic_extension_id", label_sql="topic_id || ':' || extension_type"),
     "source_access": ReviewTarget("source_access", "source_access", "source_access_id", label_sql="original_locator", confidence_column=None),

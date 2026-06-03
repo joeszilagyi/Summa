@@ -497,6 +497,231 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                             path="$.prompt.rendered_prompt_path",
                         )
 
+    iteration_mode = payload.get("iteration_mode")
+    cycle_depth = payload.get("cycle_depth")
+    previous_run_ids = payload.get("previous_run_ids")
+    prior_state = payload.get("prior_state")
+    feedback_plan = payload.get("feedback_plan")
+    facet = payload.get("facet")
+    prompt_bundle = payload.get("prompt_bundle")
+    if cycle_depth is not None and not isinstance(cycle_depth, int):
+        add_error(
+            errors,
+            code="INVALID_CYCLE_DEPTH",
+            message="cycle_depth must be an integer when present",
+            path="$.cycle_depth",
+        )
+    if isinstance(cycle_depth, int) and cycle_depth < 1:
+        add_error(
+            errors,
+            code="INVALID_CYCLE_DEPTH",
+            message="cycle_depth must be at least 1",
+            path="$.cycle_depth",
+        )
+    if previous_run_ids is not None and not isinstance(previous_run_ids, list):
+        add_error(
+            errors,
+            code="INVALID_PREVIOUS_RUN_IDS",
+            message="previous_run_ids must be an array when present",
+            path="$.previous_run_ids",
+        )
+    if isinstance(previous_run_ids, list):
+        for index, run_id in enumerate(previous_run_ids):
+            if not isinstance(run_id, str) or not run_id:
+                add_error(
+                    errors,
+                    code="INVALID_PREVIOUS_RUN_ID",
+                    message="previous_run_ids entries must be non-empty strings",
+                    path=f"$.previous_run_ids[{index}]",
+                )
+    if iteration_mode == "prior_state" and not isinstance(prior_state, dict):
+        add_error(
+            errors,
+            code="PRIOR_STATE_REQUIRED",
+            message="iteration_mode=prior_state requires a prior_state object",
+            path="$.prior_state",
+        )
+    if iteration_mode == "prior_state" and not isinstance(cycle_depth, int):
+        add_error(
+            errors,
+            code="CYCLE_DEPTH_REQUIRED",
+            message="iteration_mode=prior_state requires cycle_depth",
+            path="$.cycle_depth",
+        )
+    if iteration_mode == "one_shot" and prior_state is not None:
+        add_error(
+            errors,
+            code="ONE_SHOT_PRIOR_STATE_FORBIDDEN",
+            message="iteration_mode=one_shot must not include prior_state",
+            path="$.prior_state",
+        )
+    if isinstance(prior_state, dict):
+        context_text = prior_state.get("context_text")
+        context_hash = prior_state.get("context_hash")
+        if isinstance(context_text, str):
+            import hashlib
+
+            actual_hash = hashlib.sha256(context_text.encode("utf-8")).hexdigest()
+            if context_hash != actual_hash:
+                add_error(
+                    errors,
+                    code="PRIOR_STATE_HASH_MISMATCH",
+                    message="prior_state.context_hash does not match prior_state.context_text",
+                    path="$.prior_state.context_hash",
+                )
+            if isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
+                if context_text not in prompt["rendered_prompt"]:
+                    add_error(
+                        errors,
+                        code="PRIOR_STATE_PROMPT_MISMATCH",
+                        message="prior_state.context_text does not appear in rendered_prompt",
+                        path="$.prior_state.context_text",
+                    )
+        record_counts = prior_state.get("record_counts")
+        if isinstance(record_counts, dict):
+            for family_key, counts in record_counts.items():
+                if not isinstance(counts, dict):
+                    continue
+                total = counts.get("total")
+                selected = counts.get("selected")
+                rendered = counts.get("rendered")
+                if (
+                    isinstance(total, int)
+                    and isinstance(selected, int)
+                    and isinstance(rendered, int)
+                    and (selected > total or rendered > selected)
+                ):
+                    add_error(
+                        errors,
+                        code="PRIOR_STATE_COUNT_ORDER_INVALID",
+                        message="prior_state counts must satisfy rendered <= selected <= total",
+                        path=f"$.prior_state.record_counts.{family_key}",
+                    )
+        if isinstance(provenance, dict):
+            if provenance.get("prior_state_enabled") is not True:
+                add_error(
+                    errors,
+                    code="PRIOR_STATE_PROVENANCE_FLAG_REQUIRED",
+                    message="provenance.prior_state_enabled must be true when prior_state is present",
+                    path="$.provenance.prior_state_enabled",
+                )
+            if provenance.get("prior_state_hash") != prior_state.get("context_hash"):
+                add_error(
+                    errors,
+                    code="PRIOR_STATE_PROVENANCE_HASH_MISMATCH",
+                    message="provenance.prior_state_hash must match prior_state.context_hash",
+                    path="$.provenance.prior_state_hash",
+                )
+            if provenance.get("cycle_depth") != cycle_depth:
+                add_error(
+                    errors,
+                    code="PRIOR_STATE_CYCLE_DEPTH_MISMATCH",
+                    message="provenance.cycle_depth must match cycle_depth",
+                    path="$.provenance.cycle_depth",
+                )
+    elif isinstance(provenance, dict):
+        if provenance.get("prior_state_enabled") not in (False, None):
+            add_error(
+                errors,
+                code="ONE_SHOT_PRIOR_STATE_FLAG_INVALID",
+                message="one-shot batches must not claim prior-state provenance",
+                path="$.provenance.prior_state_enabled",
+            )
+        if provenance.get("prior_state_hash") is not None:
+            add_error(
+                errors,
+                code="ONE_SHOT_PRIOR_STATE_HASH_FORBIDDEN",
+                message="one-shot batches must not include provenance.prior_state_hash",
+                path="$.provenance.prior_state_hash",
+            )
+
+    if isinstance(feedback_plan, dict):
+        if isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
+            rendered_prompt = prompt["rendered_prompt"]
+            if "NEXT ACTION SELECTION" not in rendered_prompt:
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_PROMPT_BLOCK_REQUIRED",
+                    message="feedback-guided batches must include a NEXT ACTION SELECTION block in rendered_prompt",
+                    path="$.prompt.rendered_prompt",
+                )
+            next_action_id = feedback_plan.get("next_action_id")
+            if isinstance(next_action_id, str) and next_action_id not in rendered_prompt:
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_PROMPT_MISMATCH",
+                    message="feedback_plan.next_action_id does not appear in rendered_prompt",
+                    path="$.feedback_plan.next_action_id",
+                )
+        if isinstance(feedback_plan.get("plan_hash"), str) and not SHA256_PATTERN.fullmatch(
+            feedback_plan["plan_hash"]
+        ):
+            add_error(
+                errors,
+                code="INVALID_FEEDBACK_PLAN_HASH",
+                message="feedback_plan.plan_hash must be a lowercase hex sha256",
+                path="$.feedback_plan.plan_hash",
+            )
+        if isinstance(facet, dict) and feedback_plan.get("applied_facet") != facet.get("name"):
+            add_error(
+                errors,
+                code="FEEDBACK_PLAN_FACET_MISMATCH",
+                message="feedback_plan.applied_facet must match facet.name",
+                path="$.feedback_plan.applied_facet",
+            )
+        if isinstance(prompt_bundle, dict) and feedback_plan.get("applied_prompt_bundle_id") != prompt_bundle.get("bundle_id"):
+            add_error(
+                errors,
+                code="FEEDBACK_PLAN_BUNDLE_MISMATCH",
+                message="feedback_plan.applied_prompt_bundle_id must match prompt_bundle.bundle_id",
+                path="$.feedback_plan.applied_prompt_bundle_id",
+            )
+        if isinstance(provenance, dict):
+            if provenance.get("feedback_plan_enabled") is not True:
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_PROVENANCE_FLAG_REQUIRED",
+                    message="provenance.feedback_plan_enabled must be true when feedback_plan is present",
+                    path="$.provenance.feedback_plan_enabled",
+                )
+            if provenance.get("feedback_plan_hash") != feedback_plan.get("plan_hash"):
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_PROVENANCE_HASH_MISMATCH",
+                    message="provenance.feedback_plan_hash must match feedback_plan.plan_hash",
+                    path="$.provenance.feedback_plan_hash",
+                )
+            if provenance.get("next_action_id") != feedback_plan.get("next_action_id"):
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_NEXT_ACTION_MISMATCH",
+                    message="provenance.next_action_id must match feedback_plan.next_action_id",
+                    path="$.provenance.next_action_id",
+                )
+            if provenance.get("scoring_policy_id") != feedback_plan.get("scoring_policy_id"):
+                add_error(
+                    errors,
+                    code="FEEDBACK_PLAN_POLICY_MISMATCH",
+                    message="provenance.scoring_policy_id must match feedback_plan.scoring_policy_id",
+                    path="$.provenance.scoring_policy_id",
+                )
+    elif isinstance(provenance, dict):
+        if provenance.get("feedback_plan_enabled") not in (False, None):
+            add_error(
+                errors,
+                code="ONE_SHOT_FEEDBACK_PLAN_FLAG_INVALID",
+                message="batches without feedback_plan must not claim feedback-plan provenance",
+                path="$.provenance.feedback_plan_enabled",
+            )
+        for field_name in ("feedback_plan_hash", "next_action_id", "scoring_policy_id"):
+            if provenance.get(field_name) is not None:
+                add_error(
+                    errors,
+                    code="ONE_SHOT_FEEDBACK_PLAN_METADATA_FORBIDDEN",
+                    message=f"batches without feedback_plan must not include provenance.{field_name}",
+                    path=f"$.provenance.{field_name}",
+                )
+
     wrapping = payload.get("source_text_wrapping")
     if isinstance(wrapping, dict) and isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
         try:

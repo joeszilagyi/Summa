@@ -40,61 +40,130 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
-    APPEND_ONLY_TARGETS,
-    PROPOSAL_KINDS,
+    DEFERRED_CANDIDATE_KINDS,
+    DEFAULT_SCORING_WEIGHTS,
+    LEAD_KINDS,
+    NEXT_ACTION_KINDS,
     SCHEMA_VERSION,
-    TARGET_RECORD_FAMILIES,
+    SCORING_POLICY_ID,
 )
 
 
 VALIDATOR_NAME = "candidate_feedback_plan"
 CONTRACT_VERSION = "1"
 SCHEMA_PATH = "config/candidate_feedback_plan.schema.json"
-
-OBJECT_REF_PATTERN = re.compile(r"^[a-z_]+:[0-9]+$")
-PROVENANCE_REF_PATTERN = re.compile(r"^prov:[a-z0-9-]+$")
-EVIDENCE_REF_PATTERN = re.compile(r"^evl:[a-z0-9][a-z0-9._:-]*$")
-PROPOSAL_ID_PATTERN = re.compile(r"^cfp:[a-z0-9][a-z0-9._:-]*$")
+FACET_CANDIDATE_PATTERN = re.compile(r"^facet:[a-z0-9_][a-z0-9._-]*$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 REQUIRED_KEYS = {
     "schema_version",
     "generated_at",
-    "source",
+    "subject",
+    "canonical_store",
+    "scoring_policy",
     "counts",
-    "proposals",
-    "skipped",
+    "facet_scores",
+    "lead_scores",
+    "next_action",
+    "deferred",
     "warnings",
     "errors",
 }
-SOURCE_REQUIRED_KEYS = {
+SUBJECT_REQUIRED_KEYS = {
+    "subject_id",
+    "display_name",
+    "domain_pack",
+    "enabled_facets",
+    "query_families",
+}
+CANONICAL_STORE_REQUIRED_KEYS = {
     "database_name",
     "schema_version",
-    "correction_ledger_applied",
-    "field_review_state_count",
-    "evidence_locator_count",
+    "current_migration_id",
     "dry_run",
 }
-COUNT_REQUIRED_KEYS = {
-    "earlier_candidates_considered",
-    "later_discoveries_considered",
-    "proposals_emitted",
-    "skipped_targets",
+SCORING_POLICY_REQUIRED_KEYS = {
+    "policy_id",
+    "cycle_depth_considered",
+    "previous_run_ids_considered",
+    "use_prior_state",
+    "weights",
+    "limits",
 }
-PROPOSAL_REQUIRED_KEYS = {
-    "proposal_id",
+COUNT_REQUIRED_KEYS = {
+    "gather_runs_considered",
+    "facet_candidates",
+    "lead_candidates",
+    "productive_leads",
+    "deferred_candidates",
+}
+FACET_SCORE_REQUIRED_KEYS = {
     "rank",
-    "proposal_kind",
-    "target_record_family",
-    "target_object_ref",
-    "source_object_refs",
-    "append_only_target",
+    "candidate_id",
+    "facet",
+    "prompt_bundle_id",
     "score",
+    "selected",
+    "reason_codes",
     "rationale",
-    "preserved_target_provenance_refs",
-    "preserved_source_provenance_refs",
-    "evidence_locator_refs",
-    "evidence_summaries",
-    "proposed_changes",
+    "signals",
+}
+LEAD_SCORE_REQUIRED_KEYS = {
+    "rank",
+    "candidate_id",
+    "lead_kind",
+    "object_ref",
+    "facet",
+    "review_state",
+    "label",
+    "score",
+    "selected",
+    "reason_codes",
+    "rationale",
+    "signals",
+    "related_run_ids",
+}
+NEXT_ACTION_REQUIRED_KEYS = {
+    "action_id",
+    "action_kind",
+    "subject_id",
+    "selected_facet",
+    "selected_prompt_bundle_id",
+    "selection_score",
+    "scoring_policy_id",
+    "rationale",
+    "reason_codes",
+    "cycle_depth",
+    "use_prior_state",
+    "previous_run_ids_considered",
+    "input_record_refs",
+    "suggested_cli_args",
+}
+DEFERRED_REQUIRED_KEYS = {
+    "candidate_id",
+    "candidate_kind",
+    "score",
+    "reason",
+}
+SIGNAL_BUCKET_KEYS = {
+    "productive_runs",
+    "zero_yield_runs",
+    "open_leads",
+    "works",
+    "claims",
+    "entities",
+    "relationships",
+    "successful_extractions",
+    "failed_extractions",
+}
+LEAD_SIGNAL_KEYS = {
+    "open_lead",
+    "related_works",
+    "related_claims",
+    "related_entities",
+    "successful_extractions",
+    "failed_extractions",
+    "zero_yield_attempts",
 }
 
 
@@ -180,194 +249,450 @@ def validate_string_list(value: Any, *, field_name: str, errors: list[dict[str, 
     return accepted
 
 
-def validate_source(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
-    source = payload.get("source")
-    if not isinstance(source, dict):
-        add_error(errors, code="SOURCE_NOT_OBJECT", message="source must be an object")
+def validate_required_object(
+    payload: dict[str, Any],
+    *,
+    field_name: str,
+    required_keys: set[str],
+    errors: list[dict[str, Any]],
+    missing_code: str,
+    object_code: str,
+) -> dict[str, Any] | None:
+    value = payload.get(field_name)
+    if not isinstance(value, dict):
+        add_error(errors, code=object_code, message=f"{field_name} must be an object")
+        return None
+    for key in sorted(required_keys - set(value)):
+        add_error(errors, code=missing_code, message=f"missing required {field_name} key: {key}")
+    return value
+
+
+def validate_numeric_bucket(
+    value: Any,
+    *,
+    field_name: str,
+    required_keys: set[str],
+    errors: list[dict[str, Any]],
+) -> None:
+    if not isinstance(value, dict):
+        add_error(errors, code="INVALID_SIGNALS", message=f"{field_name} must be an object")
         return
-    for key in sorted(SOURCE_REQUIRED_KEYS - set(source)):
-        add_error(errors, code="MISSING_SOURCE_KEY", message=f"missing required source key: {key}")
-    validate_nonblank_string(source.get("database_name"), field_name="source.database_name", errors=errors, code="INVALID_SOURCE_FIELD")
-    if source.get("schema_version") is not None and not isinstance(source.get("schema_version"), int):
-        add_error(errors, code="INVALID_SOURCE_FIELD", message="source.schema_version must be null or an integer")
-    for field in ("correction_ledger_applied", "dry_run"):
-        if not isinstance(source.get(field), bool):
-            add_error(errors, code="INVALID_SOURCE_FIELD", message=f"source.{field} must be a boolean")
-    for field in ("field_review_state_count", "evidence_locator_count"):
-        value = source.get(field)
-        if not isinstance(value, int) or value < 0:
-            add_error(errors, code="INVALID_SOURCE_FIELD", message=f"source.{field} must be a non-negative integer")
+    for key in sorted(required_keys - set(value)):
+        add_error(errors, code="MISSING_SIGNAL_KEY", message=f"missing required {field_name} key: {key}")
+    for key in sorted(required_keys):
+        item = value.get(key)
+        if not isinstance(item, int) or item < 0:
+            add_error(errors, code="INVALID_SIGNAL_VALUE", message=f"{field_name}.{key} must be a non-negative integer")
+
+
+def validate_subject(payload: dict[str, Any], errors: list[dict[str, Any]]) -> list[str]:
+    subject = validate_required_object(
+        payload,
+        field_name="subject",
+        required_keys=SUBJECT_REQUIRED_KEYS,
+        errors=errors,
+        missing_code="MISSING_SUBJECT_KEY",
+        object_code="SUBJECT_NOT_OBJECT",
+    )
+    if subject is None:
+        return []
+    validate_nonblank_string(subject.get("subject_id"), field_name="subject.subject_id", errors=errors, code="INVALID_SUBJECT_FIELD")
+    validate_nonblank_string(subject.get("display_name"), field_name="subject.display_name", errors=errors, code="INVALID_SUBJECT_FIELD")
+    validate_nonblank_string(subject.get("domain_pack"), field_name="subject.domain_pack", errors=errors, code="INVALID_SUBJECT_FIELD")
+    enabled_facets = validate_string_list(subject.get("enabled_facets"), field_name="subject.enabled_facets", errors=errors, code="INVALID_SUBJECT_FIELD")
+    validate_string_list(subject.get("query_families"), field_name="subject.query_families", errors=errors, code="INVALID_SUBJECT_FIELD")
+    return enabled_facets
+
+
+def validate_canonical_store(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
+    source = validate_required_object(
+        payload,
+        field_name="canonical_store",
+        required_keys=CANONICAL_STORE_REQUIRED_KEYS,
+        errors=errors,
+        missing_code="MISSING_CANONICAL_STORE_KEY",
+        object_code="CANONICAL_STORE_NOT_OBJECT",
+    )
+    if source is None:
+        return
+    validate_nonblank_string(source.get("database_name"), field_name="canonical_store.database_name", errors=errors, code="INVALID_CANONICAL_STORE_FIELD")
+    schema_version = source.get("schema_version")
+    if schema_version is not None and (not isinstance(schema_version, int) or schema_version < 1):
+        add_error(errors, code="INVALID_CANONICAL_STORE_FIELD", message="canonical_store.schema_version must be null or a positive integer")
+    current_migration_id = source.get("current_migration_id")
+    if current_migration_id is not None and not isinstance(current_migration_id, str):
+        add_error(errors, code="INVALID_CANONICAL_STORE_FIELD", message="canonical_store.current_migration_id must be null or a string")
+    if source.get("dry_run") is not True:
+        add_error(errors, code="INVALID_CANONICAL_STORE_FIELD", message="canonical_store.dry_run must be true")
+
+
+def validate_scoring_policy(payload: dict[str, Any], errors: list[dict[str, Any]]) -> list[str]:
+    policy = validate_required_object(
+        payload,
+        field_name="scoring_policy",
+        required_keys=SCORING_POLICY_REQUIRED_KEYS,
+        errors=errors,
+        missing_code="MISSING_SCORING_POLICY_KEY",
+        object_code="SCORING_POLICY_NOT_OBJECT",
+    )
+    if policy is None:
+        return []
+    if policy.get("policy_id") != SCORING_POLICY_ID:
+        add_error(errors, code="INVALID_SCORING_POLICY", message=f"scoring_policy.policy_id must equal {SCORING_POLICY_ID}")
+    cycle_depth = policy.get("cycle_depth_considered")
+    if not isinstance(cycle_depth, int) or cycle_depth < 1:
+        add_error(errors, code="INVALID_SCORING_POLICY", message="scoring_policy.cycle_depth_considered must be a positive integer")
+    previous_run_ids = validate_string_list(
+        policy.get("previous_run_ids_considered"),
+        field_name="scoring_policy.previous_run_ids_considered",
+        errors=errors,
+        code="INVALID_SCORING_POLICY",
+    )
+    if not isinstance(policy.get("use_prior_state"), bool):
+        add_error(errors, code="INVALID_SCORING_POLICY", message="scoring_policy.use_prior_state must be a boolean")
+    weights = policy.get("weights")
+    if not isinstance(weights, dict):
+        add_error(errors, code="INVALID_SCORING_POLICY", message="scoring_policy.weights must be an object")
+    else:
+        for key in DEFAULT_SCORING_WEIGHTS:
+            value = weights.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                add_error(errors, code="INVALID_SCORING_WEIGHT", message=f"scoring_policy.weights.{key} must be numeric")
+    limits = policy.get("limits")
+    if not isinstance(limits, dict):
+        add_error(errors, code="INVALID_SCORING_POLICY", message="scoring_policy.limits must be an object")
+    else:
+        for key in ("max_facet_candidates", "max_lead_candidates", "max_deferred_candidates"):
+            value = limits.get(key)
+            if not isinstance(value, int) or value < 0:
+                add_error(errors, code="INVALID_SCORING_LIMIT", message=f"scoring_policy.limits.{key} must be a non-negative integer")
+    return previous_run_ids
 
 
 def validate_counts(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
-    counts = payload.get("counts")
-    if not isinstance(counts, dict):
-        add_error(errors, code="COUNTS_NOT_OBJECT", message="counts must be an object")
+    counts = validate_required_object(
+        payload,
+        field_name="counts",
+        required_keys=COUNT_REQUIRED_KEYS,
+        errors=errors,
+        missing_code="MISSING_COUNT_KEY",
+        object_code="COUNTS_NOT_OBJECT",
+    )
+    if counts is None:
         return
-    for key in sorted(COUNT_REQUIRED_KEYS - set(counts)):
-        add_error(errors, code="MISSING_COUNT_KEY", message=f"missing required counts key: {key}")
     for key in sorted(COUNT_REQUIRED_KEYS):
         value = counts.get(key)
         if not isinstance(value, int) or value < 0:
             add_error(errors, code="INVALID_COUNT_VALUE", message=f"counts.{key} must be a non-negative integer")
 
 
-def validate_ref_list(
-    value: Any,
-    *,
-    field_name: str,
-    pattern: re.Pattern[str],
-    errors: list[dict[str, Any]],
-    allow_empty: bool = True,
-) -> list[str]:
-    items = validate_string_list(value, field_name=field_name, errors=errors, code="INVALID_REF_LIST")
-    if not allow_empty and not items:
-        add_error(errors, code="INVALID_REF_LIST", message=f"{field_name} must not be empty")
-    accepted: list[str] = []
-    for item in items:
-        if not pattern.fullmatch(item):
-            add_error(errors, code="INVALID_REF_VALUE", message=f"{field_name} contains invalid reference: {item}")
+def validate_reason_codes(value: Any, *, field_name: str, errors: list[dict[str, Any]]) -> list[str]:
+    codes = validate_string_list(value, field_name=field_name, errors=errors, code="INVALID_REASON_CODES")
+    if not codes:
+        add_error(errors, code="INVALID_REASON_CODES", message=f"{field_name} must not be empty")
+    return codes
+
+
+def validate_facet_scores(payload: dict[str, Any], enabled_facets: list[str], errors: list[dict[str, Any]]) -> None:
+    facet_scores = payload.get("facet_scores")
+    if not isinstance(facet_scores, list):
+        add_error(errors, code="FACET_SCORES_NOT_ARRAY", message="facet_scores must be an array")
+        return
+    selected_count = 0
+    previous_score: float | None = None
+    expected_rank = 1
+    seen_facets: set[str] = set()
+    enabled_set = set(enabled_facets)
+    for index, item in enumerate(facet_scores):
+        label = f"facet_scores[{index}]"
+        if not isinstance(item, dict):
+            add_error(errors, code="FACET_SCORE_NOT_OBJECT", message=f"{label} must be an object")
             continue
-        accepted.append(item)
-    return accepted
+        for key in sorted(FACET_SCORE_REQUIRED_KEYS - set(item)):
+            add_error(errors, code="MISSING_FACET_SCORE_KEY", message=f"missing required {label} key: {key}")
+        rank = item.get("rank")
+        if not isinstance(rank, int) or rank != expected_rank:
+            add_error(errors, code="INVALID_FACET_SCORE_RANK", message=f"{label}.rank must equal {expected_rank}")
+        expected_rank += 1
+        candidate_id = validate_nonblank_string(item.get("candidate_id"), field_name=f"{label}.candidate_id", errors=errors, code="INVALID_FACET_SCORE")
+        if candidate_id is not None and not FACET_CANDIDATE_PATTERN.fullmatch(candidate_id):
+            add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.candidate_id must match ^facet:[a-z0-9_][a-z0-9._-]*$")
+        facet = validate_nonblank_string(item.get("facet"), field_name=f"{label}.facet", errors=errors, code="INVALID_FACET_SCORE")
+        if facet is not None:
+            if enabled_set and facet not in enabled_set:
+                add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.facet is not enabled for the subject: {facet}")
+            if facet in seen_facets:
+                add_error(errors, code="DUPLICATE_FACET_SCORE", message=f"duplicate facet score entry: {facet}")
+            seen_facets.add(facet)
+        validate_nonblank_string(item.get("prompt_bundle_id"), field_name=f"{label}.prompt_bundle_id", errors=errors, code="INVALID_FACET_SCORE")
+        score = item.get("score")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.score must be numeric")
+        else:
+            score_value = float(score)
+            if previous_score is not None and score_value > previous_score + 1e-9:
+                add_error(errors, code="FACET_SCORES_NOT_SORTED", message="facet_scores must be sorted in descending score order")
+            previous_score = score_value
+        if not isinstance(item.get("selected"), bool):
+            add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.selected must be a boolean")
+        elif item.get("selected") is True:
+            selected_count += 1
+        validate_reason_codes(item.get("reason_codes"), field_name=f"{label}.reason_codes", errors=errors)
+        validate_nonblank_string(item.get("rationale"), field_name=f"{label}.rationale", errors=errors, code="INVALID_FACET_SCORE")
+        validate_numeric_bucket(item.get("signals"), field_name=f"{label}.signals", required_keys=SIGNAL_BUCKET_KEYS, errors=errors)
+    if selected_count != 1:
+        add_error(errors, code="INVALID_FACET_SELECTION", message="facet_scores must mark exactly one selected facet")
 
 
-def validate_proposals(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
-    proposals = payload.get("proposals")
-    if not isinstance(proposals, list):
-        add_error(errors, code="PROPOSALS_NOT_ARRAY", message="proposals must be an array")
+def validate_lead_scores(payload: dict[str, Any], enabled_facets: list[str], errors: list[dict[str, Any]]) -> None:
+    lead_scores = payload.get("lead_scores")
+    if not isinstance(lead_scores, list):
+        add_error(errors, code="LEAD_SCORES_NOT_ARRAY", message="lead_scores must be an array")
         return
     previous_score: float | None = None
-    seen_ids: set[str] = set()
     expected_rank = 1
-    for index, proposal in enumerate(proposals):
-        label = f"proposals[{index}]"
-        if not isinstance(proposal, dict):
-            add_error(errors, code="PROPOSAL_NOT_OBJECT", message=f"{label} must be an object")
-            continue
-        for key in sorted(PROPOSAL_REQUIRED_KEYS - set(proposal)):
-            add_error(errors, code="MISSING_PROPOSAL_KEY", message=f"missing required {label} key: {key}")
-        proposal_id = validate_nonblank_string(proposal.get("proposal_id"), field_name=f"{label}.proposal_id", errors=errors, code="INVALID_PROPOSAL_ID")
-        if proposal_id is not None:
-            if not PROPOSAL_ID_PATTERN.fullmatch(proposal_id):
-                add_error(errors, code="INVALID_PROPOSAL_ID", message=f"{label}.proposal_id must match ^cfp:[a-z0-9][a-z0-9._:-]*$")
-            elif proposal_id in seen_ids:
-                add_error(errors, code="DUPLICATE_PROPOSAL_ID", message=f"duplicate proposal_id: {proposal_id}")
-            else:
-                seen_ids.add(proposal_id)
-        rank = proposal.get("rank")
-        if not isinstance(rank, int) or rank != expected_rank:
-            add_error(errors, code="INVALID_PROPOSAL_RANK", message=f"{label}.rank must equal {expected_rank}")
-        expected_rank += 1
-        kind = proposal.get("proposal_kind")
-        if not isinstance(kind, str) or kind not in PROPOSAL_KINDS:
-            add_error(errors, code="INVALID_PROPOSAL_KIND", message=f"{label}.proposal_kind must be one of: {', '.join(sorted(PROPOSAL_KINDS))}")
-        family = proposal.get("target_record_family")
-        if not isinstance(family, str) or family not in TARGET_RECORD_FAMILIES:
-            add_error(errors, code="INVALID_TARGET_RECORD_FAMILY", message=f"{label}.target_record_family must be one of: {', '.join(sorted(TARGET_RECORD_FAMILIES))}")
-        target_ref = proposal.get("target_object_ref")
-        if not isinstance(target_ref, str) or not OBJECT_REF_PATTERN.fullmatch(target_ref):
-            add_error(errors, code="INVALID_OBJECT_REF", message=f"{label}.target_object_ref must match ^[a-z_]+:[0-9]+$")
-        validate_ref_list(proposal.get("source_object_refs"), field_name=f"{label}.source_object_refs", pattern=OBJECT_REF_PATTERN, errors=errors, allow_empty=False)
-        append_only_target = proposal.get("append_only_target")
-        if not isinstance(append_only_target, str) or append_only_target not in APPEND_ONLY_TARGETS:
-            add_error(errors, code="INVALID_APPEND_ONLY_TARGET", message=f"{label}.append_only_target must be one of: {', '.join(sorted(APPEND_ONLY_TARGETS))}")
-        score = proposal.get("score")
-        if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0.0 <= float(score) <= 1.0:
-            add_error(errors, code="INVALID_SCORE", message=f"{label}.score must be a number between 0.0 and 1.0")
-        else:
-            current_score = float(score)
-            if previous_score is not None and current_score > previous_score + 1e-9:
-                add_error(errors, code="PROPOSAL_ORDER_INVALID", message="proposals must be sorted by descending score")
-            previous_score = current_score
-        validate_nonblank_string(proposal.get("rationale"), field_name=f"{label}.rationale", errors=errors, code="INVALID_RATIONALE")
-        validate_ref_list(proposal.get("preserved_target_provenance_refs"), field_name=f"{label}.preserved_target_provenance_refs", pattern=PROVENANCE_REF_PATTERN, errors=errors)
-        validate_ref_list(proposal.get("preserved_source_provenance_refs"), field_name=f"{label}.preserved_source_provenance_refs", pattern=PROVENANCE_REF_PATTERN, errors=errors)
-        validate_ref_list(proposal.get("evidence_locator_refs"), field_name=f"{label}.evidence_locator_refs", pattern=EVIDENCE_REF_PATTERN, errors=errors)
-        validate_string_list(proposal.get("evidence_summaries"), field_name=f"{label}.evidence_summaries", errors=errors, code="INVALID_EVIDENCE_SUMMARIES")
-        if not isinstance(proposal.get("proposed_changes"), dict):
-            add_error(errors, code="INVALID_PROPOSED_CHANGES", message=f"{label}.proposed_changes must be an object")
-
-
-def validate_skipped(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
-    skipped = payload.get("skipped")
-    if not isinstance(skipped, list):
-        add_error(errors, code="SKIPPED_NOT_ARRAY", message="skipped must be an array")
-        return
-    for index, item in enumerate(skipped):
-        label = f"skipped[{index}]"
+    selected_count = 0
+    seen_ids: set[str] = set()
+    enabled_set = set(enabled_facets)
+    for index, item in enumerate(lead_scores):
+        label = f"lead_scores[{index}]"
         if not isinstance(item, dict):
-            add_error(errors, code="SKIPPED_NOT_OBJECT", message=f"{label} must be an object")
+            add_error(errors, code="LEAD_SCORE_NOT_OBJECT", message=f"{label} must be an object")
             continue
-        target_ref = item.get("target_object_ref")
-        if not isinstance(target_ref, str) or not OBJECT_REF_PATTERN.fullmatch(target_ref):
-            add_error(errors, code="INVALID_OBJECT_REF", message=f"{label}.target_object_ref must match ^[a-z_]+:[0-9]+$")
-        validate_nonblank_string(item.get("reason"), field_name=f"{label}.reason", errors=errors, code="INVALID_SKIPPED_REASON")
+        for key in sorted(LEAD_SCORE_REQUIRED_KEYS - set(item)):
+            add_error(errors, code="MISSING_LEAD_SCORE_KEY", message=f"missing required {label} key: {key}")
+        rank = item.get("rank")
+        if not isinstance(rank, int) or rank != expected_rank:
+            add_error(errors, code="INVALID_LEAD_SCORE_RANK", message=f"{label}.rank must equal {expected_rank}")
+        expected_rank += 1
+        candidate_id = validate_nonblank_string(item.get("candidate_id"), field_name=f"{label}.candidate_id", errors=errors, code="INVALID_LEAD_SCORE")
+        if candidate_id is not None:
+            if candidate_id in seen_ids:
+                add_error(errors, code="DUPLICATE_LEAD_SCORE", message=f"duplicate lead candidate_id: {candidate_id}")
+            seen_ids.add(candidate_id)
+        lead_kind = item.get("lead_kind")
+        if lead_kind not in LEAD_KINDS:
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.lead_kind must be one of {sorted(LEAD_KINDS)}")
+        validate_nonblank_string(item.get("object_ref"), field_name=f"{label}.object_ref", errors=errors, code="INVALID_LEAD_SCORE")
+        facet = validate_nonblank_string(item.get("facet"), field_name=f"{label}.facet", errors=errors, code="INVALID_LEAD_SCORE")
+        if facet is not None and enabled_set and facet not in enabled_set:
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.facet is not enabled for the subject: {facet}")
+        validate_nonblank_string(item.get("review_state"), field_name=f"{label}.review_state", errors=errors, code="INVALID_LEAD_SCORE")
+        validate_nonblank_string(item.get("label"), field_name=f"{label}.label", errors=errors, code="INVALID_LEAD_SCORE")
+        score = item.get("score")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.score must be numeric")
+        else:
+            score_value = float(score)
+            if previous_score is not None and score_value > previous_score + 1e-9:
+                add_error(errors, code="LEAD_SCORES_NOT_SORTED", message="lead_scores must be sorted in descending score order")
+            previous_score = score_value
+        if not isinstance(item.get("selected"), bool):
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.selected must be a boolean")
+        elif item.get("selected") is True:
+            selected_count += 1
+        validate_reason_codes(item.get("reason_codes"), field_name=f"{label}.reason_codes", errors=errors)
+        validate_nonblank_string(item.get("rationale"), field_name=f"{label}.rationale", errors=errors, code="INVALID_LEAD_SCORE")
+        validate_numeric_bucket(item.get("signals"), field_name=f"{label}.signals", required_keys=LEAD_SIGNAL_KEYS, errors=errors)
+        related_run_ids = validate_string_list(item.get("related_run_ids"), field_name=f"{label}.related_run_ids", errors=errors, code="INVALID_LEAD_SCORE")
+        if item.get("source_locus_id") is not None and not isinstance(item.get("source_locus_id"), str):
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.source_locus_id must be null or a string")
+        if item.get("source_lead_id") is not None and not isinstance(item.get("source_lead_id"), str):
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.source_lead_id must be null or a string")
+        if related_run_ids != sorted(dict.fromkeys(related_run_ids), reverse=False):
+            # Keep deterministic but not prescriptive about chronology; require de-duplicated stable order.
+            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.related_run_ids must be de-duplicated and stable")
+    if selected_count > 1:
+        add_error(errors, code="INVALID_LEAD_SELECTION", message="lead_scores must not mark more than one selected lead")
+
+
+def validate_next_action(payload: dict[str, Any], enabled_facets: list[str], previous_run_ids: list[str], errors: list[dict[str, Any]]) -> None:
+    next_action = validate_required_object(
+        payload,
+        field_name="next_action",
+        required_keys=NEXT_ACTION_REQUIRED_KEYS,
+        errors=errors,
+        missing_code="MISSING_NEXT_ACTION_KEY",
+        object_code="NEXT_ACTION_NOT_OBJECT",
+    )
+    if next_action is None:
+        return
+    validate_nonblank_string(next_action.get("action_id"), field_name="next_action.action_id", errors=errors, code="INVALID_NEXT_ACTION")
+    if next_action.get("action_kind") not in NEXT_ACTION_KINDS:
+        add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.action_kind must be one of {sorted(NEXT_ACTION_KINDS)}")
+    validate_nonblank_string(next_action.get("subject_id"), field_name="next_action.subject_id", errors=errors, code="INVALID_NEXT_ACTION")
+    selected_facet = validate_nonblank_string(next_action.get("selected_facet"), field_name="next_action.selected_facet", errors=errors, code="INVALID_NEXT_ACTION")
+    if selected_facet is not None and enabled_facets and selected_facet not in set(enabled_facets):
+        add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.selected_facet is not enabled for the subject: {selected_facet}")
+    validate_nonblank_string(next_action.get("selected_prompt_bundle_id"), field_name="next_action.selected_prompt_bundle_id", errors=errors, code="INVALID_NEXT_ACTION")
+    if next_action.get("selected_object_ref") is not None and not isinstance(next_action.get("selected_object_ref"), str):
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.selected_object_ref must be null or a string")
+    if next_action.get("selected_lead_kind") not in LEAD_KINDS | {None}:
+        add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.selected_lead_kind must be null or one of {sorted(LEAD_KINDS)}")
+    for field in ("selected_source_locus_id", "selected_source_lead_id", "selected_label", "selected_review_state"):
+        value = next_action.get(field)
+        if value is not None and not isinstance(value, str):
+            add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.{field} must be null or a string")
+    score = next_action.get("selection_score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.selection_score must be numeric")
+    if next_action.get("scoring_policy_id") != SCORING_POLICY_ID:
+        add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.scoring_policy_id must equal {SCORING_POLICY_ID}")
+    validate_nonblank_string(next_action.get("rationale"), field_name="next_action.rationale", errors=errors, code="INVALID_NEXT_ACTION")
+    validate_reason_codes(next_action.get("reason_codes"), field_name="next_action.reason_codes", errors=errors)
+    cycle_depth = next_action.get("cycle_depth")
+    if not isinstance(cycle_depth, int) or cycle_depth < 1:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.cycle_depth must be a positive integer")
+    if not isinstance(next_action.get("use_prior_state"), bool):
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.use_prior_state must be a boolean")
+    next_previous_run_ids = validate_string_list(
+        next_action.get("previous_run_ids_considered"),
+        field_name="next_action.previous_run_ids_considered",
+        errors=errors,
+        code="INVALID_NEXT_ACTION",
+    )
+    if next_previous_run_ids != previous_run_ids:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.previous_run_ids_considered must match scoring_policy.previous_run_ids_considered")
+    validate_string_list(next_action.get("input_record_refs"), field_name="next_action.input_record_refs", errors=errors, code="INVALID_NEXT_ACTION")
+    cli_args = validate_string_list(next_action.get("suggested_cli_args"), field_name="next_action.suggested_cli_args", errors=errors, code="INVALID_NEXT_ACTION")
+    if "--facet" not in cli_args:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.suggested_cli_args must include --facet")
+    if next_action.get("use_prior_state") is True and "--use-prior-state" not in cli_args:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.suggested_cli_args must include --use-prior-state when next_action.use_prior_state is true")
+    if next_action.get("action_kind") == "facet_lead" and next_action.get("selected_object_ref") is None:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="facet_lead next actions must include selected_object_ref")
+    if next_action.get("action_kind") != "facet_lead" and next_action.get("selected_lead_kind") is not None:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="non-lead next actions must not include selected_lead_kind")
+
+
+def validate_deferred(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
+    deferred = payload.get("deferred")
+    if not isinstance(deferred, list):
+        add_error(errors, code="DEFERRED_NOT_ARRAY", message="deferred must be an array")
+        return
+    seen_ids: set[str] = set()
+    for index, item in enumerate(deferred):
+        label = f"deferred[{index}]"
+        if not isinstance(item, dict):
+            add_error(errors, code="DEFERRED_NOT_OBJECT", message=f"{label} must be an object")
+            continue
+        for key in sorted(DEFERRED_REQUIRED_KEYS - set(item)):
+            add_error(errors, code="MISSING_DEFERRED_KEY", message=f"missing required {label} key: {key}")
+        candidate_id = validate_nonblank_string(item.get("candidate_id"), field_name=f"{label}.candidate_id", errors=errors, code="INVALID_DEFERRED")
+        if candidate_id is not None:
+            if candidate_id in seen_ids:
+                add_error(errors, code="DUPLICATE_DEFERRED_CANDIDATE", message=f"duplicate deferred candidate_id: {candidate_id}")
+            seen_ids.add(candidate_id)
+        if item.get("candidate_kind") not in DEFERRED_CANDIDATE_KINDS:
+            add_error(errors, code="INVALID_DEFERRED", message=f"{label}.candidate_kind must be one of {sorted(DEFERRED_CANDIDATE_KINDS)}")
+        score = item.get("score")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            add_error(errors, code="INVALID_DEFERRED", message=f"{label}.score must be numeric")
+        validate_nonblank_string(item.get("reason"), field_name=f"{label}.reason", errors=errors, code="INVALID_DEFERRED")
+
+
+def validate_warning_error_lists(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
+    for field_name in ("warnings", "errors"):
+        validate_string_list(payload.get(field_name), field_name=field_name, errors=errors, code="INVALID_TEXT_LIST")
 
 
 def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]:
-    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
-    warnings: list[dict[str, Any]] = []
     payload, errors, exit_code = load_json_object(target)
     if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
-    counts["inspected"] = 1
+        return {
+            "validator": VALIDATOR_NAME,
+            "contract_version": CONTRACT_VERSION,
+            "schema_path": SCHEMA_PATH,
+            "target": display_path(target),
+            "valid": False,
+            "errors": errors,
+            "warnings": [],
+            "stats": {"error_count": len(errors), "warning_count": 0},
+        }, exit_code
 
-    unknown_keys = sorted(set(payload) - REQUIRED_KEYS - {"validator", "contract_version", "target", "status", "output_artifacts", "scenario"})
-    for key in unknown_keys:
-        add_error(errors, code="UNKNOWN_FIELD", message=f"unexpected field: {key}")
     for key in sorted(REQUIRED_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required key: {key}")
-    if payload.get("schema_version") != SCHEMA_VERSION:
+
+    schema_version = payload.get("schema_version")
+    if schema_version != SCHEMA_VERSION:
         add_error(errors, code="INVALID_SCHEMA_VERSION", message=f"schema_version must equal {SCHEMA_VERSION}")
     generated_at = payload.get("generated_at")
     if not isinstance(generated_at, str) or not is_rfc3339_datetime(generated_at):
-        add_error(errors, code="INVALID_GENERATED_AT", message="generated_at must be an RFC3339 datetime")
-    validate_source(payload, errors)
+        add_error(errors, code="INVALID_GENERATED_AT", message="generated_at must be an RFC3339 date-time")
+
+    enabled_facets = validate_subject(payload, errors)
+    validate_canonical_store(payload, errors)
+    previous_run_ids = validate_scoring_policy(payload, errors)
     validate_counts(payload, errors)
-    validate_proposals(payload, errors)
-    validate_skipped(payload, errors)
-    for array_field in ("warnings", "errors"):
-        validate_string_list(payload.get(array_field), field_name=array_field, errors=errors, code="INVALID_MESSAGE_ARRAY")
+    validate_facet_scores(payload, enabled_facets, errors)
+    validate_lead_scores(payload, enabled_facets, errors)
+    validate_next_action(payload, enabled_facets, previous_run_ids, errors)
+    validate_deferred(payload, errors)
+    validate_warning_error_lists(payload, errors)
 
-    payload_counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
-    proposals = payload.get("proposals") if isinstance(payload.get("proposals"), list) else []
-    skipped = payload.get("skipped") if isinstance(payload.get("skipped"), list) else []
-    if isinstance(payload_counts, dict):
-        if payload_counts.get("proposals_emitted") != len(proposals):
-            add_error(errors, code="COUNT_MISMATCH", message="counts.proposals_emitted must equal len(proposals)")
-        if payload_counts.get("skipped_targets") != len(skipped):
-            add_error(errors, code="COUNT_MISMATCH", message="counts.skipped_targets must equal len(skipped)")
+    next_action = payload.get("next_action")
+    facet_scores = payload.get("facet_scores")
+    if isinstance(next_action, dict) and isinstance(facet_scores, list):
+        selected_facets = [item for item in facet_scores if isinstance(item, dict) and item.get("selected") is True]
+        if len(selected_facets) == 1:
+            selected_facet = selected_facets[0].get("facet")
+            if next_action.get("selected_facet") != selected_facet:
+                add_error(errors, code="NEXT_ACTION_MISMATCH", message="next_action.selected_facet must match the selected facet_scores entry")
+        if next_action.get("action_kind") == "facet_bootstrap" and payload.get("counts", {}).get("gather_runs_considered") not in (0, None):
+            add_error(errors, code="NEXT_ACTION_MISMATCH", message="facet_bootstrap next actions require zero prior gather runs")
 
-    if errors:
-        counts["rejected"] = 1
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
-    counts["accepted"] = 1
-    return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
+    counts = payload.get("counts")
+    if isinstance(counts, dict):
+        if isinstance(payload.get("facet_scores"), list) and counts.get("facet_candidates") != len(payload["facet_scores"]):
+            add_error(errors, code="COUNT_MISMATCH", message="counts.facet_candidates must equal len(facet_scores)")
+        if isinstance(payload.get("lead_scores"), list) and counts.get("lead_candidates") != len(payload["lead_scores"]):
+            add_error(errors, code="COUNT_MISMATCH", message="counts.lead_candidates must equal len(lead_scores)")
+        if isinstance(payload.get("deferred"), list) and counts.get("deferred_candidates") != len(payload["deferred"]):
+            add_error(errors, code="COUNT_MISMATCH", message="counts.deferred_candidates must equal len(deferred)")
+        if isinstance(payload.get("lead_scores"), list):
+            productive_count = sum(
+                1
+                for item in payload["lead_scores"]
+                if isinstance(item, dict)
+                and isinstance(item.get("score"), (int, float))
+                and not isinstance(item.get("score"), bool)
+                and float(item["score"]) > 0.0
+            )
+            if counts.get("productive_leads") != productive_count:
+                add_error(errors, code="COUNT_MISMATCH", message="counts.productive_leads must equal the number of lead_scores with score > 0")
+
+    report = {
+        "validator": VALIDATOR_NAME,
+        "contract_version": CONTRACT_VERSION,
+        "schema_path": SCHEMA_PATH,
+        "target": display_path(target),
+        "valid": not errors,
+        "errors": errors,
+        "warnings": [],
+        "stats": {
+            "error_count": len(errors),
+            "warning_count": 0,
+            "facet_score_count": len(payload.get("facet_scores", [])) if isinstance(payload.get("facet_scores"), list) else 0,
+            "lead_score_count": len(payload.get("lead_scores", [])) if isinstance(payload.get("lead_scores"), list) else 0,
+            "deferred_count": len(payload.get("deferred", [])) if isinstance(payload.get("deferred"), list) else 0,
+        },
+    }
+    return report, EXIT_PASS if not errors else EXIT_VALIDATION_FAILED
 
 
 def main() -> int:
     args = parse_args()
-    target = Path(args.target)
-    result, exit_code = validate_candidate_feedback_plan(target)
-    report = {
-        "validator": VALIDATOR_NAME,
-        "contract_version": CONTRACT_VERSION,
-        "target": args.target_id or (display_path(args.target) or args.target),
-        "status": "pass" if exit_code == EXIT_PASS else "fail",
-        "counts": result["counts"],
-        "errors": result["errors"],
-        "warnings": result["warnings"],
-        "output_artifacts": {
-            "report_json": display_path(args.report_json) if args.report_json else None,
-            "report_text": display_path(args.report_text) if args.report_text else None,
-        },
-        "scenario": args.scenario,
-    }
-    text_report = render_text_report(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
-    sys.stdout.write(text_report)
+    target = Path(args.target).expanduser()
+    report, exit_code = validate_candidate_feedback_plan(target)
+    if getattr(args, "report_json", None):
+        write_json(Path(args.report_json), report)
+    if getattr(args, "report_text", None):
+        write_text(Path(args.report_text), render_text_report(report))
+    if getattr(args, "format", "json") == "text":
+        sys.stdout.write(render_text_report(report))
+    else:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
     return exit_code
 
 

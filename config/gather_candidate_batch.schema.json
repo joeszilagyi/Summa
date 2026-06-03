@@ -42,6 +42,30 @@
         "live"
       ]
     },
+    "iteration_mode": {
+      "type": "string",
+      "enum": [
+        "one_shot",
+        "prior_state"
+      ]
+    },
+    "cycle_depth": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_run_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "prior_state": {
+      "$ref": "#/$defs/prior_state"
+    },
+    "feedback_plan": {
+      "$ref": "#/$defs/feedback_plan"
+    },
     "phase": {
       "type": "string",
       "enum": [
@@ -345,6 +369,314 @@
         }
       }
     },
+    "prior_state_count_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "selected",
+        "rendered"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rendered": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "prior_state_previous_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "event_timestamp",
+        "cycle_depth"
+      ],
+      "properties": {
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_timestamp": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cycle_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
+    "prior_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "source",
+        "limits",
+        "record_counts",
+        "previous_runs",
+        "records",
+        "truncated",
+        "context_text",
+        "context_hash"
+      ],
+      "properties": {
+        "policy": {
+          "const": "accepted-and-open-leads"
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "subject_id",
+            "schema_version",
+            "subject_scope"
+          ],
+          "properties": {
+            "kind": {
+              "const": "canonical_store"
+            },
+            "subject_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "subject_scope": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "per_family_limit",
+            "max_chars",
+            "max_prior_cycles",
+            "high_confidence_threshold"
+          ],
+          "properties": {
+            "per_family_limit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_chars": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_prior_cycles": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "high_confidence_threshold": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "record_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "works",
+            "entities",
+            "source_claims",
+            "source_access",
+            "relationships",
+            "extraction_summaries",
+            "previous_runs"
+          ],
+          "properties": {
+            "works": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "entities": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "source_claims": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "source_access": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "relationships": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "extraction_summaries": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            },
+            "previous_runs": {
+              "$ref": "#/$defs/prior_state_count_bucket"
+            }
+          }
+        },
+        "previous_runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/prior_state_previous_run"
+          }
+        },
+        "previous_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "records": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "works",
+            "entities",
+            "source_claims",
+            "source_access",
+            "relationships",
+            "extraction_summaries"
+          ],
+          "properties": {
+            "works": {
+              "type": "array"
+            },
+            "entities": {
+              "type": "array"
+            },
+            "source_claims": {
+              "type": "array"
+            },
+            "source_access": {
+              "type": "array"
+            },
+            "relationships": {
+              "type": "array"
+            },
+            "extraction_summaries": {
+              "type": "array"
+            }
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "context_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_hash": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "feedback_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "plan_path",
+        "plan_hash",
+        "next_action_id",
+        "plan_selected_facet",
+        "applied_facet",
+        "selected_prompt_bundle_id",
+        "applied_prompt_bundle_id",
+        "selection_score",
+        "scoring_policy_id",
+        "rationale",
+        "use_prior_state",
+        "cycle_depth",
+        "previous_run_ids_considered"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "candidate-feedback-plan.v1"
+        },
+        "plan_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "next_action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_selected_facet": {
+          "type": "string",
+          "minLength": 1
+        },
+        "applied_facet": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selected_prompt_bundle_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "applied_prompt_bundle_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selected_object_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected_lead_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selection_score": {
+          "type": "number"
+        },
+        "scoring_policy_id": {
+          "const": "candidate-feedback.default.v1"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "use_prior_state": {
+          "type": "boolean"
+        },
+        "cycle_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "previous_run_ids_considered": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "prompt": {
       "type": "object",
       "additionalProperties": false,
@@ -544,6 +876,40 @@
         },
         "network_access_attempted": {
           "const": false
+        },
+        "prior_state_enabled": {
+          "type": "boolean"
+        },
+        "prior_state_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "feedback_plan_enabled": {
+          "type": "boolean"
+        },
+        "feedback_plan_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scoring_policy_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cycle_depth": {
+          "type": "integer",
+          "minimum": 1
         },
         "stamped_output_path": {
           "type": [

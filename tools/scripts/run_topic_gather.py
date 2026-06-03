@@ -31,6 +31,13 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     render_wrapped_block,
 )
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
+from tools.source_db_tools import canonical_store  # noqa: E402
+from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
+    EXIT_PASS as EXIT_FEEDBACK_PLAN_PASS,
+)
+from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
+    validate_candidate_feedback_plan,
+)
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     VALIDATOR_NAME,
     validate_gather_candidate_batch,
@@ -42,6 +49,7 @@ SCHEMA_VERSION = "gather-candidate-batch.v1"
 DEFAULT_MODE = "dry-run"
 DEFAULT_PHASE = "01a"
 DEFAULT_ENGINE = "codex"
+DEFAULT_CYCLE_DEPTH = 1
 RUNS_ROOT = Path("runs") / "gather"
 LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
@@ -69,6 +77,7 @@ CANDIDATE_TYPE_HINTS = {
     "works": "work",
     "open_questions": "open_question",
 }
+PRIOR_STATE_POLICY = canonical_store.DEFAULT_GATHER_PRIOR_STATE_POLICY
 
 
 class GatherDriverError(RuntimeError):
@@ -93,7 +102,8 @@ def parse_args() -> argparse.Namespace:
         help="Workspace root used for the local runs/gather/<run-id>/ output path.",
     )
     parser.add_argument(
-        "--facet", required=True, help="One enabled gather facet from the resolved subject runtime."
+        "--facet",
+        help="One enabled gather facet from the resolved subject runtime. Optional when --feedback-plan supplies the next action.",
     )
     parser.add_argument(
         "--mode",
@@ -126,6 +136,48 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Optional local UTF-8 text file whose bytes will be wrapped as untrusted source text. May be repeated.",
+    )
+    parser.add_argument(
+        "--db",
+        help="Canonical SQLite store used for optional prior-state gather context.",
+    )
+    parser.add_argument(
+        "--feedback-plan",
+        help="Optional candidate-feedback-plan JSON artifact used to select the next gather action.",
+    )
+    parser.add_argument(
+        "--use-prior-state",
+        action="store_true",
+        help="Inject bounded prior canonical state for the resolved subject into the rendered prompt.",
+    )
+    parser.add_argument(
+        "--cycle-depth",
+        type=int,
+        help="1-based gather cycle depth recorded in the batch artifact. Defaults to the feedback plan cycle or 1.",
+    )
+    parser.add_argument(
+        "--previous-run-id",
+        action="append",
+        default=[],
+        help="Optional prior gather run_id to record in iteration metadata. May be repeated.",
+    )
+    parser.add_argument(
+        "--prior-state-limit",
+        type=int,
+        default=canonical_store.DEFAULT_GATHER_PRIOR_STATE_LIMIT,
+        help="Maximum rows per prior-state family to include (default: 5).",
+    )
+    parser.add_argument(
+        "--prior-state-max-chars",
+        type=int,
+        default=canonical_store.DEFAULT_GATHER_PRIOR_STATE_MAX_CHARS,
+        help="Maximum rendered prior-state context characters (default: 5000).",
+    )
+    parser.add_argument(
+        "--prior-state-policy",
+        choices=(PRIOR_STATE_POLICY,),
+        default=PRIOR_STATE_POLICY,
+        help="Bounded prior-state selection policy (default: accepted-and-open-leads).",
     )
     parser.add_argument(
         "--format",
@@ -234,10 +286,17 @@ def resolve_source_text_blocks(
     return blocks, rendered_blocks
 
 
-def resolve_gather_inputs(args: argparse.Namespace) -> dict[str, Any]:
-    runtime = resolve_subject_runtime.resolve_subject_runtime(args.subject, args.workspace)
+def resolve_runtime_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    return resolve_subject_runtime.resolve_subject_runtime(args.subject, args.workspace)
+
+
+def resolve_gather_inputs(
+    *,
+    runtime: dict[str, Any],
+    facet: str,
+    phase: str,
+) -> dict[str, Any]:
     subject = runtime["subject"]
-    facet = args.facet.strip()
     if facet not in subject["enabled_facets"]:
         raise GatherDriverError(f"facet not enabled in subject manifest: {facet}")
 
@@ -251,7 +310,6 @@ def resolve_gather_inputs(args: argparse.Namespace) -> dict[str, Any]:
     except resolve_subject_runtime.ResolutionError as exc:
         raise GatherDriverError(str(exc)) from exc
 
-    phase = args.phase
     phase_template_files = bundle.get("resolved_phase_template_files")
     if not isinstance(phase_template_files, dict):
         raise GatherDriverError(
@@ -295,6 +353,173 @@ def resolve_gather_inputs(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def validate_iteration_args(args: argparse.Namespace) -> None:
+    if not args.facet:
+        raise GatherDriverError("--facet is required unless --feedback-plan supplies the next action")
+    if args.cycle_depth < 1:
+        raise GatherDriverError("--cycle-depth must be at least 1")
+    if args.prior_state_limit < 0:
+        raise GatherDriverError("--prior-state-limit must be non-negative")
+    if args.prior_state_max_chars <= 0:
+        raise GatherDriverError("--prior-state-max-chars must be positive")
+    if args.use_prior_state and not args.db:
+        raise GatherDriverError("--db is required when --use-prior-state is set")
+    if not args.use_prior_state:
+        if args.previous_run_id:
+            raise GatherDriverError("--previous-run-id requires --use-prior-state")
+        if args.cycle_depth != DEFAULT_CYCLE_DEPTH:
+            raise GatherDriverError("--cycle-depth > 1 requires --use-prior-state")
+
+
+def load_feedback_plan(raw_path: str) -> dict[str, Any]:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    report, exit_code = validate_candidate_feedback_plan(path)
+    if exit_code != EXIT_FEEDBACK_PLAN_PASS:
+        messages = "; ".join(error["message"] for error in report.get("errors", []))
+        raise GatherDriverError(f"feedback plan failed validation: {messages or path}")
+    raw_text = read_text_file(path, label="feedback plan")
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise GatherDriverError(f"feedback plan is not valid JSON: {path} (line {exc.lineno})") from exc
+    if not isinstance(payload, dict):
+        raise GatherDriverError(f"feedback plan must be a JSON object: {path}")
+    return {
+        "path": path,
+        "hash": sha256_text(raw_text),
+        "payload": payload,
+    }
+
+
+def apply_feedback_plan_defaults(
+    args: argparse.Namespace,
+    *,
+    subject: dict[str, Any],
+    feedback_plan: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if feedback_plan is None:
+        if args.cycle_depth is None:
+            args.cycle_depth = DEFAULT_CYCLE_DEPTH
+        return None
+
+    payload = feedback_plan["payload"]
+    next_action = payload.get("next_action")
+    if not isinstance(next_action, dict):
+        raise GatherDriverError("feedback plan is missing next_action")
+    if next_action.get("subject_id") != subject["subject_id"]:
+        raise GatherDriverError(
+            "feedback plan subject_id does not match the resolved gather subject"
+        )
+
+    selected_facet = next_action.get("selected_facet")
+    if not isinstance(selected_facet, str) or not selected_facet:
+        raise GatherDriverError("feedback plan next_action.selected_facet is required")
+    if args.facet is None:
+        args.facet = selected_facet
+    elif args.facet != selected_facet:
+        # Explicit CLI facet override is allowed, but we still record the plan's choice.
+        args.facet = args.facet.strip()
+
+    if args.cycle_depth is None:
+        plan_cycle_depth = next_action.get("cycle_depth")
+        if not isinstance(plan_cycle_depth, int) or plan_cycle_depth < 1:
+            raise GatherDriverError("feedback plan next_action.cycle_depth must be a positive integer")
+        args.cycle_depth = plan_cycle_depth
+
+    if not args.previous_run_id:
+        previous_run_ids = next_action.get("previous_run_ids_considered")
+        if isinstance(previous_run_ids, list) and all(
+            isinstance(item, str) and item for item in previous_run_ids
+        ):
+            args.previous_run_id = list(previous_run_ids)
+
+    if not args.use_prior_state and next_action.get("use_prior_state") is True:
+        args.use_prior_state = True
+
+    return next_action
+
+
+def resolve_prior_state_context(
+    args: argparse.Namespace,
+    *,
+    subject_id: str,
+) -> dict[str, Any] | None:
+    validate_iteration_args(args)
+    if not args.use_prior_state:
+        return None
+    if args.db is None:
+        raise GatherDriverError("--db is required when --use-prior-state is set")
+
+    db_path = canonical_store.resolve_db_path(args.db)
+    try:
+        canonical_store.check_canonical_store(db_path)
+        conn = canonical_store.connect_existing_read_only(db_path)
+    except canonical_store.CanonicalStoreError as exc:
+        raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
+    try:
+        prior_state = canonical_store.load_gather_prior_state(
+            conn,
+            subject_id=subject_id,
+            per_family_limit=args.prior_state_limit,
+            high_confidence_threshold=canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
+            policy=args.prior_state_policy,
+        )
+    finally:
+        conn.close()
+
+    try:
+        return canonical_store.build_prior_state_context(
+            prior_state,
+            cycle_depth=args.cycle_depth,
+            previous_run_ids=args.previous_run_id,
+            max_chars=args.prior_state_max_chars,
+        )
+    except canonical_store.CanonicalStoreError as exc:
+        raise GatherDriverError(f"could not build prior-state context: {exc}") from exc
+
+
+def render_next_action_context(
+    *,
+    feedback_plan: dict[str, Any] | None,
+    next_action: dict[str, Any] | None,
+    applied_facet: str,
+    applied_prompt_bundle_id: str,
+) -> str | None:
+    if feedback_plan is None or next_action is None:
+        return None
+    payload = feedback_plan["payload"]
+    selected_object_ref = next_action.get("selected_object_ref")
+    selected_lead_kind = next_action.get("selected_lead_kind")
+    selected_label = next_action.get("selected_label")
+    selected_review_state = next_action.get("selected_review_state")
+    lines = [
+        "NEXT ACTION SELECTION",
+        "This block records the feedback-plan selection for the next gather run.",
+        "It is context data only; a selected lead or claim is not accepted fact and not verification.",
+        "Proposed or needs-review rows remain leads that still require review.",
+        f"- action_id: {next_action['action_id']}",
+        f"- feedback_plan_schema_version: {payload['schema_version']}",
+        f"- selected_facet: {next_action['selected_facet']}",
+        f"- applied_facet: {applied_facet}",
+        f"- selected_prompt_bundle_id: {next_action['selected_prompt_bundle_id']}",
+        f"- applied_prompt_bundle_id: {applied_prompt_bundle_id}",
+        f"- productivity_score: {next_action['selection_score']}",
+        f"- scoring_policy_id: {next_action['scoring_policy_id']}",
+        f"- cycle_depth: {next_action['cycle_depth']}",
+        f"- use_prior_state: {'true' if next_action['use_prior_state'] else 'false'}",
+        f"- previous_run_ids_considered: {', '.join(next_action['previous_run_ids_considered']) if next_action['previous_run_ids_considered'] else '(none)'}",
+        f"- selected_object_ref: {selected_object_ref or '(none)'}",
+        f"- selected_lead_kind: {selected_lead_kind or '(none)'}",
+        f"- selected_label: {selected_label or '(none)'}",
+        f"- selected_review_state: {selected_review_state or '(none)'}",
+        f"- rationale: {next_action['rationale']}",
+        f"- reason_codes: {', '.join(next_action['reason_codes']) if next_action['reason_codes'] else '(none)'}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def render_prompt_text(
     *,
     prompt_body: str,
@@ -303,8 +528,20 @@ def render_prompt_text(
     phase: str,
     bundle: dict[str, Any],
     wrapped_blocks: list[str],
+    next_action_context_text: str | None = None,
+    prior_state_context_text: str | None = None,
 ) -> str:
     source_block_section = "\n\n".join(wrapped_blocks) if wrapped_blocks else "(none supplied)"
+    next_action_section = (
+        f"{next_action_context_text.rstrip()}\n\n"
+        if isinstance(next_action_context_text, str) and next_action_context_text.strip()
+        else ""
+    )
+    prior_state_section = (
+        f"{prior_state_context_text.rstrip()}\n\n"
+        if isinstance(prior_state_context_text, str) and prior_state_context_text.strip()
+        else ""
+    )
     return (
         f"{prompt_body.rstrip()}\n\n"
         "Subject runtime:\n"
@@ -320,6 +557,8 @@ def render_prompt_text(
         f"- prompt_bundle_id: {bundle['bundle_id']}\n"
         f"- prompt_bundle_key: {bundle['bundle_key']}\n"
         f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n"
+        f"{next_action_section}"
+        f"{prior_state_section}"
         "Wrapped source text blocks:\n"
         f"{source_block_section}\n"
     )
@@ -473,6 +712,9 @@ def build_candidate_batch(
     rendered_prompt_path: Path,
     source_wrapping_blocks: list[dict[str, Any]],
     live_result: dict[str, Any] | None,
+    prior_state: dict[str, Any] | None,
+    feedback_plan: dict[str, Any] | None,
+    next_action: dict[str, Any] | None,
 ) -> dict[str, Any]:
     subject = gather_inputs["subject"]
     pack = gather_inputs["domain_pack"]
@@ -480,6 +722,7 @@ def build_candidate_batch(
     facet = gather_inputs["facet"]
     phase = gather_inputs["phase"]
     mode = args.mode.replace("-", "_")
+    iteration_mode = "prior_state" if args.use_prior_state else "one_shot"
     engine_invoked = live_result is not None
     candidate_type_hint = candidate_type_hint_for_facet(facet)
     candidates: list[dict[str, Any]] = []
@@ -495,11 +738,14 @@ def build_candidate_batch(
             }
         )
 
-    return {
+    batch = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "created_at": created_at,
         "mode": mode,
+        "iteration_mode": iteration_mode,
+        "cycle_depth": args.cycle_depth,
+        "previous_run_ids": list(prior_state["previous_run_ids"]) if prior_state else list(args.previous_run_id),
         "phase": phase,
         "engine": {
             "requested_engine": args.engine,
@@ -568,6 +814,13 @@ def build_candidate_batch(
             "engine_present": engine_invoked,
             "timestamp": created_at,
             "network_access_attempted": False,
+            "prior_state_enabled": args.use_prior_state,
+            "prior_state_hash": prior_state["context_hash"] if prior_state else None,
+            "feedback_plan_enabled": feedback_plan is not None,
+            "feedback_plan_hash": feedback_plan["hash"] if feedback_plan else None,
+            "next_action_id": next_action["action_id"] if next_action is not None else None,
+            "scoring_policy_id": next_action["scoring_policy_id"] if next_action is not None else None,
+            "cycle_depth": args.cycle_depth,
             "stamped_output_path": live_result["stamped_output_path"]
             if live_result is not None
             else None,
@@ -586,6 +839,28 @@ def build_candidate_batch(
             "errors": [],
         },
     }
+    if prior_state is not None:
+        batch["prior_state"] = prior_state
+    if feedback_plan is not None and next_action is not None:
+        batch["feedback_plan"] = {
+            "schema_version": feedback_plan["payload"]["schema_version"],
+            "plan_path": str(feedback_plan["path"]),
+            "plan_hash": feedback_plan["hash"],
+            "next_action_id": next_action["action_id"],
+            "plan_selected_facet": next_action["selected_facet"],
+            "applied_facet": facet,
+            "selected_prompt_bundle_id": next_action["selected_prompt_bundle_id"],
+            "applied_prompt_bundle_id": bundle["bundle_id"],
+            "selected_object_ref": next_action.get("selected_object_ref"),
+            "selected_lead_kind": next_action.get("selected_lead_kind"),
+            "selection_score": next_action["selection_score"],
+            "scoring_policy_id": next_action["scoring_policy_id"],
+            "rationale": next_action["rationale"],
+            "use_prior_state": next_action["use_prior_state"],
+            "cycle_depth": next_action["cycle_depth"],
+            "previous_run_ids_considered": list(next_action["previous_run_ids_considered"]),
+        }
+    return batch
 
 
 def render_summary_text(
@@ -605,11 +880,22 @@ def render_summary_text(
         f"domain_pack={batch['domain_pack']['pack_id']}",
         f"facet={batch['facet']['name']}",
         f"phase={batch['phase']}",
+        f"iteration_mode={batch['iteration_mode']}",
+        f"cycle_depth={batch['cycle_depth']}",
         f"prompt_bundle_id={batch['prompt_bundle']['bundle_id']}",
         f"wrapper_template_id={batch['source_text_wrapping']['wrapper_template_id']}",
         f"rendered_prompt_path={rendered_prompt_path}",
         f"candidate_batch_path={batch_path}",
     ]
+    if isinstance(batch.get("prior_state"), dict):
+        lines.append(f"prior_state_hash={batch['prior_state']['context_hash']}")
+        lines.append(
+            "prior_state_counts="
+            + json.dumps(batch["prior_state"]["record_counts"], ensure_ascii=False, sort_keys=True)
+        )
+    if isinstance(batch.get("feedback_plan"), dict):
+        lines.append(f"feedback_plan_hash={batch['feedback_plan']['plan_hash']}")
+        lines.append(f"next_action_id={batch['feedback_plan']['next_action_id']}")
     if live_result is not None:
         lines.append(f"raw_engine_output_path={live_result['raw_engine_output_path']}")
         lines.append(f"stamped_output_path={live_result['stamped_output_path']}")
@@ -634,6 +920,8 @@ def render_summary_json(
     payload = {
         "run_id": batch["run_id"],
         "mode": batch["mode"],
+        "iteration_mode": batch["iteration_mode"],
+        "cycle_depth": batch["cycle_depth"],
         "subject_id": batch["subject"]["subject_id"],
         "domain_pack": batch["domain_pack"]["pack_id"],
         "facet": batch["facet"]["name"],
@@ -642,6 +930,8 @@ def render_summary_json(
         "rendered_prompt_path": str(rendered_prompt_path),
         "rendered_prompt": rendered_prompt,
         "candidate_batch_path": str(batch_path),
+        "prior_state": batch.get("prior_state"),
+        "feedback_plan": batch.get("feedback_plan"),
         "raw_engine_output_path": live_result["raw_engine_output_path"]
         if live_result is not None
         else None,
@@ -660,7 +950,27 @@ def main() -> int:
             if args.created_at
             else utc_now_text()
         )
-        gather_inputs = resolve_gather_inputs(args)
+        runtime = resolve_runtime_inputs(args)
+        feedback_plan = load_feedback_plan(args.feedback_plan) if args.feedback_plan else None
+        next_action = apply_feedback_plan_defaults(
+            args,
+            subject=runtime["subject"],
+            feedback_plan=feedback_plan,
+        )
+        if args.cycle_depth is None:
+            args.cycle_depth = DEFAULT_CYCLE_DEPTH
+        validate_iteration_args(args)
+        gather_inputs = resolve_gather_inputs(
+            runtime=runtime,
+            facet=args.facet.strip(),
+            phase=args.phase,
+        )
+        if next_action is not None:
+            selected_bundle_id = next_action.get("selected_prompt_bundle_id")
+            if isinstance(selected_bundle_id, str) and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]:
+                raise GatherDriverError(
+                    "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
+                )
         run_id = args.run_id or build_run_id(
             gather_inputs["subject"]["subject_id"],
             gather_inputs["facet"],
@@ -673,9 +983,19 @@ def main() -> int:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
+        prior_state = resolve_prior_state_context(
+            args,
+            subject_id=gather_inputs["subject"]["subject_id"],
+        )
         source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
             args.source_text_file,
             template=gather_inputs["wrapper_template"],
+        )
+        next_action_context = render_next_action_context(
+            feedback_plan=feedback_plan,
+            next_action=next_action,
+            applied_facet=gather_inputs["facet"],
+            applied_prompt_bundle_id=gather_inputs["bundle"]["bundle_id"],
         )
         rendered_prompt = render_prompt_text(
             prompt_body=prompt_body,
@@ -684,6 +1004,8 @@ def main() -> int:
             phase=gather_inputs["phase"],
             bundle=gather_inputs["bundle"],
             wrapped_blocks=rendered_blocks,
+            next_action_context_text=next_action_context,
+            prior_state_context_text=prior_state["context_text"] if prior_state else None,
         )
         parsed_blocks = parse_wrapped_blocks(
             rendered_prompt, template=gather_inputs["wrapper_template"]
@@ -716,6 +1038,9 @@ def main() -> int:
             rendered_prompt_path=rendered_prompt_path,
             source_wrapping_blocks=source_wrapping_blocks,
             live_result=live_result,
+            prior_state=prior_state,
+            feedback_plan=feedback_plan,
+            next_action=next_action,
         )
         batch_path = run_dir / "gather-candidate-batch.json"
         write_json(batch_path, batch)
