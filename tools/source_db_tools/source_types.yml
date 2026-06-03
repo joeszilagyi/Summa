@@ -1,0 +1,40 @@
+{
+  "schema_version": "source-type-registry.v1",
+  "source_types": [
+    {
+      "work_type": "book",
+      "label": "Book",
+      "provisional": false,
+      "mappings": {
+        "citation_family": "book",
+        "source_kind": "book"
+      }
+    },
+    {
+      "work_type": "journal_article",
+      "label": "Journal article",
+      "provisional": false,
+      "mappings": {
+        "citation_family": "article",
+        "source_kind": "journal_article"
+      }
+    },
+    {
+      "work_type": "webpage",
+      "label": "Web page",
+      "provisional": false,
+      "mappings": {
+        "citation_family": "web",
+        "source_kind": "webpage"
+      }
+    },
+    {
+      "work_type": "local:legacy_record",
+      "label": "Local legacy record",
+      "provisional": true,
+      "mappings": {
+        "source_kind": "legacy_local"
+      }
+    }
+  ]
+}

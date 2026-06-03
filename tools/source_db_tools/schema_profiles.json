@@ -1,0 +1,54 @@
+{
+  "schema_version": "schema-profiles.v1",
+  "identifier_policy_default": {
+    "duplicate_severity": "warning",
+    "invalid_severity": "warning",
+    "needs_review_severity": "warning",
+    "unsupported_scheme_severity": "warning"
+  },
+  "profiles": {
+    "canonical_minimal": {
+      "required_fields": [
+        "work.work_key_v1",
+        "work.work_type",
+        "work.title"
+      ],
+      "source_type_policy": {
+        "unknown_severity": "error",
+        "require_mappings": []
+      },
+      "recommended_fields": [],
+      "invalid_field_combinations": [],
+      "lossy_export_dropped_fields": [],
+      "review_required_fields": []
+    },
+    "canonical_full": {
+      "required_fields": [
+        "work.work_key_v1",
+        "work.work_type",
+        "work.title"
+      ],
+      "source_type_policy": {
+        "unknown_severity": "error",
+        "require_mappings": [
+          "source_kind"
+        ]
+      },
+      "relationship_predicate_policy": {
+        "unknown_severity": "error",
+        "evidence_missing_severity": "warning"
+      },
+      "claim_type_policy": {
+        "unknown_severity": "error",
+        "evidence_missing_severity": "warning",
+        "review_required_severity": "warning"
+      },
+      "recommended_fields": [
+        "source_access[].original_locator"
+      ],
+      "invalid_field_combinations": [],
+      "lossy_export_dropped_fields": [],
+      "review_required_fields": []
+    }
+  }
+}
