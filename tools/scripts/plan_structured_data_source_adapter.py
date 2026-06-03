@@ -28,7 +28,7 @@ from tools.common.source_adapter_contract import (  # noqa: E402
 )
 from tools.common.source_adapter_handoff import (  # noqa: E402
     build_structured_data_handoff_record,
-    validate_structured_data_handoff_record,
+    validate_source_adapter_handoff_record,
 )
 
 import validate_source_adapter  # noqa: E402
@@ -381,7 +381,7 @@ def build_plan(adapter_path: Path, adapter_payload: dict[str, Any]) -> dict[str,
         blockers.append("no structured records were parsed successfully")
 
     validation_errors = [
-        {"index": index, "errors": validate_structured_data_handoff_record(record, adapter_payload)}
+        {"index": index, "errors": validate_source_adapter_handoff_record(record, adapter_payload)}
         for index, record in enumerate(handoff_records)
     ]
     validation_errors = [entry for entry in validation_errors if entry["errors"]]

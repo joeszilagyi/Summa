@@ -2,22 +2,275 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from tools.common.source_adapter_contract import (
     HANDOFF_SCHEMA_VERSION,
+    HANDOFF_ALLOWED_TOP_LEVEL_KEYS,
+    HANDOFF_RECORD_VARIANTS,
+    HANDOFF_REMOTE_STATES,
     LOCAL_SOURCE_SPECIFIC_FIELDS,
     LOCAL_GIT_REPO_SOURCE_SPECIFIC_FIELDS,
     REMOTE_URL_MANIFEST_SOURCE_SPECIFIC_FIELDS,
+    RIGHTS_POSTURES,
     STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS,
+    STRUCTURED_DATA_FORMATS,
 )
 from tools.source_db_tools import rights_retention
 
 
+GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,64}$")
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_nonblank_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_http_url(value: Any) -> bool:
+    if not _is_nonblank_string(value):
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_timestamp(value: Any) -> bool:
+    if not _is_nonblank_string(value):
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def infer_handoff_variant(record: dict[str, Any], adapter_payload: dict[str, Any] | None = None) -> str:
+    if isinstance(adapter_payload, dict):
+        input_family = adapter_payload.get("input_family")
+        if input_family == "local_git_repo":
+            return "local_git_repo"
+        if input_family == "remote_url_manifest":
+            return "remote_url_manifest"
+        handoff = adapter_payload.get("normalized_handoff")
+        if isinstance(handoff, dict):
+            requested_specific = set(handoff.get("source_specific_fields", []))
+            if requested_specific & (STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS - LOCAL_SOURCE_SPECIFIC_FIELDS):
+                return "structured_data"
+        if input_family in {"local_file", "local_directory"}:
+            return "local_source"
+
+    source_specific = record.get("source_specific")
+    if isinstance(source_specific, dict):
+        keys = set(source_specific)
+        if keys & (STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS - LOCAL_SOURCE_SPECIFIC_FIELDS):
+            return "structured_data"
+        if keys & LOCAL_GIT_REPO_SOURCE_SPECIFIC_FIELDS:
+            return "local_git_repo"
+        if keys & REMOTE_URL_MANIFEST_SOURCE_SPECIFIC_FIELDS:
+            return "remote_url_manifest"
+
+    remote_state = record.get("remote_state")
+    if remote_state == "local_checkout":
+        return "local_git_repo"
+    if remote_state == "configured_remote":
+        return "remote_url_manifest"
+    return "local_source"
+
+
+def allowed_source_specific_fields_for_variant(variant: str) -> set[str]:
+    return set(HANDOFF_RECORD_VARIANTS.get(variant, set()))
+
+
+def validate_source_adapter_handoff_record(
+    record: dict[str, Any],
+    adapter_payload: dict[str, Any] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    variant = infer_handoff_variant(record, adapter_payload)
+    expected_specific = allowed_source_specific_fields_for_variant(variant)
+    handoff = adapter_payload.get("normalized_handoff") if isinstance(adapter_payload, dict) else None
+    adapter_input_family = adapter_payload.get("input_family") if isinstance(adapter_payload, dict) else None
+    adapter_id = adapter_payload.get("adapter_id") if isinstance(adapter_payload, dict) else None
+    workspace_id = adapter_payload.get("workspace_id") if isinstance(adapter_payload, dict) else None
+
+    if record.get("schema_version") != HANDOFF_SCHEMA_VERSION:
+        errors.append(f"schema_version must equal {HANDOFF_SCHEMA_VERSION}")
+
+    unknown_top_level = sorted(set(record) - HANDOFF_ALLOWED_TOP_LEVEL_KEYS)
+    if unknown_top_level:
+        errors.append(f"unexpected handoff field: {unknown_top_level[0]}")
+
+    for key in ("adapter_id", "workspace_id", "record_family", "batch_unit", "adapter_path", "resolved_source_path", "relative_path"):
+        if not _is_nonblank_string(record.get(key)):
+            errors.append(f"{key} must be a non-blank string")
+    if not _is_timestamp(record.get("emitted_at")):
+        errors.append("emitted_at must be an RFC3339 timestamp")
+    if not isinstance(record.get("sequence"), int) or isinstance(record.get("sequence"), bool) or record["sequence"] < 1:
+        errors.append("sequence must be an integer >= 1")
+
+    if adapter_id is not None and record.get("adapter_id") != adapter_id:
+        errors.append("adapter_id must match the source adapter manifest")
+    if workspace_id is not None and record.get("workspace_id") != workspace_id:
+        errors.append("workspace_id must match the source adapter manifest")
+    if isinstance(handoff, dict):
+        if record.get("record_family") != handoff.get("record_family"):
+            errors.append("record_family must match normalized_handoff.record_family")
+        if record.get("batch_unit") != handoff.get("batch_unit"):
+            errors.append("batch_unit must match normalized_handoff.batch_unit")
+
+    preserved = record.get("preserved")
+    source_specific = record.get("source_specific")
+    if not isinstance(preserved, dict):
+        errors.append("preserved must be an object")
+    if not isinstance(source_specific, dict):
+        errors.append("source_specific must be an object")
+
+    if isinstance(preserved, dict):
+        validate_preserved_fields(preserved, errors)
+        if isinstance(handoff, dict):
+            requested_preserve = set(handoff.get("preserve_fields", []))
+            unknown_preserved = sorted(set(preserved) - requested_preserve)
+            if unknown_preserved:
+                errors.append(f"preserved contains undeclared field: {unknown_preserved[0]}")
+
+    if isinstance(source_specific, dict):
+        validate_source_specific_fields(source_specific, variant=variant, errors=errors)
+        unknown_specific = sorted(set(source_specific) - expected_specific)
+        if unknown_specific:
+            errors.append(f"source_specific contains unsupported {variant} field: {unknown_specific[0]}")
+        if isinstance(handoff, dict):
+            requested_specific = set(handoff.get("source_specific_fields", []))
+            unknown_requested = sorted(set(source_specific) - requested_specific)
+            if unknown_requested:
+                errors.append(f"source_specific contains undeclared field: {unknown_requested[0]}")
+            unsupported_requested = sorted(requested_specific - expected_specific)
+            if unsupported_requested:
+                errors.append(
+                    f"source_specific_fields requests unsupported {variant} field: {unsupported_requested[0]}"
+                )
+
+    remote_state = record.get("remote_state")
+    if remote_state is not None and remote_state not in HANDOFF_REMOTE_STATES:
+        errors.append(f"remote_state must be one of: {', '.join(sorted(HANDOFF_REMOTE_STATES))}")
+    network_access_attempted = record.get("network_access_attempted")
+    if network_access_attempted is not None and not isinstance(network_access_attempted, bool):
+        errors.append("network_access_attempted must be a boolean when present")
+
+    if variant in {"local_source", "structured_data"}:
+        if remote_state is not None:
+            errors.append(f"remote_state is not allowed for {variant} handoff records")
+        if network_access_attempted is not None:
+            errors.append(f"network_access_attempted is not allowed for {variant} handoff records")
+    elif variant == "remote_url_manifest":
+        if remote_state != "configured_remote":
+            errors.append("remote_state must equal configured_remote")
+        if network_access_attempted is not False:
+            errors.append("network_access_attempted must be false")
+    elif variant == "local_git_repo":
+        if remote_state != "local_checkout":
+            errors.append("remote_state must equal local_checkout")
+        if network_access_attempted is not False:
+            errors.append("network_access_attempted must be false")
+        if record.get("sequence") != 1:
+            errors.append("sequence must equal 1 for per_snapshot git handoff records")
+
+    if adapter_input_family == "local_git_repo" and variant != "local_git_repo":
+        errors.append("source_specific fields do not match local_git_repo handoff shape")
+    if adapter_input_family == "remote_url_manifest" and variant != "remote_url_manifest":
+        errors.append("source_specific fields do not match remote_url_manifest handoff shape")
+
+    return errors
+
+
+def validate_preserved_fields(preserved: dict[str, Any], errors: list[str]) -> None:
+    allowed_preserve = {
+        "original_locator",
+        "discovery_provenance",
+        "rights_posture",
+        "byte_retention_status",
+        "discard_metadata",
+        "refetchability_status",
+        "extraction_metadata",
+        "durable_source_record",
+        "controlled_subjects",
+        "authority_records",
+        "transform_lineage",
+        "source_metadata",
+    }
+    unknown_preserved = sorted(set(preserved) - allowed_preserve)
+    if unknown_preserved:
+        errors.append(f"preserved contains unknown field: {unknown_preserved[0]}")
+    if "original_locator" in preserved and not isinstance(preserved.get("original_locator"), dict):
+        errors.append("preserved.original_locator must be an object")
+    if "discovery_provenance" in preserved and not _is_nonblank_string(preserved.get("discovery_provenance")):
+        errors.append("preserved.discovery_provenance must be a non-blank string")
+    if "rights_posture" in preserved:
+        rights_posture = preserved.get("rights_posture")
+        if not _is_nonblank_string(rights_posture) or rights_posture not in RIGHTS_POSTURES:
+            errors.append("preserved.rights_posture must be a known rights posture")
+    if "byte_retention_status" in preserved:
+        known_statuses = rights_retention.load_policy_registry()["record_policy"]["byte_retention_statuses"]
+        if preserved.get("byte_retention_status") not in known_statuses:
+            errors.append("preserved.byte_retention_status must be a known byte retention status")
+    if "discard_metadata" in preserved:
+        discard_metadata = preserved.get("discard_metadata")
+        if not isinstance(discard_metadata, dict):
+            errors.append("preserved.discard_metadata must be an object")
+        else:
+            if not isinstance(discard_metadata.get("discard_required"), bool):
+                errors.append("preserved.discard_metadata.discard_required must be a boolean")
+            discard_reason = discard_metadata.get("discard_reason")
+            if discard_reason is not None and not _is_nonblank_string(discard_reason):
+                errors.append("preserved.discard_metadata.discard_reason must be null or a non-blank string")
+    if "refetchability_status" in preserved:
+        known_statuses = rights_retention.load_policy_registry()["record_policy"]["refetchability_statuses"]
+        if preserved.get("refetchability_status") not in known_statuses:
+            errors.append("preserved.refetchability_status must be a known refetchability status")
+    if "extraction_metadata" in preserved and not isinstance(preserved.get("extraction_metadata"), dict):
+        errors.append("preserved.extraction_metadata must be an object")
+    if "durable_source_record" in preserved:
+        durable_source_record = preserved.get("durable_source_record")
+        if durable_source_record is not None and not isinstance(durable_source_record, dict):
+            errors.append("preserved.durable_source_record must be null or an object")
+    if "controlled_subjects" in preserved and not isinstance(preserved.get("controlled_subjects"), list):
+        errors.append("preserved.controlled_subjects must be an array")
+    if "authority_records" in preserved and not isinstance(preserved.get("authority_records"), list):
+        errors.append("preserved.authority_records must be an array")
+    if "transform_lineage" in preserved and not isinstance(preserved.get("transform_lineage"), list):
+        errors.append("preserved.transform_lineage must be an array")
+    if "source_metadata" in preserved and not isinstance(preserved.get("source_metadata"), dict):
+        errors.append("preserved.source_metadata must be an object")
+
+
+def validate_source_specific_fields(
+    source_specific: dict[str, Any],
+    *,
+    variant: str,
+    errors: list[str],
+) -> None:
+    for field in sorted(set(source_specific) & {"relative_path", "source_filename", "record_locator", "record_kind", "git_ref"}):
+        if not _is_nonblank_string(source_specific.get(field)):
+            errors.append(f"source_specific.{field} must be a non-blank string")
+
+    if "structured_format" in source_specific:
+        structured_format = source_specific.get("structured_format")
+        if not _is_nonblank_string(structured_format) or structured_format not in STRUCTURED_DATA_FORMATS:
+            errors.append(
+                f"source_specific.structured_format must be one of: {', '.join(sorted(STRUCTURED_DATA_FORMATS))}"
+            )
+    if "git_commit" in source_specific:
+        git_commit = source_specific.get("git_commit")
+        if not _is_nonblank_string(git_commit) or not GIT_COMMIT_PATTERN.fullmatch(git_commit):
+            errors.append("source_specific.git_commit must be a lowercase hexadecimal commit id")
+    if "manifest_url" in source_specific and not _is_http_url(source_specific.get("manifest_url")):
+        errors.append("source_specific.manifest_url must be an absolute http or https URL")
 
 
 def derive_byte_retention_status(payload_storage_policy_class: str | None) -> str:
@@ -174,92 +427,14 @@ def validate_local_handoff_record(
     record: dict[str, Any],
     adapter_payload: dict[str, Any],
 ) -> list[str]:
-    errors: list[str] = []
-    handoff = adapter_payload["normalized_handoff"]
-
-    if record.get("schema_version") != HANDOFF_SCHEMA_VERSION:
-        errors.append(f"schema_version must equal {HANDOFF_SCHEMA_VERSION}")
-    for key in ("adapter_id", "workspace_id", "record_family", "batch_unit", "resolved_source_path", "relative_path"):
-        value = record.get(key)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{key} must be a non-blank string")
-    if record.get("adapter_id") != adapter_payload.get("adapter_id"):
-        errors.append("adapter_id must match the source adapter manifest")
-    if record.get("workspace_id") != adapter_payload.get("workspace_id"):
-        errors.append("workspace_id must match the source adapter manifest")
-    if record.get("record_family") != handoff.get("record_family"):
-        errors.append("record_family must match normalized_handoff.record_family")
-    if record.get("batch_unit") != handoff.get("batch_unit"):
-        errors.append("batch_unit must match normalized_handoff.batch_unit")
-    if not isinstance(record.get("sequence"), int) or isinstance(record.get("sequence"), bool) or record["sequence"] < 1:
-        errors.append("sequence must be an integer >= 1")
-    if not isinstance(record.get("preserved"), dict):
-        errors.append("preserved must be an object")
-    if not isinstance(record.get("source_specific"), dict):
-        errors.append("source_specific must be an object")
-
-    if isinstance(record.get("preserved"), dict):
-        expected_preserve = set(handoff.get("preserve_fields", []))
-        unknown_preserved = sorted(set(record["preserved"]) - expected_preserve)
-        if unknown_preserved:
-            errors.append(f"preserved contains undeclared field: {unknown_preserved[0]}")
-
-    if isinstance(record.get("source_specific"), dict):
-        expected_specific = set(handoff.get("source_specific_fields", []))
-        unknown_specific = sorted(set(record["source_specific"]) - expected_specific)
-        if unknown_specific:
-            errors.append(f"source_specific contains undeclared field: {unknown_specific[0]}")
-        unsupported_requested = sorted(expected_specific - LOCAL_SOURCE_SPECIFIC_FIELDS)
-        if unsupported_requested:
-            errors.append(f"source_specific_fields requests unsupported local field: {unsupported_requested[0]}")
-
-    return errors
+    return validate_source_adapter_handoff_record(record, adapter_payload)
 
 
 def validate_structured_data_handoff_record(
     record: dict[str, Any],
     adapter_payload: dict[str, Any],
 ) -> list[str]:
-    errors: list[str] = []
-    handoff = adapter_payload["normalized_handoff"]
-
-    if record.get("schema_version") != HANDOFF_SCHEMA_VERSION:
-        errors.append(f"schema_version must equal {HANDOFF_SCHEMA_VERSION}")
-    for key in ("adapter_id", "workspace_id", "record_family", "batch_unit", "resolved_source_path", "relative_path"):
-        value = record.get(key)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{key} must be a non-blank string")
-    if record.get("adapter_id") != adapter_payload.get("adapter_id"):
-        errors.append("adapter_id must match the source adapter manifest")
-    if record.get("workspace_id") != adapter_payload.get("workspace_id"):
-        errors.append("workspace_id must match the source adapter manifest")
-    if record.get("record_family") != handoff.get("record_family"):
-        errors.append("record_family must match normalized_handoff.record_family")
-    if record.get("batch_unit") != handoff.get("batch_unit"):
-        errors.append("batch_unit must match normalized_handoff.batch_unit")
-    if not isinstance(record.get("sequence"), int) or isinstance(record.get("sequence"), bool) or record["sequence"] < 1:
-        errors.append("sequence must be an integer >= 1")
-    if not isinstance(record.get("preserved"), dict):
-        errors.append("preserved must be an object")
-    if not isinstance(record.get("source_specific"), dict):
-        errors.append("source_specific must be an object")
-
-    if isinstance(record.get("preserved"), dict):
-        expected_preserve = set(handoff.get("preserve_fields", []))
-        unknown_preserved = sorted(set(record["preserved"]) - expected_preserve)
-        if unknown_preserved:
-            errors.append(f"preserved contains undeclared field: {unknown_preserved[0]}")
-
-    if isinstance(record.get("source_specific"), dict):
-        expected_specific = set(handoff.get("source_specific_fields", []))
-        unknown_specific = sorted(set(record["source_specific"]) - expected_specific)
-        if unknown_specific:
-            errors.append(f"source_specific contains undeclared field: {unknown_specific[0]}")
-        unsupported_requested = sorted(expected_specific - STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS)
-        if unsupported_requested:
-            errors.append(f"source_specific_fields requests unsupported structured-data field: {unsupported_requested[0]}")
-
-    return errors
+    return validate_source_adapter_handoff_record(record, adapter_payload)
 
 
 def build_remote_url_manifest_handoff_record(
@@ -345,52 +520,7 @@ def validate_remote_url_manifest_handoff_record(
     record: dict[str, Any],
     adapter_payload: dict[str, Any],
 ) -> list[str]:
-    errors: list[str] = []
-    handoff = adapter_payload["normalized_handoff"]
-
-    if record.get("schema_version") != HANDOFF_SCHEMA_VERSION:
-        errors.append(f"schema_version must equal {HANDOFF_SCHEMA_VERSION}")
-    for key in ("adapter_id", "workspace_id", "record_family", "batch_unit", "resolved_source_path", "relative_path"):
-        value = record.get(key)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{key} must be a non-blank string")
-    if record.get("adapter_id") != adapter_payload.get("adapter_id"):
-        errors.append("adapter_id must match the source adapter manifest")
-    if record.get("workspace_id") != adapter_payload.get("workspace_id"):
-        errors.append("workspace_id must match the source adapter manifest")
-    if record.get("record_family") != handoff.get("record_family"):
-        errors.append("record_family must match normalized_handoff.record_family")
-    if record.get("batch_unit") != handoff.get("batch_unit"):
-        errors.append("batch_unit must match normalized_handoff.batch_unit")
-    if record.get("remote_state") != "configured_remote":
-        errors.append("remote_state must equal configured_remote")
-    if record.get("network_access_attempted") is not False:
-        errors.append("network_access_attempted must be false")
-    if not isinstance(record.get("sequence"), int) or isinstance(record.get("sequence"), bool) or record["sequence"] < 1:
-        errors.append("sequence must be an integer >= 1")
-    if not isinstance(record.get("preserved"), dict):
-        errors.append("preserved must be an object")
-    if not isinstance(record.get("source_specific"), dict):
-        errors.append("source_specific must be an object")
-
-    if isinstance(record.get("preserved"), dict):
-        expected_preserve = set(handoff.get("preserve_fields", []))
-        unknown_preserved = sorted(set(record["preserved"]) - expected_preserve)
-        if unknown_preserved:
-            errors.append(f"preserved contains undeclared field: {unknown_preserved[0]}")
-
-    if isinstance(record.get("source_specific"), dict):
-        expected_specific = set(handoff.get("source_specific_fields", []))
-        unknown_specific = sorted(set(record["source_specific"]) - expected_specific)
-        if unknown_specific:
-            errors.append(f"source_specific contains undeclared field: {unknown_specific[0]}")
-        unsupported_requested = sorted(expected_specific - REMOTE_URL_MANIFEST_SOURCE_SPECIFIC_FIELDS)
-        if unsupported_requested:
-            errors.append(
-                f"source_specific_fields requests unsupported remote_url_manifest field: {unsupported_requested[0]}"
-            )
-
-    return errors
+    return validate_source_adapter_handoff_record(record, adapter_payload)
 
 
 def build_local_git_repo_handoff_record(
@@ -485,47 +615,4 @@ def validate_local_git_repo_handoff_record(
     record: dict[str, Any],
     adapter_payload: dict[str, Any],
 ) -> list[str]:
-    errors: list[str] = []
-    handoff = adapter_payload["normalized_handoff"]
-
-    if record.get("schema_version") != HANDOFF_SCHEMA_VERSION:
-        errors.append(f"schema_version must equal {HANDOFF_SCHEMA_VERSION}")
-    for key in ("adapter_id", "workspace_id", "record_family", "batch_unit", "resolved_source_path", "relative_path"):
-        value = record.get(key)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{key} must be a non-blank string")
-    if record.get("adapter_id") != adapter_payload.get("adapter_id"):
-        errors.append("adapter_id must match the source adapter manifest")
-    if record.get("workspace_id") != adapter_payload.get("workspace_id"):
-        errors.append("workspace_id must match the source adapter manifest")
-    if record.get("record_family") != handoff.get("record_family"):
-        errors.append("record_family must match normalized_handoff.record_family")
-    if record.get("batch_unit") != handoff.get("batch_unit"):
-        errors.append("batch_unit must match normalized_handoff.batch_unit")
-    if record.get("remote_state") != "local_checkout":
-        errors.append("remote_state must equal local_checkout")
-    if record.get("network_access_attempted") is not False:
-        errors.append("network_access_attempted must be false")
-    if record.get("sequence") != 1:
-        errors.append("sequence must equal 1 for per_snapshot git handoff records")
-    if not isinstance(record.get("preserved"), dict):
-        errors.append("preserved must be an object")
-    if not isinstance(record.get("source_specific"), dict):
-        errors.append("source_specific must be an object")
-
-    if isinstance(record.get("preserved"), dict):
-        expected_preserve = set(handoff.get("preserve_fields", []))
-        unknown_preserved = sorted(set(record["preserved"]) - expected_preserve)
-        if unknown_preserved:
-            errors.append(f"preserved contains undeclared field: {unknown_preserved[0]}")
-
-    if isinstance(record.get("source_specific"), dict):
-        expected_specific = set(handoff.get("source_specific_fields", []))
-        unknown_specific = sorted(set(record["source_specific"]) - expected_specific)
-        if unknown_specific:
-            errors.append(f"source_specific contains undeclared field: {unknown_specific[0]}")
-        unsupported_requested = sorted(expected_specific - LOCAL_GIT_REPO_SOURCE_SPECIFIC_FIELDS)
-        if unsupported_requested:
-            errors.append(f"source_specific_fields requests unsupported local_git_repo field: {unsupported_requested[0]}")
-
-    return errors
+    return validate_source_adapter_handoff_record(record, adapter_payload)

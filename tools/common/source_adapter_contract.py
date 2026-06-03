@@ -68,3 +68,26 @@ STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS = {
 LOCAL_GIT_REPO_SOURCE_SPECIFIC_FIELDS = {"git_ref", "git_commit"}
 REMOTE_URL_MANIFEST_SOURCE_SPECIFIC_FIELDS = {"manifest_url"}
 HANDOFF_SCHEMA_VERSION = "source-adapter-handoff.v1"
+HANDOFF_TOP_LEVEL_REQUIRED_KEYS = {
+    "schema_version",
+    "adapter_id",
+    "workspace_id",
+    "record_family",
+    "batch_unit",
+    "adapter_path",
+    "emitted_at",
+    "sequence",
+    "resolved_source_path",
+    "relative_path",
+    "preserved",
+    "source_specific",
+}
+HANDOFF_TOP_LEVEL_OPTIONAL_KEYS = {"remote_state", "network_access_attempted"}
+HANDOFF_ALLOWED_TOP_LEVEL_KEYS = HANDOFF_TOP_LEVEL_REQUIRED_KEYS | HANDOFF_TOP_LEVEL_OPTIONAL_KEYS
+HANDOFF_REMOTE_STATES = {"configured_remote", "local_checkout"}
+HANDOFF_RECORD_VARIANTS = {
+    "local_source": LOCAL_SOURCE_SPECIFIC_FIELDS,
+    "structured_data": STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS,
+    "local_git_repo": LOCAL_GIT_REPO_SOURCE_SPECIFIC_FIELDS,
+    "remote_url_manifest": REMOTE_URL_MANIFEST_SOURCE_SPECIFIC_FIELDS,
+}

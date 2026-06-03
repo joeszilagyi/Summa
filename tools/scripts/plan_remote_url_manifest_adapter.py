@@ -21,7 +21,7 @@ if str(VALIDATORS_DIR) not in sys.path:
 from tools.common.atomic_write import atomic_write_jsonl  # noqa: E402
 from tools.common.source_adapter_handoff import (  # noqa: E402
     build_remote_url_manifest_handoff_record,
-    validate_remote_url_manifest_handoff_record,
+    validate_source_adapter_handoff_record,
 )
 
 import validate_source_adapter  # noqa: E402
@@ -129,7 +129,7 @@ def build_plan(adapter_path: Path, manifest_path: Path, adapter_payload: dict[st
         for index, item in enumerate(accepted)
     ]
     validation_errors = [
-        {"index": index, "errors": validate_remote_url_manifest_handoff_record(record, adapter_payload)}
+        {"index": index, "errors": validate_source_adapter_handoff_record(record, adapter_payload)}
         for index, record in enumerate(handoff_records)
     ]
     validation_errors = [entry for entry in validation_errors if entry["errors"]]
