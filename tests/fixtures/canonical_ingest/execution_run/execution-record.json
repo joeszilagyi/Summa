@@ -1,0 +1,41 @@
+{
+  "adapter_id": "runtime_local_file",
+  "adapter_type": "local_source",
+  "canonical_persistence_attempted": false,
+  "capture_event_count": 1,
+  "created_at": "2026-06-03T12:34:56Z",
+  "dry_run": false,
+  "executor_mode": "local",
+  "executor_name": "tools/scripts/execute_source_adapter.py",
+  "extraction_record_count": 1,
+  "handoff_path": "tests/fixtures/canonical_ingest/execution_run/handoff.jsonl",
+  "input_handoff_hash": "67834b08d077e7df1d78cefb89da24c04b7f6403f6bfd352dff341b238981965",
+  "local_input_paths_processed": [
+    "/home/joe/projects/Summa/main/tests/fixtures/source_adapter_runtime/local_file/single.pdf"
+  ],
+  "network_access_allowed": false,
+  "network_access_attempted": false,
+  "network_access_denied_reason": null,
+  "network_safety_gate": null,
+  "output_artifacts": {
+    "capture_events": "capture-events.jsonl",
+    "denial_record": null,
+    "execution_record": "execution-record.json",
+    "extraction_records": "extraction-records.jsonl",
+    "manifest": "manifest.json",
+    "network_safety_report": null
+  },
+  "planned_actions": [
+    {
+      "action_kind": "read_local_source",
+      "relative_path": "single.pdf",
+      "resolved_source_path": "/home/joe/projects/Summa/main/tests/fixtures/source_adapter_runtime/local_file/single.pdf",
+      "sequence": 1
+    }
+  ],
+  "run_id": "fixture-exec",
+  "schema_version": "source-acquisition-execution.v1",
+  "status": "completed",
+  "verification_status": "unverified",
+  "workspace_id": "alpha_subject"
+}

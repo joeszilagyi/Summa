@@ -10,6 +10,10 @@ Purpose:
   be sent to the engine
 - optionally invoke the configured engine only through
   `tools/scripts/lib/llm_runner.sh`
+- optionally consume a validated candidate-feedback plan so the next run can
+  follow the highest-yield facet or lead selected from prior canonical state
+- optionally inject bounded prior canonical state for the same subject when
+  explicit prior-state flags are supplied
 - emit a validated workspace-local `gather-candidate-batch.v1` artifact under
   `runs/gather/<run-id>/`
 
@@ -43,6 +47,10 @@ Safety model:
   engine binary directly
 - output stays in the workspace-local run directory; no canonical persistence is
   performed
+- any consumed feedback plan is validated before use, and its selected leads are
+  treated as next-run context only
+- prior canonical context is opt-in, bounded, and labeled so proposed or
+  needs-review rows remain leads rather than accepted facts
 
 Current scope limits:
 

@@ -24,9 +24,11 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 import identifier_normalization
+import canonical_store
 import source_types
 
 REPORT_SCHEMA_VERSION = "legacy-backfill-report.v1"
+SCRIPT_PATH = "tools/source_db_tools/legacy_backfill.py"
 DEFAULT_LEGACY_LEAD_CONFIDENCE = 0.45
 DEFAULT_LEGACY_ENTITY_CONFIDENCE = 0.35
 IDENTIFIER_VALID_SCORE = 1.0
@@ -90,6 +92,7 @@ def first_url(*texts: str | None) -> str | None:
 def insert_or_get_work(
     conn: sqlite3.Connection,
     *,
+    provenance_event_ref: str,
     work_key: str,
     work_type: str,
     title: str,
@@ -98,32 +101,23 @@ def insert_or_get_work(
     confidence_score: float,
     timestamp: str,
 ) -> tuple[int, bool]:
-    existing = conn.execute("SELECT work_id FROM work WHERE work_key_v1=?", (work_key,)).fetchone()
-    if existing is not None:
-        return int(existing["work_id"]), False
-    conn.execute(
-        """
-        INSERT INTO work (
-          work_key_v1, work_type, title, rights_posture, refetchability_status,
-          review_state, confidence_score, raw_cite_text, first_seen_at,
-          last_seen_at, record_last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            work_key,
-            work_type,
-            title,
-            "unknown",
-            "unknown",
-            review_state,
-            confidence_score,
-            raw_cite_text,
-            timestamp,
-            timestamp,
-            timestamp,
-        ),
+    result = canonical_store.upsert_work(
+        conn,
+        work_key_v1=work_key,
+        provenance_event_ref=provenance_event_ref,
+        work_type=work_type,
+        title=title,
+        rights_posture="unknown",
+        refetchability_status="unknown",
+        review_state=review_state,
+        confidence_score=confidence_score,
+        raw_cite_text=raw_cite_text,
+        first_seen_at=timestamp,
+        last_seen_at=timestamp,
+        created_at=timestamp,
+        record_last_updated=timestamp,
     )
-    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0]), True
+    return result.row_id, result.created
 
 
 def insert_metadata(
@@ -204,27 +198,28 @@ def insert_identifier(
     return str(normalized["validity_status"])
 
 
-def insert_source_access(conn: sqlite3.Connection, *, work_id: int, locator: str, url: str | None, timestamp: str) -> None:
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO source_access (
-          work_id, original_locator, canonical_url, access_class,
-          refetchability_status, rights_posture, citation_hint, first_seen_at,
-          last_seen_at, record_last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            work_id,
-            locator,
-            url,
-            "unknown",
-            "unknown",
-            "unknown",
-            "legacy backfill",
-            timestamp,
-            timestamp,
-            timestamp,
-        ),
+def insert_source_access(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    work_id: int,
+    locator: str,
+    url: str | None,
+    timestamp: str,
+) -> None:
+    canonical_store.record_source_access(
+        conn,
+        provenance_event_ref=provenance_event_ref,
+        work_id=work_id,
+        original_locator=locator,
+        canonical_url=url,
+        access_class="unknown",
+        refetchability_status="unknown",
+        rights_posture="unknown",
+        citation_hint="legacy backfill",
+        first_seen_at=timestamp,
+        last_seen_at=timestamp,
+        record_last_updated=timestamp,
     )
     if url:
         conn.execute(
@@ -238,29 +233,33 @@ def insert_source_access(conn: sqlite3.Connection, *, work_id: int, locator: str
         )
 
 
-def insert_no_capture_event(conn: sqlite3.Connection, *, work_id: int, timestamp: str) -> None:
-    existing = conn.execute(
-        "SELECT 1 FROM capture_event WHERE work_id=? AND capture_method='legacy_backfill_no_capture'",
+def insert_no_capture_event(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    work_id: int,
+    timestamp: str,
+) -> None:
+    locator_row = conn.execute(
+        "SELECT original_locator FROM source_access WHERE work_id=? ORDER BY source_access_id LIMIT 1",
         (work_id,),
     ).fetchone()
-    if existing is not None:
-        return
-    conn.execute(
-        """
-        INSERT INTO capture_event (
-          work_id, captured_at, capture_method, byte_retention_status,
-          refetchability_status, quality_warnings_json, record_last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            work_id,
-            timestamp,
-            "legacy_backfill_no_capture",
-            "not_applicable",
-            "unknown",
-            json.dumps(["legacy record had no capture payload"], sort_keys=True),
-            timestamp,
-        ),
+    locator = (
+        str(locator_row["original_locator"])
+        if locator_row is not None and locator_row["original_locator"]
+        else f"legacy backfill placeholder for work:{work_id}"
+    )
+    canonical_store.record_capture_event(
+        conn,
+        provenance_event_ref=provenance_event_ref,
+        work_id=work_id,
+        original_locator=locator,
+        captured_at=timestamp,
+        capture_method="legacy_backfill_no_capture",
+        byte_retention_status="not_applicable",
+        refetchability_status="unknown",
+        quality_warnings_json=["legacy record had no capture payload"],
+        record_last_updated=timestamp,
     )
 
 
@@ -284,6 +283,7 @@ def backfill_leads(
     timestamp: str,
     *,
     has_identifier_metadata: bool,
+    provenance_event_ref: str,
 ) -> None:
     if not table_exists(conn, "lead"):
         return
@@ -295,6 +295,7 @@ def backfill_leads(
         review_state = review_state_from_legacy(row["lead_status"])
         work_id, created = insert_or_get_work(
             conn,
+            provenance_event_ref=provenance_event_ref,
             work_key=f"work:legacy-lead:{row['lead_id']}",
             work_type=work_type,
             title=label,
@@ -310,12 +311,18 @@ def backfill_leads(
                 invalid_identifier = True
         insert_source_access(
             conn,
+            provenance_event_ref=provenance_event_ref,
             work_id=work_id,
             locator=row["note_text"] or row["label_text"] or f"legacy lead {row['lead_id']}",
             url=url,
             timestamp=timestamp,
         )
-        insert_no_capture_event(conn, work_id=work_id, timestamp=timestamp)
+        insert_no_capture_event(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            work_id=work_id,
+            timestamp=timestamp,
+        )
         insert_metadata(
             conn,
             work_id=work_id,
@@ -353,6 +360,7 @@ def backfill_entities(
     timestamp: str,
     *,
     can_link_entity_work: bool,
+    provenance_event_ref: str,
 ) -> None:
     if not table_exists(conn, "entity"):
         return
@@ -363,6 +371,7 @@ def backfill_entities(
         review_state = review_state_from_legacy(row["current_status"])
         work_id, created = insert_or_get_work(
             conn,
+            provenance_event_ref=provenance_event_ref,
             work_key=f"work:legacy-entity:{row['entity_id']}",
             work_type=work_type,
             title=label,
@@ -374,12 +383,18 @@ def backfill_entities(
         insert_local_identifier(conn, work_id=work_id, value=f"entity:{row['entity_id']}", timestamp=timestamp)
         insert_source_access(
             conn,
+            provenance_event_ref=provenance_event_ref,
             work_id=work_id,
             locator=row["canonical_provenance"] or f"legacy entity {row['entity_id']}",
             url=first_url(row["canonical_provenance"], row["canonical_grounded_detail"]),
             timestamp=timestamp,
         )
-        insert_no_capture_event(conn, work_id=work_id, timestamp=timestamp)
+        insert_no_capture_event(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            work_id=work_id,
+            timestamp=timestamp,
+        )
         insert_metadata(
             conn,
             work_id=work_id,
@@ -452,17 +467,30 @@ def run_backfill(db_path: Path, *, dry_run: bool = False) -> dict[str, Any]:
         can_link_entity_work = table_exists(conn, "entity_work")
         if dry_run:
             conn.execute("BEGIN")
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="legacy_backfill",
+            object_id=str(db_path.resolve()),
+            event_type="legacy_backfill",
+            tool_name=SCRIPT_PATH,
+            run_id=f"legacy-backfill:{timestamp}",
+            event_timestamp=timestamp,
+            note_text=f"legacy backfill for {db_path.resolve()}",
+            provenance_event_key_v1=f"prov:legacy-backfill:{db_path.resolve()}:{timestamp}",
+        )
         backfill_leads(
             conn,
             report,
             timestamp,
             has_identifier_metadata=has_identifier_metadata,
+            provenance_event_ref=provenance.event_key,
         )
         backfill_entities(
             conn,
             report,
             timestamp,
             can_link_entity_work=can_link_entity_work,
+            provenance_event_ref=provenance.event_key,
         )
         if dry_run:
             conn.rollback()

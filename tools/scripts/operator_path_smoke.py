@@ -28,6 +28,12 @@ SOURCE_ADAPTER_FIXTURE = (
     / "local_file"
     / "source_adapter.json"
 )
+CANDIDATE_BATCH_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+)
+EXECUTION_ARTIFACT_FIXTURE_DIR = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "execution_run"
+)
 SMOKE_SCHEMA_VERSION = "operator-path-smoke.v1"
 DEFAULT_RUN_ID = "operator-path-smoke"
 DEFAULT_TOPIC_LABEL = "Smoke Topic"
@@ -80,7 +86,7 @@ class SmokeContext:
     domain_pack: str = DEFAULT_DOMAIN_PACK
     doctor_report_path: Path | None = None
     dashboard_output_path: Path | None = None
-    review_db_path: Path | None = None
+    canonical_db_path: Path | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -265,36 +271,6 @@ def parse_json_stdout(proc: subprocess.CompletedProcess[str], *, label: str) -> 
     if not isinstance(payload, dict):
         raise OperatorPathSmokeError(f"{label} did not emit a JSON object")
     return payload
-
-
-def write_review_queue_fixture_db(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(
-            f"""
-            CREATE TABLE work (
-              work_id INTEGER PRIMARY KEY,
-              work_type TEXT,
-              title TEXT,
-              review_state TEXT,
-              confidence_score REAL,
-              workspace_id TEXT,
-              authority_level TEXT,
-              public_blocker TEXT,
-              record_last_updated TEXT
-            );
-            INSERT INTO work (
-              work_id, work_type, title, review_state, confidence_score,
-              workspace_id, authority_level, public_blocker, record_last_updated
-            ) VALUES (
-              1, 'book', 'Smoke Review Work', 'needs_review', 0.50,
-              'smoke_topic', 'primary', '', '{DEFAULT_FIXED_REVIEW_TIMESTAMP}'
-            );
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def smoke_help_surfaces(ctx: SmokeContext) -> tuple[str | None, str]:
@@ -488,15 +464,97 @@ def smoke_source_intake(ctx: SmokeContext) -> tuple[str | None, str]:
     ), "built source intake status from the checked-in runtime fixture"
 
 
+def smoke_init_canonical_store(ctx: SmokeContext) -> tuple[str | None, str]:
+    canonical_db_path = ctx.workspace_path / "canonical.sqlite"
+    command = [
+        sys.executable,
+        str(ctx.repo_root / "tools" / "source_db_tools" / "init_canonical_store.py"),
+        "--db",
+        str(canonical_db_path),
+    ]
+    checked_command(command, cwd=ctx.repo_root, label="canonical store init")
+    ctx.canonical_db_path = canonical_db_path
+    return str(canonical_db_path), "initialized canonical store for smoke ingestion"
+
+
+def smoke_ingest_candidate_batch(ctx: SmokeContext) -> tuple[str | None, str]:
+    if ctx.canonical_db_path is None:
+        raise OperatorPathSmokeError("candidate batch ingest requires an initialized canonical store")
+    require_file(CANDIDATE_BATCH_FIXTURE, label="candidate batch fixture")
+    command = [
+        sys.executable,
+        str(ctx.repo_root / "tools" / "scripts" / "ingest_gather_candidate_batch.py"),
+        "--db",
+        str(ctx.canonical_db_path),
+        "--batch",
+        str(CANDIDATE_BATCH_FIXTURE),
+        "--format",
+        "json",
+    ]
+    proc = checked_command(command, cwd=ctx.repo_root, label="candidate batch ingest")
+    payload = parse_json_stdout(proc, label="candidate batch ingest")
+    inserted = payload.get("counts", {}).get("inserted", {})
+    if inserted.get("work", 0) < 1 or inserted.get("source_claim", 0) < 1:
+        raise OperatorPathSmokeError(
+            "candidate batch ingest did not create the expected canonical work and source-claim rows"
+        )
+    return str(CANDIDATE_BATCH_FIXTURE), "ingested gather candidate batch through the canonical ingest path"
+
+
+def smoke_ingest_execution_artifacts(ctx: SmokeContext) -> tuple[str | None, str]:
+    if ctx.canonical_db_path is None:
+        raise OperatorPathSmokeError("execution artifact ingest requires an initialized canonical store")
+    if not EXECUTION_ARTIFACT_FIXTURE_DIR.is_dir():
+        raise OperatorPathSmokeError(
+            f"execution artifact fixture directory not found: {EXECUTION_ARTIFACT_FIXTURE_DIR}"
+        )
+    command = [
+        sys.executable,
+        str(ctx.repo_root / "tools" / "scripts" / "ingest_execution_artifacts.py"),
+        "--db",
+        str(ctx.canonical_db_path),
+        "--run-dir",
+        str(EXECUTION_ARTIFACT_FIXTURE_DIR),
+        "--format",
+        "json",
+    ]
+    proc = checked_command(command, cwd=ctx.repo_root, label="execution artifact ingest")
+    payload = parse_json_stdout(proc, label="execution artifact ingest")
+    inserted = payload.get("counts", {}).get("inserted", {})
+    if inserted.get("capture_event", 0) < 1 or inserted.get("extraction_record", 0) < 1:
+        raise OperatorPathSmokeError(
+            "execution artifact ingest did not create the expected capture and extraction rows"
+        )
+    return str(EXECUTION_ARTIFACT_FIXTURE_DIR), "ingested acquisition artifacts through the canonical ingest path"
+
+
+def smoke_canonical_family_counts(ctx: SmokeContext) -> tuple[str | None, str]:
+    if ctx.canonical_db_path is None:
+        raise OperatorPathSmokeError("canonical family counts require an initialized canonical store")
+    conn = sqlite3.connect(ctx.canonical_db_path)
+    try:
+        counts = {
+            "provenance_event": int(conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0]),
+            "work": int(conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]),
+            "source_claim": int(conn.execute("SELECT COUNT(*) FROM source_claim").fetchone()[0]),
+            "capture_event": int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0]),
+            "extraction_record": int(conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]),
+        }
+    finally:
+        conn.close()
+    if any(counts[key] < 1 for key in ("provenance_event", "work", "source_claim", "capture_event", "extraction_record")):
+        raise OperatorPathSmokeError(f"canonical family counts were unexpectedly sparse: {counts}")
+    return str(ctx.canonical_db_path), f"canonical family counts after ingest: {counts}"
+
+
 def smoke_review_queue(ctx: SmokeContext) -> tuple[str | None, str]:
-    review_db_path = ctx.workspace_path / "review.sqlite"
-    write_review_queue_fixture_db(review_db_path)
-    ctx.review_db_path = review_db_path
+    if ctx.canonical_db_path is None:
+        raise OperatorPathSmokeError("review queue build requires an initialized canonical store")
     command = [
         sys.executable,
         str(ctx.repo_root / "tools" / "scripts" / "build_review_queue_view.py"),
         "--db",
-        str(review_db_path),
+        str(ctx.canonical_db_path),
         "--format",
         "json",
     ]
@@ -504,9 +562,9 @@ def smoke_review_queue(ctx: SmokeContext) -> tuple[str | None, str]:
     payload = parse_json_stdout(proc, label="review queue build")
     if payload.get("schema_version") != "review-queue.v1":
         raise OperatorPathSmokeError("review queue build returned an unexpected schema_version")
-    if payload.get("counts", {}).get("total_items") != 1:
-        raise OperatorPathSmokeError("review queue build did not report the smoke review item")
-    return str(review_db_path), "built review queue view from a temp read-only smoke database"
+    if payload.get("counts", {}).get("total_items", 0) < 1:
+        raise OperatorPathSmokeError("review queue build did not report any pending canonical review items")
+    return str(ctx.canonical_db_path), "built review queue view from the ingested canonical store"
 
 
 def smoke_local_doctor(ctx: SmokeContext) -> tuple[str | None, str]:
@@ -785,6 +843,59 @@ def run_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 lambda: smoke_source_intake(ctx),
             ),
             (
+                "init_canonical_store",
+                "tools/source_db_tools/init_canonical_store.py",
+                command_text(
+                    [
+                        sys.executable,
+                        str(ctx.repo_root / "tools" / "source_db_tools" / "init_canonical_store.py"),
+                        "--db",
+                        "<canonical-store>",
+                    ]
+                ),
+                lambda: smoke_init_canonical_store(ctx),
+            ),
+            (
+                "ingest_candidate_batch",
+                "tools/scripts/ingest_gather_candidate_batch.py",
+                command_text(
+                    [
+                        sys.executable,
+                        str(ctx.repo_root / "tools" / "scripts" / "ingest_gather_candidate_batch.py"),
+                        "--db",
+                        "<canonical-store>",
+                        "--batch",
+                        str(CANDIDATE_BATCH_FIXTURE),
+                        "--format",
+                        "json",
+                    ]
+                ),
+                lambda: smoke_ingest_candidate_batch(ctx),
+            ),
+            (
+                "ingest_execution_artifacts",
+                "tools/scripts/ingest_execution_artifacts.py",
+                command_text(
+                    [
+                        sys.executable,
+                        str(ctx.repo_root / "tools" / "scripts" / "ingest_execution_artifacts.py"),
+                        "--db",
+                        "<canonical-store>",
+                        "--run-dir",
+                        str(EXECUTION_ARTIFACT_FIXTURE_DIR),
+                        "--format",
+                        "json",
+                    ]
+                ),
+                lambda: smoke_ingest_execution_artifacts(ctx),
+            ),
+            (
+                "canonical_family_counts",
+                "canonical.sqlite",
+                "sqlite count queries against the ingested canonical store",
+                lambda: smoke_canonical_family_counts(ctx),
+            ),
+            (
                 "build_review_queue_view",
                 "tools/scripts/build_review_queue_view.py",
                 command_text(
@@ -792,7 +903,7 @@ def run_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         sys.executable,
                         str(ctx.repo_root / "tools" / "scripts" / "build_review_queue_view.py"),
                         "--db",
-                        "<smoke-review-db>",
+                        "<canonical-store>",
                         "--format",
                         "json",
                     ]
