@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 
-
-SECRET_RE = re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)")
-PRIVATE_PATH_RE = re.compile(r"(?i)(?:^|[\s'\"(])(?:/home/|/Users/|/tmp/|file://|~/|[A-Za-z]:\\\\)[^\s'\"()]+")
+SECRET_RE = re.compile(
+    r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"
+)
+PRIVATE_PATH_RE = re.compile(
+    r"(?i)(?:^|[\s'\"(])(?:/home/|/Users/|/tmp/|file://|~/|[A-Za-z]:\\\\)[^\s'\"()]+"
+)
 
 RAW_PAYLOAD_FIELD_NAMES = {
     "body_text",
@@ -35,11 +38,15 @@ def normalize_field_name(value: str | None) -> str:
 
 
 def contains_secret_marker(value: str | None) -> bool:
-    return bool(value) and bool(SECRET_RE.search(value))
+    if not value:
+        return False
+    return bool(SECRET_RE.search(value))
 
 
 def contains_private_path(value: str | None) -> bool:
-    return bool(value) and bool(PRIVATE_PATH_RE.search(value))
+    if not value:
+        return False
+    return bool(PRIVATE_PATH_RE.search(value))
 
 
 def is_raw_payload_field(field_name: str | None) -> bool:

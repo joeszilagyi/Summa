@@ -5,7 +5,7 @@ set -euo pipefail
 # When changing this wrapper, keep the paired builder documentation and tests in sync.
 
 readonly SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly BUILDER="$SELF_DIR/build_static_knowledge_tree.py"
+readonly BUILDER="$SELF_DIR/build_publication_artifacts.py"
 readonly PYTHON_BIN="${PYTHON:-python3}"
 
 usage() {
@@ -13,8 +13,8 @@ usage() {
 Usage:
   Index_Build_Knowledge_Tree.sh [options] [-- <builder args>]
 
-This wrapper runs the live knowledge-tree builder from the same directory.
-The builder currently writes the static publication output directly.
+This wrapper runs the end-to-end knowledge-tree publication builder from the
+same directory.
 
 Documentation:
   docs/scripts/index_build_knowledge_tree.md

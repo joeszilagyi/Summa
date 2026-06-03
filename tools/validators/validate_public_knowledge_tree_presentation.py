@@ -57,13 +57,13 @@ REQUIRED_PAGE_KEYS = {
 }
 ALLOWED_PAGE_KEYS = REQUIRED_PAGE_KEYS
 
-ALLOWED_PAGE_FAMILIES = {"home", "facet", "entity", "source", "collection", "timeline", "validation"}
+ALLOWED_PAGE_FAMILIES = {"home", "facet", "entity", "source", "collection", "timeline", "validation", "search_results"}
 ALLOWED_READER_STATES = {"ready", "sparse", "empty", "blocked"}
 ALLOWED_REVIEW_STATES = {"reviewed", "needs_review", "unreviewed", "not_applicable"}
 ALLOWED_VALIDATION_STATES = {"passing", "warning", "blocked", "unknown"}
 ALLOWED_PUBLICATION_STATES = {"public_safe", "draft", "blocked", "previewable", "published"}
 
-REQUIRED_PAGE_FAMILIES = {"home", "facet", "entity", "source", "collection", "timeline", "validation"}
+REQUIRED_PAGE_FAMILIES = {"home", "facet", "entity", "source", "collection", "timeline", "validation", "search_results"}
 REQUIRED_NEVER_PUBLISH_FAMILIES = {
     "private local payload paths",
     "raw prompt output",
@@ -372,8 +372,8 @@ def validate_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(page_inventory, list):
         add_error(errors, code="INVALID_PAGE_INVENTORY", message="page_inventory must be an array")
     else:
-        if len(page_inventory) < 7:
-            add_error(errors, code="INVALID_PAGE_INVENTORY", message="page_inventory must contain at least 7 pages")
+        if len(page_inventory) < 8:
+            add_error(errors, code="INVALID_PAGE_INVENTORY", message="page_inventory must contain at least 8 pages")
         for index, page in enumerate(page_inventory):
             validated = validate_page(page, index, errors)
             if validated is not None:

@@ -43,7 +43,7 @@ def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> N
     )
 
     assert payload["status"] == "published"
-    assert payload["page_count"] == 7
+    assert payload["page_count"] == 8
     assert payload["asset_count"] == 1
 
     manifest_path = publish_root / "build-manifest.json"

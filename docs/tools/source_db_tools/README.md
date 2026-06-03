@@ -8,6 +8,8 @@ changing them.
 
 Current referenced guides:
 
+- `canonical_store_bootstrap.md`: canonical SQLite bootstrap, check, and
+  forward-only migration behavior
 - `claim_types.md`: claim-type registry loader and claim evidence/review checks
 - `relationship_predicates.md`: relationship predicate registry loader and
   evidence requirements

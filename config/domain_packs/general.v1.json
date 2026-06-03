@@ -2,7 +2,7 @@
   "schema_version": "domain-pack.v1",
   "pack_id": "general.v1",
   "display_name": "General topic starter domain pack",
-  "status": "partial-runtime",
+  "status": "runtime",
   "subject_kinds": [
     "topic.general",
     "topic.person_or_group",
@@ -104,6 +104,7 @@
   },
   "notes": [
     "This pack gives the first-run topic bootstrap flow a neutral starter target for ordinary topics.",
-    "Prompt templates for the active gather bundles are restored under tools/prompts/general and audited for topic-neutral candidate discovery wording."
+    "Prompt templates for the active gather bundles are restored under tools/prompts/general and audited for topic-neutral candidate discovery wording.",
+    "The checked-in gather driver exercises every enabled facet in dry-run mode and uses this pack as the broad-topic runtime baseline."
   ]
 }
