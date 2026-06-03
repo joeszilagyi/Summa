@@ -9,42 +9,42 @@
     {
       "record_family": "entity",
       "description": "entity",
-      "current_sqlite_tables": ["authority_record", "extraction_detected_entity"],
+      "current_sqlite_tables": ["authority_record", "extraction_detected_entity", "work", "work_subject"],
       "provenance_strategy": "entity provenance",
       "review_strategy": "entity review"
     },
     {
       "record_family": "relationship",
       "description": "relationship",
-      "current_sqlite_tables": ["source_relationship"],
+      "current_sqlite_tables": ["source_relationship", "work_subject"],
       "provenance_strategy": "relationship provenance",
       "review_strategy": "relationship review"
     },
     {
       "record_family": "assertion",
       "description": "assertion",
-      "current_sqlite_tables": ["source_claim"],
+      "current_sqlite_tables": ["source_claim", "topic_extension"],
       "provenance_strategy": "assertion provenance",
       "review_strategy": "assertion review"
     },
     {
       "record_family": "provenance_event",
       "description": "provenance_event",
-      "current_sqlite_tables": ["provenance_event"],
+      "current_sqlite_tables": ["provenance_event", "capture_event", "extraction_record"],
       "provenance_strategy": "provenance event provenance",
       "review_strategy": "provenance event review"
     },
     {
       "record_family": "confidence_assessment",
       "description": "confidence_assessment",
-      "current_sqlite_tables": ["source_claim"],
+      "current_sqlite_tables": ["authority_record", "source_relationship", "source_claim", "topic_extension"],
       "provenance_strategy": "confidence provenance",
       "review_strategy": "confidence review"
     },
     {
       "record_family": "review_annotation",
       "description": "review_annotation",
-      "current_sqlite_tables": ["review_state_history"],
+      "current_sqlite_tables": ["review_state_history", "authority_reconciliation"],
       "provenance_strategy": "review provenance",
       "review_strategy": "review annotation review"
     }
@@ -62,6 +62,23 @@
       "applies_to_record_families": ["entity"],
       "purpose": "field review"
     }
+  ],
+  "supporting_sqlite_tables": [
+    "authority_identifier",
+    "authority_merge_event",
+    "source_access",
+    "work_identifier",
+    "work_metadata",
+    "work_url"
+  ],
+  "schema_metadata_tables": [
+    "schema_migration_history",
+    "schema_version"
+  ],
+  "noncanonical_staging_tables": [
+    "simulated_source_lead_candidate",
+    "source_locus",
+    "source_query_execution_simulation"
   ],
   "migration_stages": [
     {

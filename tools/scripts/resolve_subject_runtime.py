@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -15,6 +16,10 @@ if str(REPO_ROOT) not in sys.path:
 from tools.common.llm_source_text_wrapper import default_template_id
 
 PHASE_KEYS = ("01a", "01r")
+SUBJECT_MANIFEST_SCHEMA_VERSION = "subject-manifest.v1"
+SUBJECT_RUNTIME_SCHEMA_VERSION = "subject-runtime-resolution.v1"
+DEFAULT_WORKSPACE_MANIFEST = Path(".indexer") / "subject_manifest.json"
+IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class ResolutionError(RuntimeError):
@@ -116,6 +121,24 @@ def _normalize_template_files(bundle: dict[str, Any]) -> list[str]:
     return template_files
 
 
+def _normalize_resolved_phase_template_files(
+    template_files: list[str],
+    *,
+    facet: str,
+    bundle_key: str,
+) -> dict[str, str]:
+    if not template_files:
+        return {}
+    if len(template_files) < len(PHASE_KEYS):
+        raise ResolutionError(
+            f"prompt bundle {bundle_key} for facet {facet} must declare at least {len(PHASE_KEYS)} template_files"
+        )
+    return {
+        "01a": template_files[0],
+        "01r": template_files[1],
+    }
+
+
 def _normalize_source_text_wrapper_template_id(bundle: dict[str, Any], *, facet: str, bundle_key: str) -> str:
     raw = bundle.get("source_text_wrapper_template_id")
     if raw is None:
@@ -176,6 +199,7 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
                 legacy_01a_output_stem,
                 field_name=f"prompt bundle {bundle_key} legacy_01a_output_stem",
             )
+        template_files = _normalize_template_files(bundle_value)
 
         resolved[facet] = {
             "bundle_key": bundle_key,
@@ -184,7 +208,12 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
             "phase_templates": phase_templates,
             "resolved_phase_prompt_files": resolved_phase_prompt_files,
             "legacy_01a_output_stem": legacy_01a_output_stem,
-            "template_files": _normalize_template_files(bundle_value),
+            "template_files": template_files,
+            "resolved_phase_template_files": _normalize_resolved_phase_template_files(
+                template_files,
+                facet=facet,
+                bundle_key=bundle_key,
+            ),
             "source_text_wrapper_template_id": _normalize_source_text_wrapper_template_id(
                 bundle_value,
                 facet=facet,
@@ -193,3 +222,142 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
         }
 
     return resolved
+
+
+def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    if not path.exists():
+        raise ResolutionError(f"{label} not found: {path}")
+    if not path.is_file():
+        raise ResolutionError(f"{label} is not a file: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ResolutionError(f"could not read {label}: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ResolutionError(f"could not parse {label}: {path} (line {exc.lineno})") from exc
+    if not isinstance(payload, dict):
+        raise ResolutionError(f"{label} must contain a JSON object: {path}")
+    return payload
+
+
+def _normalize_string_array(value: Any, *, field_name: str, min_items: int = 0) -> list[str]:
+    if not isinstance(value, list):
+        raise ResolutionError(f"{field_name} must be a string array")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        text = _require_nonblank_string(item, field_name=f"{field_name}[{index}]")
+        if text in seen:
+            raise ResolutionError(f"{field_name} contains a duplicate value: {text}")
+        seen.add(text)
+        normalized.append(text)
+    if len(normalized) < min_items:
+        raise ResolutionError(f"{field_name} must contain at least {min_items} item(s)")
+    return normalized
+
+
+def resolve_workspace_path(raw_workspace: str) -> Path:
+    workspace_path = Path(raw_workspace).expanduser()
+    if not workspace_path.is_absolute():
+        workspace_path = (Path.cwd() / workspace_path).resolve()
+    if not workspace_path.exists():
+        raise ResolutionError(f"workspace root not found: {workspace_path}")
+    if not workspace_path.is_dir():
+        raise ResolutionError(f"workspace root is not a directory: {workspace_path}")
+    return workspace_path
+
+
+def resolve_subject_manifest_path(raw_subject: str, workspace: str | None = None) -> tuple[Path, str]:
+    candidate = Path(raw_subject).expanduser()
+    if candidate.exists():
+        if not candidate.is_absolute():
+            candidate = (Path.cwd() / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        if not candidate.is_file():
+            raise ResolutionError(f"subject manifest path is not a file: {candidate}")
+        return candidate, "subject_manifest_path"
+
+    if workspace is None:
+        raise ResolutionError(
+            "subject must be an existing manifest path or a subject_id used together with --workspace"
+        )
+
+    workspace_path = resolve_workspace_path(workspace)
+    manifest_path = (workspace_path / DEFAULT_WORKSPACE_MANIFEST).resolve()
+    if not manifest_path.is_file():
+        raise ResolutionError(f"workspace subject manifest not found: {manifest_path}")
+    return manifest_path, "workspace_default_manifest"
+
+
+def load_subject_manifest(manifest_path: Path) -> dict[str, Any]:
+    payload = _load_json_object(manifest_path, label="subject manifest")
+    schema_version = _require_nonblank_string(payload.get("schema_version"), field_name="subject manifest schema_version")
+    if schema_version != SUBJECT_MANIFEST_SCHEMA_VERSION:
+        raise ResolutionError(f"subject manifest schema_version must equal {SUBJECT_MANIFEST_SCHEMA_VERSION}")
+
+    return {
+        "schema_version": schema_version,
+        "subject_id": _require_nonblank_string(payload.get("subject_id"), field_name="subject manifest subject_id"),
+        "display_name": _require_nonblank_string(payload.get("display_name"), field_name="subject manifest display_name"),
+        "domain_pack": _require_nonblank_string(payload.get("domain_pack"), field_name="subject manifest domain_pack"),
+        "scope_statement": _require_nonblank_string(
+            payload.get("scope_statement"),
+            field_name="subject manifest scope_statement",
+        ),
+        "languages": _normalize_string_array(payload.get("languages"), field_name="subject manifest languages", min_items=1),
+        "aliases": _normalize_string_array(payload.get("aliases", []), field_name="subject manifest aliases"),
+        "disambiguation_terms": _normalize_string_array(
+            payload.get("disambiguation_terms", []),
+            field_name="subject manifest disambiguation_terms",
+        ),
+        "excluded_senses": _normalize_string_array(
+            payload.get("excluded_senses", []),
+            field_name="subject manifest excluded_senses",
+        ),
+        "enabled_facets": _normalize_string_array(
+            payload.get("enabled_facets"),
+            field_name="subject manifest enabled_facets",
+            min_items=1,
+        ),
+        "query_families": _normalize_string_array(
+            payload.get("query_families"),
+            field_name="subject manifest query_families",
+            min_items=1,
+        ),
+        "legacy_substrate_paths": _normalize_string_array(
+            payload.get("legacy_substrate_paths", []),
+            field_name="subject manifest legacy_substrate_paths",
+        ),
+        "public_export_default": bool(payload.get("public_export_default", False)),
+        "notes": _normalize_string_array(payload.get("notes", []), field_name="subject manifest notes"),
+    }
+
+
+def _infer_workspace_root(manifest_path: Path) -> Path:
+    if manifest_path.parent.name == DEFAULT_WORKSPACE_MANIFEST.parent.name:
+        return manifest_path.parent.parent.resolve()
+    return manifest_path.parent.resolve()
+
+
+def resolve_subject_runtime(raw_subject: str, workspace: str | None = None) -> dict[str, Any]:
+    manifest_path, resolution_source = resolve_subject_manifest_path(raw_subject, workspace)
+    manifest = load_subject_manifest(manifest_path)
+    if workspace is None:
+        workspace_root = _infer_workspace_root(manifest_path)
+    else:
+        workspace_root = resolve_workspace_path(workspace)
+    if not IDENTIFIER_PATTERN.fullmatch(manifest["subject_id"]):
+        raise ResolutionError("subject manifest subject_id must match ^[a-z0-9][a-z0-9._-]*$")
+    if manifest["subject_id"] != raw_subject and not Path(raw_subject).expanduser().exists():
+        raise ResolutionError(
+            f"workspace manifest subject_id does not match requested subject: {manifest['subject_id']} != {raw_subject}"
+        )
+
+    return {
+        "schema_version": SUBJECT_RUNTIME_SCHEMA_VERSION,
+        "resolution_source": resolution_source,
+        "subject_manifest_path": str(manifest_path),
+        "workspace_root": str(workspace_root),
+        "subject": manifest,
+    }

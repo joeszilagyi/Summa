@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve gather facets and prompt paths from a domain pack for legacy runners."""
+"""Resolve gather facets and prompt paths from a domain pack."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--domain-pack",
-        default="subject.v1",
-        help="Domain pack ID under config/domain_packs (default: subject.v1).",
+        default="general.v1",
+        help="Domain pack ID under config/domain_packs (default: general.v1).",
     )
     parser.add_argument(
         "--facets",

@@ -69,6 +69,23 @@
       "purpose": "evidence"
     }
   ],
+  "supporting_sqlite_tables": [
+    "authority_identifier",
+    "authority_merge_event",
+    "source_access",
+    "work_identifier",
+    "work_metadata",
+    "work_url"
+  ],
+  "schema_metadata_tables": [
+    "schema_migration_history",
+    "schema_version"
+  ],
+  "noncanonical_staging_tables": [
+    "simulated_source_lead_candidate",
+    "source_locus",
+    "source_query_execution_simulation"
+  ],
   "migration_stages": [
     {
       "stage_id": "graph-outline.v1",

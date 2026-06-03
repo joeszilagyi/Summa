@@ -45,7 +45,6 @@
 {"rule_key":"rule.review_notes","priority":131,"glob":"REVIEW_NOTES/**","path_kind":"documentation","description":"Tracked review notes and configuration audit writeups kept with the repo."}
 {"rule_key":"rule.root_claude_internal_doc","priority":139,"glob":"CLAUDE.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant-facing root handoff doc; private/internal by default and excluded from public bundles."}
 {"rule_key":"rule.root_continuity_internal_doc","priority":139,"glob":"CONTINUITY.md","path_kind":"documentation","artifact_key":"artifact.internal_operator_doc","description":"Assistant-facing continuity doc; private/internal by default and excluded from public bundles."}
-{"rule_key":"rule.root_bug_fixer","priority":141,"glob":"Bug_Fixer.sh","path_kind":"operational","description":"Repo-root one-shot GitHub bug worker wrapper."}
 {"rule_key":"rule.root_license","priority":141,"glob":"LICENSE","path_kind":"documentation","description":"Repository license declaration."}
 {"rule_key":"rule.root_pyproject","priority":141,"glob":"pyproject.toml","path_kind":"config","description":"Python project metadata, dependency-group declarations, and pytest configuration."}
 {"rule_key":"rule.root_markdown","priority":141,"glob":"*.md","path_kind":"documentation","description":"Top-level Markdown context and guide files."}

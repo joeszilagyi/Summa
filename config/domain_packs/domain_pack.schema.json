@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/domain_pack.schema.json",
+  "title": "domain-pack.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "display_name",
+    "status",
+    "subject_kinds",
+    "enabled_facets",
+    "query_families",
+    "prompt_bundles",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "domain-pack.v1"
+    },
+    "pack_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject_kinds": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "enabled_facets": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "query_families": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "prompt_bundles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^gather\\.[a-z][a-z0-9_]*$": {
+          "$ref": "#/$defs/promptBundle"
+        }
+      }
+    },
+    "notes": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    }
+  },
+  "$defs": {
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonemptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonemptyString"
+      },
+      "uniqueItems": true
+    },
+    "promptBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "source_text_wrapper_template_id",
+        "template_files",
+        "template_ids"
+      ],
+      "properties": {
+        "bundle_id": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "source_text_wrapper_template_id": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "template_files": {
+          "$ref": "#/$defs/nonemptyStringArray"
+        },
+        "template_ids": {
+          "$ref": "#/$defs/nonemptyStringArray"
+        }
+      }
+    }
+  }
+}

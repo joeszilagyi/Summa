@@ -13,7 +13,8 @@
     "source",
     "collection",
     "timeline",
-    "validation"
+    "validation",
+    "search_results"
   ],
   "input_sources": [
     {
@@ -37,13 +38,13 @@
       "review_posture": "reviewed",
       "publication_state": "public_safe",
       "source_ids": ["country_sqlite"],
-      "related_page_ids": ["facet_records", "entity_alpha"],
-      "summary_cards": [{"label": "Pages", "value": "7"}],
+      "related_page_ids": ["facet_records", "entity_alpha", "search_results"],
+      "summary_cards": [{"label": "Pages", "value": "8"}],
       "sections": [
         {
           "heading": "Overview",
           "paragraphs": ["Validated export for the static site."],
-          "link_page_ids": ["facet_records", "entity_alpha"]
+          "link_page_ids": ["facet_records", "entity_alpha", "search_results"]
         }
       ]
     },
@@ -158,6 +159,25 @@
           "heading": "Validation",
           "paragraphs": ["All checks passing."],
           "link_page_ids": ["home"]
+        }
+      ]
+    },
+    {
+      "page_id": "search_results",
+      "page_family": "search_results",
+      "route": "search/results.html",
+      "title": "Search Results",
+      "lede": "Search results overview page.",
+      "review_posture": "reviewed",
+      "publication_state": "public_safe",
+      "source_ids": ["country_sqlite"],
+      "related_page_ids": ["home", "entity_alpha", "source_country_sqlite"],
+      "summary_cards": [{"label": "Results", "value": "1"}],
+      "sections": [
+        {
+          "heading": "Search",
+          "paragraphs": ["Search links back to entity and source pages."],
+          "link_page_ids": ["entity_alpha", "source_country_sqlite"]
         }
       ]
     }

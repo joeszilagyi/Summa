@@ -38,9 +38,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common.canonical_graph_model_contract import (  # noqa: E402
     CONTRACT_DOC,
+    DOCUMENTED_EXPECTED_SQLITE_TABLES,
+    REQUIRED_NONCANONICAL_STAGING_TABLES,
     REQUIRED_RECORD_FAMILIES,
+    REQUIRED_SCHEMA_METADATA_TABLES,
     REQUIRED_SIDECARS,
     REQUIRED_SQLITE_TABLE_MAPPINGS,
+    REQUIRED_SUPPORTING_SQLITE_TABLES,
     SCHEMA_VERSION,
 )
 
@@ -53,6 +57,9 @@ REQUIRED_KEYS = {
     "summary",
     "canonical_record_families",
     "append_only_sidecars",
+    "supporting_sqlite_tables",
+    "schema_metadata_tables",
+    "noncanonical_staging_tables",
     "migration_stages",
 }
 FAMILY_REQUIRED_KEYS = {
@@ -232,6 +239,68 @@ def validate_sidecars(value: Any, errors: list[dict[str, Any]], known_families: 
         add_error(errors, code="REQUIRED_SIDECAR_MISSING", message=f"missing required append-only sidecar: {sidecar}")
 
 
+def validate_table_inventory(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
+    supporting = set(
+        validate_string_array(
+            payload.get("supporting_sqlite_tables"),
+            field_name="supporting_sqlite_tables",
+            errors=errors,
+            code="INVALID_SUPPORTING_SQLITE_TABLES",
+        )
+    )
+    metadata = set(
+        validate_string_array(
+            payload.get("schema_metadata_tables"),
+            field_name="schema_metadata_tables",
+            errors=errors,
+            code="INVALID_SCHEMA_METADATA_TABLES",
+        )
+    )
+    staging = set(
+        validate_string_array(
+            payload.get("noncanonical_staging_tables"),
+            field_name="noncanonical_staging_tables",
+            errors=errors,
+            code="INVALID_NONCANONICAL_STAGING_TABLES",
+        )
+    )
+
+    for table_name in sorted(REQUIRED_SUPPORTING_SQLITE_TABLES - supporting):
+        add_error(
+            errors,
+            code="REQUIRED_SUPPORTING_SQLITE_TABLE_MISSING",
+            message=f"missing required supporting SQLite table: {table_name}",
+        )
+    for table_name in sorted(REQUIRED_SCHEMA_METADATA_TABLES - metadata):
+        add_error(
+            errors,
+            code="REQUIRED_SCHEMA_METADATA_TABLE_MISSING",
+            message=f"missing required schema metadata table: {table_name}",
+        )
+    for table_name in sorted(REQUIRED_NONCANONICAL_STAGING_TABLES - staging):
+        add_error(
+            errors,
+            code="REQUIRED_NONCANONICAL_STAGING_TABLE_MISSING",
+            message=f"missing required noncanonical staging table: {table_name}",
+        )
+
+    family_table_union: set[str] = set()
+    families = payload.get("canonical_record_families")
+    if isinstance(families, list):
+        for item in families:
+            if not isinstance(item, dict):
+                continue
+            for table_name in item.get("current_sqlite_tables", []):
+                if isinstance(table_name, str) and table_name.strip():
+                    family_table_union.add(table_name)
+    for table_name in sorted(DOCUMENTED_EXPECTED_SQLITE_TABLES - family_table_union):
+        add_error(
+            errors,
+            code="DOCUMENTED_SQLITE_TABLE_MISSING",
+            message=f"documented canonical SQLite table is not mapped to any record family: {table_name}",
+        )
+
+
 def validate_migration_stages(value: Any, errors: list[dict[str, Any]], known_families: set[str]) -> None:
     if not isinstance(value, list):
         add_error(errors, code="MIGRATION_STAGES_NOT_ARRAY", message="migration_stages must be an array")
@@ -278,6 +347,7 @@ def validate_outline(payload: dict[str, Any]) -> list[dict[str, Any]]:
             add_error(errors, code="PRESENTATIONS_NOT_DOWNSTREAM", message="summary.presentations_downstream must be true")
     families = validate_record_families(payload.get("canonical_record_families"), errors)
     validate_sidecars(payload.get("append_only_sidecars"), errors, families)
+    validate_table_inventory(payload, errors)
     validate_migration_stages(payload.get("migration_stages"), errors, families)
     return errors
 

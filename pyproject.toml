@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "summa-indexer"
-version = "0.0.0"
+version = "8.8.0.4"
 description = "Local-first topic indexing, bibliography, source-lead, and public-safe publication tooling."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,16 +14,31 @@ authors = [
 ]
 dependencies = []
 
-[project.optional-dependencies]
-adapters = []
-llm-runners = []
+[project.scripts]
+summa-new-topic = "tools.scripts.bootstrap_topic_workspace:main"
+summa-build-knowledge-tree = "tools.scripts.build_publication_artifacts:main"
+summa-workspace-overview = "tools.scripts.build_workspace_overview_view:main"
+summa-subject-detail = "tools.scripts.build_subject_detail_view:main"
+summa-source-intake-status = "tools.scripts.build_source_intake_status_view:main"
+summa-review-queue = "tools.scripts.build_review_queue_view:main"
+summa-local-doctor = "tools.scripts.local_doctor:main"
+summa-operator-dashboard = "tools.scripts.build_operator_dashboard:main"
+summa-operator-path-smoke = "tools.scripts.operator_path_smoke:main"
+summa-resolve-gather-domain-pack = "tools.scripts.resolve_gather_domain_pack:main"
+summa-init-canonical-store = "tools.source_db_tools.init_canonical_store:main"
 
 [dependency-groups]
 test = [
-  "pytest>=8"
+  "jsonschema>=4.23",
+  "pytest>=8",
+  "pytest-cov>=5",
 ]
 dev = [
-  "pytest>=8"
+  "jsonschema>=4.23",
+  "mypy>=1.13",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.8",
 ]
 
 [tool.pytest.ini_options]
@@ -39,3 +54,62 @@ testpaths = [
 
 [tool.setuptools]
 py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*"]
+exclude = ["tools.source_db_tools.tests*"]
+namespaces = true
+
+[tool.coverage.run]
+source = ["tools"]
+relative_files = true
+omit = [
+  "tests/*",
+  "tests/fixtures/*",
+  "tools/source_db_tools/tests/*",
+  "build/*",
+  "dist/*",
+  "runtime/*",
+  "dbs/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 60
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+  "build",
+  "dbs",
+  "dist",
+  "runtime",
+  "tests/fixtures",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+follow_imports = "silent"
+# Initial typed gate covers the live gather/operator/bootstrap surfaces that already
+# have bounded local-import behavior on this branch.
+files = [
+  "tools/common/search_leak_policy.py",
+  "tools/scripts/operator_path_smoke.py",
+  "tools/scripts/run_topic_gather.py",
+  "tools/source_db_tools/canonical_store.py",
+  "tools/source_db_tools/init_canonical_store.py",
+  "tests/test_llm_runner_status.py",
+  "tests/test_packaging_metadata.py",
+]

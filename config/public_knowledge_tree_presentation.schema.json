@@ -10,7 +10,7 @@
     "contract_doc": {"const": "docs/project/PUBLIC_KNOWLEDGE_TREE_PRESENTATION_CONTRACT.md"},
     "page_inventory": {
       "type": "array",
-      "minItems": 7,
+      "minItems": 8,
       "items": {"$ref": "#/$defs/page"}
     },
     "never_publish": {
@@ -42,7 +42,7 @@
       ],
       "properties": {
         "page_family": {
-          "enum": ["home", "facet", "entity", "source", "collection", "timeline", "validation"]
+          "enum": ["home", "facet", "entity", "source", "collection", "timeline", "validation", "search_results"]
         },
         "route": {"type": "string", "minLength": 1},
         "navigation_parent": {"type": "string"},

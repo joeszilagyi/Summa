@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/summa/canonical_graph_model_outline.schema.json",
+  "title": "canonical-graph-model-outline.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_doc",
+    "summary",
+    "canonical_record_families",
+    "append_only_sidecars",
+    "supporting_sqlite_tables",
+    "schema_metadata_tables",
+    "noncanonical_staging_tables",
+    "migration_stages"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "canonical-graph-model-outline.v1"
+    },
+    "contract_doc": {
+      "const": "docs/project/CANONICAL_GRAPH_MODEL.md"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_layer_name",
+        "presentations_downstream",
+        "notes"
+      ],
+      "properties": {
+        "canonical_layer_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "presentations_downstream": {
+          "type": "boolean"
+        },
+        "notes": {
+          "$ref": "#/$defs/nonemptyStringArray"
+        }
+      }
+    },
+    "canonical_record_families": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "$ref": "#/$defs/recordFamily"
+      }
+    },
+    "append_only_sidecars": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/sidecar"
+      }
+    },
+    "supporting_sqlite_tables": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "schema_metadata_tables": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "noncanonical_staging_tables": {
+      "$ref": "#/$defs/nonemptyStringArray"
+    },
+    "migration_stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/migrationStage"
+      }
+    }
+  },
+  "$defs": {
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonemptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonemptyString"
+      },
+      "uniqueItems": true
+    },
+    "recordFamilyName": {
+      "type": "string",
+      "enum": [
+        "entity",
+        "relationship",
+        "assertion",
+        "provenance_event",
+        "confidence_assessment",
+        "review_annotation"
+      ]
+    },
+    "recordFamily": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_family",
+        "description",
+        "current_sqlite_tables",
+        "provenance_strategy",
+        "review_strategy"
+      ],
+      "properties": {
+        "record_family": {
+          "$ref": "#/$defs/recordFamilyName"
+        },
+        "description": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "current_sqlite_tables": {
+          "$ref": "#/$defs/nonemptyStringArray"
+        },
+        "provenance_strategy": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "review_strategy": {
+          "$ref": "#/$defs/nonemptyString"
+        }
+      }
+    },
+    "sidecarName": {
+      "type": "string",
+      "enum": [
+        "correction_ledger",
+        "field_review_state",
+        "evidence_locator"
+      ]
+    },
+    "sidecar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sidecar",
+        "schema_version",
+        "applies_to_record_families",
+        "purpose"
+      ],
+      "properties": {
+        "sidecar": {
+          "$ref": "#/$defs/sidecarName"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "applies_to_record_families": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/recordFamilyName"
+          },
+          "uniqueItems": true
+        },
+        "purpose": {
+          "$ref": "#/$defs/nonemptyString"
+        }
+      }
+    },
+    "migrationStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage_id",
+        "title",
+        "current_inputs",
+        "target_record_families",
+        "notes"
+      ],
+      "properties": {
+        "stage_id": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "title": {
+          "$ref": "#/$defs/nonemptyString"
+        },
+        "current_inputs": {
+          "$ref": "#/$defs/nonemptyStringArray"
+        },
+        "target_record_families": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/recordFamilyName"
+          },
+          "uniqueItems": true
+        },
+        "notes": {
+          "$ref": "#/$defs/nonemptyString"
+        }
+      }
+    }
+  }
+}

@@ -25,6 +25,8 @@ contracts described in `README.md`, `docs/README.md`, and `docs/repo-layout.md`.
    history; local backup clutter belongs outside the index.
 7. Run the narrowest relevant validation before opening or updating a PR. For
    broad repo changes, run `python3 -m pytest -q` when practical.
+8. If `.project_metadata` `CURRENT_BUILD` changes, update `CHANGELOG.md` in the
+   same change so the build bump has a human-readable repository entry.
 
 ## Supported Surfaces
 
@@ -37,8 +39,8 @@ Live supported surfaces include:
 - `tools/validators/`, `tools/pipeline_registry/`, and `tools/source_db_tools/`
 - `tests/` fixtures and regression tests
 - `docs/` architecture, operations, and migration contracts
-- tracked `index/` and `dbs/` state that is intentionally part of the current
-  workflow surface
+- tracked `index/` scaffolding plus checked-in contracts and fixtures that
+  describe local database and runtime surfaces
 
 `runtime/`, local caches, local assistant notes, secrets, raw collateral
 payloads, and generated test corpora are local-only by default. See

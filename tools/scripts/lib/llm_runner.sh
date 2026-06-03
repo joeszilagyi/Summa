@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# llm_runner.sh — compatibility LLM engine abstraction for legacy gather scripts
+# llm_runner.sh — shared shell LLM engine abstraction for the live gather runtime.
+#
+# Used by tools/scripts/run_topic_gather.py via llm_runner_bridge.sh. This
+# library selects the configured Codex or Claude engine, runs the prompt, and
+# stamps provenance on gather candidate output.
+#
+# Safety:
+# - callers must wrap any untrusted source text before passing prompt_text here
+# - this library does not validate or elevate LLM output into source material
+#
+# Shell library only; source it from another script after runtime_logging.sh.
 #
 # Usage in a caller script:
 #   source "$SCRIPT_DIR/lib/llm_runner.sh"   # after runtime_logging.sh
 #   # optionally: llm_runner_set_engine "claude"  (or via --agent flag)
 #   llm_runner_init || fail "LLM engine unavailable"
 #   llm_runner_run_quiet "$tmp" "$prompt" "$phase" "MyTool.sh"
+#   # or: llm_runner_run_to_file "$tmp" "$prompt" "$output_file" "$phase" "MyTool.sh"
 #   llm_runner_stamp_output "$output_file" "$place" "$facet" "$phase"
 #
 # Env var inputs (all optional; lib sets safe defaults):
@@ -137,20 +148,20 @@ llm_runner_init() {
 # Internal engine runners — not part of the public API
 # ---------------------------------------------------------------------------
 _llm_runner_exec_codex() {
-  local tmp_dir="$1" prompt_text="$2" stderr_file="$3"
+  local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
     codex exec "${_LLM_RUNNER_CODEX_ARGS[@]}" "$prompt_text" \
-  ) > /dev/null 2>"$stderr_file"
+  ) >"$stdout_file" 2>"$stderr_file"
 }
 
 _llm_runner_exec_claude() {
-  local tmp_dir="$1" prompt_text="$2" stderr_file="$3"
+  local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
     claude -p "$prompt_text" \
       --dangerously-skip-permissions \
       --model "$LLM_RUNNER_CLAUDE_MODEL" \
       --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
-  ) > /dev/null 2>"$stderr_file"
+  ) >"$stdout_file" 2>"$stderr_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -177,7 +188,7 @@ llm_runner_run_quiet() {
   : > "$stderr_file"
   start_ts="$(date +%s)"
 
-  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$stderr_file"; then
+  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "/dev/null" "$stderr_file"; then
     end_ts="$(date +%s)"
     elapsed=$((end_ts - start_ts))
     runtime_log_event LLM_OK \
@@ -190,6 +201,53 @@ llm_runner_run_quiet() {
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
     "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
+  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
+  printf 'Captured stderr: %s\n' "$stderr_file" >&2
+  tail -n 80 "$stderr_file" >&2 || true
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# llm_runner_run_to_file <tmp_dir> <prompt_text> <output_file> <phase> <tool_name>
+#   Run the selected engine in <tmp_dir> with <prompt_text> and capture stdout
+#   in <output_file>. Captures stderr and emits the same runtime log events as
+#   llm_runner_run_quiet.
+# ---------------------------------------------------------------------------
+llm_runner_run_to_file() {
+  local tmp_dir="$1" prompt_text="$2" output_file="$3" phase="$4" tool_name="${5:-llm_runner}"
+  local stderr_file start_ts end_ts elapsed rc
+
+  [[ "$_LLM_RUNNER_INITIALIZED" == "1" ]] || {
+    printf 'llm_runner: llm_runner_init must be called before llm_runner_run_to_file\n' >&2
+    return 1
+  }
+
+  _llm_runner_require_tmp_dir "$tmp_dir" || return 1
+  _llm_runner_require_output_dir "$output_file" || return 1
+
+  if [[ -e "$output_file" && ! -w "$output_file" ]]; then
+    printf 'llm_runner: output file "%s" is not writable\n' "$output_file" >&2
+    return 1
+  fi
+
+  : > "$output_file"
+  stderr_file="$(mktemp "${tmp_dir%/}/llm.${phase}.stderr.XXXXXX")"
+  : > "$stderr_file"
+  start_ts="$(date +%s)"
+
+  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_file" "$stderr_file"; then
+    end_ts="$(date +%s)"
+    elapsed=$((end_ts - start_ts))
+    runtime_log_event LLM_OK \
+      "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
+    return 0
+  fi
+
+  rc=$?
+  end_ts="$(date +%s)"
+  elapsed=$((end_ts - start_ts))
+  runtime_log_event LLM_FAIL \
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
   printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
   printf 'Captured stderr: %s\n' "$stderr_file" >&2
   tail -n 80 "$stderr_file" >&2 || true

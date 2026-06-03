@@ -56,10 +56,31 @@ The current runtime already holds graph-shaped material in several places:
   provenance history.
 - `review_state_history` and `authority_reconciliation` provide review-oriented
   annotations.
+- `authority_identifier`, `work_identifier`, `source_access`, `work_metadata`,
+  `work_url`, and `authority_merge_event` remain supporting durable tables that
+  the canonical store bootstrap preserves for current local tools.
+- `source_locus`, `source_query_execution_simulation`, and
+  `simulated_source_lead_candidate` remain explicitly noncanonical staging or
+  simulation tables rather than canonical graph rows.
 
 This document does not require an immediate table rewrite. The first goal is to
 make the canonical ownership model explicit so later runtime work stops
 building directly on importer-specific or presentation-specific row shapes.
+
+## Bootstrap And Migration
+
+The canonical SQLite schema is initialized with:
+
+`python3 tools/source_db_tools/init_canonical_store.py --db path/to/canonical.sqlite`
+
+Validation without mutation is:
+
+`python3 tools/source_db_tools/init_canonical_store.py --db path/to/canonical.sqlite --check`
+
+The checked-in schema lives under
+`tools/source_db_tools/schema/migrations/0001_canonical_store.sql`. Migrations
+are forward-only and non-destructive: no table drops, no silent downgrade, and
+no rewrite of append-only review or provenance history.
 
 ## Migration Direction
 

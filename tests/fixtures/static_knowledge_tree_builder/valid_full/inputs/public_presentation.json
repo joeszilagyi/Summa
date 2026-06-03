@@ -14,8 +14,8 @@
       "summary_cards": ["Pages", "Status"],
       "empty_state": "",
       "redaction_gate_refs": ["public_private_export_boundary", "knowledge_tree_export_validator", "review_gate"],
-      "navigation_children": ["facets/records.html", "entities/alpha.html", "sources/country-sqlite.html", "collections/reference.html", "timeline/updates.html", "validation/status.html"],
-      "related_routes": ["facets/records.html", "entities/alpha.html"],
+      "navigation_children": ["facets/records.html", "entities/alpha.html", "sources/country-sqlite.html", "collections/reference.html", "timeline/updates.html", "validation/status.html", "search/results.html"],
+      "related_routes": ["facets/records.html", "entities/alpha.html", "search/results.html"],
       "breadcrumbs": ["index.html"]
     },
     {
@@ -113,6 +113,22 @@
       "navigation_children": [],
       "related_routes": ["index.html"],
       "breadcrumbs": ["index.html", "validation/status.html"]
+    },
+    {
+      "page_family": "search_results",
+      "route": "search/results.html",
+      "navigation_parent": "index.html",
+      "reader_state": "ready",
+      "review_state": "reviewed",
+      "validation_state": "passing",
+      "publication_state": "public_safe",
+      "source_transparency": "Validated SQLite source and public search projection.",
+      "summary_cards": ["Search summary"],
+      "empty_state": "",
+      "redaction_gate_refs": ["public_private_export_boundary", "knowledge_tree_export_validator", "review_gate"],
+      "navigation_children": [],
+      "related_routes": ["index.html", "entities/alpha.html", "sources/country-sqlite.html"],
+      "breadcrumbs": ["index.html", "search/results.html"]
     }
   ],
   "never_publish": [

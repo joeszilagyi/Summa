@@ -1,7 +1,7 @@
 # Prompt Audit
 
-This audit covers the currently active prompt files referenced by live domain
-packs.
+This audit covers the currently active prompt files referenced by the checked-in
+domain packs.
 
 Audit posture:
 

@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         "--workspace-root",
         help="New isolated root directory for this topic workspace. Must not already exist.",
     )
-    parser.add_argument("--domain-pack", help="Domain pack ID such as subject.v1 or organism.v1.")
+    parser.add_argument("--domain-pack", help="Domain pack ID such as general.v1 or organism.v1.")
     parser.add_argument("--subject-id", help="Subject manifest ID. Defaults from the domain-pack family and workspace ID.")
     parser.add_argument("--display-name", help="Subject display name. Defaults from topic label.")
     parser.add_argument("--scope-statement", help="Subject scope statement. Defaults to a bootstrap scaffold.")
