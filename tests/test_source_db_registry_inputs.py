@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -118,3 +119,16 @@ def test_validate_schema_profile_cli_uses_restored_helpers_and_registries(tmp_pa
     assert payload["schema_version"] == "schema-profile-validation-report.v1"
     assert payload["profile"] == "canonical_minimal"
     assert payload["ok"] is True
+
+
+def test_source_db_helper_documentation_paths_exist() -> None:
+    doc_path_pattern = re.compile(r"docs/tools/source_db_tools/[A-Za-z0-9_./-]+\.md")
+    referenced_paths: set[str] = set()
+
+    for module_path in SOURCE_DB_DIR.glob("*.py"):
+        matches = doc_path_pattern.findall(module_path.read_text(encoding="utf-8"))
+        referenced_paths.update(matches)
+
+    assert referenced_paths
+    missing = [relative_path for relative_path in sorted(referenced_paths) if not (REPO_ROOT / relative_path).exists()]
+    assert missing == []
