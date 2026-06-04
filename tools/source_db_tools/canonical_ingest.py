@@ -23,7 +23,6 @@ from tools.validators.validate_source_acquisition_execution import (
     validate_source_acquisition_execution,
 )
 
-
 INGEST_REPORT_SCHEMA_VERSION = "canonical-ingest-report.v1"
 INGEST_TOOL_VERSION = "canonical-ingest.v1"
 GATHER_INGEST_TOOL = "tools/scripts/ingest_gather_candidate_batch.py"
@@ -50,7 +49,9 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     except OSError as exc:
         raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise CanonicalIngestError(f"{label} is not valid JSON: {path} (line {exc.lineno})") from exc
+        raise CanonicalIngestError(
+            f"{label} is not valid JSON: {path} (line {exc.lineno})"
+        ) from exc
     if not isinstance(payload, dict):
         raise CanonicalIngestError(f"{label} must be a JSON object: {path}")
     return payload
@@ -93,7 +94,9 @@ def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], st
 
 def load_validated_execution_artifacts(
     target: Path,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]]:
+) -> tuple[
+    dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]
+]:
     result, exit_code = validate_source_acquisition_execution(target)
     if exit_code != EXIT_EXECUTION_PASS:
         message = "; ".join(
@@ -154,7 +157,9 @@ def _bump(report: dict[str, Any], bucket: str, key: str, amount: int = 1) -> Non
     target[key] = int(target.get(key, 0)) + amount
 
 
-def _append_warning(report: dict[str, Any], message: str, *, candidate_id: str | None = None) -> None:
+def _append_warning(
+    report: dict[str, Any], message: str, *, candidate_id: str | None = None
+) -> None:
     payload: dict[str, Any] = {"message": message}
     if candidate_id is not None:
         payload["candidate_id"] = candidate_id
@@ -216,18 +221,14 @@ def _batch_provenance_note(batch: dict[str, Any], *, batch_hash: str, batch_path
     subject = batch.get("subject", {}) if isinstance(batch.get("subject"), dict) else {}
     pack = batch.get("domain_pack", {}) if isinstance(batch.get("domain_pack"), dict) else {}
     prompt_bundle = (
-        batch.get("prompt_bundle", {})
-        if isinstance(batch.get("prompt_bundle"), dict)
-        else {}
+        batch.get("prompt_bundle", {}) if isinstance(batch.get("prompt_bundle"), dict) else {}
     )
     facet = batch.get("facet", {}) if isinstance(batch.get("facet"), dict) else {}
     prior_state = batch.get("prior_state", {}) if isinstance(batch.get("prior_state"), dict) else {}
     feedback_plan = (
-        batch.get("feedback_plan", {})
-        if isinstance(batch.get("feedback_plan"), dict)
-        else {}
+        batch.get("feedback_plan", {}) if isinstance(batch.get("feedback_plan"), dict) else {}
     )
-    payload = {
+    payload: dict[str, Any] = {
         "artifact_path": str(batch_path),
         "artifact_hash": batch_hash,
         "schema_version": batch.get("schema_version"),
@@ -343,7 +344,7 @@ def ingest_candidate_batch(
     strict: bool = True,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    created_at = canonical_store._normalize_timestamp(  # type: ignore[attr-defined]
+    created_at = canonical_store._normalize_timestamp(
         batch.get("created_at"),
         field_name="candidate_batch.created_at",
     )
@@ -367,6 +368,7 @@ def ingest_candidate_batch(
         raise CanonicalIngestError("candidate batch candidates must be a list")
     workspace_id = _candidate_workspace_id(batch)
     provenance_event: canonical_store.ProvenanceEventRef | None = None
+    provenance_event_key = ""
     if not dry_run:
         provenance_event = canonical_store.record_provenance_event(
             conn,
@@ -380,6 +382,7 @@ def ingest_candidate_batch(
             note_text=_batch_provenance_note(batch, batch_hash=batch_hash, batch_path=batch_path),
             provenance_event_key_v1=f"prov:gather-ingest:{batch_hash}",
         )
+        provenance_event_key = provenance_event.event_key
         report["provenance_event"] = {
             "event_id": provenance_event.event_id,
             "event_key": provenance_event.event_key,
@@ -409,7 +412,7 @@ def ingest_candidate_batch(
             else:
                 result = canonical_store.record_source_relationship(
                     conn,
-                    provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                    provenance_event_ref=provenance_event_key,
                     from_object_ref=str(structured["from_object_ref"]),
                     predicate=str(structured["predicate"]),
                     to_object_ref=structured.get("to_object_ref"),
@@ -421,7 +424,9 @@ def ingest_candidate_batch(
             relationship_written = True
 
         if candidate_type == "work":
-            incoming_work_key = _work_key_for_candidate(candidate, structured, batch_hash=batch_hash)
+            incoming_work_key = _work_key_for_candidate(
+                candidate, structured, batch_hash=batch_hash
+            )
             work_key = incoming_work_key
             title = (
                 structured.get("title")
@@ -455,7 +460,7 @@ def ingest_candidate_batch(
                 work_result = canonical_store.upsert_work(
                     conn,
                     work_key_v1=work_key,
-                    provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                    provenance_event_ref=provenance_event_key,
                     work_type=work_type,
                     title=title,
                     rights_posture=structured.get("rights_posture") if structured else None,
@@ -474,7 +479,9 @@ def ingest_candidate_batch(
                 work_refs[candidate_id] = f"work:{work_result.row_id}"
                 if structured is not None:
                     try:
-                        for identifier in canonical_reconciliation.candidate_identifiers(structured):
+                        for identifier in canonical_reconciliation.candidate_identifiers(
+                            structured
+                        ):
                             identifier_result = canonical_reconciliation.record_work_identifier(
                                 conn,
                                 work_id=work_result.row_id,
@@ -498,7 +505,7 @@ def ingest_candidate_batch(
                         work_id=work_result.row_id,
                         matched_by=work_match.method,
                         identity_key=work_match.identity_key,
-                        provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                        provenance_event_ref=provenance_event_key,
                         incoming_work_key=incoming_work_key,
                         workspace_id=workspace_id,
                         encountered_at=created_at,
@@ -515,7 +522,7 @@ def ingest_candidate_batch(
                 ):
                     access_result = canonical_store.record_source_access(
                         conn,
-                        provenance_event_ref=provenance_event.event_key,
+                        provenance_event_ref=provenance_event_key,
                         work_id=work_result.row_id,
                         source_lead_id=_source_lead_key_for_candidate(
                             candidate, batch_hash=batch_hash
@@ -544,13 +551,16 @@ def ingest_candidate_batch(
                 if isinstance(claim_text, str) and claim_text.strip():
                     claim_result = canonical_store.record_source_claim(
                         conn,
-                        provenance_event_ref=provenance_event.event_key,
+                        provenance_event_ref=provenance_event_key,
                         source_claim_key_v1=_claim_key_for_candidate(
                             candidate, batch_hash=batch_hash
                         ),
                         about_object_ref=work_refs[candidate_id],
                         claim_text=claim_text,
-                        claim_type=structured.get("claim_type") or "candidate_work_claim",
+                        claim_type=(
+                            structured.get("claim_type") if structured is not None else None
+                        )
+                        or "candidate_work_claim",
                         workspace_id=workspace_id,
                         created_at=created_at,
                         record_last_updated=created_at,
@@ -573,7 +583,7 @@ def ingest_candidate_batch(
                 )
                 result = canonical_store.record_source_access(
                     conn,
-                    provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                    provenance_event_ref=provenance_event_key,
                     source_lead_id=source_lead_id,
                     original_locator=str(
                         structured.get("original_locator")
@@ -608,11 +618,9 @@ def ingest_candidate_batch(
                 )
                 result = canonical_store.record_extraction_detected_entity(
                     conn,
-                    provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                    provenance_event_ref=provenance_event_key,
                     entity_label=entity_label,
-                    normalized_label=structured.get("normalized_label")
-                    if structured
-                    else None,
+                    normalized_label=structured.get("normalized_label") if structured else None,
                     entity_type=structured.get("entity_type") if structured else candidate_type,
                     confidence_score=structured.get("confidence_score") if structured else None,
                     record_last_updated=created_at,
@@ -632,9 +640,7 @@ def ingest_candidate_batch(
                             else candidate_type
                         ),
                         "confidence_score": (
-                            structured.get("confidence_score")
-                            if structured is not None
-                            else None
+                            structured.get("confidence_score") if structured is not None else None
                         ),
                         "structured": structured,
                     }
@@ -647,21 +653,17 @@ def ingest_candidate_batch(
             else:
                 result = canonical_store.record_source_claim(
                     conn,
-                    provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                    provenance_event_ref=provenance_event_key,
                     source_claim_key_v1=_claim_key_for_candidate(candidate, batch_hash=batch_hash),
                     about_object_ref=_structured_about_object_ref(structured),
                     claim_text=_structured_claim_text(candidate, structured),
                     public_summary=(
-                        structured.get("public_summary")
-                        if structured is not None
-                        else None
+                        structured.get("public_summary") if structured is not None else None
                     ),
                     claim_type=_structured_claim_type(candidate_type, structured),
                     workspace_id=workspace_id,
                     confidence_score=(
-                        structured.get("confidence_score")
-                        if structured is not None
-                        else None
+                        structured.get("confidence_score") if structured is not None else None
                     ),
                     created_at=created_at,
                     record_last_updated=created_at,
@@ -691,16 +693,14 @@ def ingest_candidate_batch(
         try:
             curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
                 conn,
-                provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                provenance_event_ref=provenance_event_key,
                 workspace_id=workspace_id,
                 changed_at=created_at,
                 entity_candidates=entity_candidates,
                 source_run_id=str(batch.get("run_id") or ""),
             )
         except canonical_reconciliation.CanonicalReconciliationError as exc:
-            raise CanonicalIngestError(
-                f"candidate-batch reconciliation failed: {exc}"
-            ) from exc
+            raise CanonicalIngestError(f"candidate-batch reconciliation failed: {exc}") from exc
         _apply_curation_counts(report, curation_counts)
         report["transaction_status"] = "committed"
     return report
@@ -718,7 +718,7 @@ def ingest_execution_artifacts(
     strict: bool = True,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    created_at = canonical_store._normalize_timestamp(  # type: ignore[attr-defined]
+    created_at = canonical_store._normalize_timestamp(
         execution_record.get("created_at"),
         field_name="execution_record.created_at",
     )
@@ -737,6 +737,7 @@ def ingest_execution_artifacts(
         "source_relationship": canonical_store.DEFAULT_SOURCE_RELATIONSHIP_REVIEW_STATE,
     }
     provenance_event: canonical_store.ProvenanceEventRef | None = None
+    provenance_event_key = ""
     if not dry_run:
         provenance_event = canonical_store.record_provenance_event(
             conn,
@@ -752,6 +753,7 @@ def ingest_execution_artifacts(
             ),
             provenance_event_key_v1=f"prov:execution-ingest:{input_hashes['execution_record']}",
         )
+        provenance_event_key = provenance_event.event_key
         report["provenance_event"] = {
             "event_id": provenance_event.event_id,
             "event_key": provenance_event.event_key,
@@ -764,15 +766,21 @@ def ingest_execution_artifacts(
     entity_candidates: list[dict[str, Any]] = []
     for record in capture_events:
         original_locator = record.get("original_locator")
-        locator_text = _safe_json_text(original_locator) if original_locator is not None else str(
-            record.get("normalized_local_path") or record.get("source_reference") or record.get("capture_id")
+        locator_text = (
+            _safe_json_text(original_locator)
+            if original_locator is not None
+            else str(
+                record.get("normalized_local_path")
+                or record.get("source_reference")
+                or record.get("capture_id")
+            )
         )
         if dry_run:
             _bump(report, "intended", "capture_event")
             continue
         result = canonical_store.record_capture_event(
             conn,
-            provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+            provenance_event_ref=provenance_event_key,
             original_locator=locator_text,
             captured_at=str(record.get("captured_at") or created_at),
             capture_method=str(record.get("capture_method") or "captured"),
@@ -810,9 +818,11 @@ def ingest_execution_artifacts(
             continue
         result = canonical_store.record_extraction_record(
             conn,
-            provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+            provenance_event_ref=provenance_event_key,
             capture_event_id=canonical_capture_id,
-            extractor_name=str(execution_record.get("executor_name") or "execute_source_adapter.py"),
+            extractor_name=str(
+                execution_record.get("executor_name") or "execute_source_adapter.py"
+            ),
             extractor_version=INGEST_TOOL_VERSION,
             extraction_method=str(record.get("extraction_method") or "extract"),
             summary_short=str(record.get("relative_path") or record.get("extraction_id") or ""),
@@ -841,7 +851,7 @@ def ingest_execution_artifacts(
                     raise CanonicalIngestError("detected_entities entries must be objects")
                 entity_result = canonical_store.record_extraction_detected_entity(
                     conn,
-                    provenance_event_ref=provenance_event.event_key,
+                    provenance_event_ref=provenance_event_key,
                     extraction_id=result.row_id,
                     capture_event_id=canonical_capture_id,
                     entity_label=str(entity.get("entity_label") or entity.get("label") or ""),
@@ -858,7 +868,9 @@ def ingest_execution_artifacts(
                 entity_candidates.append(
                     {
                         "detected_entity_id": entity_result.row_id,
-                        "entity_label": str(entity.get("entity_label") or entity.get("label") or ""),
+                        "entity_label": str(
+                            entity.get("entity_label") or entity.get("label") or ""
+                        ),
                         "entity_type": entity.get("entity_type"),
                         "confidence_score": entity.get("confidence_score"),
                         "structured": entity,
@@ -869,16 +881,14 @@ def ingest_execution_artifacts(
         try:
             curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
                 conn,
-                provenance_event_ref=provenance_event.event_key,  # type: ignore[union-attr]
+                provenance_event_ref=provenance_event_key,
                 workspace_id=str(execution_record.get("workspace_id") or "") or None,
                 changed_at=created_at,
                 entity_candidates=entity_candidates,
                 source_run_id=str(execution_record.get("run_id") or ""),
             )
         except canonical_reconciliation.CanonicalReconciliationError as exc:
-            raise CanonicalIngestError(
-                f"execution-artifact reconciliation failed: {exc}"
-            ) from exc
+            raise CanonicalIngestError(f"execution-artifact reconciliation failed: {exc}") from exc
         _apply_curation_counts(report, curation_counts)
         report["transaction_status"] = "committed"
     return report
@@ -896,13 +906,20 @@ def render_report_text(report: dict[str, Any]) -> str:
         lines.append(f"db_path={report['db_path']}")
     if report.get("provenance_event") is not None:
         lines.append(f"provenance_event_key={report['provenance_event']['event_key']}")
-    for bucket in ("inserted", "updated", "intended", "skipped", "deduped", "reconciled", "contradicted"):
+    for bucket in (
+        "inserted",
+        "updated",
+        "intended",
+        "skipped",
+        "deduped",
+        "reconciled",
+        "contradicted",
+    ):
         entries = report["counts"][bucket]
         for key in sorted(entries):
             lines.append(f"{bucket}.{key}={entries[key]}")
     for warning in report["warnings"]:
         lines.append(
-            "warning="
-            + str(warning.get("candidate_id") or warning.get("message") or "warning")
+            "warning=" + str(warning.get("candidate_id") or warning.get("message") or "warning")
         )
     return "\n".join(lines) + "\n"

@@ -26,6 +26,15 @@ summa-operator-dashboard = "tools.scripts.build_operator_dashboard:main"
 summa-operator-path-smoke = "tools.scripts.operator_path_smoke:main"
 summa-resolve-gather-domain-pack = "tools.scripts.resolve_gather_domain_pack:main"
 summa-init-canonical-store = "tools.source_db_tools.init_canonical_store:main"
+summa-run-gather = "tools.scripts.run_topic_gather:main"
+summa-execute-source-adapter = "tools.scripts.execute_source_adapter:main"
+summa-ingest-gather-candidate-batch = "tools.scripts.ingest_gather_candidate_batch:main"
+summa-ingest-execution-artifacts = "tools.scripts.ingest_execution_artifacts:main"
+summa-run-topic-cycle = "tools.scripts.run_topic_cycle:main"
+summa-run-scheduled-topic-cycles = "tools.scripts.run_scheduled_topic_cycles:main"
+summa-select-scheduled-workspaces = "tools.scripts.select_scheduled_workspaces:main"
+summa-apply-review-decision = "tools.scripts.apply_review_decision:main"
+summa-evaluate-network-safety-gate = "tools.scripts.evaluate_network_safety_gate:main"
 
 [dependency-groups]
 test = [
@@ -102,14 +111,32 @@ warn_redundant_casts = true
 no_implicit_optional = true
 check_untyped_defs = true
 follow_imports = "silent"
-# Initial typed gate covers the live gather/operator/bootstrap surfaces that already
-# have bounded local-import behavior on this branch.
+# Typed gate for the current runtime spine. New live operator/runtime modules
+# should be added here or explicitly justified in tests before they can drift out
+# of static validation.
 files = [
   "tools/common/search_leak_policy.py",
+  "tools/common/standards_profiles.py",
+  "tools/scripts/apply_review_decision.py",
+  "tools/scripts/build_candidate_feedback_plan.py",
+  "tools/scripts/build_release_readiness_bundle.py",
+  "tools/scripts/evaluate_network_safety_gate.py",
+  "tools/scripts/execute_source_adapter.py",
+  "tools/scripts/export_standards_profile.py",
+  "tools/scripts/ingest_execution_artifacts.py",
+  "tools/scripts/ingest_gather_candidate_batch.py",
   "tools/scripts/operator_path_smoke.py",
+  "tools/scripts/run_scheduled_topic_cycles.py",
+  "tools/scripts/run_topic_cycle.py",
   "tools/scripts/run_topic_gather.py",
+  "tools/scripts/select_scheduled_workspaces.py",
+  "tools/source_db_tools/canonical_ingest.py",
+  "tools/source_db_tools/canonical_reconciliation.py",
   "tools/source_db_tools/canonical_store.py",
   "tools/source_db_tools/init_canonical_store.py",
+  "tools/source_db_tools/review_decision_apply.py",
+  "tools/source_db_tools/source_query_plan.py",
   "tests/test_llm_runner_status.py",
+  "tests/test_mypy_runtime_gate.py",
   "tests/test_packaging_metadata.py",
 ]

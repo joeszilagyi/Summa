@@ -43,6 +43,20 @@ How docs relate to code and tests:
 - wrapper help text, paired docs, schemas, validators, and tests should move
   together
 
+Package console entry points:
+
+- installable operator commands use the `summa-*` prefix and are declared in
+  `pyproject.toml`
+- live runtime-spine commands such as gather execution, source-adapter
+  execution, candidate ingestion, execution-artifact ingestion, topic cycles,
+  scheduled cycles, workspace selection, review-decision application, and
+  network-safety evaluation must have package console commands
+- `tools/scripts/Index_*.sh` wrappers remain supported compatibility surfaces;
+  each live wrapper must either map to a console command or have a specific
+  exclusion reason in `tests/test_packaging_metadata.py`
+- adding a new live operator wrapper without updating packaging or the explicit
+  exclusion map fails the packaging metadata tests
+
 If a behavior is only documented, say that clearly. If a validator or test
 already defines the contract, treat the code and the test as the executable
 source of truth and keep the prose in sync.

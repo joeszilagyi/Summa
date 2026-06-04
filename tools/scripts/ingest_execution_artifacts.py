@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT,
@@ -29,7 +28,9 @@ def parse_args() -> argparse.Namespace:
             "rows into an initialized canonical SQLite store."
         )
     )
-    parser.add_argument("--db", required=True, help="Path to an initialized canonical SQLite store.")
+    parser.add_argument(
+        "--db", required=True, help="Path to an initialized canonical SQLite store."
+    )
     parser.add_argument(
         "--run-dir",
         required=True,

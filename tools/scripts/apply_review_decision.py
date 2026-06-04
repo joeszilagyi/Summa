@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -29,7 +28,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "This mutates only through canonical curation APIs and preserves audit history."
         )
     )
-    parser.add_argument("--db", required=True, help="Path to an initialized canonical SQLite store.")
+    parser.add_argument(
+        "--db", required=True, help="Path to an initialized canonical SQLite store."
+    )
     parser.add_argument(
         "--target",
         required=True,
@@ -50,8 +51,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--expected-current-state",
         help="Optional optimistic-safety check for the target's current review_state.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Plan and report changes without writing.")
-    parser.add_argument("--run-id", help="Optional operator run id to include in provenance/history.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Plan and report changes without writing."
+    )
+    parser.add_argument(
+        "--run-id", help="Optional operator run id to include in provenance/history."
+    )
     parser.add_argument(
         "--decided-at",
         help="RFC3339 decision timestamp. Defaults to current UTC time.",
@@ -133,7 +138,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             conn.close()
-    except (ApplyReviewDecisionCliError, review_decision_apply.ReviewDecisionApplyError, canonical_store.CanonicalStoreError, sqlite3.Error) as exc:
+    except (
+        ApplyReviewDecisionCliError,
+        review_decision_apply.ReviewDecisionApplyError,
+        canonical_store.CanonicalStoreError,
+        sqlite3.Error,
+    ) as exc:
         payload = {
             "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
             "status": "failed",

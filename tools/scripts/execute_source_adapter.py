@@ -21,7 +21,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 for candidate in (REPO_ROOT, VALIDATORS_DIR):
@@ -29,19 +28,25 @@ for candidate in (REPO_ROOT, VALIDATORS_DIR):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json, atomic_write_jsonl, atomic_write_text  # noqa: E402
-from tools.common.network_safety_gate import NetworkSafetyGateError, allowlisted, evaluate_request, load_request  # noqa: E402
+from tools.common.atomic_write import (  # noqa: E402
+    atomic_write_json,
+    atomic_write_jsonl,
+    atomic_write_text,
+)
+from tools.common.network_safety_gate import (  # noqa: E402
+    NetworkSafetyGateError,
+    allowlisted,
+    evaluate_request,
+    load_request,
+)
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
     build_xml_path_map,
     resolve_json_record_path,
 )
+from tools.validators import validate_source_adapter, validate_source_adapter_handoff  # noqa: E402
 from tools.validators.common import EXIT_PASS, EXIT_STATE_UNSAFE  # noqa: E402
-
-import validate_source_adapter  # noqa: E402
-import validate_source_adapter_handoff  # noqa: E402
-
 
 EXECUTION_SCHEMA_VERSION = "source-acquisition-execution.v1"
 CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
@@ -82,15 +87,25 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--handoff", required=True, help="Path to a validated source-adapter handoff JSON or JSONL file.")
-    parser.add_argument("--output", required=True, help="Workspace-local run directory for execution artifacts.")
+    parser.add_argument(
+        "--handoff",
+        required=True,
+        help="Path to a validated source-adapter handoff JSON or JSONL file.",
+    )
+    parser.add_argument(
+        "--output", required=True, help="Workspace-local run directory for execution artifacts."
+    )
     parser.add_argument(
         "--mode",
         choices=("auto", "local", "remote"),
         default="auto",
         help="Force local or remote execution mode. Defaults to auto inference from the handoff variant.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Validate and plan intended actions without reading payload content.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and plan intended actions without reading payload content.",
+    )
     parser.add_argument(
         "--network-safety-request",
         help="Path to a network safety gate request JSON file. Required for remote URL-manifest handoffs.",
@@ -115,7 +130,9 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_REMOTE_MAX_RESPONSE_BYTES,
         help=f"Maximum remote response body bytes to read per URL. Defaults to {DEFAULT_REMOTE_MAX_RESPONSE_BYTES}.",
     )
-    parser.add_argument("--run-id", help="Stable run identifier. Defaults to the output directory name.")
+    parser.add_argument(
+        "--run-id", help="Stable run identifier. Defaults to the output directory name."
+    )
     parser.add_argument(
         "--created-at",
         help="RFC3339 timestamp override for deterministic tests. Defaults to current UTC time.",
@@ -149,8 +166,12 @@ def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
     return json.loads(adapter_path.read_text(encoding="utf-8"))
 
 
-def load_validated_handoff_records(handoff_path: Path, *, adapter_path: Path) -> tuple[list[dict[str, Any]], str]:
-    report, exit_code = validate_source_adapter_handoff.validate_source_adapter_handoff(handoff_path, adapter_path=adapter_path)
+def load_validated_handoff_records(
+    handoff_path: Path, *, adapter_path: Path
+) -> tuple[list[dict[str, Any]], str]:
+    report, exit_code = validate_source_adapter_handoff.validate_source_adapter_handoff(
+        handoff_path, adapter_path=adapter_path
+    )
     if exit_code != validate_source_adapter_handoff.EXIT_PASS:
         errors = report.get("errors", [])
         message = errors[0]["message"] if errors else "source-adapter handoff validation failed"
@@ -168,7 +189,9 @@ def load_validated_handoff_records(handoff_path: Path, *, adapter_path: Path) ->
 def ensure_single_adapter_context(records: list[dict[str, Any]]) -> Path:
     adapter_paths = {str(record.get("adapter_path", "")).strip() for record in records}
     if len(adapter_paths) != 1:
-        raise SourceAcquisitionError("handoff artifact must contain records from exactly one adapter_path")
+        raise SourceAcquisitionError(
+            "handoff artifact must contain records from exactly one adapter_path"
+        )
     adapter_path_value = next(iter(adapter_paths))
     if not adapter_path_value:
         raise SourceAcquisitionError("handoff records must include a non-blank adapter_path")
@@ -179,9 +202,13 @@ def ensure_single_adapter_context(records: list[dict[str, Any]]) -> Path:
 
 
 def determine_variant(records: list[dict[str, Any]], *, adapter_payload: dict[str, Any]) -> str:
-    variants = {infer_handoff_variant(record, adapter_payload=adapter_payload) for record in records}
+    variants = {
+        infer_handoff_variant(record, adapter_payload=adapter_payload) for record in records
+    }
     if len(variants) != 1:
-        raise SourceAcquisitionError("handoff artifact must not mix source-adapter handoff variants")
+        raise SourceAcquisitionError(
+            "handoff artifact must not mix source-adapter handoff variants"
+        )
     variant = next(iter(variants))
     if variant not in LOCAL_VARIANTS | REMOTE_VARIANTS:
         raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
@@ -193,7 +220,9 @@ def determine_executor_mode(requested_mode: str, *, variant: str) -> str:
     if requested_mode == "auto":
         return inferred_mode
     if requested_mode != inferred_mode:
-        raise SourceAcquisitionError(f"mode={requested_mode} does not match handoff variant {variant}")
+        raise SourceAcquisitionError(
+            f"mode={requested_mode} does not match handoff variant {variant}"
+        )
     return requested_mode
 
 
@@ -206,7 +235,9 @@ def resolve_run_id(output_dir: Path, *, run_id: str | None) -> str:
         return run_id
     if output_dir.name:
         return output_dir.name
-    raise SourceAcquisitionError("--run-id is required when the output path does not have a final path segment")
+    raise SourceAcquisitionError(
+        "--run-id is required when the output path does not have a final path segment"
+    )
 
 
 def prepare_output_dir(output_dir: Path, *, run_id: str) -> None:
@@ -218,7 +249,9 @@ def prepare_output_dir(output_dir: Path, *, run_id: str) -> None:
             try:
                 manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise SourceAcquisitionError(f"existing output manifest could not be read: {manifest_path}") from exc
+                raise SourceAcquisitionError(
+                    f"existing output manifest could not be read: {manifest_path}"
+                ) from exc
             if manifest_payload.get("run_id") != run_id:
                 raise SourceAcquisitionError(
                     f"output path already contains artifacts for run_id={manifest_payload.get('run_id')!r}, expected {run_id!r}"
@@ -276,14 +309,18 @@ def ensure_path_within_root(path: Path, *, root: Path) -> None:
     try:
         path.relative_to(root)
     except ValueError as exc:
-        raise SourceAcquisitionError(f"resolved source path escapes the allowed root: {path}") from exc
+        raise SourceAcquisitionError(
+            f"resolved source path escapes the allowed root: {path}"
+        ) from exc
 
 
 def expected_local_root(record: dict[str, Any], *, adapter_path: Path) -> Path:
     original_locator = record.get("preserved", {}).get("original_locator", {})
     adapter_local_path = original_locator.get("adapter_local_path")
     if not isinstance(adapter_local_path, str) or not adapter_local_path.strip():
-        raise SourceAcquisitionError("handoff preserved.original_locator.adapter_local_path must be a non-blank string")
+        raise SourceAcquisitionError(
+            "handoff preserved.original_locator.adapter_local_path must be a non-blank string"
+        )
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 
@@ -304,7 +341,9 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
     return row_map, errors
 
 
-def load_json_record_map(path: Path, *, record_path: str | None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_json_record_map(
+    path: Path, *, record_path: str | None
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except UnicodeDecodeError:
@@ -339,7 +378,9 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
     return record_map, errors
 
 
-def load_xml_record_map(path: Path, *, record_path: str | None) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+def load_xml_record_map(
+    path: Path, *, record_path: str | None
+) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
     try:
         tree = ET.parse(path)
     except UnicodeDecodeError:
@@ -353,13 +394,23 @@ def load_xml_record_map(path: Path, *, record_path: str | None) -> tuple[dict[st
     if record_path:
         matches = root.findall(record_path)
         if not matches:
-            return {}, [{"context": f"record_path:{record_path}", "reason": "record_path matched no XML elements"}]
+            return {}, [
+                {
+                    "context": f"record_path:{record_path}",
+                    "reason": "record_path matched no XML elements",
+                }
+            ]
     else:
         matches = list(root) or [root]
-    return {path_map.get(id(element), f"element:{index}"): element for index, element in enumerate(matches, start=1)}, []
+    return {
+        path_map.get(id(element), f"element:{index}"): element
+        for index, element in enumerate(matches, start=1)
+    }, []
 
 
-def load_structured_record_map(path: Path, *, structured_format: str, record_path: str | None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_structured_record_map(
+    path: Path, *, structured_format: str, record_path: str | None
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if structured_format == "csv":
         return load_csv_row_map(path)
     if structured_format == "json":
@@ -368,7 +419,9 @@ def load_structured_record_map(path: Path, *, structured_format: str, record_pat
         return load_jsonl_record_map(path)
     if structured_format == "xml":
         return load_xml_record_map(path, record_path=record_path)
-    return {}, [{"context": "file", "reason": f"unsupported structured format: {structured_format}"}]
+    return {}, [
+        {"context": "file", "reason": f"unsupported structured format: {structured_format}"}
+    ]
 
 
 def serialize_structured_value(value: Any) -> str:
@@ -388,7 +441,7 @@ def build_extraction_record(
     adapter_type: str,
     handoff_sequence: int,
     relative_path: str,
-    input_hash: str,
+    input_hash: str | None,
     byte_count_in: int,
     extraction_method: str,
     hazard_flags: list[str],
@@ -400,7 +453,13 @@ def build_extraction_record(
 ) -> dict[str, Any]:
     content_hash = sha256_text(content_text) if content_text is not None else None
     byte_count_out = len(content_text.encode("utf-8")) if content_text is not None else 0
-    status = "completed" if content_text is not None and failure_reason is None else "skipped" if failure_reason == "oversized_payload" else "failed"
+    status = (
+        "completed"
+        if content_text is not None and failure_reason is None
+        else "skipped"
+        if failure_reason == "oversized_payload"
+        else "failed"
+    )
     if status not in SAFE_TEXT_STATUS:
         raise SourceAcquisitionError(f"unsupported extraction status: {status}")
     payload = {
@@ -419,7 +478,9 @@ def build_extraction_record(
         "byte_count_in": byte_count_in,
         "byte_count_out": byte_count_out,
         "encoding_result": encoding_result,
-        "truncation_status": "refused_oversize" if failure_reason == "oversized_payload" else "not_truncated",
+        "truncation_status": "refused_oversize"
+        if failure_reason == "oversized_payload"
+        else "not_truncated",
         "hostile_replay_flags": hazard_flags,
         "failure_reason": failure_reason,
         "extracted_text_path": extracted_text_path,
@@ -467,9 +528,13 @@ def dry_run_execution_record(
         "dry_run": True,
         "status": "dry_run",
         "network_access_attempted": False,
-        "network_access_allowed": gate_report["execution_allowed"] if gate_report is not None else False,
+        "network_access_allowed": gate_report["execution_allowed"]
+        if gate_report is not None
+        else False,
         "network_access_denied_reason": None,
-        "network_safety_gate": summarize_gate_report(gate_report) if gate_report is not None else None,
+        "network_safety_gate": summarize_gate_report(gate_report)
+        if gate_report is not None
+        else None,
         "local_input_paths_processed": local_input_paths,
         "planned_actions": planned_actions,
         "capture_event_count": 0,
@@ -530,7 +595,9 @@ def execution_record_payload(
         "network_access_attempted": network_access_attempted,
         "network_access_allowed": network_access_allowed,
         "network_access_denied_reason": network_access_denied_reason,
-        "network_safety_gate": summarize_gate_report(gate_report) if gate_report is not None else None,
+        "network_safety_gate": summarize_gate_report(gate_report)
+        if gate_report is not None
+        else None,
         "local_input_paths_processed": local_input_paths,
         "planned_actions": planned_actions,
         "capture_event_count": len(capture_events),
@@ -541,14 +608,18 @@ def execution_record_payload(
             "extraction_records": "extraction-records.jsonl",
             "manifest": "manifest.json",
             "denial_record": "denial-record.json" if denial_record_written else None,
-            "network_safety_report": "network-safety-report.json" if gate_report is not None else None,
+            "network_safety_report": "network-safety-report.json"
+            if gate_report is not None
+            else None,
         },
         "canonical_persistence_attempted": False,
         "verification_status": "unverified",
     }
 
 
-def build_manifest(run_id: str, *, created_at: str, status: str, output_artifacts: dict[str, Any]) -> dict[str, Any]:
+def build_manifest(
+    run_id: str, *, created_at: str, status: str, output_artifacts: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "schema_version": "source-acquisition-run-manifest.v1",
         "run_id": run_id,
@@ -570,7 +641,9 @@ def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes])
         try:
             target.relative_to(output_dir.resolve())
         except ValueError as exc:
-            raise SourceAcquisitionError(f"binary artifact path escapes output directory: {relative_path}") from exc
+            raise SourceAcquisitionError(
+                f"binary artifact path escapes output directory: {relative_path}"
+            ) from exc
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
 
@@ -618,11 +691,15 @@ def validate_emitted_artifacts(output_dir: Path) -> None:
     )
     if validator_proc.returncode != 0:
         raise SourceAcquisitionError(
-            validator_proc.stdout.strip() or validator_proc.stderr.strip() or "execution artifact validation failed"
+            validator_proc.stdout.strip()
+            or validator_proc.stderr.strip()
+            or "execution artifact validation failed"
         )
 
 
-def planned_actions_for_records(records: list[dict[str, Any]], *, variant: str) -> list[dict[str, Any]]:
+def planned_actions_for_records(
+    records: list[dict[str, Any]], *, variant: str
+) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if variant == "remote_url_manifest":
         for record in records:
@@ -662,14 +739,22 @@ def execute_local_source(
     text_artifacts: dict[str, str] = {}
     local_paths: list[str] = []
     failed = False
-    capture_method = "local_file_copy" if adapter_payload["input_family"] == "local_file" else "local_directory_walk"
+    capture_method = (
+        "local_file_copy"
+        if adapter_payload["input_family"] == "local_file"
+        else "local_directory_walk"
+    )
 
-    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
+    for index, record in enumerate(
+        sorted(records, key=lambda item: int(item["sequence"])), start=1
+    ):
         root = expected_local_root(record, adapter_path=adapter_path)
         source_path = Path(record["resolved_source_path"]).expanduser().resolve()
         if adapter_payload["input_family"] == "local_file":
             if source_path != root:
-                raise SourceAcquisitionError(f"local file handoff does not match adapter root: {source_path}")
+                raise SourceAcquisitionError(
+                    f"local file handoff does not match adapter root: {source_path}"
+                )
         else:
             ensure_path_within_root(source_path, root=root)
         capture_id = make_capture_id(index)
@@ -710,7 +795,9 @@ def execute_local_source(
             extracted_text_path = None
             if extracted_text is not None:
                 extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                text_artifacts[extracted_text_path] = extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+                text_artifacts[extracted_text_path] = (
+                    extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+                )
             else:
                 failed = True
             extraction_records.append(
@@ -725,7 +812,9 @@ def execute_local_source(
                     input_hash=capture_event["content_hash"],
                     byte_count_in=capture_event["byte_count"],
                     extraction_method="utf8_text_extract",
-                    hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+                    hazard_flags=list(
+                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                    ),
                     content_text=extracted_text,
                     encoding_result=encoding_result,
                     failure_reason=failure_reason,
@@ -797,7 +886,9 @@ def execute_structured_data(
             expected_path = root
             source_path = Path(source_path_value).expanduser().resolve()
             if source_path != expected_path:
-                raise SourceAcquisitionError(f"structured local file handoff does not match adapter root: {source_path}")
+                raise SourceAcquisitionError(
+                    f"structured local file handoff does not match adapter root: {source_path}"
+                )
         else:
             source_path = Path(source_path_value).expanduser().resolve()
             ensure_path_within_root(source_path, root=root)
@@ -838,7 +929,9 @@ def execute_structured_data(
         )
         structured_format = grouped_records[0]["source_specific"]["structured_format"]
         cache_key = (source_path_value, structured_format)
-        record_map, parse_errors = load_structured_record_map(source_path, structured_format=structured_format, record_path=record_path)
+        record_map, parse_errors = load_structured_record_map(
+            source_path, structured_format=structured_format, record_path=record_path
+        )
         record_map_cache[cache_key] = (record_map, parse_errors)
 
     for record in sorted(records, key=lambda item: int(item["sequence"])):
@@ -847,7 +940,9 @@ def execute_structured_data(
         capture_size = capture_size_by_path[record["resolved_source_path"]]
         structured_format = record["source_specific"]["structured_format"]
         record_locator = record["source_specific"]["record_locator"]
-        record_map, parse_errors = record_map_cache[(record["resolved_source_path"], structured_format)]
+        record_map, parse_errors = record_map_cache[
+            (record["resolved_source_path"], structured_format)
+        ]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         value = record_map.get(record_locator)
         extracted_text = None
@@ -881,7 +976,9 @@ def execute_structured_data(
                 input_hash=capture_hash,
                 byte_count_in=capture_size,
                 extraction_method="structured_record_extract",
-                hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+                hazard_flags=list(
+                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                ),
                 content_text=extracted_text,
                 encoding_result=encoding_result,
                 failure_reason=failure_reason,
@@ -897,7 +994,9 @@ def execute_structured_data(
     return capture_events, extraction_records, text_artifacts, sorted(local_paths), failed
 
 
-def compute_git_snapshot_hash(file_entries: list[dict[str, Any]], *, git_ref: str, git_commit: str) -> str:
+def compute_git_snapshot_hash(
+    file_entries: list[dict[str, Any]], *, git_ref: str, git_commit: str
+) -> str:
     payload = {
         "git_ref": git_ref,
         "git_commit": git_commit,
@@ -906,10 +1005,14 @@ def compute_git_snapshot_hash(file_entries: list[dict[str, Any]], *, git_ref: st
     return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
-def inspect_git_repo_for_execution(repo_path: Path, *, git_ref: str, git_commit: str) -> tuple[str, str]:
+def inspect_git_repo_for_execution(
+    repo_path: Path, *, git_ref: str, git_commit: str
+) -> tuple[str, str]:
     rev_parse = git_command(repo_path, "rev-parse", "--verify", f"{git_ref}^{{commit}}")
     if rev_parse.returncode != 0:
-        raise SourceAcquisitionError(f"configured git ref could not be resolved during execution: {git_ref}")
+        raise SourceAcquisitionError(
+            f"configured git ref could not be resolved during execution: {git_ref}"
+        )
     resolved_commit = rev_parse.stdout.strip()
     if resolved_commit != git_commit:
         raise SourceAcquisitionError(
@@ -933,7 +1036,9 @@ def execute_local_git_repo(
     handoff_hash: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], list[str], bool]:
     if len(records) != 1:
-        raise SourceAcquisitionError("local_git_repo execution expects exactly one snapshot handoff record")
+        raise SourceAcquisitionError(
+            "local_git_repo execution expects exactly one snapshot handoff record"
+        )
     record = records[0]
     repo_path = Path(record["resolved_source_path"]).expanduser().resolve()
     if not repo_path.exists() or not repo_path.is_dir():
@@ -942,8 +1047,12 @@ def execute_local_git_repo(
         raise SourceAcquisitionError(f"symlink git repositories are not supported: {repo_path}")
     git_ref = record["source_specific"]["git_ref"]
     git_commit = record["source_specific"]["git_commit"]
-    resolved_commit, repo_state = inspect_git_repo_for_execution(repo_path, git_ref=git_ref, git_commit=git_commit)
-    candidate_paths = list(record["preserved"].get("source_metadata", {}).get("candidate_paths", []))
+    resolved_commit, repo_state = inspect_git_repo_for_execution(
+        repo_path, git_ref=git_ref, git_commit=git_commit
+    )
+    candidate_paths = list(
+        record["preserved"].get("source_metadata", {}).get("candidate_paths", [])
+    )
     file_entries: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
@@ -951,7 +1060,9 @@ def execute_local_git_repo(
     failed = False
     for relative_path in candidate_paths:
         if not isinstance(relative_path, str) or not relative_path.strip():
-            raise SourceAcquisitionError("local_git_repo candidate_paths must contain non-blank strings")
+            raise SourceAcquisitionError(
+                "local_git_repo candidate_paths must contain non-blank strings"
+            )
         file_path = (repo_path / relative_path).resolve()
         ensure_path_within_root(file_path, root=repo_path)
         ensure_path_is_local_file(file_path)
@@ -964,7 +1075,9 @@ def execute_local_git_repo(
             }
         )
         local_paths.append(str(file_path))
-    snapshot_hash = compute_git_snapshot_hash(file_entries, git_ref=git_ref, git_commit=resolved_commit)
+    snapshot_hash = compute_git_snapshot_hash(
+        file_entries, git_ref=git_ref, git_commit=resolved_commit
+    )
     capture_event = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "capture_id": make_capture_id(1),
@@ -1003,7 +1116,9 @@ def execute_local_git_repo(
         extracted_text_path = None
         if extracted_text is not None:
             extracted_text_path = f"extracted-text/{extraction_id}.txt"
-            text_artifacts[extracted_text_path] = extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+            text_artifacts[extracted_text_path] = (
+                extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+            )
         else:
             failed = True
         extraction_records.append(
@@ -1018,7 +1133,9 @@ def execute_local_git_repo(
                 input_hash=file_entry["content_hash"],
                 byte_count_in=file_entry["byte_count"],
                 extraction_method="git_file_text_extract",
-                hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+                hazard_flags=list(
+                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                ),
                 content_text=extracted_text,
                 encoding_result=encoding_result,
                 failure_reason=failure_reason,
@@ -1040,7 +1157,9 @@ def extract_remote_urls(records: list[dict[str, Any]]) -> list[str]:
         if isinstance(entry_url, str) and entry_url.strip():
             urls.append(entry_url)
     if not urls:
-        raise SourceAcquisitionError("remote_url_manifest handoffs must include preserved.original_locator.entry_url")
+        raise SourceAcquisitionError(
+            "remote_url_manifest handoffs must include preserved.original_locator.entry_url"
+        )
     return sorted(dict.fromkeys(urls))
 
 
@@ -1052,7 +1171,9 @@ def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]
     return actions
 
 
-def ensure_gate_request_matches_handoff(gate_report: dict[str, Any], *, expected_urls: list[str]) -> None:
+def ensure_gate_request_matches_handoff(
+    gate_report: dict[str, Any], *, expected_urls: list[str]
+) -> None:
     planned_urls = sorted(
         {
             str(action.get("url"))
@@ -1062,10 +1183,14 @@ def ensure_gate_request_matches_handoff(gate_report: dict[str, Any], *, expected
     )
     missing = [url for url in expected_urls if url not in planned_urls]
     if missing:
-        raise SourceAcquisitionError(f"network safety gate request is missing planned actions for: {missing[0]}")
+        raise SourceAcquisitionError(
+            f"network safety gate request is missing planned actions for: {missing[0]}"
+        )
 
 
-def build_denial_record(execution_record: dict[str, Any], *, considered_urls: list[str]) -> dict[str, Any]:
+def build_denial_record(
+    execution_record: dict[str, Any], *, considered_urls: list[str]
+) -> dict[str, Any]:
     payload = dict(execution_record)
     payload["considered_urls"] = considered_urls
     return payload
@@ -1074,7 +1199,9 @@ def build_denial_record(execution_record: dict[str, Any], *, considered_urls: li
 class NoAutoRedirectHandler(HTTPRedirectHandler):
     """Expose redirects to the executor so every hop can be allowlist checked."""
 
-    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+    def redirect_request(
+        self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
         return None
 
 
@@ -1089,7 +1216,8 @@ def is_extractable_content_type(content_type: str) -> bool:
     normalized = content_type.split(";", 1)[0].strip().casefold()
     return (
         normalized.startswith("text/")
-        or normalized in {"application/json", "application/xml", "application/xhtml+xml", "application/csv"}
+        or normalized
+        in {"application/json", "application/xml", "application/xhtml+xml", "application/csv"}
         or normalized.endswith("+json")
         or normalized.endswith("+xml")
     )
@@ -1118,7 +1246,9 @@ def gate_allowlist(gate_report: dict[str, Any]) -> tuple[list[str], list[str]]:
     request_allowlist = checks.get("allowlist")
     if isinstance(request_allowlist, dict):
         hosts = [item for item in request_allowlist.get("hosts", []) if isinstance(item, str)]
-        prefixes = [item for item in request_allowlist.get("url_prefixes", []) if isinstance(item, str)]
+        prefixes = [
+            item for item in request_allowlist.get("url_prefixes", []) if isinstance(item, str)
+        ]
         return hosts, prefixes
     # Older gate reports do not echo the allowlist. In that case every planned
     # URL has already been checked, but redirects must be refused.
@@ -1147,9 +1277,13 @@ def remote_fetch_one(
             response = opener.open(request, timeout=timeout_seconds)
             status_code = int(getattr(response, "status", response.getcode()))
             headers = response.headers
-            payload, truncated = (b"", False) if method == "HEAD" else read_limited_response(
-                response,
-                max_response_bytes=max_response_bytes,
+            payload, truncated = (
+                (b"", False)
+                if method == "HEAD"
+                else read_limited_response(
+                    response,
+                    max_response_bytes=max_response_bytes,
+                )
             )
         except HTTPError as exc:
             status_code = int(exc.code)
@@ -1198,9 +1332,13 @@ def remote_fetch_one(
                     }
                 current_url = redirected_url
                 continue
-            payload, truncated = (b"", False) if method == "HEAD" else read_limited_response(
-                exc,
-                max_response_bytes=max_response_bytes,
+            payload, truncated = (
+                (b"", False)
+                if method == "HEAD"
+                else read_limited_response(
+                    exc,
+                    max_response_bytes=max_response_bytes,
+                )
             )
         except (TimeoutError, URLError, OSError) as exc:
             return {
@@ -1250,7 +1388,14 @@ def execute_remote_fetches(
     gate_report: dict[str, Any],
     timeout_seconds: float,
     max_response_bytes: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], dict[str, bytes], bool, dict[str, Any]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, str],
+    dict[str, bytes],
+    bool,
+    dict[str, Any],
+]:
     if timeout_seconds <= 0:
         raise SourceAcquisitionError("--timeout-seconds must be greater than zero")
     if max_response_bytes < 1:
@@ -1273,13 +1418,19 @@ def execute_remote_fetches(
     network_policy = gate_report.get("checks", {}).get("network_policy", {})
     user_agent = network_policy.get("user_agent") if isinstance(network_policy, dict) else None
     if not isinstance(user_agent, str) or not user_agent.strip():
-        raise SourceAcquisitionError("network safety gate report does not include a usable user agent")
+        raise SourceAcquisitionError(
+            "network safety gate report does not include a usable user agent"
+        )
     rate_limits = gate_report.get("checks", {}).get("rate_limits", {})
-    min_interval = rate_limits.get("min_interval_seconds", 0) if isinstance(rate_limits, dict) else 0
+    min_interval = (
+        rate_limits.get("min_interval_seconds", 0) if isinstance(rate_limits, dict) else 0
+    )
     min_interval_seconds = float(min_interval) if isinstance(min_interval, (int, float)) else 0.0
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
 
-    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
+    for index, record in enumerate(
+        sorted(records, key=lambda item: int(item["sequence"])), start=1
+    ):
         original_locator = record["preserved"]["original_locator"]
         url = original_locator["entry_url"]
         gate_action = action_map.get(url)
@@ -1320,6 +1471,8 @@ def execute_remote_fetches(
             failed = True
             summary["urls_failed"] += 1
 
+        headers = fetch_result.get("headers")
+        response_headers: dict[str, Any] = headers if isinstance(headers, dict) else {}
         capture_event = {
             "schema_version": CAPTURE_SCHEMA_VERSION,
             "capture_id": capture_id,
@@ -1343,7 +1496,7 @@ def execute_remote_fetches(
             "user_agent": user_agent,
             "content_hash": content_hash,
             "byte_count": byte_count,
-            "content_length_header": fetch_result.get("headers").get("Content-Length") if fetch_result.get("headers") is not None else None,
+            "content_length_header": response_headers.get("Content-Length"),
             "content_type": content_type,
             "captured_at": created_at,
             "capture_method": "remote_url_fetch",
@@ -1376,7 +1529,9 @@ def execute_remote_fetches(
                 extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
                 if extracted_text is not None:
                     extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                    text_artifacts[extracted_text_path] = extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+                    text_artifacts[extracted_text_path] = (
+                        extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+                    )
                 else:
                     failed = True
         extraction_records.append(
@@ -1391,7 +1546,9 @@ def execute_remote_fetches(
                 input_hash=content_hash,
                 byte_count_in=byte_count,
                 extraction_method="remote_text_extract",
-                hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+                hazard_flags=list(
+                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                ),
                 content_text=extracted_text,
                 encoding_result=encoding_result,
                 failure_reason=failure_reason,
@@ -1420,9 +1577,18 @@ def execute_remote_url_manifest(
     allow_network: bool,
     timeout_seconds: float,
     max_response_bytes: int,
-) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[str]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+    list[str],
+]:
     if gate_request_path is None:
-        raise SourceAcquisitionError("remote_url_manifest execution requires --network-safety-request")
+        raise SourceAcquisitionError(
+            "remote_url_manifest execution requires --network-safety-request"
+        )
     try:
         gate_request = load_request(gate_request_path)
     except NetworkSafetyGateError as exc:
@@ -1520,15 +1686,17 @@ def execute_remote_url_manifest(
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
         return execution_record, denial_record, [], [], gate_report, expected_urls
 
-    capture_events, extraction_records, text_artifacts, binary_artifacts, failed, remote_summary = execute_remote_fetches(
-        records=records,
-        adapter_payload=adapter_payload,
-        run_id=run_id,
-        created_at=created_at,
-        handoff_hash=handoff_hash,
-        gate_report=gate_report,
-        timeout_seconds=timeout_seconds,
-        max_response_bytes=max_response_bytes,
+    capture_events, extraction_records, text_artifacts, binary_artifacts, failed, remote_summary = (
+        execute_remote_fetches(
+            records=records,
+            adapter_payload=adapter_payload,
+            run_id=run_id,
+            created_at=created_at,
+            handoff_hash=handoff_hash,
+            gate_report=gate_report,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
     )
     execution_record = execution_record_payload(
         run_id=run_id,
@@ -1572,33 +1740,52 @@ def main() -> int:
     run_id = resolve_run_id(output_dir, run_id=args.run_id)
 
     try:
-        raw_records, load_errors, load_exit = validate_source_adapter_handoff.load_records(handoff_path)
+        raw_records, load_errors, load_exit = validate_source_adapter_handoff.load_records(
+            handoff_path
+        )
         if load_exit != validate_source_adapter_handoff.EXIT_PASS or not raw_records:
-            message = load_errors[0]["message"] if load_errors else "source-adapter handoff could not be loaded"
+            message = (
+                load_errors[0]["message"]
+                if load_errors
+                else "source-adapter handoff could not be loaded"
+            )
             raise SourceAcquisitionError(message)
         adapter_path = ensure_single_adapter_context([record for _, record in raw_records])
         adapter_payload = load_validated_adapter(adapter_path)
-        records, handoff_hash = load_validated_handoff_records(handoff_path, adapter_path=adapter_path)
+        records, handoff_hash = load_validated_handoff_records(
+            handoff_path, adapter_path=adapter_path
+        )
         variant = determine_variant(records, adapter_payload=adapter_payload)
         executor_mode = determine_executor_mode(args.mode, variant=variant)
         planned_actions = planned_actions_for_records(records, variant=variant)
 
         if variant == "remote_url_manifest" and not args.network_safety_request:
-            raise SourceAcquisitionError("remote_url_manifest execution requires --network-safety-request")
+            raise SourceAcquisitionError(
+                "remote_url_manifest execution requires --network-safety-request"
+            )
         prepare_output_dir(output_dir, run_id=run_id)
 
         if args.dry_run:
             gate_report = None
             if variant == "remote_url_manifest":
-                gate_request_path = resolve_cli_path(args.network_safety_request, base_dir=Path.cwd())
-                execution_record, denial_record, capture_events, extraction_records, gate_report, _ = execute_remote_url_manifest(
+                dry_run_gate_request_path = resolve_cli_path(
+                    args.network_safety_request, base_dir=Path.cwd()
+                )
+                (
+                    remote_execution_record,
+                    remote_denial_record,
+                    remote_capture_events,
+                    remote_extraction_records,
+                    gate_report,
+                    _,
+                ) = execute_remote_url_manifest(
                     records=records,
                     run_id=run_id,
-                created_at=created_at,
-                handoff_path=handoff_path,
-                handoff_hash=handoff_hash,
-                adapter_payload=adapter_payload,
-                gate_request_path=gate_request_path,
+                    created_at=created_at,
+                    handoff_path=handoff_path,
+                    handoff_hash=handoff_hash,
+                    adapter_payload=adapter_payload,
+                    gate_request_path=dry_run_gate_request_path,
                     dry_run=True,
                     allow_network=args.allow_network,
                     timeout_seconds=args.timeout_seconds,
@@ -1606,18 +1793,25 @@ def main() -> int:
                 )
                 write_execution_artifacts(
                     output_dir=output_dir,
-                    execution_record=execution_record,
-                    capture_events=capture_events,
-                    extraction_records=extraction_records,
-                    denial_record=denial_record,
+                    execution_record=remote_execution_record,
+                    capture_events=remote_capture_events,
+                    extraction_records=remote_extraction_records,
+                    denial_record=remote_denial_record,
                     gate_report=gate_report,
                     text_artifacts={},
                 )
                 validate_emitted_artifacts(output_dir)
-                sys.stdout.write(json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-                return 0 if execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
+                sys.stdout.write(
+                    json.dumps(
+                        remote_execution_record, ensure_ascii=False, indent=2, sort_keys=True
+                    )
+                    + "\n"
+                )
+                return 0 if remote_execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
 
-            local_input_paths = sorted({str(record["resolved_source_path"]) for record in records})
+            dry_run_local_input_paths = sorted(
+                {str(record["resolved_source_path"]) for record in records}
+            )
             execution_record = dry_run_execution_record(
                 run_id=run_id,
                 created_at=created_at,
@@ -1626,7 +1820,7 @@ def main() -> int:
                 adapter_payload=adapter_payload,
                 adapter_type=variant,
                 executor_mode=executor_mode,
-                local_input_paths=local_input_paths,
+                local_input_paths=dry_run_local_input_paths,
                 gate_report=None,
                 planned_actions=planned_actions,
             )
@@ -1640,7 +1834,9 @@ def main() -> int:
                 text_artifacts={},
             )
             validate_emitted_artifacts(output_dir)
-            sys.stdout.write(json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            sys.stdout.write(
+                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            )
             return 0
 
         denial_record = None
@@ -1653,13 +1849,15 @@ def main() -> int:
         failed = False
 
         if variant == "local_source":
-            capture_events, extraction_records, text_artifacts, local_input_paths, failed = execute_local_source(
-                records=records,
-                adapter_payload=adapter_payload,
-                adapter_path=adapter_path,
-                run_id=run_id,
-                created_at=created_at,
-                handoff_hash=handoff_hash,
+            capture_events, extraction_records, text_artifacts, local_input_paths, failed = (
+                execute_local_source(
+                    records=records,
+                    adapter_payload=adapter_payload,
+                    adapter_path=adapter_path,
+                    run_id=run_id,
+                    created_at=created_at,
+                    handoff_hash=handoff_hash,
+                )
             )
             execution_record = execution_record_payload(
                 run_id=run_id,
@@ -1682,13 +1880,15 @@ def main() -> int:
                 denial_record_written=False,
             )
         elif variant == "structured_data":
-            capture_events, extraction_records, text_artifacts, local_input_paths, failed = execute_structured_data(
-                records=records,
-                adapter_payload=adapter_payload,
-                adapter_path=adapter_path,
-                run_id=run_id,
-                created_at=created_at,
-                handoff_hash=handoff_hash,
+            capture_events, extraction_records, text_artifacts, local_input_paths, failed = (
+                execute_structured_data(
+                    records=records,
+                    adapter_payload=adapter_payload,
+                    adapter_path=adapter_path,
+                    run_id=run_id,
+                    created_at=created_at,
+                    handoff_hash=handoff_hash,
+                )
             )
             execution_record = execution_record_payload(
                 run_id=run_id,
@@ -1711,12 +1911,14 @@ def main() -> int:
                 denial_record_written=False,
             )
         elif variant == "local_git_repo":
-            capture_events, extraction_records, text_artifacts, local_input_paths, failed = execute_local_git_repo(
-                records=records,
-                adapter_payload=adapter_payload,
-                run_id=run_id,
-                created_at=created_at,
-                handoff_hash=handoff_hash,
+            capture_events, extraction_records, text_artifacts, local_input_paths, failed = (
+                execute_local_git_repo(
+                    records=records,
+                    adapter_payload=adapter_payload,
+                    run_id=run_id,
+                    created_at=created_at,
+                    handoff_hash=handoff_hash,
+                )
             )
             execution_record = execution_record_payload(
                 run_id=run_id,
@@ -1739,19 +1941,25 @@ def main() -> int:
                 denial_record_written=False,
             )
         elif variant == "remote_url_manifest":
-            gate_request_path = resolve_cli_path(args.network_safety_request, base_dir=Path.cwd()) if args.network_safety_request else None
-            execution_record, denial_record, capture_events, extraction_records, gate_report, _ = execute_remote_url_manifest(
-                records=records,
-                run_id=run_id,
-                created_at=created_at,
-                handoff_path=handoff_path,
-                handoff_hash=handoff_hash,
-                adapter_payload=adapter_payload,
-                gate_request_path=gate_request_path,
-                dry_run=False,
-                allow_network=args.allow_network,
-                timeout_seconds=args.timeout_seconds,
-                max_response_bytes=args.max_response_bytes,
+            remote_gate_request_path = (
+                resolve_cli_path(args.network_safety_request, base_dir=Path.cwd())
+                if args.network_safety_request
+                else None
+            )
+            execution_record, denial_record, capture_events, extraction_records, gate_report, _ = (
+                execute_remote_url_manifest(
+                    records=records,
+                    run_id=run_id,
+                    created_at=created_at,
+                    handoff_path=handoff_path,
+                    handoff_hash=handoff_hash,
+                    adapter_payload=adapter_payload,
+                    gate_request_path=remote_gate_request_path,
+                    dry_run=False,
+                    allow_network=args.allow_network,
+                    timeout_seconds=args.timeout_seconds,
+                    max_response_bytes=args.max_response_bytes,
+                )
             )
             text_artifacts = execution_record.pop("_text_artifacts", {})
             binary_artifacts = execution_record.pop("_binary_artifacts", {})
@@ -1770,7 +1978,9 @@ def main() -> int:
         )
         validate_emitted_artifacts(output_dir)
 
-        sys.stdout.write(json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        )
         return EXIT_PASS if execution_record["status"] == "completed" else EXIT_STATE_UNSAFE
     except SourceAcquisitionError as exc:
         print(f"Error: {exc}", file=sys.stderr)

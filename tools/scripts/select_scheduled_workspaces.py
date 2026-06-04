@@ -19,7 +19,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 SCHEDULED_POSTURE = "scheduled"
@@ -31,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
+from tools.common import topic_saturation  # noqa: E402
 from tools.common.topic_workspace_registry import (  # noqa: E402
     DEFAULT_REGISTRY_ENV,
     DEFAULT_REGISTRY_PATH,
@@ -38,10 +38,8 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     resolve_workspaces,
 )
-from tools.common import topic_saturation  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
-
-import validate_topic_workspace_registry  # noqa: E402
+from tools.validators import validate_topic_workspace_registry  # noqa: E402
 
 
 class SelectionError(RuntimeError):
@@ -91,7 +89,9 @@ def parse_args() -> argparse.Namespace:
             f"  Without either, the default is {default_registry_display}."
         ),
     )
-    parser.add_argument("--registry", help="Optional path to the topic workspace registry JSON file.")
+    parser.add_argument(
+        "--registry", help="Optional path to the topic workspace registry JSON file."
+    )
     parser.add_argument(
         "--workspace-id",
         action="append",
@@ -158,11 +158,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_registry_or_raise(registry_path: Path) -> None:
-    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
+        registry_path
+    )
     if exit_code != validate_topic_workspace_registry.EXIT_PASS:
         errors = result.get("errors", [])
         if errors:
-            raise SelectionError(errors[0].get("message", "topic workspace registry validation failed"))
+            raise SelectionError(
+                errors[0].get("message", "topic workspace registry validation failed")
+            )
         raise SelectionError("topic workspace registry validation failed")
 
 
@@ -183,14 +187,18 @@ def workspace_output_entry(workspace: dict[str, Any]) -> dict[str, Any]:
     if "default_subject_manifest" in workspace:
         payload["default_subject_manifest"] = workspace["default_subject_manifest"]
     if "resolved_default_subject_manifest" in workspace:
-        payload["resolved_default_subject_manifest"] = str(workspace["resolved_default_subject_manifest"])
+        payload["resolved_default_subject_manifest"] = str(
+            workspace["resolved_default_subject_manifest"]
+        )
     if "scheduler_policy" in workspace:
         payload["scheduler_policy"] = copy.deepcopy(workspace["scheduler_policy"])
 
     return payload
 
 
-def effective_scheduler_policy(workspace: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def effective_scheduler_policy(
+    workspace: dict[str, Any], args: argparse.Namespace
+) -> dict[str, Any]:
     raw_policy = workspace.get("scheduler_policy")
     policy = copy.deepcopy(raw_policy) if isinstance(raw_policy, dict) else {}
 
@@ -221,20 +229,28 @@ def derived_next_retry_at(policy: dict[str, Any]) -> str | None:
         return None
     backoff_seconds = retry_policy.get("backoff_seconds")
     last_failure_at = failure_state.get("last_failure_at")
-    if not isinstance(backoff_seconds, int) or not isinstance(last_failure_at, str) or not last_failure_at:
+    if (
+        not isinstance(backoff_seconds, int)
+        or not isinstance(last_failure_at, str)
+        or not last_failure_at
+    ):
         return None
-    retry_at = parse_timestamp(last_failure_at, label="scheduler_policy.failure_state.last_failure_at") + timedelta(
-        seconds=backoff_seconds
-    )
+    retry_at = parse_timestamp(
+        last_failure_at, label="scheduler_policy.failure_state.last_failure_at"
+    ) + timedelta(seconds=backoff_seconds)
     return retry_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def scheduler_ineligibility_reasons(workspace: dict[str, Any], *, include_manual: bool) -> list[str]:
+def scheduler_ineligibility_reasons(
+    workspace: dict[str, Any], *, include_manual: bool
+) -> list[str]:
     reasons: list[str] = []
 
     lifecycle_state = workspace.get("lifecycle_state")
     if lifecycle_state != "active":
-        reasons.append(f"lifecycle_state is {lifecycle_state!r}; scheduler only selects active workspaces")
+        reasons.append(
+            f"lifecycle_state is {lifecycle_state!r}; scheduler only selects active workspaces"
+        )
 
     schedule_posture = workspace.get("schedule_posture")
     allowed_postures = set(DEFAULT_ALLOWED_POSTURES)
@@ -250,7 +266,9 @@ def scheduler_ineligibility_reasons(workspace: dict[str, Any], *, include_manual
             )
 
     if "resolved_default_subject_manifest" not in workspace:
-        reasons.append("default_subject_manifest is missing or unresolved; scheduled runs need an explicit manifest")
+        reasons.append(
+            "default_subject_manifest is missing or unresolved; scheduled runs need an explicit manifest"
+        )
 
     return reasons
 
@@ -280,7 +298,11 @@ def scheduler_policy_ineligibility_reasons(
             reasons.append("failure_state is blocked")
 
     max_attempts = run_budget.get("max_attempts")
-    if isinstance(max_attempts, int) and isinstance(attempt_count, int) and attempt_count >= max_attempts:
+    if (
+        isinstance(max_attempts, int)
+        and isinstance(attempt_count, int)
+        and attempt_count >= max_attempts
+    ):
         reasons.append(
             f"attempt_count {attempt_count} reached run_budget.max_attempts {max_attempts}"
         )
@@ -341,7 +363,9 @@ def planned_run_record(
         "run_budget": dict(run_budget),
         "retry_policy": copy.deepcopy(retry_policy) if retry_policy is not None else None,
         "failure_state": copy.deepcopy(failure_state) if failure_state is not None else None,
-        "saturation": copy.deepcopy(entry.get("saturation")) if isinstance(entry.get("saturation"), dict) else None,
+        "saturation": copy.deepcopy(entry.get("saturation"))
+        if isinstance(entry.get("saturation"), dict)
+        else None,
         "saturation_override": bool(entry.get("saturation_override", False)),
         "workspace_root": entry.get("workspace_root"),
         "resolved_workspace_root": entry.get("resolved_workspace_root"),
@@ -360,7 +384,9 @@ def build_planned_run_records(
 ) -> list[dict[str, Any]]:
     planned_at = args.planned_at or utc_now()
     records = []
-    for entry, decision in [(entry, "selected") for entry in selected] + [(entry, "skipped") for entry in skipped]:
+    for entry, decision in [(entry, "selected") for entry in selected] + [
+        (entry, "skipped") for entry in skipped
+    ]:
         policy = effective_scheduler_policy(entry, args)
         records.append(
             planned_run_record(
@@ -370,8 +396,12 @@ def build_planned_run_records(
                 planner_run_id=args.planner_run_id,
                 planned_at=planned_at,
                 run_budget=policy["run_budget"],
-                retry_policy=policy.get("retry_policy") if isinstance(policy.get("retry_policy"), dict) else None,
-                failure_state=policy.get("failure_state") if isinstance(policy.get("failure_state"), dict) else None,
+                retry_policy=policy.get("retry_policy")
+                if isinstance(policy.get("retry_policy"), dict)
+                else None,
+                failure_state=policy.get("failure_state")
+                if isinstance(policy.get("failure_state"), dict)
+                else None,
             )
         )
     return records
@@ -391,7 +421,9 @@ def load_subject_id_from_manifest(manifest_path: str | None) -> str | None:
     return subject_id if isinstance(subject_id, str) and subject_id else None
 
 
-def saturation_context(args: argparse.Namespace) -> tuple[topic_saturation.Policy | None, sqlite3.Connection | None]:
+def saturation_context(
+    args: argparse.Namespace,
+) -> tuple[topic_saturation.Policy | None, sqlite3.Connection | None]:
     if args.ignore_saturation or not args.saturation_policy:
         return None, None
     if not args.db:
@@ -401,7 +433,11 @@ def saturation_context(args: argparse.Namespace) -> tuple[topic_saturation.Polic
         db_path = canonical_store.resolve_db_path(args.db)
         canonical_store.check_canonical_store(db_path)
         conn = canonical_store.connect_existing_read_only(db_path)
-    except (topic_saturation.TopicSaturationError, canonical_store.CanonicalStoreError, sqlite3.Error) as exc:
+    except (
+        topic_saturation.TopicSaturationError,
+        canonical_store.CanonicalStoreError,
+        sqlite3.Error,
+    ) as exc:
         raise SelectionError(f"saturation policy/store is not usable: {exc}") from exc
     return policy, conn
 
@@ -438,7 +474,9 @@ def attach_saturation(
     )
 
 
-def saturation_ineligibility_reasons(entry: dict[str, Any], *, include_saturated: bool) -> list[str]:
+def saturation_ineligibility_reasons(
+    entry: dict[str, Any], *, include_saturated: bool
+) -> list[str]:
     saturation = entry.get("saturation")
     if not isinstance(saturation, dict):
         return []
@@ -452,7 +490,9 @@ def saturation_ineligibility_reasons(entry: dict[str, Any], *, include_saturated
     if action == "cooldown":
         next_eligible = saturation.get("next_eligible_cycle")
         suffix = f" until cycle {next_eligible}" if next_eligible is not None else ""
-        return [f"saturation_state is cooldown{suffix}: {', '.join(saturation.get('reason_codes', []))}"]
+        return [
+            f"saturation_state is cooldown{suffix}: {', '.join(saturation.get('reason_codes', []))}"
+        ]
     return []
 
 
@@ -475,9 +515,13 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         raise SelectionError("--limit must be at least 1")
 
     validate_registry_or_raise(registry_path)
-    planned_at = parse_timestamp(args.planned_at, label="--planned-at") if args.planned_at else parse_timestamp(
-        utc_now(),
-        label="generated planned_at",
+    planned_at = (
+        parse_timestamp(args.planned_at, label="--planned-at")
+        if args.planned_at
+        else parse_timestamp(
+            utc_now(),
+            label="generated planned_at",
+        )
     )
 
     try:
@@ -513,11 +557,16 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
                     planned_at=planned_at,
                 )
             )
-            reasons.extend(saturation_ineligibility_reasons(entry, include_saturated=args.include_saturated))
+            reasons.extend(
+                saturation_ineligibility_reasons(entry, include_saturated=args.include_saturated)
+            )
             if reasons:
                 entry["reasons"] = reasons
                 skipped.append(entry)
-            elif isinstance(entry.get("saturation"), dict) and entry["saturation"].get("scheduler_action") == "deprioritize":
+            elif (
+                isinstance(entry.get("saturation"), dict)
+                and entry["saturation"].get("scheduler_action") == "deprioritize"
+            ):
                 entry["saturation_deprioritized"] = True
                 deprioritized.append(entry)
             else:
@@ -533,7 +582,9 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         for deferred in ranked_eligible[args.limit :]:
             deferred_entry = dict(deferred)
             if deferred_entry.get("saturation_deprioritized"):
-                deferred_entry["reasons"] = ["selection limit reached after saturation deprioritization"]
+                deferred_entry["reasons"] = [
+                    "selection limit reached after saturation deprioritization"
+                ]
             else:
                 deferred_entry["reasons"] = ["selection limit reached"]
             skipped.append(deferred_entry)

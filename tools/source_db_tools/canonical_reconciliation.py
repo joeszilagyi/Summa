@@ -20,7 +20,6 @@ from typing import Any
 
 from tools.source_db_tools import canonical_store, identifier_normalization
 
-
 RECONCILIATION_TOOL = "tools/source_db_tools/canonical_reconciliation.py"
 WORK_DUPLICATE_EVENT_TYPE = "work_duplicate_encountered"
 AUTHORITY_MATCH_EXACT_IDENTIFIER = 1.0
@@ -46,7 +45,7 @@ STRUCTURED_CLAIM_TYPES = {
 }
 BIRTH_CLAIM_TYPES = {"birth_year", "birth_date", "date_of_birth", "born"}
 DEATH_CLAIM_TYPES = {"death_year", "death_date", "date_of_death", "died"}
-RELATIONAL_CONSTRAINTS = {
+RELATIONAL_CONSTRAINTS: dict[str, dict[str, Any]] = {
     "taught_by": {
         "rule_id": RELATIONAL_TEMPORAL_RULE,
         "required_facts": ["subject.birth_year", "object.death_year"],
@@ -117,7 +116,7 @@ class RelationalContradiction:
 
 
 def _normalize_timestamp(value: str | None, *, field_name: str, default: str | None = None) -> str:
-    return canonical_store._normalize_timestamp(  # type: ignore[attr-defined]
+    return canonical_store._normalize_timestamp(
         value,
         field_name=field_name,
         default=default,
@@ -125,7 +124,7 @@ def _normalize_timestamp(value: str | None, *, field_name: str, default: str | N
 
 
 def _normalize_review_state(value: str, *, field_name: str = "review_state") -> str:
-    return canonical_store._normalize_review_state(  # type: ignore[attr-defined]
+    return canonical_store._normalize_review_state(
         value,
         default=value,
         field_name=field_name,
@@ -133,7 +132,7 @@ def _normalize_review_state(value: str, *, field_name: str = "review_state") -> 
 
 
 def _normalize_confidence_score(value: float | int | None) -> float | None:
-    return canonical_store._normalize_confidence_score(value)  # type: ignore[attr-defined]
+    return canonical_store._normalize_confidence_score(value)
 
 
 def normalize_authority_label(value: Any) -> str:
@@ -247,7 +246,13 @@ def candidate_identifiers(structured: dict[str, Any] | None) -> list[dict[str, s
         value = structured.get(value_field)
         if scheme and value:
             identifiers.append({"scheme": str(scheme), "value": str(value)})
-    for field_name, scheme in (("doi", "doi"), ("isbn", "isbn"), ("issn", "issn"), ("orcid", "orcid"), ("wikidata_id", "wikidata")):
+    for field_name, scheme in (
+        ("doi", "doi"),
+        ("isbn", "isbn"),
+        ("issn", "issn"),
+        ("orcid", "orcid"),
+        ("wikidata_id", "wikidata"),
+    ):
         value = structured.get(field_name)
         if isinstance(value, str) and value.strip():
             identifiers.append({"scheme": scheme, "value": value})
@@ -295,7 +300,9 @@ def _review_target_row(
         "extraction_detected_entity": ("extraction_detected_entity", "detected_entity_id"),
     }
     if target_namespace not in mapping:
-        raise CanonicalReconciliationError(f"unsupported review-state target namespace: {target_namespace}")
+        raise CanonicalReconciliationError(
+            f"unsupported review-state target namespace: {target_namespace}"
+        )
     table_name, pk_column = mapping[target_namespace]
     row = conn.execute(
         f"SELECT * FROM {table_name} WHERE {pk_column}=?",
@@ -417,7 +424,7 @@ def record_work_identifier(
         )
         return canonical_store.CanonicalWriteResult(
             "work_identifier",
-            int(cursor.lastrowid),
+            canonical_store._inserted_rowid(cursor),
             f"{normalized['scheme']}:{normalized['value']}",
             True,
         )
@@ -511,7 +518,9 @@ def find_existing_work_match(
         matches: list[sqlite3.Row] = []
         for row in rows:
             row_title = normalize_title(row["title"])
-            row_locator = normalize_locator(row["canonical_url"]) or normalize_locator(row["original_locator"])
+            row_locator = normalize_locator(row["canonical_url"]) or normalize_locator(
+                row["original_locator"]
+            )
             if row_title == normalized_title and row_locator == source_identifier:
                 matches.append(row)
         distinct_ids = {int(row["work_id"]) for row in matches}
@@ -715,7 +724,7 @@ def _ensure_local_authority_candidate(
             created_at,
         ),
     )
-    return int(cursor.lastrowid)
+    return canonical_store._inserted_rowid(cursor)
 
 
 def record_authority_reconciliation(
@@ -781,7 +790,7 @@ def record_authority_reconciliation(
         )
         return canonical_store.CanonicalWriteResult(
             "authority_reconciliation",
-            int(cursor.lastrowid),
+            canonical_store._inserted_rowid(cursor),
             reconciliation_key,
             True,
         )
@@ -887,7 +896,7 @@ def record_authority_merge_event(
     )
     return canonical_store.CanonicalWriteResult(
         "authority_merge_event",
-        int(cursor.lastrowid),
+        canonical_store._inserted_rowid(cursor),
         canonical_store.stable_write_key(
             "authority-merge",
             from_authority_record_id,
@@ -915,7 +924,10 @@ def _maybe_link_detected_entity_authority(
     ).fetchone()
     if row is None:
         raise CanonicalReconciliationError(f"missing detected entity: {detected_entity_id}")
-    if row["authority_record_id"] is not None and int(row["authority_record_id"]) == authority_record_id:
+    if (
+        row["authority_record_id"] is not None
+        and int(row["authority_record_id"]) == authority_record_id
+    ):
         return False
     conn.execute(
         """
@@ -1138,9 +1150,7 @@ def intervals_overlap(
         return None
     if left_start is not None and right_end is not None and left_start > right_end:
         return False
-    if right_start is not None and left_end is not None and right_start > left_end:
-        return False
-    return True
+    return not (right_start is not None and left_end is not None and right_start > left_end)
 
 
 def _event_outside_lifespan(event_year: int, facts: EndpointFacts) -> TemporalFact | None:
@@ -1159,11 +1169,15 @@ def _load_relationship_row(conn: sqlite3.Connection, source_relationship_id: int
         (source_relationship_id,),
     ).fetchone()
     if row is None:
-        raise CanonicalReconciliationError(f"missing source_relationship id: {source_relationship_id}")
+        raise CanonicalReconciliationError(
+            f"missing source_relationship id: {source_relationship_id}"
+        )
     return row
 
 
-def _relationship_has_structured_claim_counterpart(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+def _relationship_has_structured_claim_counterpart(
+    conn: sqlite3.Connection, row: sqlite3.Row
+) -> bool:
     rows = conn.execute(
         """
         SELECT *
@@ -1182,7 +1196,9 @@ def _relationship_has_structured_claim_counterpart(conn: sqlite3.Connection, row
             continue
         claim_from = payload.get("from_object_ref") or payload.get("about_object_ref")
         claim_to = payload.get("to_object_ref") or payload.get("object_object_ref")
-        claim_predicate = str(payload.get("predicate") or claim_row["claim_type"] or "").strip().casefold()
+        claim_predicate = (
+            str(payload.get("predicate") or claim_row["claim_type"] or "").strip().casefold()
+        )
         if claim_from == from_ref and claim_to == to_ref and claim_predicate == predicate:
             return True
     return False
@@ -1251,11 +1267,17 @@ def evaluate_temporal_relation_constraint(
                         object_role="subject",
                     )
     elif predicate == "met":
-        overlap = intervals_overlap(*lifespan_interval(subject_facts), *lifespan_interval(object_facts))
+        overlap = intervals_overlap(
+            *lifespan_interval(subject_facts), *lifespan_interval(object_facts)
+        )
         if overlap is False:
             subject_birth, subject_death = lifespan_interval(subject_facts)
             object_birth, object_death = lifespan_interval(object_facts)
-            if subject_birth is not None and object_death is not None and subject_birth > object_death:
+            if (
+                subject_birth is not None
+                and object_death is not None
+                and subject_birth > object_death
+            ):
                 target = object_facts.death_years[0]
                 rationale = (
                     f"relationship {relationship_id} predicate met is impossible: "
@@ -1269,7 +1291,11 @@ def evaluate_temporal_relation_constraint(
                         rationale=rationale,
                     )
                 )
-            elif object_birth is not None and subject_death is not None and object_birth > subject_death:
+            elif (
+                object_birth is not None
+                and subject_death is not None
+                and object_birth > subject_death
+            ):
                 target = subject_facts.death_years[0]
                 rationale = (
                     f"relationship {relationship_id} predicate met is impossible: "
@@ -1292,7 +1318,11 @@ def evaluate_temporal_relation_constraint(
             boundary_fact = _event_outside_lifespan(event_year, facts)
             if boundary_fact is None:
                 continue
-            direction = "before birth year" if boundary_fact.fact_type in BIRTH_CLAIM_TYPES else "after death year"
+            direction = (
+                "before birth year"
+                if boundary_fact.fact_type in BIRTH_CLAIM_TYPES
+                else "after death year"
+            )
             rationale = (
                 f"relationship {relationship_id} predicate {predicate} has event year {event_year} "
                 f"{direction} {boundary_fact.year} for {role} {facts.object_ref}"
@@ -1322,7 +1352,9 @@ def record_relational_contradiction(
         offending_id=contradiction.relationship_id,
         target_object_ref=contradiction.target_object_ref,
         provenance_event_ref=str(relationship_row["provenance_event_ref"]),
-        workspace_id=None if relationship_row["workspace_id"] is None else str(relationship_row["workspace_id"]),
+        workspace_id=None
+        if relationship_row["workspace_id"] is None
+        else str(relationship_row["workspace_id"]),
         rule_id=contradiction.rule_id,
         rationale=contradiction.rationale,
         changed_at=changed_at,
@@ -1342,7 +1374,10 @@ def detect_relational_contradictions_for_relationship(
     if predicate == CONTRADICTION_PREDICATE:
         return {"results": [], "skipped": ["contradiction relationship rows are not checked"]}
     if predicate not in RELATIONAL_CONSTRAINTS:
-        return {"results": [], "skipped": [f"no relational constraint registered for predicate {predicate!r}"]}
+        return {
+            "results": [],
+            "skipped": [f"no relational constraint registered for predicate {predicate!r}"],
+        }
     to_object_ref = row["to_object_ref"]
     if not isinstance(to_object_ref, str) or not to_object_ref.strip():
         return {"results": [], "skipped": ["relationship has no to_object_ref"]}
@@ -1410,7 +1445,9 @@ def run_relational_constraint_pass(
         predicate = str(row["predicate"]).strip().casefold()
         if predicate not in RELATIONAL_CONSTRAINTS:
             continue
-        if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(conn, row):
+        if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(
+            conn, row
+        ):
             counts["relational_constraints_skipped"] += 1
             continue
         counts["relational_constraints_checked"] += 1
@@ -1501,7 +1538,12 @@ def detect_structured_contradictions_for_claim(
     if relation_type in {"taught_by", "relationship_taught_by"} or predicate == "taught_by":
         subject_ref = about_object_ref
         object_ref = payload.get("to_object_ref") or payload.get("object_object_ref")
-        if isinstance(subject_ref, str) and subject_ref and isinstance(object_ref, str) and object_ref:
+        if (
+            isinstance(subject_ref, str)
+            and subject_ref
+            and isinstance(object_ref, str)
+            and object_ref
+        ):
             birth_rows = _claims_for_ref_and_type(
                 conn,
                 about_object_ref=subject_ref,
@@ -1516,15 +1558,19 @@ def detect_structured_contradictions_for_claim(
             )
             for birth_row in birth_rows:
                 birth_payload = _structured_claim_payload(birth_row)
-                birth_year = None if birth_payload is None else normalize_year(
-                    birth_payload.get("year", birth_payload.get("value"))
+                birth_year = (
+                    None
+                    if birth_payload is None
+                    else normalize_year(birth_payload.get("year", birth_payload.get("value")))
                 )
                 if birth_year is None:
                     continue
                 for death_row in death_rows:
                     death_payload = _structured_claim_payload(death_row)
-                    death_year = None if death_payload is None else normalize_year(
-                        death_payload.get("year", death_payload.get("value"))
+                    death_year = (
+                        None
+                        if death_payload is None
+                        else normalize_year(death_payload.get("year", death_payload.get("value")))
                     )
                     if death_year is None or birth_year <= death_year:
                         continue
@@ -1606,7 +1652,9 @@ def run_reconciliation_pass_for_ingest(
                 conn,
                 detected_entity_id=entity_id,
                 entity_label=str(entity["entity_label"]),
-                entity_type=None if entity.get("entity_type") is None else str(entity["entity_type"]),
+                entity_type=None
+                if entity.get("entity_type") is None
+                else str(entity["entity_type"]),
                 workspace_id=workspace_id,
                 provenance_event_ref=provenance_event_ref,
                 confidence_score=entity.get("confidence_score"),
@@ -1640,7 +1688,9 @@ def run_reconciliation_pass_for_ingest(
                 conn,
                 detected_entity_id=entity_id,
                 raw_label=str(entity["entity_label"]),
-                entity_type=None if entity.get("entity_type") is None else str(entity["entity_type"]),
+                entity_type=None
+                if entity.get("entity_type") is None
+                else str(entity["entity_type"]),
                 candidate_authority_record_id=match.authority_record_id,
                 method=match.method,
                 match_method=match.method,

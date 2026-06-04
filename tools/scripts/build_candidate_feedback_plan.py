@@ -11,7 +11,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "scripts"):
     candidate_text = str(candidate)
@@ -20,14 +19,11 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "scripts"):
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.candidate_feedback_contract import (  # noqa: E402
-    ACCEPTED_REVIEW_STATES,
     DEFAULT_MAX_DEFERRED_CANDIDATES,
     DEFAULT_MAX_FACET_CANDIDATES,
     DEFAULT_MAX_LEAD_CANDIDATES,
     DEFAULT_SCORING_WEIGHTS,
-    LEAD_KINDS,
     LEAD_REVIEW_STATES,
-    NEXT_ACTION_KINDS,
     SCHEMA_VERSION,
     SCORING_POLICY_ID,
 )
@@ -37,7 +33,6 @@ from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS,
     validate_candidate_feedback_plan,
 )
-
 
 SUCCESS_EXTRACTION_STATUSES = frozenset({"completed", "ok", "recorded", "success"})
 FAILED_EXTRACTION_STATUSES = frozenset({"bad_utf8", "error", "failed", "hostile_replay", "invalid"})
@@ -60,8 +55,12 @@ def parse_args() -> argparse.Namespace:
         help="Workspace root used to resolve the subject runtime.",
     )
     parser.add_argument("--db", required=True, help="Path to the canonical SQLite database.")
-    parser.add_argument("--output-json", help="Optional JSON path for the emitted candidate-feedback plan.")
-    parser.add_argument("--generated-at", help="Optional RFC3339 timestamp override for deterministic tests.")
+    parser.add_argument(
+        "--output-json", help="Optional JSON path for the emitted candidate-feedback plan."
+    )
+    parser.add_argument(
+        "--generated-at", help="Optional RFC3339 timestamp override for deterministic tests."
+    )
     parser.add_argument(
         "--max-facet-candidates",
         type=int,
@@ -100,7 +99,7 @@ def resolve_path(raw_path: str) -> Path:
 def now_rfc3339() -> str:
     import datetime as dt
 
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -112,7 +111,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise CandidateFeedbackError("--max-deferred-candidates must be non-negative")
 
 
-def load_runtime(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+def load_runtime(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
     try:
         runtime = resolve_subject_runtime.resolve_subject_runtime(args.subject, args.workspace)
     except resolve_subject_runtime.ResolutionError as exc:
@@ -120,13 +121,20 @@ def load_runtime(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
     subject = runtime["subject"]
     try:
         pack = resolve_gather_domain_pack.load_domain_pack(subject["domain_pack"])
-        bundles = resolve_subject_runtime.resolve_prompt_bundles(pack, list(subject["enabled_facets"]))
-    except (resolve_gather_domain_pack.GatherDomainPackError, resolve_subject_runtime.ResolutionError) as exc:
+        bundles = resolve_subject_runtime.resolve_prompt_bundles(
+            pack, list(subject["enabled_facets"])
+        )
+    except (
+        resolve_gather_domain_pack.GatherDomainPackError,
+        resolve_subject_runtime.ResolutionError,
+    ) as exc:
         raise CandidateFeedbackError(str(exc)) from exc
     return runtime, pack, bundles
 
 
-def load_checked_connection(raw_db_path: str) -> tuple[sqlite3.Connection, canonical_store.CheckResult]:
+def load_checked_connection(
+    raw_db_path: str,
+) -> tuple[sqlite3.Connection, canonical_store.CheckResult]:
     db_path = canonical_store.resolve_db_path(raw_db_path)
     try:
         check_result = canonical_store.check_canonical_store(db_path)
@@ -257,7 +265,7 @@ def canonical_family_yields_for_event(conn: sqlite3.Connection, event_key: str) 
 
 
 def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[str, Any]]:
-    pattern = f'%\"subject_id\": \"{subject_id}\"%'
+    pattern = f'%"subject_id": "{subject_id}"%'
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
@@ -330,7 +338,9 @@ def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
     return str(row["run_id"])
 
 
-def extraction_outcome_counts(conn: sqlite3.Connection, *, source_locus_id: str | None, locators: list[str], subject_id: str) -> dict[str, Any]:
+def extraction_outcome_counts(
+    conn: sqlite3.Connection, *, source_locus_id: str | None, locators: list[str], subject_id: str
+) -> dict[str, Any]:
     clauses: list[str] = []
     params: list[Any] = [subject_id]
     if source_locus_id:
@@ -424,7 +434,7 @@ def load_source_access_leads(
         FROM source_access AS access
         LEFT JOIN work
           ON work.work_id = access.work_id
-        WHERE {scope_sql.replace('workspace_id', 'access.workspace_id').replace('work_id', 'access.work_id')}
+        WHERE {scope_sql.replace("workspace_id", "access.workspace_id").replace("work_id", "access.work_id")}
           AND access.review_state IN ({placeholders})
         ORDER BY COALESCE(access.last_seen_at, access.first_seen_at, access.record_last_updated) DESC, access.source_access_id ASC
         """,
@@ -524,8 +534,12 @@ def load_source_access_leads(
                 "reason_codes": reason_codes,
                 "rationale": "; ".join(rationale_bits),
                 "signals": signals,
-                "source_locus_id": None if row["source_locus_id"] is None else str(row["source_locus_id"]),
-                "source_lead_id": None if row["source_lead_id"] is None else str(row["source_lead_id"]),
+                "source_locus_id": None
+                if row["source_locus_id"] is None
+                else str(row["source_locus_id"]),
+                "source_lead_id": None
+                if row["source_lead_id"] is None
+                else str(row["source_lead_id"]),
                 "related_run_ids": related_run_ids,
             }
         )
@@ -626,9 +640,16 @@ def load_entity_leads(
         else:
             continue
         extraction_status = str(row["extraction_status"] or "").casefold()
-        success = 1 if extraction_status and extraction_status not in FAILED_EXTRACTION_STATUSES else 0
+        success = (
+            1 if extraction_status and extraction_status not in FAILED_EXTRACTION_STATUSES else 0
+        )
         failed = 1 if extraction_status in FAILED_EXTRACTION_STATUSES else 0
-        score = weights["open_lead"] + weights["entity_yield"] + weights["successful_extraction"] * success - weights["failed_extraction_penalty"] * failed
+        score = (
+            weights["open_lead"]
+            + weights["entity_yield"]
+            + weights["successful_extraction"] * success
+            - weights["failed_extraction_penalty"] * failed
+        )
         provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
         leads.append(
             {
@@ -819,7 +840,9 @@ def aggregate_facet_scores(
                 "signals": signal_bucket,
             }
         )
-    facet_scores.sort(key=lambda item: (-float(item["score"]), facet_order[item["facet"]], item["candidate_id"]))
+    facet_scores.sort(
+        key=lambda item: (-float(item["score"]), facet_order[item["facet"]], item["candidate_id"])
+    )
     for rank, item in enumerate(facet_scores, start=1):
         item["rank"] = rank
     return facet_scores
@@ -909,7 +932,11 @@ def select_next_action(
     selected_prompt_bundle_id = (
         top_facet["prompt_bundle_id"]
         if not productive_leads
-        else next(item["prompt_bundle_id"] for item in facet_scores if item["facet"] == productive_leads[0]["facet"])
+        else next(
+            item["prompt_bundle_id"]
+            for item in facet_scores
+            if item["facet"] == productive_leads[0]["facet"]
+        )
     )
     cli_args = ["--facet", selected_facet]
     if use_prior_state:
@@ -1105,7 +1132,9 @@ def render_text_plan(payload: dict[str, Any]) -> str:
     for index, item in enumerate(payload["facet_scores"][:3]):
         lines.append(f"facet[{index}]={item['facet']} score={item['score']}")
     for index, item in enumerate(payload["lead_scores"][:3]):
-        lines.append(f"lead[{index}]={item['object_ref']} facet={item['facet']} score={item['score']}")
+        lines.append(
+            f"lead[{index}]={item['object_ref']} facet={item['facet']} score={item['score']}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1113,7 +1142,9 @@ def validate_emitted_plan(path: Path) -> None:
     report, exit_code = validate_candidate_feedback_plan(path)
     if exit_code != EXIT_PASS:
         first = report["errors"][0]["message"] if report.get("errors") else "unknown error"
-        raise CandidateFeedbackError(f"generated candidate feedback plan failed validation: {first}")
+        raise CandidateFeedbackError(
+            f"generated candidate feedback plan failed validation: {first}"
+        )
 
 
 def main() -> int:
@@ -1121,7 +1152,7 @@ def main() -> int:
     try:
         validate_args(args)
         generated_at = (
-            canonical_store._normalize_timestamp(args.generated_at, field_name="--generated-at")  # type: ignore[attr-defined]
+            canonical_store._normalize_timestamp(args.generated_at, field_name="--generated-at")
             if args.generated_at
             else now_rfc3339()
         )
@@ -1144,9 +1175,13 @@ def main() -> int:
             atomic_write_json(output_path, payload)
             validate_emitted_plan(output_path)
         else:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", suffix=".json", delete=False
+            ) as handle:
                 temp_path = Path(handle.name)
-                handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+                handle.write(
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                )
             try:
                 validate_emitted_plan(temp_path)
             finally:
