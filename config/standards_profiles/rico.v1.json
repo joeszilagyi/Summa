@@ -1,0 +1,121 @@
+{
+  "schema_version": "standards-profile.v1",
+  "profile_id": "rico.v1",
+  "profile_name": "RiC-O profile JSON export",
+  "profile_version": "1",
+  "external_standard": {
+    "name": "ICA Records in Contexts Ontology",
+    "version_or_reference": "RiC-O 1.1 public release",
+    "reference_url": "https://ica-egad.github.io/RiC-O/"
+  },
+  "export_format": "rico_profile_json",
+  "target_artifact_type": "standards-profile-export.v1",
+  "conformance_level": "experimental",
+  "summa_source_tables": ["work", "authority_record", "source_relationship", "provenance_event", "capture_event", "extraction_record", "work_subject"],
+  "field_mappings": [
+    {
+      "mapping_id": "rico.record_resource",
+      "summa_source": { "table": "work", "field": "work_key_v1" },
+      "external_target": "rico:RecordResource",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "stable URI-like node for each exported work"
+    },
+    {
+      "mapping_id": "rico.record_title",
+      "summa_source": { "table": "work", "field": "title" },
+      "external_target": "rico:title",
+      "status": "required",
+      "cardinality": "1..1",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "nonblank title"
+    },
+    {
+      "mapping_id": "rico.agent",
+      "summa_source": { "table": "authority_record", "field": "preferred_label" },
+      "external_target": "rico:Agent",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "stable URI-like node for each authority"
+    },
+    {
+      "mapping_id": "rico.relation",
+      "summa_source": { "table": "source_relationship", "field": "predicate" },
+      "external_target": "rico:Relation",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "local predicate relation nodes"
+    },
+    {
+      "mapping_id": "rico.event",
+      "summa_source": { "table": "provenance_event", "field": "event_type" },
+      "external_target": "rico:Event",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "event/activity nodes from provenance"
+    },
+    {
+      "mapping_id": "rico.capture_activity",
+      "summa_source": { "table": "capture_event", "field": "capture_method" },
+      "external_target": "rico:Activity",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "capture activity nodes"
+    }
+  ],
+  "required_fields": ["rico.record_resource", "rico.record_title"],
+  "optional_fields": ["rico.agent", "rico.relation", "rico.event", "rico.capture_activity"],
+  "controlled_vocabularies": [
+    {
+      "field": "rico:Relation",
+      "policy": "Summa predicates are emitted as local relation types and are not asserted as full RiC-O object properties.",
+      "allowed_values": []
+    }
+  ],
+  "identifier_policy": {
+    "summary": "Build deterministic URI-like identifiers under an operator-supplied base URI; no local paths or unsafe characters are emitted.",
+    "base_uri_required": true,
+    "stable_identifier_fields": ["work.work_id", "authority_record.authority_record_id", "source_relationship.source_relationship_id", "provenance_event.provenance_event_id"]
+  },
+  "private_public_policy": {
+    "default_mode": "public_only",
+    "public_excludes": ["public_blocker values", "private publication states", "local filesystem paths", "raw extracted text"],
+    "internal_mode_requires_explicit_flag": true
+  },
+  "unsupported_fields": [
+    {
+      "field": "OWL/RDF conformance",
+      "reason": "F33 emits deterministic RiC-O profile JSON, not externally validated RDF/OWL."
+    },
+    {
+      "field": "full RiC-CM relation semantics",
+      "reason": "Source relationship predicates remain local until a dedicated relation vocabulary profile is added."
+    }
+  ],
+  "lossy_mapping_rules": [
+    { "mapping_id": "rico.record_resource", "reason": "Summa work is mapped to a record-resource-like node but is not a full RiC-CM record set model." },
+    { "mapping_id": "rico.agent", "reason": "Authority records are mapped to generic agent-like nodes without full RiC-O class selection." },
+    { "mapping_id": "rico.relation", "reason": "Local predicates are relation nodes, not full ontology properties." },
+    { "mapping_id": "rico.event", "reason": "Provenance events are activity/event summaries." }
+  ],
+  "validation_rules": [
+    { "rule_id": "rico.base_uri", "severity": "error", "description": "RiC-O profile JSON export requires a safe base URI." },
+    { "rule_id": "rico.stable_ids", "severity": "error", "description": "Every node id must be URI-like and stable." },
+    { "rule_id": "rico.public.safe", "severity": "error", "description": "Public RiC-O export must not include private paths, raw text, or private blockers." }
+  ],
+  "known_limitations": [
+    "This is RiC-O profile JSON, not RDF/Turtle or OWL validation.",
+    "Full RiC-O class and property coverage is future profile work."
+  ]
+}

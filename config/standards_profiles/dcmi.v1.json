@@ -1,0 +1,163 @@
+{
+  "schema_version": "standards-profile.v1",
+  "profile_id": "dcmi.v1",
+  "profile_name": "Dublin Core Metadata Terms JSON profile",
+  "profile_version": "1",
+  "external_standard": {
+    "name": "DCMI Metadata Terms",
+    "version_or_reference": "DCMI Recommendation, 2020-01-20",
+    "reference_url": "https://www.dublincore.org/specifications/dublin-core/dcmi-terms/"
+  },
+  "export_format": "dcterms_json",
+  "target_artifact_type": "standards-profile-export.v1",
+  "conformance_level": "partial",
+  "summa_source_tables": ["work", "source_access", "source_claim", "source_relationship", "provenance_event"],
+  "field_mappings": [
+    {
+      "mapping_id": "dcmi.title",
+      "summa_source": { "table": "work", "field": "title" },
+      "external_target": "dcterms:title",
+      "status": "required",
+      "cardinality": "1..1",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "nonblank string"
+    },
+    {
+      "mapping_id": "dcmi.identifier.work",
+      "summa_source": { "table": "work", "field": "work_key_v1" },
+      "external_target": "dcterms:identifier",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "stable Summa work key"
+    },
+    {
+      "mapping_id": "dcmi.type",
+      "summa_source": { "table": "work", "field": "work_type" },
+      "external_target": "dcterms:type",
+      "status": "optional",
+      "cardinality": "0..1",
+      "lossy": true,
+      "privacy": "public",
+      "controlled_vocabulary": "summa_work_type_to_dcmi_type",
+      "validation": "string when present",
+      "notes": "Summa work_type is local and only loosely maps to DCMI type vocabulary."
+    },
+    {
+      "mapping_id": "dcmi.source.url",
+      "summa_source": { "table": "source_access", "field": "canonical_url", "join_note": "via source_access.work_id" },
+      "external_target": "dcterms:source",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "public URL only"
+    },
+    {
+      "mapping_id": "dcmi.date",
+      "summa_source": { "table": "work", "field": "first_seen_at" },
+      "external_target": "dcterms:date",
+      "status": "optional",
+      "cardinality": "0..1",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "RFC3339-ish timestamp when present",
+      "notes": "First-seen date is operational discovery date, not necessarily publication date."
+    },
+    {
+      "mapping_id": "dcmi.description",
+      "summa_source": { "table": "source_claim", "field": "public_summary", "join_note": "via source_claim.about_object_ref=work:<id>" },
+      "external_target": "dcterms:description",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "public summaries only"
+    },
+    {
+      "mapping_id": "dcmi.subject",
+      "summa_source": { "table": "source_relationship", "field": "target_label", "join_note": "via source_relationship.from_object_ref=work:<id>" },
+      "external_target": "dcterms:subject",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "public relationship labels only"
+    },
+    {
+      "mapping_id": "dcmi.rights",
+      "summa_source": { "table": "work", "field": "rights_posture" },
+      "external_target": "dcterms:rights",
+      "status": "optional",
+      "cardinality": "0..1",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "string when present"
+    },
+    {
+      "mapping_id": "dcmi.provenance",
+      "summa_source": { "table": "provenance_event", "field": "event_type", "join_note": "via work.provenance_event_ref" },
+      "external_target": "dcterms:provenance",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "event type/timestamp summary only"
+    }
+  ],
+  "required_fields": ["dcmi.title", "dcmi.identifier.work"],
+  "optional_fields": [
+    "dcmi.type",
+    "dcmi.source.url",
+    "dcmi.date",
+    "dcmi.description",
+    "dcmi.subject",
+    "dcmi.rights",
+    "dcmi.provenance"
+  ],
+  "controlled_vocabularies": [
+    {
+      "field": "dcterms:type",
+      "policy": "local Summa work_type values are emitted as local strings and flagged as lossy unless a future controlled-vocabulary map is added",
+      "allowed_values": []
+    }
+  ],
+  "identifier_policy": {
+    "summary": "Use work.work_key_v1 plus public source URLs when available; do not expose local filesystem paths.",
+    "base_uri_required": false,
+    "stable_identifier_fields": ["work.work_key_v1", "source_access.canonical_url"]
+  },
+  "private_public_policy": {
+    "default_mode": "public_only",
+    "public_excludes": ["public_blocker values", "private publication states", "raw claim_text"],
+    "internal_mode_requires_explicit_flag": true
+  },
+  "unsupported_fields": [
+    {
+      "field": "dcterms:creator",
+      "reason": "Summa has authority records but no stable creator-role mapping in this first DCMI profile."
+    },
+    {
+      "field": "dcterms:publisher",
+      "reason": "No first-class publisher field exists in the canonical schema."
+    }
+  ],
+  "lossy_mapping_rules": [
+    { "mapping_id": "dcmi.type", "reason": "Local work_type is not the DCMI Type Vocabulary." },
+    { "mapping_id": "dcmi.date", "reason": "First-seen operational date is not a publication or issued date." },
+    { "mapping_id": "dcmi.description", "reason": "Only public summaries are exported; raw source claims are excluded by policy." },
+    { "mapping_id": "dcmi.subject", "reason": "Relationship labels are not a controlled subject vocabulary." },
+    { "mapping_id": "dcmi.provenance", "reason": "Provenance events are summarized, not serialized as a full event graph." }
+  ],
+  "validation_rules": [
+    { "rule_id": "dcmi.required.title", "severity": "error", "description": "Every exported work must have dcterms:title." },
+    { "rule_id": "dcmi.required.identifier", "severity": "error", "description": "Every exported work must have at least one dcterms:identifier." },
+    { "rule_id": "dcmi.public.safe", "severity": "error", "description": "Public DCMI export must not include private sentinels, local paths, raw payloads, or raw claim text." }
+  ],
+  "known_limitations": [
+    "This is deterministic JSON using dcterms keys, not external RDF validation.",
+    "Creator and publisher are reported unsupported until role-aware agent mapping exists."
+  ]
+}
