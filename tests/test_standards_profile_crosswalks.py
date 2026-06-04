@@ -9,7 +9,6 @@ import pytest
 from tools.common import standards_profiles
 from tools.source_db_tools import authority_reconciliation, canonical_store
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXED_TIMESTAMP = "2026-06-04T09:00:00Z"
 PRIVATE_SENTINEL = "PRIVATE_SENTINEL_DO_NOT_EXPORT"
@@ -239,7 +238,12 @@ def build_fixture_store(tmp_path: Path) -> dict[str, int | Path]:
             )
     finally:
         conn.close()
-    return {"db_path": db_path, "work_id": work.row_id, "capture_id": capture.row_id, "authority_id": authority_id}
+    return {
+        "db_path": db_path,
+        "work_id": work.row_id,
+        "capture_id": capture.row_id,
+        "authority_id": authority_id,
+    }
 
 
 def test_profile_configs_validate_and_reference_existing_fields(tmp_path: Path) -> None:
@@ -308,7 +312,10 @@ def test_premis_export_reports_object_event_fixity_and_agent_limitation(tmp_path
     premis = result.export_payload["premis"]
     assert premis["objects"][0]["fixity"]["message_digest"] == "sha256:abc123"
     assert premis["events"][0]["event_datetime"] == FIXED_TIMESTAMP
-    assert any("first-class preservation agent" in item["reason"] for item in result.conformance_report["unsupported_fields"])
+    assert any(
+        "first-class preservation agent" in item["reason"]
+        for item in result.conformance_report["unsupported_fields"]
+    )
     assert result.conformance_report["conformance_status"] == "pass_with_warnings"
 
 
@@ -325,11 +332,15 @@ def test_rico_profile_json_uses_stable_uri_identifiers(tmp_path: Path) -> None:
     graph = result.export_payload["rico_profile_json"]
     ids = [node["id"] for node in graph["nodes"]]
     assert f"https://example.org/summa/work/{fixture['work_id']}" in ids
-    assert all(" " not in node_id and node_id.startswith("https://example.org/summa/") for node_id in ids)
+    assert all(
+        " " not in node_id and node_id.startswith("https://example.org/summa/") for node_id in ids
+    )
     assert graph["relations"]
 
 
-def test_nara_readiness_report_distinguishes_present_and_missing_transfer_package(tmp_path: Path) -> None:
+def test_nara_readiness_report_distinguishes_present_and_missing_transfer_package(
+    tmp_path: Path,
+) -> None:
     fixture = build_fixture_store(tmp_path)
     result = standards_profiles.export_profile(
         db_path=fixture["db_path"],
@@ -338,7 +349,9 @@ def test_nara_readiness_report_distinguishes_present_and_missing_transfer_packag
         generated_at=FIXED_TIMESTAMP,
     )
 
-    checks = {item["check_id"]: item for item in result.export_payload["readiness_report"]["checks"]}
+    checks = {
+        item["check_id"]: item for item in result.export_payload["readiness_report"]["checks"]
+    }
     assert checks["fixity_present"]["status"] == "pass"
     assert checks["actions_recorded"]["status"] == "pass"
     assert checks["transfer_package_present"]["status"] == "not_applicable"
@@ -387,8 +400,12 @@ def test_export_is_deterministic_across_repeated_runs(tmp_path: Path) -> None:
         generated_at=FIXED_TIMESTAMP,
     )
 
-    assert standards_profiles.stable_json(first.export_payload) == standards_profiles.stable_json(second.export_payload)
-    assert standards_profiles.stable_json(first.conformance_report) == standards_profiles.stable_json(second.conformance_report)
+    assert standards_profiles.stable_json(first.export_payload) == standards_profiles.stable_json(
+        second.export_payload
+    )
+    assert standards_profiles.stable_json(
+        first.conformance_report
+    ) == standards_profiles.stable_json(second.conformance_report)
 
 
 def test_missing_required_field_causes_conformance_failure(tmp_path: Path) -> None:

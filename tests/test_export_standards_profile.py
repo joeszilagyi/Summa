@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "export_standards_profile.py"
 FIXED_TIMESTAMP = "2026-06-04T09:00:00Z"

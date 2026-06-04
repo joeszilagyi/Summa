@@ -46,6 +46,7 @@ REQUIRED_SCHEMA_METADATA_TABLES = {
 
 REQUIRED_NONCANONICAL_STAGING_TABLES = {
     "source_locus",
+    "source_query_plan",
     "source_query_execution_simulation",
     "simulated_source_lead_candidate",
 }

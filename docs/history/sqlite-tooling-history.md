@@ -64,6 +64,10 @@ The current source-locus helper creates or maintains:
   `source_access.source_locus_id`, and `source_access.source_lead_id` when the
   target tables already exist
 
+The current source-query planning helper creates or maintains:
+
+- `source_query_plan`
+
 The current simulation helper creates or maintains:
 
 - `source_query_execution_simulation`
@@ -87,7 +91,7 @@ Examples:
 
 - `review_queue.py` still supports a broader review-target vocabulary, including
   compatibility tables such as `lead`
-- `source_locus_seed.py` and
+- `source_locus_seed.py`, `source_query_plan.py`, and
   `source_query_execution_simulation.py` operate on staging/simulation tables
   that the canonical outline classifies as noncanonical
 
@@ -110,9 +114,14 @@ document it as a separate frozen historical reference.
 
 Some SQLite-adjacent references are still transitional:
 
-- `tools/source_db_tools/source_query_execution_simulation.py` references a
-  `source_query_plan` helper line that is not restored as a standalone Python
-  module in this checkout
+- `tools/source_db_tools/source_query_plan.py` has been restored as a
+  planning-only helper for deterministic local source-query plans derived from
+  `source_locus`. It does not execute queries, call external services, fetch
+  sources, or create source/capture/acquisition rows.
+- `tools/source_db_tools/source_query_execution_simulation.py` remains a
+  simulation-only consumer of those plans. It writes only
+  `source_query_execution_simulation` and `simulated_source_lead_candidate`
+  staging rows.
 - several view emitters and helper tests still exercise older
   `source.sqlite`-shaped tables alongside the canonical bootstrap
 
