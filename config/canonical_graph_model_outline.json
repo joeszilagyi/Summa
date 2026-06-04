@@ -111,6 +111,13 @@
   "supporting_sqlite_tables": [
     "authority_identifier",
     "authority_merge_event",
+    "cycle_artifact_ref",
+    "cycle_candidate_considered",
+    "cycle_candidate_excluded",
+    "cycle_event",
+    "cycle_operator_override",
+    "cycle_stage_event",
+    "cycle_tool_failure",
     "source_access",
     "work_identifier",
     "work_metadata",

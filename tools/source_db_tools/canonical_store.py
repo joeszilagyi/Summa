@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 1
-CURRENT_MIGRATION_ID = "0001_canonical_store"
+CURRENT_SCHEMA_VERSION = 2
+CURRENT_MIGRATION_ID = "0002_cycle_evidence_ledger"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -41,6 +41,14 @@ REQUIRED_INDEXES = {
     "ix_authority_record_merge",
     "ix_capture_event_hash",
     "ix_capture_event_work",
+    "ix_cycle_artifact_ref_cycle",
+    "ix_cycle_candidate_considered_cycle",
+    "ix_cycle_candidate_excluded_cycle",
+    "ix_cycle_event_run",
+    "ix_cycle_event_subject",
+    "ix_cycle_operator_override_cycle",
+    "ix_cycle_stage_event_cycle",
+    "ix_cycle_tool_failure_cycle",
     "ix_detected_entity_authority",
     "ix_detected_entity_extraction",
     "ix_extraction_record_capture",
@@ -190,9 +198,15 @@ COUNTED_CANONICAL_TABLES = (
 MIGRATIONS: tuple[MigrationSpec, ...] = (
     MigrationSpec(
         version=1,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0001_canonical_store",
         sql_path=MIGRATIONS_DIR / "0001_canonical_store.sql",
         notes="Initial canonical store bootstrap.",
+    ),
+    MigrationSpec(
+        version=2,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0002_cycle_evidence_ledger.sql",
+        notes="Add local cycle evidence ledger operational tables.",
     ),
 )
 

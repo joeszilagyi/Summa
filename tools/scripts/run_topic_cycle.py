@@ -19,7 +19,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.scripts import resolve_subject_runtime  # noqa: E402
-from tools.source_db_tools import canonical_ingest, canonical_store  # noqa: E402
+from tools.source_db_tools import (  # noqa: E402
+    canonical_ingest,
+    canonical_store,
+    cycle_evidence_ledger,
+)
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS as EXIT_FEEDBACK_PASS,
 )
@@ -216,9 +220,23 @@ def build_manifest(
     workspace: Path,
     db_path: Path,
 ) -> dict[str, Any]:
+    cycle_event_id = cycle_evidence_ledger.build_cycle_event_id(
+        run_id=run_id,
+        started_at=started_at,
+        workspace_ref=str(workspace),
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
+        "cycle_event_id": cycle_event_id,
+        "cycle_evidence_ledger": {
+            "schema_version": cycle_evidence_ledger.SCHEMA_VERSION,
+            "cycle_event_id": cycle_event_id,
+            "recording_policy": "skipped_for_dry_run"
+            if args.mode == "dry-run"
+            else "record_after_manifest_write",
+            "status": "pending",
+        },
         "workspace": {
             "path": str(workspace),
             "workspace_id": None,
@@ -240,6 +258,7 @@ def build_manifest(
         "stages": [],
         "feedback_plan": None,
         "next_action": None,
+        "operator_overrides": collect_operator_overrides(args),
         "budget": None,
         "budget_consumed": {
             "runtime_seconds": 0.0,
@@ -254,6 +273,54 @@ def build_manifest(
         "remote_fetch_enabled": REMOTE_FETCH_ENABLED,
         "llm_invoked": False,
     }
+
+
+def collect_operator_overrides(args: argparse.Namespace) -> list[dict[str, str]]:
+    overrides: list[dict[str, str]] = []
+    if getattr(args, "force", False):
+        overrides.append(
+            {
+                "override_kind": "force",
+                "override_value": "true",
+                "reason": "operator allowed replacing an existing completed cycle manifest",
+                "actor": "operator",
+            }
+        )
+    if getattr(args, "resume", False):
+        overrides.append(
+            {
+                "override_kind": "resume",
+                "override_value": "true",
+                "reason": "operator requested partial-run resume handling",
+                "actor": "operator",
+            }
+        )
+    if getattr(args, "allow_network", False):
+        overrides.append(
+            {
+                "override_kind": "allow_network",
+                "override_value": "true",
+                "reason": "operator requested network allowance; this runner still keeps remote fetch disabled",
+                "actor": "operator",
+            }
+        )
+    for attr, kind in (
+        ("feedback_plan", "manual_feedback_plan"),
+        ("candidate_batch_fixture", "manual_candidate_batch_fixture"),
+        ("source_handoff", "manual_source_handoff"),
+        ("execution_run_fixture", "manual_execution_run_fixture"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            overrides.append(
+                {
+                    "override_kind": kind,
+                    "override_value": str(value),
+                    "reason": "operator supplied an explicit local artifact input",
+                    "actor": "operator",
+                }
+            )
+    return overrides
 
 
 def command_text(command: list[str]) -> str:
@@ -812,6 +879,53 @@ def render_text(manifest: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def record_cycle_evidence_from_manifest(
+    *,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    db_path: Path,
+) -> None:
+    ledger = manifest.get("cycle_evidence_ledger")
+    if not isinstance(ledger, dict):
+        return
+    if manifest.get("dry_run") is True:
+        ledger["status"] = "skipped"
+        return
+    if not db_path.is_file():
+        ledger["status"] = "failed"
+        ledger["error"] = f"canonical DB path is not a file: {db_path}"
+        manifest.setdefault("warnings", []).append(
+            "cycle evidence ledger was not recorded: DB missing"
+        )
+        write_json(manifest_path, manifest)
+        return
+    try:
+        manifest_hash = hash_file(manifest_path)
+        conn = canonical_store.connect_canonical_store(db_path)
+        try:
+            with conn:
+                cycle_event_id = cycle_evidence_ledger.record_topic_cycle_manifest(
+                    conn,
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    manifest_hash=manifest_hash,
+                    canonical_db_ref=str(db_path),
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        ledger["status"] = "failed"
+        ledger["error"] = str(exc)
+        manifest.setdefault("warnings", []).append(f"cycle evidence ledger was not recorded: {exc}")
+        write_json(manifest_path, manifest)
+        return
+    ledger["status"] = "recorded"
+    ledger["cycle_event_id"] = cycle_event_id
+    # Keep the manifest as the durable cycle artifact. The ledger row references
+    # the pre-recording manifest hash; the in-memory status is returned to CLI
+    # callers without rewriting the artifact and changing that hash.
+
+
 def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if getattr(args, "dry_run", False):
         args.mode = "dry-run"
@@ -911,6 +1025,11 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         manifest["ended_at"] = utc_now()
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
         write_json(manifest_path, manifest)
+        record_cycle_evidence_from_manifest(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            db_path=db_path,
+        )
     return manifest, return_code
 
 

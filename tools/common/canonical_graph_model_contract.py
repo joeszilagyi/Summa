@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 SCHEMA_VERSION = "canonical-graph-model-outline.v1"
 CONTRACT_DOC = "docs/project/CANONICAL_GRAPH_MODEL.md"
 
@@ -26,13 +25,25 @@ REQUIRED_SQLITE_TABLE_MAPPINGS = {
     "relationship": {"source_relationship", "work_subject"},
     "assertion": {"source_claim", "topic_extension"},
     "provenance_event": {"provenance_event", "capture_event", "extraction_record"},
-    "confidence_assessment": {"authority_record", "source_relationship", "source_claim", "topic_extension"},
+    "confidence_assessment": {
+        "authority_record",
+        "source_relationship",
+        "source_claim",
+        "topic_extension",
+    },
     "review_annotation": {"review_state_history", "authority_reconciliation"},
 }
 
 REQUIRED_SUPPORTING_SQLITE_TABLES = {
     "authority_identifier",
     "authority_merge_event",
+    "cycle_artifact_ref",
+    "cycle_candidate_considered",
+    "cycle_candidate_excluded",
+    "cycle_event",
+    "cycle_operator_override",
+    "cycle_stage_event",
+    "cycle_tool_failure",
     "source_access",
     "work_identifier",
     "work_metadata",

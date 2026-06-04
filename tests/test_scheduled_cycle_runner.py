@@ -7,7 +7,6 @@ from pathlib import Path
 
 from tools.scripts import run_scheduled_topic_cycles as scheduled_runner
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "run_scheduled_topic_cycles.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Run_Scheduled_Topic_Cycles.sh"
@@ -106,7 +105,7 @@ def write_fake_cycle_runner(tmp_path: Path, *, exit_code: int = 0) -> Path:
                 "args = parser.parse_args()",
                 "run_dir = pathlib.Path(args.run_dir)",
                 "run_dir.mkdir(parents=True, exist_ok=True)",
-                "payload = {'schema_version': 'topic-cycle-run.v1', 'run_id': args.run_id, 'status': 'completed'}",
+                "payload = {'schema_version': 'topic-cycle-run.v1', 'run_id': args.run_id, 'cycle_event_id': 'cycle:' + args.run_id, 'status': 'completed'}",
                 "(run_dir / 'topic-cycle-run.json').write_text(json.dumps(payload) + '\\n', encoding='utf-8')",
                 "print(json.dumps(payload))",
                 f"raise SystemExit({exit_code})",
@@ -182,6 +181,10 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
     assert payload["attempted_workspace_count"] == 1
     assert payload["completed_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "completed"
+    assert (
+        payload["workspace_results"][0]["cycle_event_id"]
+        == "cycle:scheduled-run.scheduled_subject.1"
+    )
     ledger = ledger_root / "scheduled_subject.runtime-ledger.jsonl"
     lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     assert [line["event_type"] for line in lines] == ["command_start", "command_end"]
@@ -191,7 +194,14 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "blocked_subject")
     selection = write_selection(
         tmp_path,
-        [planned_record(workspace_id="blocked_subject", workspace=workspace, manifest=manifest, max_attempts=1)],
+        [
+            planned_record(
+                workspace_id="blocked_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=1,
+            )
+        ],
     )
     ledger_root = tmp_path / "ledgers"
     ledger = ledger_root / "blocked_subject.runtime-ledger.jsonl"
@@ -241,7 +251,9 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
 
 def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "saturated_subject")
-    record = planned_record(workspace_id="saturated_subject", workspace=workspace, manifest=manifest)
+    record = planned_record(
+        workspace_id="saturated_subject", workspace=workspace, manifest=manifest
+    )
     record["saturation"] = {
         "schema_version": "topic-saturation.v1",
         "workspace_id": "saturated_subject",
