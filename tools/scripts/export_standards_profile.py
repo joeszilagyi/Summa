@@ -8,7 +8,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -16,7 +16,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common import standards_profiles  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
-
 
 SCRIPT_PATH = "tools/scripts/export_standards_profile.py"
 
@@ -35,14 +34,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=sorted(standards_profiles.SUPPORTED_PROFILE_IDS),
         help="Standards profile id to export.",
     )
-    parser.add_argument("--output", required=True, help="Output path for the standards export JSON.")
+    parser.add_argument(
+        "--output", required=True, help="Output path for the standards export JSON."
+    )
     parser.add_argument(
         "--conformance-report",
         help="Optional path for standards-profile-conformance-report.v1 JSON. If omitted, only stdout reports it.",
     )
     parser.add_argument("--work-id", help="Optional work id or work:<id> scope.")
     parser.add_argument("--capture-id", help="Optional capture id or capture_event:<id> scope.")
-    parser.add_argument("--subject-id", help="Optional workspace/subject scope where profile supports it.")
+    parser.add_argument(
+        "--subject-id", help="Optional workspace/subject scope where profile supports it."
+    )
     parser.add_argument("--base-uri", help="Required for rico.v1 URI-like node identifiers.")
     parser.add_argument(
         "--include-private",
@@ -54,13 +57,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Explicitly select the default public-only mode.",
     )
-    parser.add_argument("--generated-at", help="RFC3339 timestamp override for deterministic tests.")
-    parser.add_argument("--strict", action="store_true", help="Exit nonzero if conformance validation fails.")
+    parser.add_argument(
+        "--generated-at", help="RFC3339 timestamp override for deterministic tests."
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="Exit nonzero if conformance validation fails."
+    )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser.parse_args(argv)
 
 
-def render_text(result: standards_profiles.ExportResult, output_path: Path, report_path: Path | None) -> str:
+def render_text(
+    result: standards_profiles.ExportResult, output_path: Path, report_path: Path | None
+) -> str:
     report = result.conformance_report
     lines = [
         f"status={report['conformance_status']}",
@@ -78,10 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
         if args.public_only and args.include_private:
-            raise standards_profiles.StandardsProfileError("--public-only and --include-private cannot both be set")
+            raise standards_profiles.StandardsProfileError(
+                "--public-only and --include-private cannot both be set"
+            )
         db_path = standards_profiles.resolve_path(args.db)
         output_path = standards_profiles.resolve_path(args.output)
-        report_path = standards_profiles.resolve_path(args.conformance_report) if args.conformance_report else None
+        report_path = (
+            standards_profiles.resolve_path(args.conformance_report)
+            if args.conformance_report
+            else None
+        )
         result = standards_profiles.export_profile(
             db_path=db_path,
             profile_id=args.profile,
@@ -95,7 +110,11 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=args.generated_at,
             strict=bool(args.strict),
         )
-    except (standards_profiles.StandardsProfileError, canonical_store.CanonicalStoreError, sqlite3.Error) as exc:
+    except (
+        standards_profiles.StandardsProfileError,
+        canonical_store.CanonicalStoreError,
+        sqlite3.Error,
+    ) as exc:
         payload = {
             "schema_version": "standards-profile-export-result.v1",
             "status": "failed",
@@ -105,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
         return 2
 
-    payload = {
+    result_payload: dict[str, Any] = {
         "schema_version": "standards-profile-export-result.v1",
         "status": result.conformance_report["conformance_status"],
         "validation_status": result.conformance_report["validation_status"],
@@ -116,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         "writer_surface": SCRIPT_PATH,
     }
     if args.format == "json":
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(result_payload, indent=2, sort_keys=True))
     else:
         print(render_text(result, output_path, report_path), end="")
     return 0 if result.conformance_report["validation_status"] == "pass" or not args.strict else 2

@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import re
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -13,13 +12,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.source_db_tools import canonical_store  # noqa: E402
-
 
 PROFILE_SCHEMA_VERSION = "standards-profile.v1"
 EXPORT_SCHEMA_VERSION = "standards-profile-export.v1"
@@ -38,7 +35,14 @@ SUPPORTED_EXPORT_FORMATS = {
     "readiness_report_json",
 }
 PUBLIC_SAFE_PUBLICATION_STATES = {"public", "public_safe", "published", "release", "released"}
-PRIVATE_PUBLICATION_STATES = {"private", "private_working", "local_only", "restricted", "blocked", "draft"}
+PRIVATE_PUBLICATION_STATES = {
+    "private",
+    "private_working",
+    "local_only",
+    "restricted",
+    "blocked",
+    "draft",
+}
 PRIVATE_SENTINEL_PATTERNS = (
     "PRIVATE_SENTINEL",
     "private sentinel",
@@ -123,9 +127,13 @@ def validate_profile_payload(profile: dict[str, Any]) -> None:
     }
     missing = sorted(required - set(profile))
     if missing:
-        raise StandardsProfileError("standards profile missing required keys: " + ", ".join(missing))
+        raise StandardsProfileError(
+            "standards profile missing required keys: " + ", ".join(missing)
+        )
     if profile["schema_version"] != PROFILE_SCHEMA_VERSION:
-        raise StandardsProfileError(f"profile {profile.get('profile_id')} has unsupported schema_version")
+        raise StandardsProfileError(
+            f"profile {profile.get('profile_id')} has unsupported schema_version"
+        )
     if profile["profile_id"] not in SUPPORTED_PROFILE_IDS:
         raise StandardsProfileError(f"unsupported profile_id: {profile['profile_id']}")
     if profile["export_format"] not in SUPPORTED_EXPORT_FORMATS:
@@ -136,7 +144,16 @@ def validate_profile_payload(profile: dict[str, Any]) -> None:
     for index, mapping in enumerate(profile["field_mappings"]):
         if not isinstance(mapping, dict):
             raise StandardsProfileError(f"field_mappings[{index}] must be an object")
-        for key in ("mapping_id", "summa_source", "external_target", "status", "cardinality", "lossy", "privacy", "validation"):
+        for key in (
+            "mapping_id",
+            "summa_source",
+            "external_target",
+            "status",
+            "cardinality",
+            "lossy",
+            "privacy",
+            "validation",
+        ):
             if key not in mapping:
                 raise StandardsProfileError(f"field_mappings[{index}] missing {key}")
         mapping_ids.add(str(mapping["mapping_id"]))
@@ -149,7 +166,9 @@ def validate_profile_payload(profile: dict[str, Any]) -> None:
         )
 
 
-def validate_profile_mappings(conn: sqlite3.Connection, profile: dict[str, Any]) -> list[dict[str, Any]]:
+def validate_profile_mappings(
+    conn: sqlite3.Connection, profile: dict[str, Any]
+) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     tables = canonical_store.actual_tables(conn)
     for mapping in profile["field_mappings"]:
@@ -196,7 +215,9 @@ def public_conditions_for_table(conn: sqlite3.Connection, table: str, alias: str
         conditions.append(f"COALESCE({prefix}public_blocker, '') = ''")
     if "publication_state" in columns:
         placeholders = ", ".join(f"'{state}'" for state in sorted(PRIVATE_PUBLICATION_STATES))
-        conditions.append(f"COALESCE({prefix}publication_state, 'public_safe') NOT IN ({placeholders})")
+        conditions.append(
+            f"COALESCE({prefix}publication_state, 'public_safe') NOT IN ({placeholders})"
+        )
     return conditions
 
 
@@ -211,7 +232,8 @@ def nonblank(value: Any) -> str | None:
 def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    return {key: row[key] for key in row.keys()}
+    row_keys = set(row.keys())
+    return {key: row[key] for key in row_keys}
 
 
 def parse_record_id(value: str | int | None, *, label: str) -> int | None:
@@ -243,7 +265,9 @@ def privacy_exclusions_for_table(conn: sqlite3.Connection, table: str) -> int:
         predicates.append(f"COALESCE(publication_state, '') IN ({placeholders})")
     if not predicates:
         return 0
-    return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE " + " OR ".join(predicates)).fetchone()[0])
+    return int(
+        conn.execute(f"SELECT COUNT(*) FROM {table} WHERE " + " OR ".join(predicates)).fetchone()[0]
+    )
 
 
 def has_private_sentinel(payload: Any) -> bool:
@@ -266,7 +290,9 @@ def node_uri(base_uri: str, *parts: Any) -> str:
     return base_uri + "/".join(part for part in safe_parts if part)
 
 
-def work_rows(conn: sqlite3.Connection, *, work_id: int | None, subject_id: str | None, include_private: bool) -> list[sqlite3.Row]:
+def work_rows(
+    conn: sqlite3.Connection, *, work_id: int | None, subject_id: str | None, include_private: bool
+) -> list[sqlite3.Row]:
     where = []
     params: list[Any] = []
     if work_id is not None:
@@ -277,14 +303,26 @@ def work_rows(conn: sqlite3.Connection, *, work_id: int | None, subject_id: str 
         params.append(subject_id)
     if not include_private:
         where.extend(public_conditions_for_table(conn, "work"))
-    sql = "SELECT * FROM work" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY work_id"
+    sql = (
+        "SELECT * FROM work"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " ORDER BY work_id"
+    )
     rows = conn.execute(sql, tuple(params)).fetchall()
     if work_id is not None and not rows:
-        raise StandardsProfileError(f"work not found or not public under current export policy: {work_id}")
+        raise StandardsProfileError(
+            f"work not found or not public under current export policy: {work_id}"
+        )
     return rows
 
 
-def capture_rows(conn: sqlite3.Connection, *, capture_id: int | None, subject_id: str | None, include_private: bool) -> list[sqlite3.Row]:
+def capture_rows(
+    conn: sqlite3.Connection,
+    *,
+    capture_id: int | None,
+    subject_id: str | None,
+    include_private: bool,
+) -> list[sqlite3.Row]:
     where = []
     params: list[Any] = []
     if capture_id is not None:
@@ -295,10 +333,16 @@ def capture_rows(conn: sqlite3.Connection, *, capture_id: int | None, subject_id
         params.append(subject_id)
     if not include_private:
         where.extend(public_conditions_for_table(conn, "capture_event"))
-    sql = "SELECT * FROM capture_event" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY capture_event_id"
+    sql = (
+        "SELECT * FROM capture_event"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " ORDER BY capture_event_id"
+    )
     rows = conn.execute(sql, tuple(params)).fetchall()
     if capture_id is not None and not rows:
-        raise StandardsProfileError(f"capture event not found or not public under current export policy: {capture_id}")
+        raise StandardsProfileError(
+            f"capture event not found or not public under current export policy: {capture_id}"
+        )
     return rows
 
 
@@ -324,12 +368,16 @@ def provenance_summary(conn: sqlite3.Connection, event_key: str | None) -> dict[
     }
 
 
-def source_urls_for_work(conn: sqlite3.Connection, work_id: int, *, include_private: bool) -> list[str]:
+def source_urls_for_work(
+    conn: sqlite3.Connection, work_id: int, *, include_private: bool
+) -> list[str]:
     where = ["work_id=?"]
     if not include_private:
         where.extend(public_conditions_for_table(conn, "source_access"))
     rows = conn.execute(
-        "SELECT canonical_url, original_locator FROM source_access WHERE " + " AND ".join(where) + " ORDER BY source_access_id",
+        "SELECT canonical_url, original_locator FROM source_access WHERE "
+        + " AND ".join(where)
+        + " ORDER BY source_access_id",
         (work_id,),
     ).fetchall()
     values: list[str] = []
@@ -340,19 +388,25 @@ def source_urls_for_work(conn: sqlite3.Connection, work_id: int, *, include_priv
     return values
 
 
-def descriptions_for_work(conn: sqlite3.Connection, work_id: int, *, include_private: bool) -> list[str]:
+def descriptions_for_work(
+    conn: sqlite3.Connection, work_id: int, *, include_private: bool
+) -> list[str]:
     where = ["about_object_ref=?"]
     params: list[Any] = [f"work:{work_id}"]
     if not include_private:
         where.extend(public_conditions_for_table(conn, "source_claim"))
     rows = conn.execute(
-        "SELECT public_summary FROM source_claim WHERE " + " AND ".join(where) + " ORDER BY source_claim_id",
+        "SELECT public_summary FROM source_claim WHERE "
+        + " AND ".join(where)
+        + " ORDER BY source_claim_id",
         tuple(params),
     ).fetchall()
     return [value for row in rows if (value := nonblank(row["public_summary"]))]
 
 
-def subjects_for_work(conn: sqlite3.Connection, work_id: int, *, include_private: bool) -> list[str]:
+def subjects_for_work(
+    conn: sqlite3.Connection, work_id: int, *, include_private: bool
+) -> list[str]:
     where = ["from_object_ref=?"]
     params: list[Any] = [f"work:{work_id}"]
     if not include_private:
@@ -399,7 +453,9 @@ def build_dcmi_export(
             metadata["dcterms:identifier"] = [identifier]
             satisfy(report_bits, "dcmi.identifier.work")
         else:
-            missing(report_bits, "dcmi.identifier.work", f"work:{row['work_id']} missing work_key_v1")
+            missing(
+                report_bits, "dcmi.identifier.work", f"work:{row['work_id']} missing work_key_v1"
+            )
         if value := nonblank(row["work_type"]):
             metadata["dcterms:type"] = value
             optional(report_bits, "dcmi.type")
@@ -410,7 +466,9 @@ def build_dcmi_export(
         if value := nonblank(row["first_seen_at"]):
             metadata["dcterms:date"] = value
             optional(report_bits, "dcmi.date")
-        descriptions = descriptions_for_work(conn, int(row["work_id"]), include_private=include_private)
+        descriptions = descriptions_for_work(
+            conn, int(row["work_id"]), include_private=include_private
+        )
         if descriptions:
             metadata["dcterms:description"] = descriptions
             optional(report_bits, "dcmi.description")
@@ -424,8 +482,12 @@ def build_dcmi_export(
         if provenance := provenance_summary(conn, row["provenance_event_ref"]):
             metadata["dcterms:provenance"] = provenance
             optional(report_bits, "dcmi.provenance")
-        records.append({"record_type": "work", "summa_ref": f"work:{row['work_id']}", "metadata": metadata})
-    payload = base_export_payload(profile, generated_at=generated_at, include_private=include_private)
+        records.append(
+            {"record_type": "work", "summa_ref": f"work:{row['work_id']}", "metadata": metadata}
+        )
+    payload = base_export_payload(
+        profile, generated_at=generated_at, include_private=include_private
+    )
     payload["records"] = records
     return payload, report_bits
 
@@ -439,7 +501,9 @@ def build_premis_export(
     include_private: bool,
     generated_at: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    captures = capture_rows(conn, capture_id=capture_id, subject_id=subject_id, include_private=include_private)
+    captures = capture_rows(
+        conn, capture_id=capture_id, subject_id=subject_id, include_private=include_private
+    )
     report_bits = new_report_bits(profile)
     objects: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
@@ -455,7 +519,10 @@ def build_premis_export(
         }
         satisfy(report_bits, "premis.object.identifier")
         if value := nonblank(row["content_hash"]):
-            obj["fixity"] = {"message_digest_algorithm": "sha256-or-declared", "message_digest": value}
+            obj["fixity"] = {
+                "message_digest_algorithm": "sha256-or-declared",
+                "message_digest": value,
+            }
             satisfy(report_bits, "premis.object.fixity")
         else:
             missing(report_bits, "premis.object.fixity", f"{capture_ref} missing content_hash")
@@ -481,14 +548,24 @@ def build_premis_export(
             optional(report_bits, "premis.event.provenance")
             tool = nonblank(provenance.get("tool_name"))
             if tool:
-                agents[tool] = {"agent_identifier": f"agent:tool:{tool}", "agent_name": tool, "agent_type": "software"}
+                agents[tool] = {
+                    "agent_identifier": f"agent:tool:{tool}",
+                    "agent_name": tool,
+                    "agent_type": "software",
+                }
                 optional(report_bits, "premis.agent.tool")
         if row["work_id"] is not None:
-            work = conn.execute("SELECT rights_posture FROM work WHERE work_id=?", (row["work_id"],)).fetchone()
+            work = conn.execute(
+                "SELECT rights_posture FROM work WHERE work_id=?", (row["work_id"],)
+            ).fetchone()
             if work is not None and nonblank(work["rights_posture"]):
-                rights.append({"linked_object": capture_ref, "rights_statement": work["rights_posture"]})
+                rights.append(
+                    {"linked_object": capture_ref, "rights_statement": work["rights_posture"]}
+                )
                 optional(report_bits, "premis.rights.posture")
-    payload = base_export_payload(profile, generated_at=generated_at, include_private=include_private)
+    payload = base_export_payload(
+        profile, generated_at=generated_at, include_private=include_private
+    )
     payload["premis"] = {
         "objects": objects,
         "events": events,
@@ -529,16 +606,20 @@ def build_rico_export(
             satisfy(report_bits, "rico.record_title")
         else:
             missing(report_bits, "rico.record_title", f"{work_ref} missing title")
-    auth_rows = conn.execute(
-        """
+    auth_rows = (
+        conn.execute(
+            """
         SELECT authority_record_id, preferred_label, authority_type
         FROM authority_record
         WHERE COALESCE(public_blocker, '') = ''
         ORDER BY authority_record_id
         """
-    ).fetchall() if not include_private else conn.execute(
-        "SELECT authority_record_id, preferred_label, authority_type FROM authority_record ORDER BY authority_record_id"
-    ).fetchall()
+        ).fetchall()
+        if not include_private
+        else conn.execute(
+            "SELECT authority_record_id, preferred_label, authority_type FROM authority_record ORDER BY authority_record_id"
+        ).fetchall()
+    )
     for row in auth_rows:
         nodes.append(
             {
@@ -551,7 +632,11 @@ def build_rico_export(
         )
         optional(report_bits, "rico.agent")
     rel_where = [] if include_private else public_conditions_for_table(conn, "source_relationship")
-    rel_sql = "SELECT * FROM source_relationship" + (" WHERE " + " AND ".join(rel_where) if rel_where else "") + " ORDER BY source_relationship_id"
+    rel_sql = (
+        "SELECT * FROM source_relationship"
+        + (" WHERE " + " AND ".join(rel_where) if rel_where else "")
+        + " ORDER BY source_relationship_id"
+    )
     for row in conn.execute(rel_sql).fetchall():
         relations.append(
             {
@@ -578,7 +663,9 @@ def build_rico_export(
             }
         )
         optional(report_bits, "rico.event")
-    payload = base_export_payload(profile, generated_at=generated_at, include_private=include_private)
+    payload = base_export_payload(
+        profile, generated_at=generated_at, include_private=include_private
+    )
     payload["base_uri"] = base
     payload["rico_profile_json"] = {"nodes": nodes, "relations": relations}
     return payload, report_bits
@@ -596,7 +683,11 @@ def build_nara_readiness_report(
     report_bits = new_report_bits(profile)
     subject_filter = "WHERE workspace_id=?" if subject_id else ""
     subject_params = (subject_id,) if subject_id else ()
-    capture_count = int(conn.execute(f"SELECT COUNT(*) FROM capture_event {subject_filter}", subject_params).fetchone()[0])
+    capture_count = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM capture_event {subject_filter}", subject_params
+        ).fetchone()[0]
+    )
     fixity_count = int(
         conn.execute(
             f"SELECT COUNT(*) FROM capture_event {subject_filter} {'AND' if subject_filter else 'WHERE'} content_hash IS NOT NULL AND TRIM(content_hash) <> ''",
@@ -624,18 +715,38 @@ def build_nara_readiness_report(
     )
     history_count = int(conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0])
     checks = [
-        readiness_check("fixity_present", fixity_count > 0 and fixity_count == capture_count, fixity_count, capture_count),
+        readiness_check(
+            "fixity_present",
+            fixity_count > 0 and fixity_count == capture_count,
+            fixity_count,
+            capture_count,
+        ),
         readiness_check("actions_recorded", provenance_count > 0, provenance_count, None),
-        readiness_check("capture_timestamps", timestamp_count > 0 and timestamp_count == capture_count, timestamp_count, capture_count),
-        readiness_check("format_recorded", format_count > 0, format_count, capture_count, required=False),
-        readiness_check("raw_payload_policy_recorded", payload_policy_count > 0, payload_policy_count, capture_count, required=False),
-        readiness_check("review_audit_present", history_count > 0, history_count, None, required=False),
+        readiness_check(
+            "capture_timestamps",
+            timestamp_count > 0 and timestamp_count == capture_count,
+            timestamp_count,
+            capture_count,
+        ),
+        readiness_check(
+            "format_recorded", format_count > 0, format_count, capture_count, required=False
+        ),
+        readiness_check(
+            "raw_payload_policy_recorded",
+            payload_policy_count > 0,
+            payload_policy_count,
+            capture_count,
+            required=False,
+        ),
+        readiness_check(
+            "review_audit_present", history_count > 0, history_count, None, required=False
+        ),
         {
             "check_id": "transfer_package_present",
             "status": "not_applicable",
-            "required": false_json(),
+            "required": False,
             "evidence_count": 0,
-            "expected_count": null_json(),
+            "expected_count": None,
             "message": "F33 readiness report does not build a NARA transfer package.",
         },
     ]
@@ -671,15 +782,14 @@ def build_nara_readiness_report(
     return payload, report_bits
 
 
-def false_json() -> bool:
-    return False
-
-
-def null_json() -> None:
-    return None
-
-
-def readiness_check(check_id: str, passed: bool, evidence_count: int, expected_count: int | None, *, required: bool = True) -> dict[str, Any]:
+def readiness_check(
+    check_id: str,
+    passed: bool,
+    evidence_count: int,
+    expected_count: int | None,
+    *,
+    required: bool = True,
+) -> dict[str, Any]:
     status = "pass" if passed else ("fail" if required else "warn")
     return {
         "check_id": check_id,
@@ -690,7 +800,9 @@ def readiness_check(check_id: str, passed: bool, evidence_count: int, expected_c
     }
 
 
-def base_export_payload(profile: dict[str, Any], *, generated_at: str, include_private: bool) -> dict[str, Any]:
+def base_export_payload(
+    profile: dict[str, Any], *, generated_at: str, include_private: bool
+) -> dict[str, Any]:
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "profile_id": profile["profile_id"],
@@ -746,7 +858,9 @@ def conformance_report(
     missing_ids = {item["mapping_id"] for item in report_bits["required_missing"]}
     for mapping_id in profile["required_fields"]:
         if mapping_id not in report_bits["required_satisfied"] and mapping_id not in missing_ids:
-            report_bits["required_missing"].append({"mapping_id": mapping_id, "reason": "required mapping was not emitted"})
+            report_bits["required_missing"].append(
+                {"mapping_id": mapping_id, "reason": "required mapping was not emitted"}
+            )
     validation_errors = validate_export_payload(export_payload, profile=profile)
     if has_private_sentinel(export_payload) and not export_payload.get("internal_mode"):
         validation_errors.append(
@@ -761,7 +875,11 @@ def conformance_report(
         conformance_status = "report_only"
     elif validation_status == "fail":
         conformance_status = "fail"
-    elif report_bits["lossy_mappings"] or report_bits["unsupported_fields"] or report_bits["controlled_vocabulary_warnings"]:
+    elif (
+        report_bits["lossy_mappings"]
+        or report_bits["unsupported_fields"]
+        or report_bits["controlled_vocabulary_warnings"]
+    ):
         conformance_status = "pass_with_warnings"
     else:
         conformance_status = "pass"
@@ -771,7 +889,9 @@ def conformance_report(
         "standard_name": profile["external_standard"]["name"],
         "standard_version_or_reference": profile["external_standard"]["version_or_reference"],
         "export_artifact_path": None if export_path is None else str(export_path),
-        "export_artifact_hash": None if export_path is None or not export_path.exists() else hash_file(export_path),
+        "export_artifact_hash": None
+        if export_path is None or not export_path.exists()
+        else hash_file(export_path),
         "canonical_db_source": str(db_path),
         "scope": scope,
         "records_exported": record_count(export_payload),
@@ -803,34 +923,73 @@ def record_count(export_payload: dict[str, Any]) -> int:
     return 0
 
 
-def validate_export_payload(export_payload: dict[str, Any], *, profile: dict[str, Any]) -> list[dict[str, str]]:
+def validate_export_payload(
+    export_payload: dict[str, Any], *, profile: dict[str, Any]
+) -> list[dict[str, str]]:
     errors: list[dict[str, str]] = []
     if export_payload.get("schema_version") != EXPORT_SCHEMA_VERSION:
-        errors.append({"code": "INVALID_SCHEMA_VERSION", "message": "export payload schema_version is invalid"})
+        errors.append(
+            {
+                "code": "INVALID_SCHEMA_VERSION",
+                "message": "export payload schema_version is invalid",
+            }
+        )
     if export_payload.get("profile_id") != profile["profile_id"]:
-        errors.append({"code": "PROFILE_MISMATCH", "message": "export payload profile_id does not match profile"})
+        errors.append(
+            {
+                "code": "PROFILE_MISMATCH",
+                "message": "export payload profile_id does not match profile",
+            }
+        )
     if profile["profile_id"] == "dcmi.v1":
         for record in export_payload.get("records", []):
             metadata = record.get("metadata", {})
             if not metadata.get("dcterms:title"):
-                errors.append({"code": "DCMI_TITLE_MISSING", "message": f"{record.get('summa_ref')} missing dcterms:title"})
+                errors.append(
+                    {
+                        "code": "DCMI_TITLE_MISSING",
+                        "message": f"{record.get('summa_ref')} missing dcterms:title",
+                    }
+                )
             if not metadata.get("dcterms:identifier"):
-                errors.append({"code": "DCMI_IDENTIFIER_MISSING", "message": f"{record.get('summa_ref')} missing dcterms:identifier"})
+                errors.append(
+                    {
+                        "code": "DCMI_IDENTIFIER_MISSING",
+                        "message": f"{record.get('summa_ref')} missing dcterms:identifier",
+                    }
+                )
     elif profile["profile_id"] == "premis.v1":
         premis = export_payload.get("premis", {})
         if not premis.get("objects"):
-            errors.append({"code": "PREMIS_OBJECTS_MISSING", "message": "PREMIS profile export has no objects"})
+            errors.append(
+                {
+                    "code": "PREMIS_OBJECTS_MISSING",
+                    "message": "PREMIS profile export has no objects",
+                }
+            )
         if not premis.get("events"):
-            errors.append({"code": "PREMIS_EVENTS_MISSING", "message": "PREMIS profile export has no events"})
+            errors.append(
+                {"code": "PREMIS_EVENTS_MISSING", "message": "PREMIS profile export has no events"}
+            )
         for obj in premis.get("objects", []):
             if not obj.get("fixity"):
-                errors.append({"code": "PREMIS_FIXITY_MISSING", "message": f"{obj.get('summa_ref')} missing fixity"})
+                errors.append(
+                    {
+                        "code": "PREMIS_FIXITY_MISSING",
+                        "message": f"{obj.get('summa_ref')} missing fixity",
+                    }
+                )
     elif profile["profile_id"] == "rico.v1":
         graph = export_payload.get("rico_profile_json", {})
         for node in graph.get("nodes", []):
             node_id = str(node.get("id", ""))
             if not node_id.startswith(("http://", "https://")) or " " in node_id:
-                errors.append({"code": "RICO_NODE_ID_INVALID", "message": f"invalid RiC-O profile node id: {node_id}"})
+                errors.append(
+                    {
+                        "code": "RICO_NODE_ID_INVALID",
+                        "message": f"invalid RiC-O profile node id: {node_id}",
+                    }
+                )
     return errors
 
 
@@ -908,7 +1067,14 @@ def export_profile(
             )
         else:  # pragma: no cover - guarded by load_profile
             raise StandardsProfileError(f"unsupported profile id: {profile_id}")
-        for table in ("work", "source_access", "source_claim", "source_relationship", "capture_event", "extraction_record"):
+        for table in (
+            "work",
+            "source_access",
+            "source_claim",
+            "source_relationship",
+            "capture_event",
+            "extraction_record",
+        ):
             count = privacy_exclusions_for_table(conn, table)
             if count:
                 report_bits["privacy_exclusions"].append({"table": table, "excluded_count": count})
@@ -928,7 +1094,9 @@ def export_profile(
         scope=scope,
         export_path=output_resolved,
     )
-    report_resolved = resolve_path(conformance_report_path) if conformance_report_path is not None else None
+    report_resolved = (
+        resolve_path(conformance_report_path) if conformance_report_path is not None else None
+    )
     if report_resolved is not None:
         report_resolved.parent.mkdir(parents=True, exist_ok=True)
         report_resolved.write_text(stable_json(report), encoding="utf-8")
