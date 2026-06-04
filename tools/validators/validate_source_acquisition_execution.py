@@ -316,6 +316,21 @@ def validate_execution_record(
         code="INVALID_HANDOFF_HASH",
         message="input_handoff_hash must be a 64-character lowercase SHA-256 hex digest",
     )
+    if payload.get("adapter_type") == "remote_url_manifest":
+        if payload.get("status") in {"denied", "dry_run"} and payload.get("network_access_attempted") is not False:
+            add_error(
+                errors,
+                code="REMOTE_DENIAL_ATTEMPTED_NETWORK",
+                message="remote denied and dry-run execution records must set network_access_attempted false",
+                path="$.network_access_attempted",
+            )
+        if capture_events and payload.get("network_access_attempted") is not True:
+            add_error(
+                errors,
+                code="REMOTE_CAPTURE_WITHOUT_NETWORK_ATTEMPT",
+                message="remote capture events require execution network_access_attempted true",
+                path="$.network_access_attempted",
+            )
 
 
 def validate_capture_events(
@@ -393,6 +408,51 @@ def validate_capture_events(
             code="INVALID_CONTENT_HASH",
             message="content_hash must be null or a 64-character lowercase SHA-256 hex digest",
         )
+        if record.get("adapter_type") == "remote_url_manifest" or record.get("capture_method") == "remote_url_fetch":
+            for key in ("normalized_url", "final_url", "request_method", "user_agent"):
+                _require_string(
+                    record.get(key),
+                    errors=errors,
+                    path=f"{base}.{key}",
+                    code="REMOTE_FIELD_REQUIRED",
+                    message=f"remote capture event must include {key}",
+                )
+            _require_bool(
+                record.get("network_access_attempted"),
+                errors=errors,
+                path=f"{base}.network_access_attempted",
+                code="BOOL_REQUIRED",
+                message="remote capture event network_access_attempted must be boolean",
+            )
+            if record.get("network_access_attempted") is not True:
+                add_error(
+                    errors,
+                    code="REMOTE_CAPTURE_NOT_ATTEMPTED",
+                    message="remote capture event must set network_access_attempted true once an HTTP request is attempted",
+                    path=f"{base}.network_access_attempted",
+                )
+            if record.get("status") == "completed":
+                _require_nonnegative_int(
+                    record.get("http_status_code"),
+                    errors=errors,
+                    path=f"{base}.http_status_code",
+                    code="REMOTE_STATUS_REQUIRED",
+                    message="completed remote capture event must include HTTP status code",
+                )
+                _require_sha256_or_null(
+                    record.get("content_hash"),
+                    errors=errors,
+                    path=f"{base}.content_hash",
+                    code="INVALID_CONTENT_HASH",
+                    message="completed remote capture event must include content_hash",
+                )
+                if record.get("content_hash") is None:
+                    add_error(
+                        errors,
+                        code="REMOTE_CAPTURE_HASH_REQUIRED",
+                        message="completed remote capture event must include content_hash",
+                        path=f"{base}.content_hash",
+                    )
 
 
 def validate_extraction_records(

@@ -94,14 +94,12 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     assert "operator_script_help" in checks
     assert "bootstrap_workspace_apply" in checks
     assert "build_workspace_overview" in checks
-    assert "ingest_candidate_batch" in checks
-    assert "ingest_execution_artifacts" in checks
+    assert "run_topic_cycle" in checks
     assert "canonical_family_counts" in checks
     assert "build_operator_dashboard" in checks
     assert checks["bootstrap_workspace_apply"]["status"] == "passed"
     assert checks["build_workspace_overview"]["status"] == "passed"
-    assert checks["ingest_candidate_batch"]["status"] == "passed"
-    assert checks["ingest_execution_artifacts"]["status"] == "passed"
+    assert checks["run_topic_cycle"]["status"] == "passed"
 
     expected_paths = [
         workspace / "topic_workspaces.local.json",
@@ -147,3 +145,10 @@ def test_operator_path_smoke_wrapper_points_to_existing_python_target() -> None:
 
     assert 'operator_path_smoke.py' in body
     assert PY_TOOL.exists()
+
+
+def test_operator_path_smoke_uses_real_topic_cycle_path() -> None:
+    body = PY_TOOL.read_text(encoding="utf-8")
+
+    assert "run_topic_cycle.py" in body
+    assert "smoke_run_topic_cycle" in body

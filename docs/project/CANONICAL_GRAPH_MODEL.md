@@ -67,6 +67,26 @@ This document does not require an immediate table rewrite. The first goal is to
 make the canonical ownership model explicit so later runtime work stops
 building directly on importer-specific or presentation-specific row shapes.
 
+## Deterministic Curation
+
+Canonical curation distinguishes direct assertion conflicts from relational
+impossibilities. Direct conflicts compare structured `source_claim` rows, such
+as incompatible year or quantity values for the same object. Relational
+constraints inspect stored `source_relationship` edges with bounded,
+predicate-specific rules, such as `taught_by` or `met` relationships whose
+endpoints have non-overlapping structured lifespan facts.
+
+Contradiction detection is a review signal, not a truth decision. The original
+source claim, endpoint fact, and relationship rows remain stored. The curation
+layer records a `source_relationship` with predicate `contradicts`, writes
+`review_state_history`, and moves the affected claim or relationship into a
+safe review state such as `needs_review`. It does not parse freeform prose for
+new facts, mark claims accepted or verified, delete wrong claims, merge
+authorities, or run broad fuzzy graph reasoning. Predicates with valid
+posthumous interpretations, such as generic `influenced`, are intentionally
+conservative unless the relationship is explicitly modeled as direct personal
+contact.
+
 ## Bootstrap And Migration
 
 The canonical SQLite schema is initialized with:

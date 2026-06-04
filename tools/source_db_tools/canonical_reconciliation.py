@@ -34,6 +34,8 @@ MERGE_EVENT_REVIEW_STATE = "reviewed"
 CONTRADICTION_PREDICATE = "contradicts"
 QUANTITY_CONFLICT_RULE = "structured_quantity_conflict"
 TAUGHT_BY_IMPOSSIBLE_RULE = "structured_taught_by_impossible_life_overlap"
+RELATIONAL_TEMPORAL_RULE = "relational_temporal_lifespan_overlap"
+RELATIONAL_EVENT_YEAR_RULE = "relational_temporal_event_year_outside_lifespan"
 STRUCTURED_CLAIM_TYPES = {
     "birth_year",
     "death_year",
@@ -41,6 +43,31 @@ STRUCTURED_CLAIM_TYPES = {
     "relationship_taught_by",
     "publication_year",
     "quantity",
+}
+BIRTH_CLAIM_TYPES = {"birth_year", "birth_date", "date_of_birth", "born"}
+DEATH_CLAIM_TYPES = {"death_year", "death_date", "date_of_death", "died"}
+RELATIONAL_CONSTRAINTS = {
+    "taught_by": {
+        "rule_id": RELATIONAL_TEMPORAL_RULE,
+        "required_facts": ["subject.birth_year", "object.death_year"],
+        "review_state": RECONCILIATION_REVIEW_STATE,
+    },
+    "teacher_of": {
+        "rule_id": RELATIONAL_TEMPORAL_RULE,
+        "required_facts": ["object.birth_year", "subject.death_year"],
+        "review_state": RECONCILIATION_REVIEW_STATE,
+    },
+    "met": {
+        "rule_id": RELATIONAL_TEMPORAL_RULE,
+        "required_facts": ["lifespan_overlap"],
+        "review_state": RECONCILIATION_REVIEW_STATE,
+    },
+    "influenced": {
+        "rule_id": "relational_temporal_posthumous_influence_not_constrained",
+        "required_facts": [],
+        "review_state": None,
+        "skip_reason": "posthumous influence can be valid; no direct-personal constraint is encoded",
+    },
 }
 TRIVIAL_PUNCTUATION_RE = re.compile(r"[\s\-_.,;:!?()\\[\\]{}]+")
 
@@ -64,6 +91,29 @@ class AuthorityMatch:
     method: str
     confidence_score: float
     automatic_merge: bool
+
+
+@dataclass(frozen=True)
+class TemporalFact:
+    fact_type: str
+    year: int
+    source_claim_id: int
+    about_object_ref: str
+
+
+@dataclass(frozen=True)
+class EndpointFacts:
+    object_ref: str
+    birth_years: tuple[TemporalFact, ...]
+    death_years: tuple[TemporalFact, ...]
+
+
+@dataclass(frozen=True)
+class RelationalContradiction:
+    relationship_id: int
+    rule_id: str
+    target_object_ref: str
+    rationale: str
 
 
 def _normalize_timestamp(value: str | None, *, field_name: str, default: str | None = None) -> str:
@@ -129,6 +179,9 @@ def normalize_year(value: Any) -> int | None:
     text = str(value).strip()
     if not text:
         return None
+    iso_match = re.fullmatch(r"(-?\d{1,6})(?:-\d{2}-\d{2})?", text)
+    if iso_match is not None:
+        return int(iso_match.group(1))
     if not re.fullmatch(r"-?\d{1,6}", text):
         raise CanonicalReconciliationError(f"year value must be an integer: {value!r}")
     return int(text)
@@ -235,6 +288,8 @@ def _review_target_row(
     target_id: int,
 ) -> tuple[str, str, sqlite3.Row]:
     mapping = {
+        "authority_record": ("authority_record", "authority_record_id"),
+        "authority_reconciliation": ("authority_reconciliation", "authority_reconciliation_id"),
         "source_claim": ("source_claim", "source_claim_id"),
         "source_relationship": ("source_relationship", "source_relationship_id"),
         "extraction_detected_entity": ("extraction_detected_entity", "detected_entity_id"),
@@ -973,6 +1028,403 @@ def _claims_for_ref_and_type(
     return list(rows)
 
 
+def _claims_for_ref_and_types(
+    conn: sqlite3.Connection,
+    *,
+    about_object_ref: str,
+    claim_types: set[str],
+    workspace_id: str | None,
+) -> list[sqlite3.Row]:
+    if not claim_types:
+        return []
+    placeholders = ", ".join("?" for _ in claim_types)
+    params: list[Any] = [about_object_ref, *sorted(claim_types)]
+    workspace_clause = ""
+    if workspace_id is not None:
+        workspace_clause = " AND workspace_id=?"
+        params.append(workspace_id)
+    return list(
+        conn.execute(
+            f"""
+            SELECT *
+            FROM source_claim
+            WHERE about_object_ref=? AND claim_type IN ({placeholders}){workspace_clause}
+            ORDER BY source_claim_id
+            """,
+            tuple(params),
+        ).fetchall()
+    )
+
+
+def _year_from_structured_fact(payload: dict[str, Any]) -> int | None:
+    for key in ("year", "value", "date", "birth_year", "death_year", "event_year", "event_date"):
+        if key in payload:
+            return normalize_year(payload.get(key))
+    return None
+
+
+def load_relationship_endpoint_facts(
+    conn: sqlite3.Connection,
+    *,
+    object_ref: str,
+    workspace_id: str | None,
+) -> EndpointFacts:
+    birth_facts: list[TemporalFact] = []
+    death_facts: list[TemporalFact] = []
+    for row in _claims_for_ref_and_types(
+        conn,
+        about_object_ref=object_ref,
+        claim_types=BIRTH_CLAIM_TYPES | DEATH_CLAIM_TYPES,
+        workspace_id=workspace_id,
+    ):
+        payload = _structured_claim_payload(row)
+        if payload is None:
+            continue
+        year = _year_from_structured_fact(payload)
+        if year is None:
+            continue
+        fact_type = str(row["claim_type"] or payload.get("claim_type") or "").strip().casefold()
+        fact = TemporalFact(
+            fact_type=fact_type,
+            year=year,
+            source_claim_id=int(row["source_claim_id"]),
+            about_object_ref=object_ref,
+        )
+        if fact_type in BIRTH_CLAIM_TYPES:
+            birth_facts.append(fact)
+        elif fact_type in DEATH_CLAIM_TYPES:
+            death_facts.append(fact)
+    return EndpointFacts(
+        object_ref=object_ref,
+        birth_years=tuple(birth_facts),
+        death_years=tuple(death_facts),
+    )
+
+
+def _relationship_structured_payload(row: sqlite3.Row) -> dict[str, Any]:
+    evidence_note = row["evidence_note"]
+    if not isinstance(evidence_note, str) or not evidence_note.strip():
+        return {}
+    try:
+        payload = json.loads(evidence_note)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _relationship_event_year(row: sqlite3.Row) -> int | None:
+    payload = _relationship_structured_payload(row)
+    for key in ("event_year", "event_date", "year", "date"):
+        if key in payload:
+            return normalize_year(payload.get(key))
+    return None
+
+
+def lifespan_interval(facts: EndpointFacts) -> tuple[int | None, int | None]:
+    birth_year = min((fact.year for fact in facts.birth_years), default=None)
+    death_year = max((fact.year for fact in facts.death_years), default=None)
+    return birth_year, death_year
+
+
+def intervals_overlap(
+    left_start: int | None,
+    left_end: int | None,
+    right_start: int | None,
+    right_end: int | None,
+) -> bool | None:
+    if left_start is None and left_end is None:
+        return None
+    if right_start is None and right_end is None:
+        return None
+    if left_start is not None and right_end is not None and left_start > right_end:
+        return False
+    if right_start is not None and left_end is not None and right_start > left_end:
+        return False
+    return True
+
+
+def _event_outside_lifespan(event_year: int, facts: EndpointFacts) -> TemporalFact | None:
+    for birth in facts.birth_years:
+        if event_year < birth.year:
+            return birth
+    for death in facts.death_years:
+        if event_year > death.year:
+            return death
+    return None
+
+
+def _load_relationship_row(conn: sqlite3.Connection, source_relationship_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM source_relationship WHERE source_relationship_id=?",
+        (source_relationship_id,),
+    ).fetchone()
+    if row is None:
+        raise CanonicalReconciliationError(f"missing source_relationship id: {source_relationship_id}")
+    return row
+
+
+def _relationship_has_structured_claim_counterpart(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM source_claim
+        WHERE provenance_event_ref=? AND claim_type IN ('taught_by', 'relationship_taught_by')
+        ORDER BY source_claim_id
+        """,
+        (row["provenance_event_ref"],),
+    ).fetchall()
+    from_ref = str(row["from_object_ref"])
+    to_ref = None if row["to_object_ref"] is None else str(row["to_object_ref"])
+    predicate = str(row["predicate"]).strip().casefold()
+    for claim_row in rows:
+        payload = _structured_claim_payload(claim_row)
+        if payload is None:
+            continue
+        claim_from = payload.get("from_object_ref") or payload.get("about_object_ref")
+        claim_to = payload.get("to_object_ref") or payload.get("object_object_ref")
+        claim_predicate = str(payload.get("predicate") or claim_row["claim_type"] or "").strip().casefold()
+        if claim_from == from_ref and claim_to == to_ref and claim_predicate == predicate:
+            return True
+    return False
+
+
+def evaluate_temporal_relation_constraint(
+    *,
+    row: sqlite3.Row,
+    subject_facts: EndpointFacts,
+    object_facts: EndpointFacts,
+) -> tuple[list[RelationalContradiction], list[str]]:
+    predicate = str(row["predicate"]).strip().casefold()
+    relationship_id = int(row["source_relationship_id"])
+    if predicate not in RELATIONAL_CONSTRAINTS:
+        return [], [f"no relational constraint registered for predicate {predicate!r}"]
+    constraint = RELATIONAL_CONSTRAINTS[predicate]
+    skip_reason = constraint.get("skip_reason")
+    if isinstance(skip_reason, str):
+        return [], [skip_reason]
+
+    contradictions: list[RelationalContradiction] = []
+    skipped: list[str] = []
+
+    def add_lifespan_contradiction(
+        *,
+        left_birth: TemporalFact,
+        right_death: TemporalFact,
+        subject_role: str,
+        object_role: str,
+    ) -> None:
+        rationale = (
+            f"relationship {relationship_id} predicate {predicate} is impossible: "
+            f"{subject_role} birth year {left_birth.year} is after {object_role} death year {right_death.year}"
+        )
+        contradictions.append(
+            RelationalContradiction(
+                relationship_id=relationship_id,
+                rule_id=RELATIONAL_TEMPORAL_RULE,
+                target_object_ref=_source_claim_ref(right_death.source_claim_id),
+                rationale=rationale,
+            )
+        )
+
+    if predicate == "taught_by":
+        if not subject_facts.birth_years or not object_facts.death_years:
+            skipped.append("taught_by requires subject birth year and object death year")
+        for birth in subject_facts.birth_years:
+            for death in object_facts.death_years:
+                if birth.year > death.year:
+                    add_lifespan_contradiction(
+                        left_birth=birth,
+                        right_death=death,
+                        subject_role="subject",
+                        object_role="object",
+                    )
+    elif predicate == "teacher_of":
+        if not object_facts.birth_years or not subject_facts.death_years:
+            skipped.append("teacher_of requires object birth year and subject death year")
+        for birth in object_facts.birth_years:
+            for death in subject_facts.death_years:
+                if birth.year > death.year:
+                    add_lifespan_contradiction(
+                        left_birth=birth,
+                        right_death=death,
+                        subject_role="object",
+                        object_role="subject",
+                    )
+    elif predicate == "met":
+        overlap = intervals_overlap(*lifespan_interval(subject_facts), *lifespan_interval(object_facts))
+        if overlap is False:
+            subject_birth, subject_death = lifespan_interval(subject_facts)
+            object_birth, object_death = lifespan_interval(object_facts)
+            if subject_birth is not None and object_death is not None and subject_birth > object_death:
+                target = object_facts.death_years[0]
+                rationale = (
+                    f"relationship {relationship_id} predicate met is impossible: "
+                    f"subject birth year {subject_birth} is after object death year {object_death}"
+                )
+                contradictions.append(
+                    RelationalContradiction(
+                        relationship_id=relationship_id,
+                        rule_id=RELATIONAL_TEMPORAL_RULE,
+                        target_object_ref=_source_claim_ref(target.source_claim_id),
+                        rationale=rationale,
+                    )
+                )
+            elif object_birth is not None and subject_death is not None and object_birth > subject_death:
+                target = subject_facts.death_years[0]
+                rationale = (
+                    f"relationship {relationship_id} predicate met is impossible: "
+                    f"object birth year {object_birth} is after subject death year {subject_death}"
+                )
+                contradictions.append(
+                    RelationalContradiction(
+                        relationship_id=relationship_id,
+                        rule_id=RELATIONAL_TEMPORAL_RULE,
+                        target_object_ref=_source_claim_ref(target.source_claim_id),
+                        rationale=rationale,
+                    )
+                )
+        elif overlap is None:
+            skipped.append("met requires enough endpoint lifespan facts to prove non-overlap")
+
+    event_year = _relationship_event_year(row)
+    if event_year is not None and predicate in {"taught_by", "teacher_of", "met"}:
+        for role, facts in (("subject", subject_facts), ("object", object_facts)):
+            boundary_fact = _event_outside_lifespan(event_year, facts)
+            if boundary_fact is None:
+                continue
+            direction = "before birth year" if boundary_fact.fact_type in BIRTH_CLAIM_TYPES else "after death year"
+            rationale = (
+                f"relationship {relationship_id} predicate {predicate} has event year {event_year} "
+                f"{direction} {boundary_fact.year} for {role} {facts.object_ref}"
+            )
+            contradictions.append(
+                RelationalContradiction(
+                    relationship_id=relationship_id,
+                    rule_id=RELATIONAL_EVENT_YEAR_RULE,
+                    target_object_ref=_source_claim_ref(boundary_fact.source_claim_id),
+                    rationale=rationale,
+                )
+            )
+    return contradictions, skipped
+
+
+def record_relational_contradiction(
+    conn: sqlite3.Connection,
+    *,
+    contradiction: RelationalContradiction,
+    relationship_row: sqlite3.Row,
+    changed_at: str,
+    source_run_id: str | None,
+) -> canonical_store.CanonicalWriteResult:
+    return record_source_contradiction(
+        conn,
+        offending_namespace="source_relationship",
+        offending_id=contradiction.relationship_id,
+        target_object_ref=contradiction.target_object_ref,
+        provenance_event_ref=str(relationship_row["provenance_event_ref"]),
+        workspace_id=None if relationship_row["workspace_id"] is None else str(relationship_row["workspace_id"]),
+        rule_id=contradiction.rule_id,
+        rationale=contradiction.rationale,
+        changed_at=changed_at,
+        source_run_id=source_run_id,
+    )
+
+
+def detect_relational_contradictions_for_relationship(
+    conn: sqlite3.Connection,
+    *,
+    source_relationship_id: int,
+    changed_at: str,
+    source_run_id: str | None = None,
+) -> dict[str, Any]:
+    row = _load_relationship_row(conn, source_relationship_id)
+    predicate = str(row["predicate"]).strip().casefold()
+    if predicate == CONTRADICTION_PREDICATE:
+        return {"results": [], "skipped": ["contradiction relationship rows are not checked"]}
+    if predicate not in RELATIONAL_CONSTRAINTS:
+        return {"results": [], "skipped": [f"no relational constraint registered for predicate {predicate!r}"]}
+    to_object_ref = row["to_object_ref"]
+    if not isinstance(to_object_ref, str) or not to_object_ref.strip():
+        return {"results": [], "skipped": ["relationship has no to_object_ref"]}
+    workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
+    subject_facts = load_relationship_endpoint_facts(
+        conn,
+        object_ref=str(row["from_object_ref"]),
+        workspace_id=workspace_id,
+    )
+    object_facts = load_relationship_endpoint_facts(
+        conn,
+        object_ref=to_object_ref,
+        workspace_id=workspace_id,
+    )
+    contradictions, skipped = evaluate_temporal_relation_constraint(
+        row=row,
+        subject_facts=subject_facts,
+        object_facts=object_facts,
+    )
+    results = [
+        record_relational_contradiction(
+            conn,
+            contradiction=contradiction,
+            relationship_row=row,
+            changed_at=changed_at,
+            source_run_id=source_run_id,
+        )
+        for contradiction in contradictions
+    ]
+    return {"results": results, "skipped": skipped}
+
+
+def run_relational_constraint_pass(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str | None = None,
+    workspace_id: str | None = None,
+    changed_at: str,
+    source_run_id: str | None = None,
+    skip_structured_claim_counterparts: bool = False,
+) -> dict[str, int]:
+    params: list[Any] = [CONTRADICTION_PREDICATE]
+    clauses = ["predicate<>?"]
+    if provenance_event_ref is not None:
+        clauses.append("provenance_event_ref=?")
+        params.append(provenance_event_ref)
+    if workspace_id is not None:
+        clauses.append("workspace_id=?")
+        params.append(workspace_id)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM source_relationship
+        WHERE {" AND ".join(clauses)}
+        ORDER BY source_relationship_id
+        """,
+        tuple(params),
+    ).fetchall()
+    counts = {
+        "relational_constraints_checked": 0,
+        "relational_constraints_skipped": 0,
+        "relational_contradictions_detected": 0,
+    }
+    for row in rows:
+        predicate = str(row["predicate"]).strip().casefold()
+        if predicate not in RELATIONAL_CONSTRAINTS:
+            continue
+        if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(conn, row):
+            counts["relational_constraints_skipped"] += 1
+            continue
+        counts["relational_constraints_checked"] += 1
+        result = detect_relational_contradictions_for_relationship(
+            conn,
+            source_relationship_id=int(row["source_relationship_id"]),
+            changed_at=changed_at,
+            source_run_id=source_run_id,
+        )
+        counts["relational_contradictions_detected"] += len(result["results"])
+        counts["relational_constraints_skipped"] += len(result["skipped"])
+    return counts
+
+
 def detect_structured_contradictions_for_claim(
     conn: sqlite3.Connection,
     *,
@@ -1135,6 +1587,8 @@ def run_reconciliation_pass_for_ingest(
         "authority_merged": 0,
         "claims_contradicted": 0,
         "relationships_contradicted": 0,
+        "relational_constraints_checked": 0,
+        "relational_constraints_skipped": 0,
     }
     for entity in entity_candidates or []:
         entity_id = int(entity["detected_entity_id"])
@@ -1234,4 +1688,15 @@ def run_reconciliation_pass_for_ingest(
             if relationship_row is not None:
                 seen_relationship_rows.add(int(relationship_row["source_relationship_id"]))
     counts["relationships_contradicted"] = len(seen_relationship_rows)
+    relational_counts = run_relational_constraint_pass(
+        conn,
+        provenance_event_ref=provenance_event_ref,
+        workspace_id=workspace_id,
+        changed_at=changed_at,
+        source_run_id=source_run_id,
+        skip_structured_claim_counterparts=True,
+    )
+    counts["relational_constraints_checked"] = relational_counts["relational_constraints_checked"]
+    counts["relational_constraints_skipped"] = relational_counts["relational_constraints_skipped"]
+    counts["relationships_contradicted"] += relational_counts["relational_contradictions_detected"]
     return counts

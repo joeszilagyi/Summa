@@ -297,6 +297,7 @@ def evaluate_request(
         },
         "checks": {
             "allowlist_present": bool(hosts or prefixes),
+            "allowlist": payload.get("allowlist"),
             "rate_limits": payload.get("rate_limits"),
             "side_effect_budget": payload.get("side_effect_budget"),
             "dirty_worktree_policy": payload.get("dirty_worktree_policy"),
