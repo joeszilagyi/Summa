@@ -792,6 +792,58 @@ def _record_feedback_candidates(
     payload = _read_json_object(feedback_plan_path)
     if payload is None:
         return
+    explanation = payload.get("selection_explanation")
+    if isinstance(explanation, dict):
+        policy = explanation.get("policy") if isinstance(explanation.get("policy"), dict) else {}
+        policy_id = _optional_text(policy.get("policy_id"))
+        for candidate in explanation.get("considered_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = _optional_text(candidate.get("candidate_id"))
+            if candidate_id is None:
+                continue
+            record_cycle_candidate_considered(
+                conn,
+                cycle_event_id=cycle_event_id,
+                stage_event_id=stage_event_id,
+                candidate_kind=_optional_text(candidate.get("candidate_type"))
+                or "feedback_candidate",
+                candidate_ref_type="selection_explanation",
+                candidate_ref_id=candidate_id,
+                candidate_label=_optional_text(candidate.get("label")),
+                score=candidate.get("score")
+                if isinstance(candidate.get("score"), (int, float))
+                else None,
+                score_policy_id=policy_id,
+                rationale=_optional_text(candidate.get("rationale")),
+                reason={
+                    "selection_explanation_id": explanation.get("explanation_id"),
+                    "reason_codes": candidate.get("reason_codes", []),
+                    "eligibility_status": candidate.get("eligibility_status"),
+                },
+                selected=bool(candidate.get("selected")),
+            )
+        for candidate in explanation.get("excluded_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = _optional_text(candidate.get("candidate_id"))
+            if candidate_id is None:
+                continue
+            record_cycle_candidate_excluded(
+                conn,
+                cycle_event_id=cycle_event_id,
+                stage_event_id=stage_event_id,
+                candidate_kind=_optional_text(candidate.get("candidate_type"))
+                or "feedback_candidate",
+                candidate_ref_type="selection_explanation",
+                candidate_ref_id=candidate_id,
+                candidate_label=_optional_text(candidate.get("label")),
+                exclusion_reason=_optional_text(candidate.get("reason"))
+                or "deferred_by_feedback_plan",
+                policy_id=policy_id,
+                retryable=bool(candidate.get("retryable", True)),
+            )
+        return
     next_action = payload.get("next_action")
     if isinstance(next_action, dict):
         record_cycle_candidate_considered(

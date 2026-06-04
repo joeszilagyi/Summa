@@ -257,6 +257,7 @@ def build_manifest(
         "stage_plan": [],
         "stages": [],
         "feedback_plan": None,
+        "selection_explanations": [],
         "next_action": None,
         "operator_overrides": collect_operator_overrides(args),
         "budget": None,
@@ -273,6 +274,34 @@ def build_manifest(
         "remote_fetch_enabled": REMOTE_FETCH_ENABLED,
         "llm_invoked": False,
     }
+
+
+def attach_feedback_selection_explanation(
+    manifest: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    path: Path,
+    when: str,
+) -> None:
+    explanation = payload.get("selection_explanation")
+    if not isinstance(explanation, dict):
+        return
+    explanation_id = explanation.get("explanation_id")
+    if not isinstance(explanation_id, str) or not explanation_id:
+        return
+    entries = manifest.setdefault("selection_explanations", [])
+    if not isinstance(entries, list):
+        manifest["selection_explanations"] = entries = []
+    entries.append(
+        {
+            "selection_explanation_id": explanation_id,
+            "selection_kind": explanation.get("selection_kind"),
+            "source": "feedback_plan",
+            "when": when,
+            "path": str(path),
+            "sha256": hash_file(path),
+        }
+    )
 
 
 def collect_operator_overrides(args: argparse.Namespace) -> list[dict[str, str]]:
@@ -497,6 +526,12 @@ def build_feedback_plan_stage(
             "when": when,
         }
         manifest["next_action"] = payload.get("next_action")
+        attach_feedback_selection_explanation(
+            manifest,
+            payload=payload,
+            path=output,
+            when=when,
+        )
         finish_stage(stage)
         add_stage(manifest, stage)
         return output
@@ -540,6 +575,12 @@ def resolve_feedback_plan(
         payload = read_json(path, label="candidate feedback plan")
         manifest["feedback_plan"] = {"path": str(path), "sha256": hash_file(path), "when": "pre"}
         manifest["next_action"] = payload.get("next_action")
+        attach_feedback_selection_explanation(
+            manifest,
+            payload=payload,
+            path=path,
+            when="pre",
+        )
         finish_stage(stage)
         add_stage(manifest, stage)
         return path

@@ -31,6 +31,7 @@ if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
 from tools.common import topic_saturation  # noqa: E402
+from tools.common.selection_explanation import build_scheduler_selection_explanation  # noqa: E402
 from tools.common.topic_workspace_registry import (  # noqa: E402
     DEFAULT_REGISTRY_ENV,
     DEFAULT_REGISTRY_PATH,
@@ -595,6 +596,20 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         registry_path=registry_path,
         args=args,
     )
+    selection_explanation = build_scheduler_selection_explanation(
+        planner_run_id=args.planner_run_id,
+        planned_at=planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        registry_path=str(registry_path),
+        selected_workspaces=selected,
+        skipped_workspaces=skipped,
+        limit=args.limit,
+        include_manual=args.include_manual,
+        include_saturated=args.include_saturated,
+        ignore_saturation=args.ignore_saturation,
+        saturation_policy=None if saturation_policy is None else saturation_policy.policy_id,
+    )
+    for record in planned_records:
+        record["selection_explanation_id"] = selection_explanation["explanation_id"]
     if args.planned_runs_jsonl is not None:
         append_planned_run_records(args.planned_runs_jsonl, planned_records)
 
@@ -613,6 +628,7 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "selected_workspaces": selected,
         "skipped_workspaces": skipped,
         "planned_run_records": planned_records,
+        "selection_explanation": selection_explanation,
     }
 
 

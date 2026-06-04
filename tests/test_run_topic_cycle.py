@@ -206,6 +206,9 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
+    assert manifest["selection_explanations"]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    assert manifest["selection_explanations"][0]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
 
 
 def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
@@ -263,6 +266,7 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["cycle_depth"] == 2
     assert manifest["prior_state"]["context_hash"]  # type: ignore[index]
     assert manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
 
 
 def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_path: Path) -> None:

@@ -27,8 +27,11 @@ from tools.common.candidate_feedback_contract import (  # noqa: E402
     SCHEMA_VERSION,
     SCORING_POLICY_ID,
 )
+from tools.common.selection_explanation import (  # noqa: E402
+    build_feedback_selection_explanation,
+)
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
-from tools.source_db_tools import canonical_store  # noqa: E402
+from tools.source_db_tools import canonical_store, cycle_evidence_ledger  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS,
     validate_candidate_feedback_plan,
@@ -84,6 +87,14 @@ def parse_args() -> argparse.Namespace:
         choices=(SCORING_POLICY_ID,),
         default=SCORING_POLICY_ID,
         help="Deterministic scoring policy identifier.",
+    )
+    parser.add_argument(
+        "--record-selection-ledger",
+        action="store_true",
+        help=(
+            "Record feedback candidates into the local cycle evidence ledger. "
+            "This mutates only operational ledger tables."
+        ),
     )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser.parse_args()
@@ -1069,6 +1080,29 @@ def build_plan(
         max_deferred=args.max_deferred_candidates,
     )
 
+    scoring_policy = {
+        "policy_id": args.scoring_policy,
+        "cycle_depth_considered": cycle_depth,
+        "previous_run_ids_considered": previous_run_ids,
+        "use_prior_state": bool(previous_run_ids),
+        "weights": dict(DEFAULT_SCORING_WEIGHTS),
+        "limits": {
+            "max_facet_candidates": args.max_facet_candidates,
+            "max_lead_candidates": args.max_lead_candidates,
+            "max_deferred_candidates": args.max_deferred_candidates,
+        },
+    }
+    selection_explanation = build_feedback_selection_explanation(
+        subject_id=subject["subject_id"],
+        workspace_id=subject["subject_id"],
+        generated_at=generated_at,
+        scoring_policy=scoring_policy,
+        facet_scores=facet_scores,
+        lead_scores=lead_scores,
+        next_action=next_action,
+        deferred=deferred,
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1085,18 +1119,7 @@ def build_plan(
             "current_migration_id": check_result.current_migration_id,
             "dry_run": True,
         },
-        "scoring_policy": {
-            "policy_id": args.scoring_policy,
-            "cycle_depth_considered": cycle_depth,
-            "previous_run_ids_considered": previous_run_ids,
-            "use_prior_state": bool(previous_run_ids),
-            "weights": dict(DEFAULT_SCORING_WEIGHTS),
-            "limits": {
-                "max_facet_candidates": args.max_facet_candidates,
-                "max_lead_candidates": args.max_lead_candidates,
-                "max_deferred_candidates": args.max_deferred_candidates,
-            },
-        },
+        "scoring_policy": scoring_policy,
         "counts": {
             "gather_runs_considered": len(history),
             "facet_candidates": len(facet_scores),
@@ -1108,9 +1131,119 @@ def build_plan(
         "lead_scores": lead_scores,
         "next_action": next_action,
         "deferred": deferred,
+        "selection_explanation": selection_explanation,
         "warnings": [],
         "errors": [],
     }
+
+
+def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) -> None:
+    explanation = payload.get("selection_explanation")
+    if not isinstance(explanation, dict):
+        raise CandidateFeedbackError("selection_explanation is missing")
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            cycle_event_id = cycle_evidence_ledger.build_cycle_event_id(
+                run_id=str(explanation["explanation_id"]),
+                started_at=str(payload["generated_at"]),
+                workspace_ref=str(payload["subject"]["subject_id"]),
+            )
+            event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                cycle_event_id=cycle_event_id,
+                run_id=str(explanation["explanation_id"]),
+                workspace_id=str(payload["subject"]["subject_id"]),
+                workspace_ref=str(payload["subject"]["subject_id"]),
+                subject_key=str(payload["subject"]["subject_id"]),
+                domain_pack_id=str(payload["subject"]["domain_pack"]),
+                cycle_depth=payload["next_action"].get("cycle_depth")
+                if isinstance(payload.get("next_action"), dict)
+                else None,
+                mode="selection_explanation",
+                started_at=str(payload["generated_at"]),
+                status="completed",
+                final_feedback_plan_ref=None,
+                warning_count=0,
+                error_count=0,
+                metadata={
+                    "selection_explanation_id": explanation["explanation_id"],
+                    "selection_kind": explanation["selection_kind"],
+                    "artifact_schema_version": payload["schema_version"],
+                },
+            )
+            stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+                conn,
+                cycle_event_id=event_id,
+                run_id=str(explanation["explanation_id"]),
+                stage_name="build_candidate_feedback_plan",
+                stage_order=1,
+                started_at=str(payload["generated_at"]),
+                status="completed",
+                required_stage=False,
+                command_name="build_candidate_feedback_plan.py",
+                validation_status="pass",
+                metadata={"selection_explanation_id": explanation["explanation_id"]},
+            )
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn,
+                stage_event_id=stage_id,
+                status="completed",
+                ended_at=str(payload["generated_at"]),
+            )
+            policy_id = str(payload["scoring_policy"]["policy_id"])
+            for candidate in explanation.get("considered_candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                cycle_evidence_ledger.record_cycle_candidate_considered(
+                    conn,
+                    cycle_event_id=event_id,
+                    stage_event_id=stage_id,
+                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
+                    candidate_ref_type="selection_explanation",
+                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
+                    candidate_label=None
+                    if candidate.get("label") is None
+                    else str(candidate.get("label")),
+                    score=candidate.get("score")
+                    if isinstance(candidate.get("score"), (int, float))
+                    else None,
+                    score_policy_id=policy_id,
+                    rationale=None
+                    if candidate.get("rationale") is None
+                    else str(candidate.get("rationale")),
+                    reason={
+                        "selection_explanation_id": explanation["explanation_id"],
+                        "reason_codes": candidate.get("reason_codes", []),
+                        "eligibility_status": candidate.get("eligibility_status"),
+                    },
+                    selected=bool(candidate.get("selected")),
+                )
+            for candidate in explanation.get("excluded_candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                cycle_evidence_ledger.record_cycle_candidate_excluded(
+                    conn,
+                    cycle_event_id=event_id,
+                    stage_event_id=stage_id,
+                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
+                    candidate_ref_type="selection_explanation",
+                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
+                    candidate_label=None
+                    if candidate.get("label") is None
+                    else str(candidate.get("label")),
+                    exclusion_reason=str(candidate.get("reason") or "deferred_by_feedback_plan"),
+                    policy_id=policy_id,
+                    retryable=bool(candidate.get("retryable", True)),
+                )
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn,
+                cycle_event_id=event_id,
+                status="completed",
+                ended_at=str(payload["generated_at"]),
+            )
+    finally:
+        conn.close()
 
 
 def render_text_plan(payload: dict[str, Any]) -> str:
@@ -1186,6 +1319,12 @@ def main() -> int:
                 validate_emitted_plan(temp_path)
             finally:
                 temp_path.unlink(missing_ok=True)
+
+        if args.record_selection_ledger:
+            record_selection_explanation_ledger(
+                canonical_store.resolve_db_path(args.db),
+                payload,
+            )
 
         if args.format == "text":
             sys.stdout.write(render_text_plan(payload))
