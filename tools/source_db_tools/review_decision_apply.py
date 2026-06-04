@@ -14,7 +14,6 @@ from typing import Any
 
 from tools.source_db_tools import canonical_reconciliation, canonical_store
 
-
 APPLY_TOOL = "tools/scripts/apply_review_decision.py"
 RESULT_SCHEMA_VERSION = "review-decision-apply-result.v1"
 SUPPORTED_ACTIONS = {
@@ -60,7 +59,9 @@ def parse_review_target(value: str) -> ReviewTargetRef:
     return ReviewTargetRef(target_type, target_id)
 
 
-def _fetch_one(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...], missing: str) -> sqlite3.Row:
+def _fetch_one(
+    conn: sqlite3.Connection, sql: str, params: tuple[Any, ...], missing: str
+) -> sqlite3.Row:
     row = conn.execute(sql, params).fetchone()
     if row is None:
         raise ReviewDecisionApplyError(missing)
@@ -104,7 +105,10 @@ def _fetch_relationship(conn: sqlite3.Connection, source_relationship_id: int) -
 
 
 def _current_state(row: sqlite3.Row) -> str | None:
-    value = row["review_state"] if "review_state" in row.keys() else None
+    try:
+        value = row["review_state"]
+    except IndexError:
+        return None
     return None if value is None else str(value)
 
 
@@ -183,9 +187,15 @@ def _review_state_update(
 
 
 def _candidate_winner(row: sqlite3.Row) -> int:
-    winner = row["candidate_authority_record_id"] or row["candidate_authority_id"] or row["accepted_authority_id"]
+    winner = (
+        row["candidate_authority_record_id"]
+        or row["candidate_authority_id"]
+        or row["accepted_authority_id"]
+    )
     if winner is None:
-        raise ReviewDecisionApplyError("authority reconciliation target has no candidate authority to accept")
+        raise ReviewDecisionApplyError(
+            "authority reconciliation target has no candidate authority to accept"
+        )
     return int(winner)
 
 
@@ -207,7 +217,9 @@ def _candidate_loser(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
     )
 
 
-def _merge_already_applied(conn: sqlite3.Connection, *, loser_id: int, winner_id: int, reconciliation_id: int) -> bool:
+def _merge_already_applied(
+    conn: sqlite3.Connection, *, loser_id: int, winner_id: int, reconciliation_id: int
+) -> bool:
     loser = _fetch_authority(conn, loser_id)
     rec = _fetch_reconciliation(conn, reconciliation_id)
     merge = conn.execute(
@@ -247,20 +259,28 @@ def validate_review_decision_target(
         row = _fetch_claim(conn, target.target_id)
     elif action == "resolve_contradiction":
         if target.target_type != "source_relationship":
-            raise ReviewDecisionApplyError("resolve_contradiction requires a source_relationship target")
+            raise ReviewDecisionApplyError(
+                "resolve_contradiction requires a source_relationship target"
+            )
         row = _fetch_relationship(conn, target.target_id)
         if str(row["predicate"]) != canonical_reconciliation.CONTRADICTION_PREDICATE:
-            raise ReviewDecisionApplyError("resolve_contradiction requires a contradiction relationship")
+            raise ReviewDecisionApplyError(
+                "resolve_contradiction requires a contradiction relationship"
+            )
     elif action == "mark_contradicted":
         if target.target_type == "source_claim":
             row = _fetch_claim(conn, target.target_id)
         elif target.target_type == "source_relationship":
             row = _fetch_relationship(conn, target.target_id)
         else:
-            raise ReviewDecisionApplyError("mark_contradicted requires a source_claim or source_relationship target")
+            raise ReviewDecisionApplyError(
+                "mark_contradicted requires a source_claim or source_relationship target"
+            )
     elif action == "reject_relationship":
         if target.target_type != "source_relationship":
-            raise ReviewDecisionApplyError("reject_relationship requires a source_relationship target")
+            raise ReviewDecisionApplyError(
+                "reject_relationship requires a source_relationship target"
+            )
         row = _fetch_relationship(conn, target.target_id)
     else:  # pragma: no cover - guarded by action set
         raise ReviewDecisionApplyError(f"unsupported review decision action: {action}")
@@ -389,7 +409,9 @@ def apply_authority_merge_decision(
             f"authority_record:{loser_id}": "demoted",
         }
         return result
-    if _merge_already_applied(conn, loser_id=loser_id, winner_id=winner_id, reconciliation_id=target.target_id):
+    if _merge_already_applied(
+        conn, loser_id=loser_id, winner_id=winner_id, reconciliation_id=target.target_id
+    ):
         result["status"] = "already_applied"
         result["references_repointed"] = {key: 0 for key in result["references_repointed"]}
         return result
@@ -494,7 +516,9 @@ def apply_authority_reconciliation_rejection(
     if candidate is not None:
         result["rows_preserved"].append(f"authority_record:{int(candidate)}")
     if dry_run:
-        result["intended_review_states"] = {f"authority_reconciliation:{target.target_id}": "rejected"}
+        result["intended_review_states"] = {
+            f"authority_reconciliation:{target.target_id}": "rejected"
+        }
         return result
     if str(row["review_state"]) == "rejected":
         result["status"] = "already_applied"
@@ -529,7 +553,14 @@ def apply_authority_reconciliation_rejection(
             record_last_updated=?
         WHERE authority_reconciliation_id=?
         """,
-        (reason, json.dumps(rejected_ids, sort_keys=True), decided_at, decided_at, decided_at, target.target_id),
+        (
+            reason,
+            json.dumps(rejected_ids, sort_keys=True),
+            decided_at,
+            decided_at,
+            decided_at,
+            target.target_id,
+        ),
     )
     canonical_store.record_review_state_history(
         conn,
@@ -737,7 +768,7 @@ def apply_review_decision(
         raise ReviewDecisionApplyError("reason is required")
     action = decision_action.strip().lower().replace("-", "_")
     target_ref = parse_review_target(target)
-    timestamp = canonical_store._normalize_timestamp(  # type: ignore[attr-defined]
+    timestamp = canonical_store._normalize_timestamp(
         decided_at,
         field_name="decided_at",
         default=canonical_store.now_rfc3339(),

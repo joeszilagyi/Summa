@@ -8,18 +8,20 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import runtime_ledger  # noqa: E402
-from tools.common.scheduler_failure_reconciliation import read_runtime_ledger, summarize_run_outcomes  # noqa: E402
-
+from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
+    read_runtime_ledger,
+    summarize_run_outcomes,
+)
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
 PLANNED_RUN_SCHEMA_VERSION = "planned-run.v1"
@@ -62,7 +64,9 @@ def hash_file(path: Path) -> str:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -72,15 +76,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "run budgets, run bounded topic cycles, and append runtime-ledger outcomes."
         )
     )
-    parser.add_argument("--selection", required=True, help="Selection JSON or planned-run JSONL artifact.")
-    parser.add_argument("--db", required=True, help="Canonical SQLite store to pass to each topic cycle.")
-    parser.add_argument("--run-dir", required=True, help="Output directory for the scheduled run manifest and child cycles.")
+    parser.add_argument(
+        "--selection", required=True, help="Selection JSON or planned-run JSONL artifact."
+    )
+    parser.add_argument(
+        "--db", required=True, help="Canonical SQLite store to pass to each topic cycle."
+    )
+    parser.add_argument(
+        "--run-dir",
+        required=True,
+        help="Output directory for the scheduled run manifest and child cycles.",
+    )
     parser.add_argument("--run-id", help="Stable scheduled run id. Defaults to run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override.")
     parser.add_argument("--mode", choices=("dry-run", "local"), default="dry-run")
-    parser.add_argument("--cycle-runner", help="Optional alternate cycle runner script for deterministic tests.")
-    parser.add_argument("--candidate-batch-fixture", help="Optional fixture passed through to each child cycle.")
-    parser.add_argument("--execution-run-fixture", help="Optional execution fixture passed through to each child cycle.")
+    parser.add_argument(
+        "--cycle-runner", help="Optional alternate cycle runner script for deterministic tests."
+    )
+    parser.add_argument(
+        "--candidate-batch-fixture", help="Optional fixture passed through to each child cycle."
+    )
+    parser.add_argument(
+        "--execution-run-fixture",
+        help="Optional execution fixture passed through to each child cycle.",
+    )
     parser.add_argument("--build-next-feedback-plan", action="store_true")
     parser.add_argument(
         "--ledger-root",
@@ -211,7 +230,11 @@ def run_scheduled_cycles(
         "errors": [],
         "remote_fetch_enabled": False,
     }
-    runner = resolve_path(args.cycle_runner) if args.cycle_runner else REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
+    runner = (
+        resolve_path(args.cycle_runner)
+        if args.cycle_runner
+        else REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
+    )
     exit_code = 0
     for record in records:
         workspace_id = str(record.get("workspace_id") or "")
@@ -227,17 +250,22 @@ def run_scheduled_cycles(
             "runtime_consumed_seconds": 0.0,
             "outcome": "skipped",
             "failure_reason": None,
-            "saturation": record.get("saturation") if isinstance(record.get("saturation"), dict) else None,
+            "saturation": record.get("saturation")
+            if isinstance(record.get("saturation"), dict)
+            else None,
             "saturation_override": bool(record.get("saturation_override", False)),
             "scheduler_failure_state_record": None,
             "ledger_path": None,
         }
-        run_budget = record.get("run_budget") if isinstance(record.get("run_budget"), dict) else {}
+        raw_run_budget = record.get("run_budget")
+        run_budget: dict[str, Any] = raw_run_budget if isinstance(raw_run_budget, dict) else {}
         result["max_attempts"] = run_budget.get("max_attempts")
         result["runtime_budget_seconds"] = run_budget.get("max_runtime_seconds")
         if not planned_record_selected(record):
             result["outcome"] = "deferred"
-            result["failure_reason"] = record.get("skipped_reason") or "planned-run decision was not selected"
+            result["failure_reason"] = (
+                record.get("skipped_reason") or "planned-run decision was not selected"
+            )
             manifest["deferred_workspace_count"] += 1
             manifest["workspace_results"].append(result)
             continue
@@ -245,7 +273,9 @@ def run_scheduled_cycles(
         subject_manifest = record.get("resolved_default_subject_manifest")
         if not isinstance(workspace_root, str) or not isinstance(subject_manifest, str):
             result["outcome"] = "failed"
-            result["failure_reason"] = "planned-run record is missing resolved workspace or subject manifest"
+            result["failure_reason"] = (
+                "planned-run record is missing resolved workspace or subject manifest"
+            )
             manifest["failed_workspace_count"] += 1
             manifest["workspace_results"].append(result)
             exit_code = 1
@@ -299,9 +329,13 @@ def run_scheduled_cycles(
             "json",
         ]
         if args.candidate_batch_fixture:
-            command.extend(["--candidate-batch-fixture", str(resolve_path(args.candidate_batch_fixture))])
+            command.extend(
+                ["--candidate-batch-fixture", str(resolve_path(args.candidate_batch_fixture))]
+            )
         if args.execution_run_fixture:
-            command.extend(["--execution-run-fixture", str(resolve_path(args.execution_run_fixture))])
+            command.extend(
+                ["--execution-run-fixture", str(resolve_path(args.execution_run_fixture))]
+            )
         if args.build_next_feedback_plan:
             command.append("--build-next-feedback-plan")
         append_ledger_event(
@@ -318,10 +352,14 @@ def run_scheduled_cycles(
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
         result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
-        artifact_refs = [{"artifact_type": "topic_cycle_manifest", "path": result["cycle_manifest_path"]}]
+        artifact_refs = [
+            {"artifact_type": "topic_cycle_manifest", "path": result["cycle_manifest_path"]}
+        ]
         if runtime_budget is not None and elapsed > runtime_budget:
             result["outcome"] = "failed"
-            result["failure_reason"] = f"cycle runtime {elapsed} exceeded run_budget.max_runtime_seconds {runtime_budget}"
+            result["failure_reason"] = (
+                f"cycle runtime {elapsed} exceeded run_budget.max_runtime_seconds {runtime_budget}"
+            )
             manifest["failed_workspace_count"] += 1
             exit_code = 1
             append_ledger_event(

@@ -23,6 +23,53 @@ EXPECTED_CONSOLE_SCRIPTS = {
     "summa-operator-path-smoke": "tools.scripts.operator_path_smoke:main",
     "summa-resolve-gather-domain-pack": "tools.scripts.resolve_gather_domain_pack:main",
     "summa-init-canonical-store": "tools.source_db_tools.init_canonical_store:main",
+    "summa-run-gather": "tools.scripts.run_topic_gather:main",
+    "summa-execute-source-adapter": "tools.scripts.execute_source_adapter:main",
+    "summa-ingest-gather-candidate-batch": ("tools.scripts.ingest_gather_candidate_batch:main"),
+    "summa-ingest-execution-artifacts": "tools.scripts.ingest_execution_artifacts:main",
+    "summa-run-topic-cycle": "tools.scripts.run_topic_cycle:main",
+    "summa-run-scheduled-topic-cycles": "tools.scripts.run_scheduled_topic_cycles:main",
+    "summa-select-scheduled-workspaces": "tools.scripts.select_scheduled_workspaces:main",
+    "summa-apply-review-decision": "tools.scripts.apply_review_decision:main",
+    "summa-evaluate-network-safety-gate": ("tools.scripts.evaluate_network_safety_gate:main"),
+}
+
+RUNTIME_OPERATOR_CONSOLE_COMMANDS = {
+    "run_topic_gather.py": "summa-run-gather",
+    "execute_source_adapter.py": "summa-execute-source-adapter",
+    "ingest_gather_candidate_batch.py": "summa-ingest-gather-candidate-batch",
+    "ingest_execution_artifacts.py": "summa-ingest-execution-artifacts",
+    "run_topic_cycle.py": "summa-run-topic-cycle",
+    "run_scheduled_topic_cycles.py": "summa-run-scheduled-topic-cycles",
+    "select_scheduled_workspaces.py": "summa-select-scheduled-workspaces",
+    "apply_review_decision.py": "summa-apply-review-decision",
+    "evaluate_network_safety_gate.py": "summa-evaluate-network-safety-gate",
+}
+
+INDEX_WRAPPER_CONSOLE_COMMANDS = {
+    "Index_Apply_Review_Decision.sh": "summa-apply-review-decision",
+    "Index_Build_Knowledge_Tree.sh": "summa-build-knowledge-tree",
+    "Index_New_Topic.sh": "summa-new-topic",
+    "Index_Operator_Path_Smoke.sh": "summa-operator-path-smoke",
+    "Index_Run_Gather.sh": "summa-run-gather",
+    "Index_Run_Scheduled_Topic_Cycles.sh": "summa-run-scheduled-topic-cycles",
+    "Index_Run_Topic_Cycle.sh": "summa-run-topic-cycle",
+    "Index_Select_Scheduled_Workspaces.sh": "summa-select-scheduled-workspaces",
+    "Index_Workspace_Overview.sh": "summa-workspace-overview",
+}
+
+INDEX_WRAPPER_EXCLUSIONS = {
+    "Index_Build_Release_Readiness_Bundle.sh": (
+        "release-readiness serviceability wrapper; intentionally outside the F37 "
+        "runtime-spine console surface"
+    ),
+    "Index_Plan_Crown_Jewel_Backup.sh": (
+        "legacy compatibility wrapper around tools/common/crown_jewel_backup.py"
+    ),
+    "Index_Topic_Backup_Drill.sh": (
+        "backup-drill serviceability wrapper; intentionally outside the F37 "
+        "runtime-spine console surface"
+    ),
 }
 
 
@@ -103,6 +150,36 @@ def test_console_script_targets_are_importable_and_callable() -> None:
         assert callable(getattr(module, attr_name)), f"{command} target must be callable: {target}"
 
 
+def test_runtime_operator_scripts_are_exposed_as_console_commands() -> None:
+    pyproject = load_pyproject()
+    scripts = pyproject["project"]["scripts"]
+
+    for script_name, command in RUNTIME_OPERATOR_CONSOLE_COMMANDS.items():
+        assert (REPO_ROOT / "tools" / "scripts" / script_name).is_file()
+        assert command in scripts, f"{script_name} is missing console command {command}"
+        assert scripts[command] == EXPECTED_CONSOLE_SCRIPTS[command]
+
+
+def test_live_index_wrappers_are_packaged_or_explicitly_excluded() -> None:
+    pyproject = load_pyproject()
+    scripts = pyproject["project"]["scripts"]
+    wrapper_names = {
+        path.name for path in sorted((REPO_ROOT / "tools" / "scripts").glob("Index_*.sh"))
+    }
+
+    expected_wrapper_names = set(INDEX_WRAPPER_CONSOLE_COMMANDS) | set(INDEX_WRAPPER_EXCLUSIONS)
+    assert wrapper_names == expected_wrapper_names
+
+    for wrapper_name, command in INDEX_WRAPPER_CONSOLE_COMMANDS.items():
+        assert command in scripts, f"{wrapper_name} is not exposed through {command}"
+
+    for wrapper_name, reason in INDEX_WRAPPER_EXCLUSIONS.items():
+        assert reason.strip()
+        assert "TODO" not in reason.upper()
+        assert "MAYBE" not in reason.upper()
+        assert (REPO_ROOT / "tools" / "scripts" / wrapper_name).is_file()
+
+
 def test_pytest_config_moved_into_pyproject() -> None:
     pyproject = load_pyproject()
 
@@ -148,7 +225,10 @@ def test_coverage_tooling_is_configured_in_pyproject_and_ci() -> None:
 
     workflow = HYGIENE_WORKFLOW.read_text(encoding="utf-8")
     assert 'python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"' in workflow
-    assert "python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml" in workflow
+    assert (
+        "python -m pytest -q --cov=tools/validators --cov=tools/common "
+        "--cov-report=term-missing --cov-report=xml"
+    ) in workflow
 
 
 def test_console_entry_point_targets_emit_help() -> None:

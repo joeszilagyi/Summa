@@ -12,28 +12,32 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-
+from typing import Any, NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.source_db_tools import canonical_ingest, canonical_store  # noqa: E402
 from tools.scripts import resolve_subject_runtime  # noqa: E402
+from tools.source_db_tools import canonical_ingest, canonical_store  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS as EXIT_FEEDBACK_PASS,
+)
+from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     validate_candidate_feedback_plan,
 )
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     EXIT_PASS as EXIT_GATHER_PASS,
+)
+from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     validate_gather_candidate_batch,
 )
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     EXIT_PASS as EXIT_EXECUTION_PASS,
+)
+from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     validate_source_acquisition_execution,
 )
-
 
 SCHEMA_VERSION = "topic-cycle-run.v1"
 DEFAULT_FACET = "sources"
@@ -122,7 +126,9 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -139,10 +145,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Subject manifest path or subject_id. Defaults to <workspace>/.indexer/subject_manifest.json.",
     )
     parser.add_argument("--db", required=True, help="Initialized canonical SQLite store.")
-    parser.add_argument("--run-dir", required=True, help="Output directory for this topic-cycle run.")
+    parser.add_argument(
+        "--run-dir", required=True, help="Output directory for this topic-cycle run."
+    )
     parser.add_argument("--run-id", help="Stable cycle run id. Defaults to the run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override for deterministic tests.")
-    parser.add_argument("--facet", default=DEFAULT_FACET, help="Gather facet when no feedback plan selects one.")
+    parser.add_argument(
+        "--facet", default=DEFAULT_FACET, help="Gather facet when no feedback plan selects one."
+    )
     parser.add_argument("--phase", default=DEFAULT_PHASE, help="Gather phase to render.")
     parser.add_argument(
         "--mode",
@@ -156,8 +166,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Convenience alias for --mode dry-run.",
     )
     parser.add_argument("--cycle-depth", type=int, default=1, help="1-based gather cycle depth.")
-    parser.add_argument("--previous-run-id", action="append", default=[], help="Prior gather run id. May repeat.")
-    parser.add_argument("--use-prior-state", action="store_true", help="Pass bounded prior-state context to gather.")
+    parser.add_argument(
+        "--previous-run-id", action="append", default=[], help="Prior gather run id. May repeat."
+    )
+    parser.add_argument(
+        "--use-prior-state", action="store_true", help="Pass bounded prior-state context to gather."
+    )
     parser.add_argument(
         "--feedback-plan",
         help="Candidate feedback plan path, or 'auto' to build one before gather.",
@@ -171,7 +185,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--candidate-batch-fixture",
         help="Optional validated gather-candidate-batch fixture to use for ingestion in local mode.",
     )
-    parser.add_argument("--source-handoff", help="Optional source-adapter handoff for local acquisition.")
+    parser.add_argument(
+        "--source-handoff", help="Optional source-adapter handoff for local acquisition."
+    )
     parser.add_argument(
         "--execution-run-fixture",
         help="Optional validated execution run directory to ingest instead of executing a handoff.",
@@ -181,8 +197,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Reserved for later remote acquisition. F26 records this as disabled and refuses remote fetch.",
     )
-    parser.add_argument("--force", action="store_true", help="Allow replacing an existing completed cycle manifest.")
-    parser.add_argument("--resume", action="store_true", help="Reserved; currently refuses partial runs clearly.")
+    parser.add_argument(
+        "--force", action="store_true", help="Allow replacing an existing completed cycle manifest."
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="Reserved; currently refuses partial runs clearly."
+    )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser.parse_args(argv)
 
@@ -244,7 +264,7 @@ def run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
 
 
-def fail_stage(stage: StageRecord, message: str) -> None:
+def fail_stage(stage: StageRecord, message: str) -> NoReturn:
     stage.status = "failed"
     stage.error_message = message
     stage.ended_at = utc_now()
@@ -267,13 +287,17 @@ def validate_existing_run_dir(run_dir: Path, *, force: bool, resume: bool) -> No
     payload = read_json(manifest_path, label="existing topic-cycle manifest")
     status = payload.get("status")
     if status in {"completed", "dry_run"} and not force:
-        raise TopicCycleError(f"topic cycle run already completed at {manifest_path}; use --force or a new run id")
+        raise TopicCycleError(
+            f"topic cycle run already completed at {manifest_path}; use --force or a new run id"
+        )
     if status in {"failed", "partial"} and not resume and not force:
         raise TopicCycleError(
             f"topic cycle run already exists with status {status}; use --resume, --force, or a new run id"
         )
     if resume:
-        raise TopicCycleError("--resume is reserved; use a new run id or --force for this F26 runner")
+        raise TopicCycleError(
+            "--resume is reserved; use a new run id or --force for this F26 runner"
+        )
 
 
 def load_domain_pack_summary(domain_pack: str) -> dict[str, Any]:
@@ -315,7 +339,9 @@ def resolve_runtime_stage(
         fail_stage(stage, str(exc))
 
 
-def resolve_domain_pack_stage(*, runtime: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+def resolve_domain_pack_stage(
+    *, runtime: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
     stage = StageRecord(name="resolve_domain_pack")
     stage.started_at = utc_now()
     domain_pack = runtime["subject"]["domain_pack"]
@@ -387,7 +413,10 @@ def build_feedback_plan_stage(
             fail_stage(stage, (proc.stderr or proc.stdout).strip() or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
         report, exit_code = validate_candidate_feedback_plan(output)
-        stage.validation = {"status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail", "report": report}
+        stage.validation = {
+            "status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail",
+            "report": report,
+        }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "candidate feedback plan failed validation")
         stage.artifacts = {
@@ -435,7 +464,10 @@ def resolve_feedback_plan(
         stage.started_at = utc_now()
         stage.inputs = {"feedback_plan": str(path)}
         report, exit_code = validate_candidate_feedback_plan(path)
-        stage.validation = {"status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail", "report": report}
+        stage.validation = {
+            "status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail",
+            "report": report,
+        }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "feedback plan failed validation")
         payload = read_json(path, label="candidate feedback plan")
@@ -444,7 +476,9 @@ def resolve_feedback_plan(
         finish_stage(stage)
         add_stage(manifest, stage)
         return path
-    stage = StageRecord(name="feedback_plan_pre", required=False, status="skipped", skipped_reason="not requested")
+    stage = StageRecord(
+        name="feedback_plan_pre", required=False, status="skipped", skipped_reason="not requested"
+    )
     add_stage(manifest, stage)
     return None
 
@@ -486,7 +520,9 @@ def gather_stage(
         command.extend(["--feedback-plan", str(feedback_plan)])
     use_prior = args.use_prior_state or args.cycle_depth > 1
     if use_prior:
-        command.extend(["--db", str(db_path), "--use-prior-state", "--cycle-depth", str(args.cycle_depth)])
+        command.extend(
+            ["--db", str(db_path), "--use-prior-state", "--cycle-depth", str(args.cycle_depth)]
+        )
         for previous_run_id in args.previous_run_id:
             command.extend(["--previous-run-id", previous_run_id])
     elif args.cycle_depth != 1:
@@ -500,7 +536,10 @@ def gather_stage(
         batch_path = resolve_path(payload["candidate_batch_path"], base=REPO_ROOT)
         prompt_path = resolve_path(payload["rendered_prompt_path"], base=REPO_ROOT)
         report, exit_code = validate_gather_candidate_batch(batch_path)
-        stage.validation = {"status": "pass" if exit_code == EXIT_GATHER_PASS else "fail", "report": report}
+        stage.validation = {
+            "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
+            "report": report,
+        }
         if exit_code != EXIT_GATHER_PASS:
             fail_stage(stage, "gather candidate batch failed validation")
         stage.artifacts = {
@@ -543,7 +582,9 @@ def candidate_ingest_stage(
             stage.error_message = "candidate batch fixture failed validation"
             stage.ended_at = utc_now()
             add_stage(manifest, stage)
-            raise TopicCycleError("ingest_candidate_batch: candidate batch fixture failed validation")
+            raise TopicCycleError(
+                "ingest_candidate_batch: candidate batch fixture failed validation"
+            )
         fixture_target = run_dir / "candidate-ingest" / "gather-candidate-batch.json"
         fixture_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture, fixture_target)
@@ -606,7 +647,9 @@ def acquisition_stage(
     run_dir: Path,
 ) -> Path | None:
     if args.allow_network:
-        manifest["warnings"].append("remote acquisition remains disabled in F26; --allow-network was ignored")
+        manifest["warnings"].append(
+            "remote acquisition remains disabled in F26; --allow-network was ignored"
+        )
     if args.execution_run_fixture:
         stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
         stage.skipped_reason = "execution fixture supplied"
@@ -638,9 +681,14 @@ def acquisition_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT)
         if proc.returncode != 0:
-            fail_stage(stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed")
+            fail_stage(
+                stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed"
+            )
         report, exit_code = validate_source_acquisition_execution(output_dir)
-        stage.validation = {"status": "pass" if exit_code == EXIT_EXECUTION_PASS else "fail", "report": report}
+        stage.validation = {
+            "status": "pass" if exit_code == EXIT_EXECUTION_PASS else "fail",
+            "report": report,
+        }
         if exit_code != EXIT_EXECUTION_PASS:
             fail_stage(stage, "execution artifacts failed validation")
         stage.artifacts = {
@@ -675,7 +723,9 @@ def execution_ingest_stage(
     stage.started_at = utc_now()
     stage.inputs = {"execution_run_dir": str(execution_run_dir)}
     try:
-        execution_record, capture_events, extraction_records, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+        execution_record, capture_events, extraction_records, paths, input_hashes = (
+            canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+        )
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             if args.mode == "dry-run":
@@ -820,7 +870,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             runtime=runtime,
             feedback_plan=feedback_plan,
         )
-        candidate_ingest_stage(args=args, manifest=manifest, db_path=db_path, batch_path=batch_path, run_dir=run_dir)
+        candidate_ingest_stage(
+            args=args, manifest=manifest, db_path=db_path, batch_path=batch_path, run_dir=run_dir
+        )
         execution_run_dir = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
         execution_ingest_stage(
             args=args,
@@ -849,7 +901,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return_code = 0
     except TopicCycleError as exc:
         manifest["status"] = "failed"
-        last_failed = next((stage for stage in reversed(manifest["stages"]) if stage["status"] == "failed"), None)
+        last_failed = next(
+            (stage for stage in reversed(manifest["stages"]) if stage["status"] == "failed"), None
+        )
         manifest["failure_stage"] = last_failed["name"] if last_failed else "cycle_setup"
         manifest["error_summary"] = str(exc)
         return_code = 1

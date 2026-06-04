@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT,
@@ -20,8 +19,14 @@ for candidate in (
         sys.path.insert(0, candidate_text)
 
 from tools.common.network_safety_gate import evaluate_request, load_request  # noqa: E402
-from tools.validators.common import EXIT_INPUT_UNAVAILABLE, EXIT_PASS, EXIT_VALIDATION_FAILED, add_report_args, write_json, write_text  # noqa: E402
-
+from tools.validators.common import (  # noqa: E402
+    EXIT_INPUT_UNAVAILABLE,
+    EXIT_PASS,
+    EXIT_VALIDATION_FAILED,
+    add_report_args,
+    write_json,
+    write_text,
+)
 
 SCRIPT_PATH = "tools/scripts/evaluate_network_safety_gate.py"
 
@@ -49,12 +54,16 @@ def render_text(report: dict[str, object]) -> str:
             **counts
         )
     )
-    for index, action in enumerate(report["planned_actions"]):
+    planned_actions = report.get("planned_actions")
+    assert isinstance(planned_actions, list)
+    for index, action in enumerate(planned_actions):
         assert isinstance(action, dict)
         lines.append(
             f"action[{index}]={action['action_id']} kind={action['action_kind']} method={action['method']} status={action['status']} host={action['host']}"
         )
-    for index, error in enumerate(report["errors"]):
+    errors = report.get("errors")
+    assert isinstance(errors, list)
+    for index, error in enumerate(errors):
         assert isinstance(error, dict)
         lines.append(f"error[{index}]={error['code']} message={error['message']}")
     return "\n".join(lines) + "\n"
