@@ -872,6 +872,12 @@ def _update_row(
     conn.execute(sql, tuple(assignments[column] for column in columns) + (pk_value,))
 
 
+def _inserted_rowid(cursor: sqlite3.Cursor) -> int:
+    if cursor.lastrowid is None:
+        raise CanonicalStoreError("insert did not return a row id")
+    return int(cursor.lastrowid)
+
+
 def record_provenance_event(
     conn: sqlite3.Connection,
     *,
@@ -973,7 +979,7 @@ def record_provenance_event(
             timestamp,
         ),
     )
-    return ProvenanceEventRef(event_id=int(cursor.lastrowid), event_key=key)
+    return ProvenanceEventRef(event_id=_inserted_rowid(cursor), event_key=key)
 
 
 def upsert_work(
@@ -1061,7 +1067,7 @@ def upsert_work(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("work", int(cursor.lastrowid), work_key, True)
+        return CanonicalWriteResult("work", _inserted_rowid(cursor), work_key, True)
 
     merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
     _update_row(
@@ -1205,7 +1211,7 @@ def record_source_access(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("source_access", int(cursor.lastrowid), None, True)
+        return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
 
     _update_row(
         conn,
@@ -1349,7 +1355,7 @@ def record_source_claim(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("source_claim", int(cursor.lastrowid), claim_key, True)
+        return CanonicalWriteResult("source_claim", _inserted_rowid(cursor), claim_key, True)
 
     _update_row(
         conn,
@@ -1492,7 +1498,7 @@ def record_capture_event(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("capture_event", int(cursor.lastrowid), None, True)
+        return CanonicalWriteResult("capture_event", _inserted_rowid(cursor), None, True)
 
     _update_row(
         conn,
@@ -1649,7 +1655,7 @@ def record_extraction_record(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("extraction_record", int(cursor.lastrowid), None, True)
+        return CanonicalWriteResult("extraction_record", _inserted_rowid(cursor), None, True)
 
     _update_row(
         conn,
@@ -1781,7 +1787,9 @@ def record_extraction_detected_entity(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("extraction_detected_entity", int(cursor.lastrowid), None, True)
+        return CanonicalWriteResult(
+            "extraction_detected_entity", _inserted_rowid(cursor), None, True
+        )
 
     _update_row(
         conn,
@@ -1887,7 +1895,7 @@ def record_source_relationship(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult("source_relationship", int(cursor.lastrowid), None, True)
+        return CanonicalWriteResult("source_relationship", _inserted_rowid(cursor), None, True)
 
     _update_row(
         conn,
@@ -2013,7 +2021,7 @@ def record_review_state_history(
             changed_at_value,
         ),
     )
-    return CanonicalWriteResult("review_state_history", int(cursor.lastrowid), key, True)
+    return CanonicalWriteResult("review_state_history", _inserted_rowid(cursor), key, True)
 
 
 def canonical_family_counts(conn: sqlite3.Connection) -> dict[str, int]:

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from packaging.version import Version
 
@@ -25,7 +26,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
 }
 
 
-def load_pyproject() -> dict[str, object]:
+def load_pyproject() -> dict[str, Any]:
     return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
