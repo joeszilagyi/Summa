@@ -54,6 +54,29 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
                     "errors": [],
                     "recommended_interpretation": "Store is initialized and valid, but contains no canonical records yet.",
                 },
+                "loop_health": {
+                    "health_status": "insufficient_data",
+                    "lookback_cycles": 5,
+                    "aggregate_metrics": {"yield_trend": "insufficient_data"},
+                    "review_backlog": {
+                        "pending_review_count": 0,
+                        "oldest_pending_age_days": None,
+                        "median_pending_age_days": None,
+                    },
+                    "contradictions": {
+                        "total_contradictions": 0,
+                        "new_contradictions": 0,
+                        "contradictions_per_new_source_claim": None,
+                    },
+                    "ingestion_resolution": {
+                        "reviewable_ingested_count": 0,
+                        "review_decision_applied_count": None,
+                        "resolution_coverage": None,
+                    },
+                    "per_cycle_metrics": [],
+                    "warnings": [],
+                    "limitations": ["cycle_history_unavailable"],
+                },
                 "public_gates": {
                     "surfaces": {
                         "public_presentation_schema": "present",
@@ -92,7 +115,7 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
     assert report["status"] == "pass"
     assert report["read_only"] is True
     assert "Summa Operator Health" in body
-    for label in ["Canonical Store", "Workspaces", "Databases", "Locks", "Findings"]:
+    for label in ["Canonical Store", "Loop Health", "Workspaces", "Databases", "Locks", "Findings"]:
         assert f"<h2>{label}</h2>" in body
     for health in [
         "crown_jewel_backup_posture",

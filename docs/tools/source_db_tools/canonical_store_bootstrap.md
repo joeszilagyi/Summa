@@ -68,3 +68,14 @@ records. `source_locus`, `source_query_execution_simulation`, and
   automatic operator failure.
 - Canonical family counts and last-ingest timestamps appear only when the store
   contains recognized ingest provenance events.
+- `local_doctor.py` also reports a separate loop-health section derived from
+  existing cycle ingest provenance, review-state history, contradiction
+  relationships, and review-decision provenance. Loop health is motion over
+  time, not a replacement for static row counts.
+- Loop-health metrics include recent per-cycle reviewable yield, accepted
+  yield where available, pending review backlog size and age, contradiction
+  rate, and review-decision coverage. Missing cycle history or review-decision
+  data is reported as unavailable rather than treated as zero.
+- Loop-health status is operational only. It can warn that review is lagging,
+  contradictions are spiking, or recent cycles are stalled, but it does not
+  decide claim truth, apply review decisions, or mutate canonical rows.

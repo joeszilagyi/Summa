@@ -35,7 +35,7 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     resolve_workspaces,
 )
-from tools.source_db_tools import canonical_store  # noqa: E402
+from tools.source_db_tools import canonical_store, loop_health  # noqa: E402
 
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
@@ -162,6 +162,7 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
             "schedule_posture": workspace.get("schedule_posture"),
             "workspace_root_status": "ok" if isinstance(root, Path) and root.is_dir() else "missing",
             "default_subject_manifest_status": "ok" if isinstance(manifest, Path) and manifest.is_file() else "missing",
+            "saturation": workspace_saturation_summary(workspace),
         }
         workspaces.append(entry)
         if entry["workspace_root_status"] != "ok":
@@ -183,6 +184,35 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
                 )
             )
     return workspaces, findings
+
+
+def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
+    scheduler_policy = workspace.get("scheduler_policy")
+    saturation = scheduler_policy.get("saturation_state") if isinstance(scheduler_policy, dict) else None
+    if not isinstance(saturation, dict):
+        return {
+            "state": "not_evaluated",
+            "scheduler_action": "run",
+            "reason_codes": ["not_evaluated"],
+            "interpretation": "No saturation evaluation is recorded for this workspace.",
+        }
+    state = str(saturation.get("state") or "not_evaluated")
+    action = str(saturation.get("scheduler_action") or "run")
+    reasons = saturation.get("reason_codes") if isinstance(saturation.get("reason_codes"), list) else []
+    if state in {"saturated", "cooldown"}:
+        interpretation = f"Workspace is {state}; scheduler action is {action}."
+    else:
+        interpretation = "Workspace is not saturated under the recorded policy."
+    return {
+        "state": state,
+        "scheduler_action": action,
+        "reason_codes": [str(reason) for reason in reasons],
+        "policy_id": saturation.get("policy_id"),
+        "evaluated_at": saturation.get("evaluated_at"),
+        "next_eligible_cycle": saturation.get("next_eligible_cycle"),
+        "recent_yield_summary": saturation.get("recent_yield_summary"),
+        "interpretation": interpretation,
+    }
 
 
 def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
@@ -309,6 +339,60 @@ def inspect_canonical_store(
                 "advisory_only",
                 "canonical store contains rows but no recognized ingest provenance events",
                 path=summary.get("path"),
+            )
+        )
+    return summary, findings
+
+
+def inspect_loop_health(
+    repo_root: Path,
+    *,
+    canonical_db: str | Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if canonical_db is not None:
+        configured_path = Path(canonical_db).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = (repo_root / configured_path).resolve()
+    else:
+        configured_path = repo_root / "canonical.sqlite"
+    summary = loop_health.summarize_loop_health(configured_path)
+    findings: list[dict[str, Any]] = []
+    status = summary.get("health_status") or summary.get("status")
+    if status == "review_lagging":
+        findings.append(
+            finding(
+                "LOOP_HEALTH_REVIEW_LAGGING",
+                "advisory_only",
+                "loop health indicates review is not keeping pace with ingestion",
+                pending_review_count=summary.get("review_backlog", {}).get("pending_review_count"),
+                resolution_coverage=summary.get("ingestion_resolution", {}).get("resolution_coverage"),
+            )
+        )
+    elif status == "contradiction_spike":
+        findings.append(
+            finding(
+                "LOOP_HEALTH_CONTRADICTION_SPIKE",
+                "advisory_only",
+                "loop health indicates a high contradiction rate in recent ingest cycles",
+                contradiction_rate=summary.get("contradictions", {}).get("contradictions_per_new_source_claim"),
+            )
+        )
+    elif status == "stalled":
+        findings.append(
+            finding(
+                "LOOP_HEALTH_STALLED",
+                "advisory_only",
+                "loop health indicates recent cycles produced no reviewable records",
+                cycle_ids=summary.get("cycle_ids_considered", []),
+            )
+        )
+    elif status == "accumulating":
+        findings.append(
+            finding(
+                "LOOP_HEALTH_ACCUMULATING",
+                "advisory_only",
+                "loop health indicates the review backlog is accumulating",
+                pending_review_count=summary.get("review_backlog", {}).get("pending_review_count"),
             )
         )
     return summary, findings
@@ -609,6 +693,11 @@ def build_report(
         canonical_db=canonical_db,
     )
     findings.extend(canonical_store_findings)
+    loop_health_summary, loop_health_findings = inspect_loop_health(
+        repo_root,
+        canonical_db=canonical_db,
+    )
+    findings.extend(loop_health_findings)
     locks, lock_findings = inspect_locks(repo_root)
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
@@ -645,6 +734,17 @@ def build_report(
             },
             default="pass",
         ),
+        "loop_health": status_from_findings(
+            loop_health_findings,
+            fail_codes=set(),
+            warn_codes={
+                "LOOP_HEALTH_REVIEW_LAGGING",
+                "LOOP_HEALTH_CONTRADICTION_SPIKE",
+                "LOOP_HEALTH_STALLED",
+                "LOOP_HEALTH_ACCUMULATING",
+            },
+            default="pass",
+        ),
         "workspace_locks": status_from_findings(
             lock_findings,
             fail_codes=set(),
@@ -667,6 +767,7 @@ def build_report(
             "workspaces": workspaces,
             "databases": databases,
             "canonical_store": canonical_store_summary,
+            "loop_health": loop_health_summary,
             "locks": locks,
             "backup_posture": backup_posture,
             "migration_posture": migration_posture,
@@ -699,6 +800,17 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(f"canonical_store.status={canonical_store_summary.get('status')}")
         lines.append(f"canonical_store.total_rows={canonical_store_summary.get('total_rows')}")
         lines.append(f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}")
+    loop_health_summary = report.get("loop_health", {})
+    if isinstance(loop_health_summary, dict):
+        lines.append(f"loop_health.status={loop_health_summary.get('health_status')}")
+        lines.append(
+            "loop_health.pending_review_count="
+            f"{loop_health_summary.get('review_backlog', {}).get('pending_review_count')}"
+        )
+        lines.append(
+            "loop_health.resolution_coverage="
+            f"{loop_health_summary.get('ingestion_resolution', {}).get('resolution_coverage')}"
+        )
     for index, entry in enumerate(report["findings"][:20]):
         lines.append(f"finding[{index}].code={entry['code']}")
         lines.append(f"finding[{index}].class={entry['class']}")
