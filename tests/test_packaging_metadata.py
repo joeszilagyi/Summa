@@ -225,7 +225,10 @@ def test_coverage_tooling_is_configured_in_pyproject_and_ci() -> None:
 
     workflow = HYGIENE_WORKFLOW.read_text(encoding="utf-8")
     assert 'python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"' in workflow
-    assert "python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml" in workflow
+    assert (
+        "python -m pytest -q --cov=tools/validators --cov=tools/common "
+        "--cov-report=term-missing --cov-report=xml"
+    ) in workflow
 
 
 def test_console_entry_point_targets_emit_help() -> None:
