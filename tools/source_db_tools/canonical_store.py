@@ -807,7 +807,11 @@ def _pending_review_state(state: str | None) -> bool:
 
 def _merged_review_state(existing: Any, proposed: str) -> str:
     existing_text = None if existing is None else str(existing).strip()
-    if existing_text and not _pending_review_state(existing_text) and _pending_review_state(proposed):
+    if (
+        existing_text
+        and not _pending_review_state(existing_text)
+        and _pending_review_state(proposed)
+    ):
         return existing_text
     return proposed
 
@@ -822,7 +826,9 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
-def _lookup_row(conn: sqlite3.Connection, table: str, pk_column: str, criteria: dict[str, Any]) -> sqlite3.Row | None:
+def _lookup_row(
+    conn: sqlite3.Connection, table: str, pk_column: str, criteria: dict[str, Any]
+) -> sqlite3.Row | None:
     clauses: list[str] = []
     params: list[Any] = []
     for column, value in criteria.items():
@@ -858,7 +864,11 @@ def _update_row(
     assignments: dict[str, Any],
 ) -> None:
     columns = list(assignments)
-    sql = f"UPDATE {table} SET " + ", ".join(f"{column}=?" for column in columns) + f" WHERE {pk_column}=?"
+    sql = (
+        f"UPDATE {table} SET "
+        + ", ".join(f"{column}=?" for column in columns)
+        + f" WHERE {pk_column}=?"
+    )
     conn.execute(sql, tuple(assignments[column] for column in columns) + (pk_value,))
 
 
@@ -990,15 +1000,11 @@ def upsert_work(
 ) -> CanonicalWriteResult:
     _require_provenance_event(conn, provenance_event_ref)
     work_key = _require_nonblank(work_key_v1, "work_key_v1")
-    review_state_value = _normalize_review_state(
-        review_state, default=DEFAULT_WORK_REVIEW_STATE
-    )
+    review_state_value = _normalize_review_state(review_state, default=DEFAULT_WORK_REVIEW_STATE)
     timestamp = _normalize_timestamp(
         record_last_updated, field_name="record_last_updated", default=now_rfc3339()
     )
-    created_at_value = _normalize_timestamp(
-        created_at, field_name="created_at", default=timestamp
-    )
+    created_at_value = _normalize_timestamp(created_at, field_name="created_at", default=timestamp)
     first_seen_value = _normalize_timestamp(
         first_seen_at, field_name="first_seen_at", default=created_at_value
     )
@@ -1294,9 +1300,7 @@ def record_source_claim(
     timestamp = _normalize_timestamp(
         record_last_updated, field_name="record_last_updated", default=now_rfc3339()
     )
-    created_at_value = _normalize_timestamp(
-        created_at, field_name="created_at", default=timestamp
-    )
+    created_at_value = _normalize_timestamp(created_at, field_name="created_at", default=timestamp)
     score = _normalize_confidence_score(confidence_score)
     existing = conn.execute(
         "SELECT * FROM source_claim WHERE source_claim_key_v1=?",
@@ -1478,9 +1482,7 @@ def record_capture_event(
                 _optional_nonblank(byte_retention_status, "byte_retention_status"),
                 _optional_nonblank(full_text_retention_status, "full_text_retention_status"),
                 _optional_nonblank(refetchability_status, "refetchability_status"),
-                _optional_nonblank(
-                    payload_storage_policy_class, "payload_storage_policy_class"
-                ),
+                _optional_nonblank(payload_storage_policy_class, "payload_storage_policy_class"),
                 _normalize_json_text(quality_warnings_json, "quality_warnings_json"),
                 _optional_nonblank(transient_payload_note, "transient_payload_note"),
                 review_state_value,
@@ -1523,9 +1525,7 @@ def record_capture_event(
                 existing["refetchability_status"],
             ),
             "payload_storage_policy_class": _first_present(
-                _optional_nonblank(
-                    payload_storage_policy_class, "payload_storage_policy_class"
-                ),
+                _optional_nonblank(payload_storage_policy_class, "payload_storage_policy_class"),
                 existing["payload_storage_policy_class"],
             ),
             "quality_warnings_json": _first_present(
@@ -1781,9 +1781,7 @@ def record_extraction_detected_entity(
                 timestamp,
             ),
         )
-        return CanonicalWriteResult(
-            "extraction_detected_entity", int(cursor.lastrowid), None, True
-        )
+        return CanonicalWriteResult("extraction_detected_entity", int(cursor.lastrowid), None, True)
 
     _update_row(
         conn,
@@ -1950,7 +1948,9 @@ def record_review_state_history(
     source_run_id: str | None = None,
     review_state_history_key_v1: str | None = None,
 ) -> CanonicalWriteResult:
-    new_state_value = _normalize_review_state(new_state, default="needs_review", field_name="new_state")
+    new_state_value = _normalize_review_state(
+        new_state, default="needs_review", field_name="new_state"
+    )
     changed_at_value = _normalize_timestamp(
         changed_at, field_name="changed_at", default=now_rfc3339()
     )
@@ -2151,7 +2151,9 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
             missing = ", ".join(sorted(metadata_tables - table_set))
             summary["status"] = "uninitialized"
             summary["errors"].append(f"missing canonical schema metadata tables: {missing}")
-            summary["recommended_interpretation"] = _recommended_store_interpretation("uninitialized")
+            summary["recommended_interpretation"] = _recommended_store_interpretation(
+                "uninitialized"
+            )
             return summary
 
         schema_row = get_schema_version(conn)
@@ -2160,7 +2162,9 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
             summary["errors"].append(
                 "canonical schema metadata tables exist, but schema_version row for canonical_store is missing"
             )
-            summary["recommended_interpretation"] = _recommended_store_interpretation("uninitialized")
+            summary["recommended_interpretation"] = _recommended_store_interpretation(
+                "uninitialized"
+            )
             return summary
 
         summary["initialized"] = True
@@ -2185,18 +2189,13 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
         )
         summary["total_rows"] = substantive_total
         summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
-        if (
-            summary["table_counts"].get("provenance_event", 0) > 0
-            and non_event_total == 0
-        ):
+        if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
             summary["warnings"].append(
                 "provenance events exist, but no substantive canonical family rows were found"
             )
         if substantive_total > 0 and summary["last_ingest_at"] is None:
             summary["warnings"].append("no recognized ingest provenance events were found")
-        summary["recommended_interpretation"] = _recommended_store_interpretation(
-            summary["status"]
-        )
+        summary["recommended_interpretation"] = _recommended_store_interpretation(summary["status"])
         return summary
     finally:
         conn.close()
@@ -2337,7 +2336,10 @@ def load_gather_prior_state(
             OR COALESCE(confidence_score, 0.0) >= ?
           )
         """,
-        tuple(work_scope_params) + excluded_params + established_params + (high_confidence_threshold,),
+        tuple(work_scope_params)
+        + excluded_params
+        + established_params
+        + (high_confidence_threshold,),
     ).fetchone()
     work_rows = conn.execute(
         f"""
@@ -2417,7 +2419,9 @@ def load_gather_prior_state(
     claim_scope = "workspace_id=?"
     claim_scope_params: list[Any] = [subject_key]
     if work_refs:
-        claim_scope = f"({claim_scope} OR about_object_ref IN ({', '.join('?' for _ in work_refs)}))"
+        claim_scope = (
+            f"({claim_scope} OR about_object_ref IN ({', '.join('?' for _ in work_refs)}))"
+        )
         claim_scope_params.extend(work_refs)
     claim_total = conn.execute(
         f"""
@@ -2479,9 +2483,7 @@ def load_gather_prior_state(
     relationship_scope_params: list[Any] = [subject_key]
     if work_refs:
         placeholders = ", ".join("?" for _ in work_refs)
-        relationship_scope = (
-            f"({relationship_scope} OR from_object_ref IN ({placeholders}) OR to_object_ref IN ({placeholders}))"
-        )
+        relationship_scope = f"({relationship_scope} OR from_object_ref IN ({placeholders}) OR to_object_ref IN ({placeholders}))"
         relationship_scope_params.extend(work_refs)
         relationship_scope_params.extend(work_refs)
     relationship_total = conn.execute(
@@ -2529,7 +2531,7 @@ def load_gather_prior_state(
         (subject_key, per_family_limit),
     ).fetchall()
 
-    subject_pattern = f'%\"subject_id\": \"{subject_key}\"%'
+    subject_pattern = f'%"subject_id": "{subject_key}"%'
     previous_total = conn.execute(
         """
         SELECT COUNT(*) AS count
@@ -2716,8 +2718,7 @@ def build_prior_state_context(
         raise CanonicalStoreError("max_chars must be positive")
 
     explicit_previous = [
-        _require_nonblank(value, "previous_run_id")
-        for value in (previous_run_ids or [])
+        _require_nonblank(value, "previous_run_id") for value in (previous_run_ids or [])
     ]
     merged_previous = list(explicit_previous)
     for item in prior_state.get("previous_runs", []):
@@ -2749,15 +2750,25 @@ def build_prior_state_context(
         return "\n".join(lines).rstrip() + "\n"
 
     if len(current_text()) > max_chars:
-        raise CanonicalStoreError("prior-state context exceeds max_chars before any records are rendered")
+        raise CanonicalStoreError(
+            "prior-state context exceeds max_chars before any records are rendered"
+        )
 
     section_specs: list[tuple[str, str, list[dict[str, Any]]]] = [
         ("Accepted / high-confidence works", "works", prior_state["records"]["works"]),
         ("Accepted / high-confidence entities", "entities", prior_state["records"]["entities"]),
-        ("Needs-review / proposed source claims", "source_claims", prior_state["records"]["source_claims"]),
+        (
+            "Needs-review / proposed source claims",
+            "source_claims",
+            prior_state["records"]["source_claims"],
+        ),
         ("Open source leads", "source_access", prior_state["records"]["source_access"]),
         ("Source relationships", "relationships", prior_state["records"]["relationships"]),
-        ("Recent extraction summaries", "extraction_summaries", prior_state["records"]["extraction_summaries"]),
+        (
+            "Recent extraction summaries",
+            "extraction_summaries",
+            prior_state["records"]["extraction_summaries"],
+        ),
         ("Previous gather runs considered", "previous_runs", prior_state["previous_runs"]),
     ]
 
@@ -2828,9 +2839,8 @@ def build_prior_state_context(
                     cycle_bits.append(f"cycle_depth={record['cycle_depth']}")
                 if record.get("event_timestamp"):
                     cycle_bits.append(str(record["event_timestamp"]))
-                line = (
-                    f"- {record.get('run_id') or '(missing-run-id)'}"
-                    + (f" ({', '.join(cycle_bits)})" if cycle_bits else "")
+                line = f"- {record.get('run_id') or '(missing-run-id)'}" + (
+                    f" ({', '.join(cycle_bits)})" if cycle_bits else ""
                 )
             if not add_line(line):
                 break
@@ -2840,9 +2850,12 @@ def build_prior_state_context(
             break
         add_line("")
 
-    if not any_records:
-        if not add_line("No prior canonical records were selected for this subject."):
-            raise CanonicalStoreError("prior-state context max_chars is too small for the empty-state block")
+    if not any_records and not add_line(
+        "No prior canonical records were selected for this subject."
+    ):
+        raise CanonicalStoreError(
+            "prior-state context max_chars is too small for the empty-state block"
+        )
 
     if truncated:
         add_line("[prior canonical state truncated by max_chars]")

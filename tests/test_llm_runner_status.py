@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +11,13 @@ GATHER_DOC_PATH = REPO_ROOT / "docs" / "scripts" / "index_run_gather.md"
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def file_contains_text(path: Path, needle: str) -> bool:
+    try:
+        return needle in read_text(path)
+    except UnicodeDecodeError:
+        return False
 
 
 def test_llm_runner_header_declares_live_gather_role() -> None:
@@ -26,16 +32,12 @@ def test_llm_runner_header_declares_live_gather_role() -> None:
 
 
 def test_llm_runner_has_live_nonlegacy_callers() -> None:
-    result = subprocess.run(
-        ["rg", "-l", "llm_runner", "tools", "tests"],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-    references = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    references = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for root in (REPO_ROOT / "tools", REPO_ROOT / "tests")
+        for path in root.rglob("*")
+        if path.is_file() and file_contains_text(path, "llm_runner")
+    }
     runner_rel = RUNNER_PATH.relative_to(REPO_ROOT).as_posix()
     assert runner_rel in references
     assert len(references) > 1
