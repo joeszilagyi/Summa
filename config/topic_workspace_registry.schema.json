@@ -106,6 +106,9 @@
         },
         "failure_state": {
           "$ref": "#/$defs/failure_state"
+        },
+        "saturation_state": {
+          "$ref": "#/$defs/saturation_state"
         }
       }
     },
@@ -188,6 +191,61 @@
         "blocked_reason": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "saturation_state": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "state",
+        "reason_codes",
+        "scheduler_action"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "active_bootstrap",
+            "watch",
+            "cooldown",
+            "saturated",
+            "manually_paused",
+            "reactivated",
+            "not_evaluated"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scheduler_action": {
+          "type": "string",
+          "enum": [
+            "run",
+            "deprioritize",
+            "cooldown",
+            "halt"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evaluated_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "next_eligible_cycle": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "recent_yield_summary": {
+          "type": "object"
         }
       }
     },

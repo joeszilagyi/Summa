@@ -46,6 +46,7 @@ def workspace_record(
     schedule_posture: str = "manual",
     workspace_policy_class: str = "private_local",
     manifest_path: Path | None = None,
+    scheduler_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     record: dict[str, object] = {
         "workspace_id": workspace_id,
@@ -58,6 +59,8 @@ def workspace_record(
     }
     if manifest_path is not None:
         record["default_subject_manifest"] = str(manifest_path)
+    if scheduler_policy is not None:
+        record["scheduler_policy"] = scheduler_policy
     return record
 
 
@@ -104,6 +107,16 @@ def test_workspace_overview_surfaces_status_and_publish_blockers(tmp_path: Path)
             workspace_record(
                 workspace_id="private_topic",
                 workspace_root=private_root,
+                scheduler_policy={
+                    "saturation_state": {
+                        "state": "saturated",
+                        "scheduler_action": "deprioritize",
+                        "reason_codes": ["consecutive_low_yield"],
+                        "policy_id": "topic-saturation.test",
+                        "evaluated_at": "2026-06-04T12:00:00Z",
+                        "recent_yield_summary": {"cycle_count": 2},
+                    }
+                },
             ),
             workspace_record(
                 workspace_id="missing_topic",
@@ -124,6 +137,7 @@ def test_workspace_overview_surfaces_status_and_publish_blockers(tmp_path: Path)
         "active_workspaces": 3,
         "default_subject_manifest_ok": 1,
         "publish_blocked": 2,
+        "saturated_workspaces": 1,
         "scheduled_workspaces": 2,
         "total_workspaces": 3,
         "workspace_root_ok": 2,
@@ -141,6 +155,8 @@ def test_workspace_overview_surfaces_status_and_publish_blockers(tmp_path: Path)
     assert workspaces["private_topic"]["default_subject_manifest_status"] == "not_declared"
     assert workspaces["private_topic"]["publish_readiness"]["state"] == "blocked"
     assert "workspace_policy_class:private_local" in workspaces["private_topic"]["publish_readiness"]["blockers"]
+    assert workspaces["private_topic"]["saturation"]["state"] == "saturated"
+    assert workspaces["private_topic"]["saturation"]["scheduler_action"] == "deprioritize"
 
     assert workspaces["missing_topic"]["workspace_root_status"] == "missing"
     assert workspaces["missing_topic"]["default_subject_manifest_status"] == "missing"

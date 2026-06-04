@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/topic_saturation_policy.v1.schema.json",
+  "title": "Topic Saturation Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "enabled",
+    "mode",
+    "lookback_cycles",
+    "min_new_accepted_records",
+    "min_new_reviewable_records",
+    "min_useful_yield",
+    "max_consecutive_low_yield_cycles",
+    "review_backlog_pressure_threshold",
+    "cooldown_cycles",
+    "scheduler_action_on_saturated",
+    "family_weights",
+    "accepted_review_states",
+    "reviewable_review_states",
+    "backlog_review_states"
+  ],
+  "properties": {
+    "schema_version": { "const": "topic-saturation-policy.v1" },
+    "policy_id": { "type": "string", "minLength": 1 },
+    "enabled": { "type": "boolean" },
+    "mode": {
+      "type": "string",
+      "enum": ["mixed", "accepted_only", "reviewable_yield"]
+    },
+    "lookback_cycles": { "type": "integer", "minimum": 1 },
+    "min_new_accepted_records": { "type": "integer", "minimum": 0 },
+    "min_new_reviewable_records": { "type": "integer", "minimum": 0 },
+    "min_useful_yield": { "type": "number", "minimum": 0 },
+    "max_consecutive_low_yield_cycles": { "type": "integer", "minimum": 1 },
+    "review_backlog_pressure_threshold": { "type": "integer", "minimum": 0 },
+    "cooldown_cycles": { "type": "integer", "minimum": 0 },
+    "scheduler_action_on_saturated": {
+      "type": "string",
+      "enum": ["deprioritize", "cooldown", "halt"]
+    },
+    "family_weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted_record",
+        "reviewable_record",
+        "work",
+        "source_claim",
+        "source_access",
+        "extraction_detected_entity",
+        "source_relationship",
+        "capture_event",
+        "extraction_record",
+        "authority_reconciliation"
+      ],
+      "properties": {
+        "accepted_record": { "type": "number", "minimum": 0 },
+        "reviewable_record": { "type": "number", "minimum": 0 },
+        "work": { "type": "number", "minimum": 0 },
+        "source_claim": { "type": "number", "minimum": 0 },
+        "source_access": { "type": "number", "minimum": 0 },
+        "extraction_detected_entity": { "type": "number", "minimum": 0 },
+        "source_relationship": { "type": "number", "minimum": 0 },
+        "capture_event": { "type": "number", "minimum": 0 },
+        "extraction_record": { "type": "number", "minimum": 0 },
+        "authority_reconciliation": { "type": "number", "minimum": 0 }
+      }
+    },
+    "accepted_review_states": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "reviewable_review_states": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "backlog_review_states": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "minItems": 1
+    }
+  }
+}

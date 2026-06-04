@@ -34,8 +34,16 @@ Budget behavior:
   `run_budget.max_attempts` are deferred
 - cycle runtime is measured per workspace and compared to
   `run_budget.max_runtime_seconds`
+- planned-run records may also carry a `saturation` section from
+  `select_scheduled_workspaces.py`
+- workspaces marked `halt` or `cooldown` by saturation policy are deferred
+  unless the planned-run record includes a saturation override
 - failures are appended as `command_failure` runtime-ledger events
 - successes are appended as `command_end` runtime-ledger events
+
+Saturation is a convergence budget, not a truth decision. It means recent
+cycles produced too little accepted or reviewable yield under the configured
+policy, so the scheduler should stop spending expansion cycles for now.
 
 Safety model:
 

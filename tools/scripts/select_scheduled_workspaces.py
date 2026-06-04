@@ -12,6 +12,7 @@ import argparse
 import copy
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,8 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     resolve_workspaces,
 )
+from tools.common import topic_saturation  # noqa: E402
+from tools.source_db_tools import canonical_store  # noqa: E402
 
 import validate_topic_workspace_registry  # noqa: E402
 
@@ -135,6 +138,21 @@ def parse_args() -> argparse.Namespace:
         "--run-budget-max-runtime-seconds",
         type=positive_int_arg("--run-budget-max-runtime-seconds"),
         help="Optional maximum runner wall-clock seconds to record in each planned-run budget.",
+    )
+    parser.add_argument("--db", help="Canonical SQLite store for optional saturation evaluation.")
+    parser.add_argument(
+        "--saturation-policy",
+        help="Optional topic saturation policy JSON. If omitted, scheduler behavior is unchanged.",
+    )
+    parser.add_argument(
+        "--include-saturated",
+        action="store_true",
+        help="Allow saturated/cooldown workspaces to be selected and record the override in planned-run output.",
+    )
+    parser.add_argument(
+        "--ignore-saturation",
+        action="store_true",
+        help="Disable saturation evaluation even when --saturation-policy is supplied.",
     )
     return parser.parse_args()
 
@@ -323,6 +341,8 @@ def planned_run_record(
         "run_budget": dict(run_budget),
         "retry_policy": copy.deepcopy(retry_policy) if retry_policy is not None else None,
         "failure_state": copy.deepcopy(failure_state) if failure_state is not None else None,
+        "saturation": copy.deepcopy(entry.get("saturation")) if isinstance(entry.get("saturation"), dict) else None,
+        "saturation_override": bool(entry.get("saturation_override", False)),
         "workspace_root": entry.get("workspace_root"),
         "resolved_workspace_root": entry.get("resolved_workspace_root"),
         "default_subject_manifest": entry.get("default_subject_manifest"),
@@ -357,6 +377,85 @@ def build_planned_run_records(
     return records
 
 
+def load_subject_id_from_manifest(manifest_path: str | None) -> str | None:
+    if not isinstance(manifest_path, str) or not manifest_path:
+        return None
+    path = Path(manifest_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    subject_id = payload.get("subject_id")
+    return subject_id if isinstance(subject_id, str) and subject_id else None
+
+
+def saturation_context(args: argparse.Namespace) -> tuple[topic_saturation.Policy | None, sqlite3.Connection | None]:
+    if args.ignore_saturation or not args.saturation_policy:
+        return None, None
+    if not args.db:
+        raise SelectionError("--db is required when --saturation-policy is supplied")
+    try:
+        policy = topic_saturation.load_policy(args.saturation_policy)
+        db_path = canonical_store.resolve_db_path(args.db)
+        canonical_store.check_canonical_store(db_path)
+        conn = canonical_store.connect_existing_read_only(db_path)
+    except (topic_saturation.TopicSaturationError, canonical_store.CanonicalStoreError, sqlite3.Error) as exc:
+        raise SelectionError(f"saturation policy/store is not usable: {exc}") from exc
+    return policy, conn
+
+
+def attach_saturation(
+    entry: dict[str, Any],
+    *,
+    workspace: dict[str, Any],
+    policy: topic_saturation.Policy | None,
+    conn: sqlite3.Connection | None,
+    planned_at: str,
+) -> None:
+    if policy is None or conn is None:
+        return
+    subject_id = load_subject_id_from_manifest(entry.get("resolved_default_subject_manifest"))
+    if subject_id is None:
+        entry["saturation"] = {
+            "schema_version": topic_saturation.SCHEMA_VERSION,
+            "workspace_id": entry.get("workspace_id"),
+            "subject_id": None,
+            "policy_id": policy.policy_id,
+            "state": "not_evaluated",
+            "scheduler_action": "run",
+            "reason_codes": ["subject_unresolved"],
+            "recent_yield_summary": topic_saturation.empty_summary(),
+        }
+        return
+    entry["saturation"] = topic_saturation.evaluate_saturation(
+        conn,
+        workspace_id=str(workspace["workspace_id"]),
+        subject_id=subject_id,
+        policy=policy,
+        evaluated_at=planned_at,
+    )
+
+
+def saturation_ineligibility_reasons(entry: dict[str, Any], *, include_saturated: bool) -> list[str]:
+    saturation = entry.get("saturation")
+    if not isinstance(saturation, dict):
+        return []
+    action = saturation.get("scheduler_action")
+    if include_saturated:
+        if action in {"halt", "cooldown"}:
+            entry["saturation_override"] = True
+        return []
+    if action == "halt":
+        return [f"saturation_state is halted: {', '.join(saturation.get('reason_codes', []))}"]
+    if action == "cooldown":
+        next_eligible = saturation.get("next_eligible_cycle")
+        suffix = f" until cycle {next_eligible}" if next_eligible is not None else ""
+        return [f"saturation_state is cooldown{suffix}: {', '.join(saturation.get('reason_codes', []))}"]
+    return []
+
+
 def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -389,33 +488,54 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
     except TopicWorkspaceRegistryError as exc:
         raise SelectionError(str(exc)) from exc
 
-    eligible: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for workspace in resolved_workspaces:
-        try:
-            entry = workspace_output_entry(workspace)
-        except (KeyError, TypeError) as exc:
-            raise SelectionError(f"workspace record is invalid: {exc}") from exc
-        reasons = scheduler_ineligibility_reasons(workspace, include_manual=args.include_manual)
-        reasons.extend(
-            scheduler_policy_ineligibility_reasons(
-                workspace,
-                args=args,
-                planned_at=planned_at,
+    saturation_policy, saturation_conn = saturation_context(args)
+    try:
+        eligible: list[dict[str, Any]] = []
+        deprioritized: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for workspace in resolved_workspaces:
+            try:
+                entry = workspace_output_entry(workspace)
+            except (KeyError, TypeError) as exc:
+                raise SelectionError(f"workspace record is invalid: {exc}") from exc
+            attach_saturation(
+                entry,
+                workspace=workspace,
+                policy=saturation_policy,
+                conn=saturation_conn,
+                planned_at=planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             )
-        )
-        if reasons:
-            entry["reasons"] = reasons
-            skipped.append(entry)
-        else:
-            eligible.append(entry)
+            reasons = scheduler_ineligibility_reasons(workspace, include_manual=args.include_manual)
+            reasons.extend(
+                scheduler_policy_ineligibility_reasons(
+                    workspace,
+                    args=args,
+                    planned_at=planned_at,
+                )
+            )
+            reasons.extend(saturation_ineligibility_reasons(entry, include_saturated=args.include_saturated))
+            if reasons:
+                entry["reasons"] = reasons
+                skipped.append(entry)
+            elif isinstance(entry.get("saturation"), dict) and entry["saturation"].get("scheduler_action") == "deprioritize":
+                entry["saturation_deprioritized"] = True
+                deprioritized.append(entry)
+            else:
+                eligible.append(entry)
+    finally:
+        if saturation_conn is not None:
+            saturation_conn.close()
 
-    selected = eligible
-    if args.limit is not None and len(eligible) > args.limit:
-        selected = eligible[: args.limit]
-        for deferred in eligible[args.limit :]:
+    ranked_eligible = eligible + deprioritized
+    selected = ranked_eligible
+    if args.limit is not None and len(ranked_eligible) > args.limit:
+        selected = ranked_eligible[: args.limit]
+        for deferred in ranked_eligible[args.limit :]:
             deferred_entry = dict(deferred)
-            deferred_entry["reasons"] = ["selection limit reached"]
+            if deferred_entry.get("saturation_deprioritized"):
+                deferred_entry["reasons"] = ["selection limit reached after saturation deprioritization"]
+            else:
+                deferred_entry["reasons"] = ["selection limit reached"]
             skipped.append(deferred_entry)
 
     planned_records = build_planned_run_records(
@@ -431,6 +551,9 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "registry_path": str(registry_path),
         "requested_workspace_ids": list(args.workspace_ids),
         "include_manual": args.include_manual,
+        "saturation_policy": None if saturation_policy is None else saturation_policy.policy_id,
+        "include_saturated": args.include_saturated,
+        "ignore_saturation": args.ignore_saturation,
         "limit": args.limit,
         "planner_run_id": args.planner_run_id,
         "planned_run_record_count": len(planned_records),
