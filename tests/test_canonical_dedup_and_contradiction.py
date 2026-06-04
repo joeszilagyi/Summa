@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.source_db_tools import authority_reconciliation, canonical_ingest, canonical_store
+from tools.source_db_tools import authority_reconciliation, canonical_ingest, canonical_reconciliation, canonical_store
 
 
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
@@ -110,6 +110,31 @@ def structured_claim_candidate(
     return {
         "candidate_id": candidate_id,
         "candidate_type": candidate_type,
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def relationship_candidate(
+    candidate_id: str,
+    *,
+    from_object_ref: str,
+    predicate: str,
+    to_object_ref: str,
+    evidence_note: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "from_object_ref": from_object_ref,
+        "predicate": predicate,
+        "to_object_ref": to_object_ref,
+    }
+    if evidence_note is not None:
+        payload["evidence_note"] = evidence_note
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": "relationship",
         "origin": "llm_proposed",
         "persistence_status": "workspace_run_only",
         "review_status": "unverified",
@@ -416,6 +441,356 @@ def test_structured_taught_by_impossibility_creates_contradiction_and_review_his
     assert report["counts"]["contradicted"]["source_claim"] >= 1
     assert report["counts"]["contradicted"]["source_relationship"] == 1
     assert {"accepted", "verified"} & {row["review_state"] for row in claims} == set()
+
+
+def test_relational_taught_by_lifespan_impossibility_flags_relationship_without_deleting_facts(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.a",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.b",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-contradiction",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = ingest_batch(conn, batch, batch_name="relational.json", db_path=db_path)
+        original_relationship = conn.execute(
+            """
+            SELECT source_relationship_id, review_state
+            FROM source_relationship
+            WHERE predicate='taught_by'
+            """
+        ).fetchone()
+        contradiction_rows = conn.execute(
+            """
+            SELECT from_object_ref, to_object_ref, predicate, target_label, evidence_note, review_state
+            FROM source_relationship
+            WHERE predicate='contradicts'
+            """
+        ).fetchall()
+        claim_count = conn.execute("SELECT COUNT(*) FROM source_claim").fetchone()[0]
+        history_rows = conn.execute(
+            """
+            SELECT target_namespace, target_id, new_state, reason, note
+            FROM review_state_history
+            WHERE reason='relational_temporal_lifespan_overlap'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert claim_count == 2
+    assert original_relationship is not None
+    assert original_relationship["review_state"] == "needs_review"
+    assert len(contradiction_rows) == 1
+    assert contradiction_rows[0]["from_object_ref"] == f"source_relationship:{original_relationship['source_relationship_id']}"
+    assert contradiction_rows[0]["target_label"] == "relational_temporal_lifespan_overlap"
+    assert "subject birth year 1940 is after object death year 1938" in contradiction_rows[0]["evidence_note"]
+    assert contradiction_rows[0]["review_state"] == "needs_review"
+    assert history_rows
+    assert history_rows[0]["target_namespace"] == "source_relationship"
+    assert report["counts"]["contradicted"]["source_relationship"] == 1
+
+
+def test_relational_taught_by_with_insufficient_data_does_not_flag(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.death.insufficient",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by.insufficient",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-insufficient",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-insufficient.json", db_path=db_path)
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+        relationship_state = conn.execute(
+            "SELECT review_state FROM source_relationship WHERE predicate='taught_by'"
+        ).fetchone()["review_state"]
+    finally:
+        conn.close()
+
+    assert contradiction_count == 0
+    assert relationship_state == "proposed"
+
+
+def test_relational_taught_by_with_overlapping_lifespans_does_not_flag(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.overlap",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.overlap",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1990,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by.overlap",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-overlap",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-overlap.json", db_path=db_path)
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert contradiction_count == 0
+
+
+def test_relational_met_non_overlap_flags_contradiction(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.met",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.met",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.met",
+                from_object_ref="authority:person-a",
+                predicate="met",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-met",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-met.json", db_path=db_path)
+        contradiction = conn.execute(
+            "SELECT target_label, evidence_note FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert contradiction["target_label"] == "relational_temporal_lifespan_overlap"
+    assert "predicate met is impossible" in contradiction["evidence_note"]
+
+
+def test_relational_influenced_is_conservative_for_posthumous_influence(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.influenced",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.influenced",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.influenced",
+                from_object_ref="authority:person-a",
+                predicate="influenced",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-influenced",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = ingest_batch(conn, batch, batch_name="relational-influenced.json", db_path=db_path)
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+        relationship_state = conn.execute(
+            "SELECT review_state FROM source_relationship WHERE predicate='influenced'"
+        ).fetchone()["review_state"]
+    finally:
+        conn.close()
+
+    assert contradiction_count == 0
+    assert relationship_state == "proposed"
+    assert report["counts"]["contradicted"].get("source_relationship", 0) == 0
+
+
+def test_relational_event_year_outside_lifespan_flags_relationship(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.event",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.event",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1990,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by.event",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+                evidence_note=json.dumps({"event_year": 1935}, sort_keys=True),
+            ),
+        ],
+        run_id="gather-relational-event",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-event.json", db_path=db_path)
+        contradiction = conn.execute(
+            "SELECT target_label, evidence_note FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert contradiction["target_label"] == "relational_temporal_event_year_outside_lifespan"
+    assert "event year 1935 before birth year 1940" in contradiction["evidence_note"]
+
+
+def test_relational_constraint_pass_is_idempotent(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.idempotent",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.idempotent",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by.idempotent",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-idempotent",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-idempotent.json", db_path=db_path)
+        first_counts = {
+            "contradictions": conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0],
+            "history": conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0],
+        }
+        with conn:
+            pass_report = canonical_reconciliation.run_relational_constraint_pass(
+                conn,
+                changed_at=FIXED_TIMESTAMP,
+                source_run_id="manual-pass",
+            )
+        second_counts = {
+            "contradictions": conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0],
+            "history": conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+    assert first_counts == second_counts
+    assert pass_report["relational_contradictions_detected"] == 1
 
 
 def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -> None:

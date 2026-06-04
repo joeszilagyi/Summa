@@ -13,9 +13,13 @@ import json
 import mimetypes
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +30,7 @@ for candidate in (REPO_ROOT, VALIDATORS_DIR):
         sys.path.insert(0, candidate_text)
 
 from tools.common.atomic_write import atomic_write_json, atomic_write_jsonl, atomic_write_text  # noqa: E402
-from tools.common.network_safety_gate import NetworkSafetyGateError, evaluate_request, load_request  # noqa: E402
+from tools.common.network_safety_gate import NetworkSafetyGateError, allowlisted, evaluate_request, load_request  # noqa: E402
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
@@ -44,6 +48,9 @@ CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
 EXTRACTION_SCHEMA_VERSION = "source-extraction-record.v1"
 EXECUTOR_NAME = "tools/scripts/execute_source_adapter.py"
 MAX_EXTRACT_TEXT_BYTES = 64 * 1024
+DEFAULT_REMOTE_TIMEOUT_SECONDS = 10.0
+DEFAULT_REMOTE_MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_REMOTE_REDIRECTS = 3
 SAFE_TEXT_STATUS = {"completed", "failed", "skipped"}
 SAFE_RUN_STATUS = {"completed", "denied", "failed", "dry_run"}
 LOCAL_VARIANTS = {"local_source", "structured_data", "local_git_repo"}
@@ -92,9 +99,21 @@ def parse_args() -> argparse.Namespace:
         "--allow-network",
         action="store_true",
         help=(
-            "Explicit opt-in for remote execution after a gate allow decision. "
-            "Remote live fetch remains intentionally disabled in this executor version."
+            "Explicit opt-in for remote URL retrieval after a network safety gate allow decision. "
+            "Remote fetch remains disabled by default."
         ),
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_REMOTE_TIMEOUT_SECONDS,
+        help=f"Remote HTTP timeout in seconds. Defaults to {DEFAULT_REMOTE_TIMEOUT_SECONDS:g}.",
+    )
+    parser.add_argument(
+        "--max-response-bytes",
+        type=int,
+        default=DEFAULT_REMOTE_MAX_RESPONSE_BYTES,
+        help=f"Maximum remote response body bytes to read per URL. Defaults to {DEFAULT_REMOTE_MAX_RESPONSE_BYTES}.",
     )
     parser.add_argument("--run-id", help="Stable run identifier. Defaults to the output directory name.")
     parser.add_argument(
@@ -545,6 +564,17 @@ def write_text_artifacts(output_dir: Path, text_artifacts: dict[str, str]) -> No
         atomic_write_text(output_dir / relative_path, body)
 
 
+def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes]) -> None:
+    for relative_path, payload in binary_artifacts.items():
+        target = (output_dir / relative_path).resolve()
+        try:
+            target.relative_to(output_dir.resolve())
+        except ValueError as exc:
+            raise SourceAcquisitionError(f"binary artifact path escapes output directory: {relative_path}") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+
+
 def write_execution_artifacts(
     *,
     output_dir: Path,
@@ -554,6 +584,7 @@ def write_execution_artifacts(
     denial_record: dict[str, Any] | None,
     gate_report: dict[str, Any] | None,
     text_artifacts: dict[str, str],
+    binary_artifacts: dict[str, bytes] | None = None,
 ) -> None:
     atomic_write_json(output_dir / "execution-record.json", execution_record)
     atomic_write_jsonl(output_dir / "capture-events.jsonl", capture_events)
@@ -562,6 +593,7 @@ def write_execution_artifacts(
         atomic_write_json(output_dir / "denial-record.json", denial_record)
     if gate_report is not None:
         atomic_write_json(output_dir / "network-safety-report.json", gate_report)
+    write_binary_artifacts(output_dir, binary_artifacts or {})
     write_text_artifacts(output_dir, text_artifacts)
     manifest = build_manifest(
         execution_record["run_id"],
@@ -1012,6 +1044,14 @@ def extract_remote_urls(records: list[dict[str, Any]]) -> list[str]:
     return sorted(dict.fromkeys(urls))
 
 
+def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    actions: dict[str, dict[str, Any]] = {}
+    for action in gate_report.get("planned_actions", []):
+        if isinstance(action, dict) and isinstance(action.get("url"), str):
+            actions[action["url"]] = action
+    return actions
+
+
 def ensure_gate_request_matches_handoff(gate_report: dict[str, Any], *, expected_urls: list[str]) -> None:
     planned_urls = sorted(
         {
@@ -1031,6 +1071,342 @@ def build_denial_record(execution_record: dict[str, Any], *, considered_urls: li
     return payload
 
 
+class NoAutoRedirectHandler(HTTPRedirectHandler):
+    """Expose redirects to the executor so every hop can be allowlist checked."""
+
+    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def extract_content_type(headers: Any) -> str:
+    value = headers.get("Content-Type") if headers is not None else None
+    if not isinstance(value, str) or not value.strip():
+        return "application/octet-stream"
+    return value.split(";", 1)[0].strip().casefold() or "application/octet-stream"
+
+
+def is_extractable_content_type(content_type: str) -> bool:
+    normalized = content_type.split(";", 1)[0].strip().casefold()
+    return (
+        normalized.startswith("text/")
+        or normalized in {"application/json", "application/xml", "application/xhtml+xml", "application/csv"}
+        or normalized.endswith("+json")
+        or normalized.endswith("+xml")
+    )
+
+
+def read_limited_response(response: Any, *, max_response_bytes: int) -> tuple[bytes, bool]:
+    chunks: list[bytes] = []
+    total = 0
+    limit = max_response_bytes + 1
+    while total <= max_response_bytes:
+        chunk = response.read(min(64 * 1024, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_response_bytes:
+            break
+    payload = b"".join(chunks)
+    if len(payload) > max_response_bytes:
+        return payload[:max_response_bytes], True
+    return payload, False
+
+
+def gate_allowlist(gate_report: dict[str, Any]) -> tuple[list[str], list[str]]:
+    checks = gate_report.get("checks", {})
+    request_allowlist = checks.get("allowlist")
+    if isinstance(request_allowlist, dict):
+        hosts = [item for item in request_allowlist.get("hosts", []) if isinstance(item, str)]
+        prefixes = [item for item in request_allowlist.get("url_prefixes", []) if isinstance(item, str)]
+        return hosts, prefixes
+    # Older gate reports do not echo the allowlist. In that case every planned
+    # URL has already been checked, but redirects must be refused.
+    return [], []
+
+
+def remote_fetch_one(
+    *,
+    url: str,
+    method: str,
+    user_agent: str,
+    allowlist_hosts: list[str],
+    allowlist_prefixes: list[str],
+    timeout_seconds: float,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    opener = build_opener(NoAutoRedirectHandler)
+    current_url = url
+    redirect_count = 0
+    attempted_urls: list[str] = []
+
+    while True:
+        attempted_urls.append(current_url)
+        request = Request(current_url, method=method, headers={"User-Agent": user_agent})
+        try:
+            response = opener.open(request, timeout=timeout_seconds)
+            status_code = int(getattr(response, "status", response.getcode()))
+            headers = response.headers
+            payload, truncated = (b"", False) if method == "HEAD" else read_limited_response(
+                response,
+                max_response_bytes=max_response_bytes,
+            )
+        except HTTPError as exc:
+            status_code = int(exc.code)
+            headers = exc.headers
+            if 300 <= status_code < 400 and headers.get("Location"):
+                redirect_count += 1
+                redirected_url = urljoin(current_url, headers["Location"])
+                if redirect_count > MAX_REMOTE_REDIRECTS:
+                    return {
+                        "status": "failed",
+                        "failure_reason": "too_many_redirects",
+                        "http_status_code": status_code,
+                        "final_url": current_url,
+                        "redirect_target": redirected_url,
+                        "redirect_count": redirect_count,
+                        "attempted_urls": attempted_urls,
+                        "payload": b"",
+                        "truncated": False,
+                        "headers": headers,
+                    }
+                if not allowlist_hosts and not allowlist_prefixes:
+                    return {
+                        "status": "failed",
+                        "failure_reason": "redirects_refused_without_echoed_allowlist",
+                        "http_status_code": status_code,
+                        "final_url": current_url,
+                        "redirect_target": redirected_url,
+                        "redirect_count": redirect_count,
+                        "attempted_urls": attempted_urls,
+                        "payload": b"",
+                        "truncated": False,
+                        "headers": headers,
+                    }
+                if not allowlisted(redirected_url, allowlist_hosts, allowlist_prefixes):
+                    return {
+                        "status": "failed",
+                        "failure_reason": "redirect_target_not_allowlisted",
+                        "http_status_code": status_code,
+                        "final_url": current_url,
+                        "redirect_target": redirected_url,
+                        "redirect_count": redirect_count,
+                        "attempted_urls": attempted_urls,
+                        "payload": b"",
+                        "truncated": False,
+                        "headers": headers,
+                    }
+                current_url = redirected_url
+                continue
+            payload, truncated = (b"", False) if method == "HEAD" else read_limited_response(
+                exc,
+                max_response_bytes=max_response_bytes,
+            )
+        except (TimeoutError, URLError, OSError) as exc:
+            return {
+                "status": "failed",
+                "failure_reason": f"network_error:{exc.__class__.__name__}",
+                "error_detail": str(exc),
+                "http_status_code": None,
+                "final_url": current_url,
+                "redirect_count": redirect_count,
+                "attempted_urls": attempted_urls,
+                "payload": b"",
+                "truncated": False,
+                "headers": None,
+            }
+
+        failure_reason = None
+        status = "captured"
+        if status_code >= 400:
+            status = "failed"
+            failure_reason = f"http_status_{status_code}"
+            payload = b""
+            truncated = False
+        elif truncated:
+            status = "failed"
+            failure_reason = "response_exceeds_max_bytes"
+
+        return {
+            "status": status,
+            "failure_reason": failure_reason,
+            "http_status_code": status_code,
+            "final_url": current_url,
+            "redirect_count": redirect_count,
+            "attempted_urls": attempted_urls,
+            "payload": payload,
+            "truncated": truncated,
+            "headers": headers,
+        }
+
+
+def execute_remote_fetches(
+    *,
+    records: list[dict[str, Any]],
+    adapter_payload: dict[str, Any],
+    run_id: str,
+    created_at: str,
+    handoff_hash: str,
+    gate_report: dict[str, Any],
+    timeout_seconds: float,
+    max_response_bytes: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], dict[str, bytes], bool, dict[str, Any]]:
+    if timeout_seconds <= 0:
+        raise SourceAcquisitionError("--timeout-seconds must be greater than zero")
+    if max_response_bytes < 1:
+        raise SourceAcquisitionError("--max-response-bytes must be at least 1")
+
+    capture_events: list[dict[str, Any]] = []
+    extraction_records: list[dict[str, Any]] = []
+    text_artifacts: dict[str, str] = {}
+    binary_artifacts: dict[str, bytes] = {}
+    failed = False
+    summary = {
+        "urls_planned": len(records),
+        "urls_attempted": 0,
+        "urls_succeeded": 0,
+        "urls_failed": 0,
+        "urls_denied": 0,
+        "bytes_captured": 0,
+    }
+    action_map = gate_action_by_url(gate_report)
+    network_policy = gate_report.get("checks", {}).get("network_policy", {})
+    user_agent = network_policy.get("user_agent") if isinstance(network_policy, dict) else None
+    if not isinstance(user_agent, str) or not user_agent.strip():
+        raise SourceAcquisitionError("network safety gate report does not include a usable user agent")
+    rate_limits = gate_report.get("checks", {}).get("rate_limits", {})
+    min_interval = rate_limits.get("min_interval_seconds", 0) if isinstance(rate_limits, dict) else 0
+    min_interval_seconds = float(min_interval) if isinstance(min_interval, (int, float)) else 0.0
+    allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
+
+    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
+        original_locator = record["preserved"]["original_locator"]
+        url = original_locator["entry_url"]
+        gate_action = action_map.get(url)
+        if gate_action is None or gate_action.get("status") != "planned":
+            failed = True
+            summary["urls_denied"] += 1
+            continue
+        method = str(gate_action.get("method") or "GET").upper()
+        if method not in {"GET", "HEAD"}:
+            failed = True
+            summary["urls_denied"] += 1
+            continue
+        if index > 1 and min_interval_seconds > 0:
+            time.sleep(min_interval_seconds)
+
+        capture_id = make_capture_id(index)
+        fetch_result = remote_fetch_one(
+            url=url,
+            method=method,
+            user_agent=user_agent,
+            allowlist_hosts=allowlist_hosts,
+            allowlist_prefixes=allowlist_prefixes,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
+        summary["urls_attempted"] += 1
+        payload = fetch_result["payload"]
+        content_type = extract_content_type(fetch_result.get("headers"))
+        content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
+        byte_count = len(payload) if fetch_result["status"] == "captured" else 0
+        payload_path = None
+        if fetch_result["status"] == "captured":
+            payload_path = f"payloads/{capture_id}.bin"
+            binary_artifacts[payload_path] = payload
+            summary["bytes_captured"] += byte_count
+            summary["urls_succeeded"] += 1
+        else:
+            failed = True
+            summary["urls_failed"] += 1
+
+        capture_event = {
+            "schema_version": CAPTURE_SCHEMA_VERSION,
+            "capture_id": capture_id,
+            "run_id": run_id,
+            "handoff_hash": handoff_hash,
+            "handoff_sequences": [record["sequence"]],
+            "adapter_id": adapter_payload["adapter_id"],
+            "workspace_id": adapter_payload["workspace_id"],
+            "adapter_type": "remote_url_manifest",
+            "source_reference": {
+                "relative_path": record["relative_path"],
+                "remote_url": url,
+                "manifest_url": record["source_specific"].get("manifest_url"),
+            },
+            "original_locator": original_locator,
+            "normalized_url": urlparse(url).geturl(),
+            "final_url": fetch_result["final_url"],
+            "redirect_count": fetch_result["redirect_count"],
+            "http_status_code": fetch_result["http_status_code"],
+            "request_method": method,
+            "user_agent": user_agent,
+            "content_hash": content_hash,
+            "byte_count": byte_count,
+            "content_length_header": fetch_result.get("headers").get("Content-Length") if fetch_result.get("headers") is not None else None,
+            "content_type": content_type,
+            "captured_at": created_at,
+            "capture_method": "remote_url_fetch",
+            "transient_payload_path": payload_path,
+            "payload_retention_policy": "transient_run_artifact",
+            "network_access_attempted": True,
+            "rights_posture": record["preserved"].get("rights_posture"),
+            "status": "completed" if fetch_result["status"] == "captured" else "failed",
+            "failure_reason": fetch_result["failure_reason"],
+            "canonical_persistence_attempted": False,
+            "verification_status": "unverified",
+        }
+        if fetch_result.get("redirect_target"):
+            capture_event["redirect_target"] = fetch_result["redirect_target"]
+        if fetch_result.get("error_detail"):
+            capture_event["error_detail"] = fetch_result["error_detail"]
+        capture_events.append(capture_event)
+
+        extraction_id = make_extraction_id(len(extraction_records) + 1)
+        extracted_text = None
+        encoding_result = "not_attempted"
+        failure_reason = fetch_result["failure_reason"]
+        extracted_text_path = None
+        if fetch_result["status"] == "captured":
+            if method == "HEAD":
+                failure_reason = "head_request_no_body"
+            elif not is_extractable_content_type(content_type):
+                failure_reason = "unsupported_content_type"
+            else:
+                extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+                if extracted_text is not None:
+                    extracted_text_path = f"extracted-text/{extraction_id}.txt"
+                    text_artifacts[extracted_text_path] = extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
+                else:
+                    failed = True
+        extraction_records.append(
+            build_extraction_record(
+                extraction_id=extraction_id,
+                run_id=run_id,
+                capture_id=capture_id,
+                adapter_payload=adapter_payload,
+                adapter_type="remote_url_manifest",
+                handoff_sequence=record["sequence"],
+                relative_path=record["relative_path"],
+                input_hash=content_hash,
+                byte_count_in=byte_count,
+                extraction_method="remote_text_extract",
+                hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+                content_text=extracted_text,
+                encoding_result=encoding_result,
+                failure_reason=failure_reason,
+                extracted_text_path=extracted_text_path,
+                extra_fields={
+                    "content_type": content_type,
+                    "remote_url": url,
+                    "final_url": fetch_result["final_url"],
+                    "network_access_attempted": True,
+                },
+            )
+        )
+    return capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary
+
+
 def execute_remote_url_manifest(
     *,
     records: list[dict[str, Any]],
@@ -1042,6 +1418,8 @@ def execute_remote_url_manifest(
     gate_request_path: Path | None,
     dry_run: bool,
     allow_network: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[str]]:
     if gate_request_path is None:
         raise SourceAcquisitionError("remote_url_manifest execution requires --network-safety-request")
@@ -1093,9 +1471,65 @@ def execute_remote_url_manifest(
         )
         return execution_record, None, [], [], gate_report, expected_urls
 
+    if not gate_report["execution_allowed"]:
+        execution_record = execution_record_payload(
+            run_id=run_id,
+            created_at=created_at,
+            handoff_path=handoff_path,
+            handoff_hash=handoff_hash,
+            adapter_payload=adapter_payload,
+            adapter_type="remote_url_manifest",
+            executor_mode="remote",
+            dry_run=False,
+            status="denied",
+            network_access_attempted=False,
+            network_access_allowed=False,
+            network_access_denied_reason="network safety gate did not allow execution",
+            gate_report=gate_report,
+            local_input_paths=[],
+            planned_actions=planned_actions,
+            capture_events=[],
+            extraction_records=[],
+            denial_record_written=True,
+        )
+        denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
+        return execution_record, denial_record, [], [], gate_report, expected_urls
+
     reason = "explicit --allow-network is required for remote execution"
-    if allow_network:
-        reason = "remote live fetch is intentionally disabled in this executor version"
+    if not allow_network:
+        execution_record = execution_record_payload(
+            run_id=run_id,
+            created_at=created_at,
+            handoff_path=handoff_path,
+            handoff_hash=handoff_hash,
+            adapter_payload=adapter_payload,
+            adapter_type="remote_url_manifest",
+            executor_mode="remote",
+            dry_run=False,
+            status="denied",
+            network_access_attempted=False,
+            network_access_allowed=bool(gate_report["execution_allowed"]),
+            network_access_denied_reason=reason,
+            gate_report=gate_report,
+            local_input_paths=[],
+            planned_actions=planned_actions,
+            capture_events=[],
+            extraction_records=[],
+            denial_record_written=True,
+        )
+        denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
+        return execution_record, denial_record, [], [], gate_report, expected_urls
+
+    capture_events, extraction_records, text_artifacts, binary_artifacts, failed, remote_summary = execute_remote_fetches(
+        records=records,
+        adapter_payload=adapter_payload,
+        run_id=run_id,
+        created_at=created_at,
+        handoff_hash=handoff_hash,
+        gate_report=gate_report,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
     execution_record = execution_record_payload(
         run_id=run_id,
         created_at=created_at,
@@ -1105,19 +1539,29 @@ def execute_remote_url_manifest(
         adapter_type="remote_url_manifest",
         executor_mode="remote",
         dry_run=False,
-        status="denied",
-        network_access_attempted=False,
+        status="failed" if failed else "completed",
+        network_access_attempted=remote_summary["urls_attempted"] > 0,
         network_access_allowed=bool(gate_report["execution_allowed"]),
-        network_access_denied_reason=reason,
+        network_access_denied_reason=None,
         gate_report=gate_report,
         local_input_paths=[],
         planned_actions=planned_actions,
-        capture_events=[],
-        extraction_records=[],
-        denial_record_written=True,
+        capture_events=capture_events,
+        extraction_records=extraction_records,
+        denial_record_written=False,
     )
-    denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-    return execution_record, denial_record, [], [], gate_report, expected_urls
+    execution_record.update(
+        {
+            "network_gate_request_hash": sha256_bytes(gate_request_path.read_bytes()),
+            "remote_live_fetch_enabled": True,
+            "timeout_seconds": timeout_seconds,
+            "max_response_bytes": max_response_bytes,
+            **remote_summary,
+        }
+    )
+    execution_record["_text_artifacts"] = text_artifacts
+    execution_record["_binary_artifacts"] = binary_artifacts
+    return execution_record, None, capture_events, extraction_records, gate_report, expected_urls
 
 
 def main() -> int:
@@ -1157,6 +1601,8 @@ def main() -> int:
                 gate_request_path=gate_request_path,
                     dry_run=True,
                     allow_network=args.allow_network,
+                    timeout_seconds=args.timeout_seconds,
+                    max_response_bytes=args.max_response_bytes,
                 )
                 write_execution_artifacts(
                     output_dir=output_dir,
@@ -1202,6 +1648,7 @@ def main() -> int:
         capture_events: list[dict[str, Any]] = []
         extraction_records: list[dict[str, Any]] = []
         text_artifacts: dict[str, str] = {}
+        binary_artifacts: dict[str, bytes] = {}
         local_input_paths: list[str] = []
         failed = False
 
@@ -1303,7 +1750,11 @@ def main() -> int:
                 gate_request_path=gate_request_path,
                 dry_run=False,
                 allow_network=args.allow_network,
+                timeout_seconds=args.timeout_seconds,
+                max_response_bytes=args.max_response_bytes,
             )
+            text_artifacts = execution_record.pop("_text_artifacts", {})
+            binary_artifacts = execution_record.pop("_binary_artifacts", {})
         else:
             raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
 
@@ -1315,6 +1766,7 @@ def main() -> int:
             denial_record=denial_record,
             gate_report=gate_report,
             text_artifacts=text_artifacts,
+            binary_artifacts=binary_artifacts,
         )
         validate_emitted_artifacts(output_dir)
 

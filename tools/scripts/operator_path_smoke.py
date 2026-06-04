@@ -477,55 +477,49 @@ def smoke_init_canonical_store(ctx: SmokeContext) -> tuple[str | None, str]:
     return str(canonical_db_path), "initialized canonical store for smoke ingestion"
 
 
-def smoke_ingest_candidate_batch(ctx: SmokeContext) -> tuple[str | None, str]:
+def smoke_run_topic_cycle(ctx: SmokeContext) -> tuple[str | None, str]:
     if ctx.canonical_db_path is None:
-        raise OperatorPathSmokeError("candidate batch ingest requires an initialized canonical store")
-    require_file(CANDIDATE_BATCH_FIXTURE, label="candidate batch fixture")
+        raise OperatorPathSmokeError("topic cycle requires an initialized canonical store")
+    if ctx.subject_manifest_path is None:
+        raise OperatorPathSmokeError("topic cycle requires a bootstrapped subject manifest")
+    cycle_run_dir = ctx.workspace_path / "topic-cycle" / ctx.run_id
     command = [
         sys.executable,
-        str(ctx.repo_root / "tools" / "scripts" / "ingest_gather_candidate_batch.py"),
-        "--db",
-        str(ctx.canonical_db_path),
-        "--batch",
-        str(CANDIDATE_BATCH_FIXTURE),
-        "--format",
-        "json",
-    ]
-    proc = checked_command(command, cwd=ctx.repo_root, label="candidate batch ingest")
-    payload = parse_json_stdout(proc, label="candidate batch ingest")
-    inserted = payload.get("counts", {}).get("inserted", {})
-    if inserted.get("work", 0) < 1 or inserted.get("source_claim", 0) < 1:
-        raise OperatorPathSmokeError(
-            "candidate batch ingest did not create the expected canonical work and source-claim rows"
-        )
-    return str(CANDIDATE_BATCH_FIXTURE), "ingested gather candidate batch through the canonical ingest path"
-
-
-def smoke_ingest_execution_artifacts(ctx: SmokeContext) -> tuple[str | None, str]:
-    if ctx.canonical_db_path is None:
-        raise OperatorPathSmokeError("execution artifact ingest requires an initialized canonical store")
-    if not EXECUTION_ARTIFACT_FIXTURE_DIR.is_dir():
-        raise OperatorPathSmokeError(
-            f"execution artifact fixture directory not found: {EXECUTION_ARTIFACT_FIXTURE_DIR}"
-        )
-    command = [
-        sys.executable,
-        str(ctx.repo_root / "tools" / "scripts" / "ingest_execution_artifacts.py"),
+        str(ctx.repo_root / "tools" / "scripts" / "run_topic_cycle.py"),
+        "--workspace",
+        str(ctx.topic_workspace_root),
+        "--subject",
+        str(ctx.subject_manifest_path),
         "--db",
         str(ctx.canonical_db_path),
         "--run-dir",
+        str(cycle_run_dir),
+        "--run-id",
+        ctx.run_id,
+        "--timestamp",
+        ctx.timestamp,
+        "--mode",
+        "local",
+        "--candidate-batch-fixture",
+        str(CANDIDATE_BATCH_FIXTURE),
+        "--execution-run-fixture",
         str(EXECUTION_ARTIFACT_FIXTURE_DIR),
         "--format",
         "json",
     ]
-    proc = checked_command(command, cwd=ctx.repo_root, label="execution artifact ingest")
-    payload = parse_json_stdout(proc, label="execution artifact ingest")
-    inserted = payload.get("counts", {}).get("inserted", {})
-    if inserted.get("capture_event", 0) < 1 or inserted.get("extraction_record", 0) < 1:
-        raise OperatorPathSmokeError(
-            "execution artifact ingest did not create the expected capture and extraction rows"
-        )
-    return str(EXECUTION_ARTIFACT_FIXTURE_DIR), "ingested acquisition artifacts through the canonical ingest path"
+    proc = checked_command(command, cwd=ctx.repo_root, label="topic cycle")
+    payload = parse_json_stdout(proc, label="topic cycle")
+    if payload.get("schema_version") != "topic-cycle-run.v1":
+        raise OperatorPathSmokeError("topic cycle returned an unexpected schema_version")
+    if payload.get("status") != "completed":
+        raise OperatorPathSmokeError(f"topic cycle did not complete: {payload.get('error_summary')}")
+    if payload.get("canonical_db", {}).get("mutated") is not True:
+        raise OperatorPathSmokeError("topic cycle did not report canonical-store mutation")
+    checks = {stage["name"]: stage for stage in payload.get("stages", [])}
+    for required_stage in ("ingest_candidate_batch", "ingest_execution_artifacts"):
+        if checks.get(required_stage, {}).get("status") != "passed":
+            raise OperatorPathSmokeError(f"topic cycle stage did not pass: {required_stage}")
+    return str(cycle_run_dir / "topic-cycle-run.json"), "ran real topic-cycle path over smoke fixtures"
 
 
 def smoke_canonical_family_counts(ctx: SmokeContext) -> tuple[str | None, str]:
@@ -863,38 +857,21 @@ def run_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 lambda: smoke_init_canonical_store(ctx),
             ),
             (
-                "ingest_candidate_batch",
-                "tools/scripts/ingest_gather_candidate_batch.py",
+                "run_topic_cycle",
+                "tools/scripts/run_topic_cycle.py",
                 command_text(
                     [
                         sys.executable,
-                        str(ctx.repo_root / "tools" / "scripts" / "ingest_gather_candidate_batch.py"),
+                        str(ctx.repo_root / "tools" / "scripts" / "run_topic_cycle.py"),
                         "--db",
                         "<canonical-store>",
-                        "--batch",
-                        str(CANDIDATE_BATCH_FIXTURE),
+                        "--candidate-batch-fixture",
+                        "<fixture>",
                         "--format",
                         "json",
                     ]
                 ),
-                lambda: smoke_ingest_candidate_batch(ctx),
-            ),
-            (
-                "ingest_execution_artifacts",
-                "tools/scripts/ingest_execution_artifacts.py",
-                command_text(
-                    [
-                        sys.executable,
-                        str(ctx.repo_root / "tools" / "scripts" / "ingest_execution_artifacts.py"),
-                        "--db",
-                        "<canonical-store>",
-                        "--run-dir",
-                        str(EXECUTION_ARTIFACT_FIXTURE_DIR),
-                        "--format",
-                        "json",
-                    ]
-                ),
-                lambda: smoke_ingest_execution_artifacts(ctx),
+                lambda: smoke_run_topic_cycle(ctx),
             ),
             (
                 "canonical_family_counts",
