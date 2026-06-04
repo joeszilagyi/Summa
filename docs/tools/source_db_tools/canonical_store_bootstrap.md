@@ -49,8 +49,9 @@ Schema metadata is stored in:
 ## Staging Boundary
 
 The bootstrap does not convert staging or simulation tables into canonical
-records. `source_locus`, `source_query_execution_simulation`, and
-`simulated_source_lead_candidate` remain explicitly noncanonical staging tables.
+records. `source_locus`, `source_query_plan`,
+`source_query_execution_simulation`, and `simulated_source_lead_candidate`
+remain explicitly noncanonical staging tables.
 
 ## Scope Limits
 

@@ -59,7 +59,7 @@ The current runtime already holds graph-shaped material in several places:
 - `authority_identifier`, `work_identifier`, `source_access`, `work_metadata`,
   `work_url`, and `authority_merge_event` remain supporting durable tables that
   the canonical store bootstrap preserves for current local tools.
-- `source_locus`, `source_query_execution_simulation`, and
+- `source_locus`, `source_query_plan`, `source_query_execution_simulation`, and
   `simulated_source_lead_candidate` remain explicitly noncanonical staging or
   simulation tables rather than canonical graph rows.
 

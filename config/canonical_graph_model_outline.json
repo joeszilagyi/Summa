@@ -123,6 +123,7 @@
   "noncanonical_staging_tables": [
     "simulated_source_lead_candidate",
     "source_locus",
+    "source_query_plan",
     "source_query_execution_simulation"
   ],
   "migration_stages": [

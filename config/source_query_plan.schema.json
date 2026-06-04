@@ -13,6 +13,7 @@
     "locus_type",
     "plan_status",
     "query_text",
+    "normalized_query",
     "query_language",
     "query_target",
     "query_mode",
@@ -29,6 +30,8 @@
     "generated_by",
     "confidence_score",
     "review_state",
+    "simulation_only",
+    "network_access_attempted",
     "notes"
   ],
   "properties": {
@@ -57,6 +60,10 @@
       "enum": ["proposed", "needs_review", "accepted", "rejected", "deprecated"]
     },
     "query_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "normalized_query": {
       "type": "string",
       "minLength": 1
     },
@@ -132,6 +139,12 @@
     "review_state": {
       "type": "string",
       "enum": ["accepted", "needs_review", "demoted", "deprecated", "rejected"]
+    },
+    "simulation_only": {
+      "const": true
+    },
+    "network_access_attempted": {
+      "const": false
     },
     "notes": {
       "type": ["string", "null"]
