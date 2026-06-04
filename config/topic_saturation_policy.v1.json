@@ -1,0 +1,46 @@
+{
+  "accepted_review_states": [
+    "accepted",
+    "approved",
+    "curated",
+    "reviewed"
+  ],
+  "backlog_review_states": [
+    "ambiguous",
+    "machine_extracted",
+    "needs_review",
+    "proposed",
+    "unreviewed"
+  ],
+  "cooldown_cycles": 1,
+  "enabled": true,
+  "family_weights": {
+    "accepted_record": 2.0,
+    "authority_reconciliation": 1.0,
+    "capture_event": 0.5,
+    "extraction_detected_entity": 1.0,
+    "extraction_record": 0.5,
+    "reviewable_record": 1.0,
+    "source_access": 1.0,
+    "source_claim": 1.0,
+    "source_relationship": 1.0,
+    "work": 1.0
+  },
+  "lookback_cycles": 3,
+  "max_consecutive_low_yield_cycles": 2,
+  "min_new_accepted_records": 1,
+  "min_new_reviewable_records": 1,
+  "min_useful_yield": 1.0,
+  "mode": "mixed",
+  "policy_id": "topic-saturation.default.v1",
+  "review_backlog_pressure_threshold": 25,
+  "reviewable_review_states": [
+    "ambiguous",
+    "machine_extracted",
+    "needs_review",
+    "proposed",
+    "unreviewed"
+  ],
+  "scheduler_action_on_saturated": "deprioritize",
+  "schema_version": "topic-saturation-policy.v1"
+}

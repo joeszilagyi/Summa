@@ -3,9 +3,9 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from packaging.version import Version
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HYGIENE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "repo-hygiene.yml"
@@ -26,7 +26,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
 }
 
 
-def load_pyproject() -> dict[str, object]:
+def load_pyproject() -> dict[str, Any]:
     return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
@@ -97,7 +97,9 @@ def test_console_script_targets_are_importable_and_callable() -> None:
     for command, target in pyproject["project"]["scripts"].items():
         module_name, attr_name = target.split(":", 1)
         module = importlib.import_module(module_name)
-        assert hasattr(module, attr_name), f"{command} target missing attribute {attr_name}: {target}"
+        assert hasattr(module, attr_name), (
+            f"{command} target missing attribute {attr_name}: {target}"
+        )
         assert callable(getattr(module, attr_name)), f"{command} target must be callable: {target}"
 
 

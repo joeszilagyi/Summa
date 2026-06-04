@@ -1,0 +1,148 @@
+{
+  "schema_version": "standards-profile.v1",
+  "profile_id": "premis.v1",
+  "profile_name": "PREMIS preservation metadata JSON profile",
+  "profile_version": "1",
+  "external_standard": {
+    "name": "PREMIS Data Dictionary for Preservation Metadata",
+    "version_or_reference": "Version 3.0",
+    "reference_url": "https://www.loc.gov/standards/premis/v3/"
+  },
+  "export_format": "premis_profile_json",
+  "target_artifact_type": "standards-profile-export.v1",
+  "conformance_level": "partial",
+  "summa_source_tables": ["work", "source_access", "capture_event", "extraction_record", "provenance_event"],
+  "field_mappings": [
+    {
+      "mapping_id": "premis.object.identifier",
+      "summa_source": { "table": "capture_event", "field": "capture_event_id" },
+      "external_target": "object.objectIdentifier",
+      "status": "required",
+      "cardinality": "1..1",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "stable local object identifier"
+    },
+    {
+      "mapping_id": "premis.object.fixity",
+      "summa_source": { "table": "capture_event", "field": "content_hash" },
+      "external_target": "object.objectCharacteristics.fixity",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "nonblank hash when captured bytes are represented"
+    },
+    {
+      "mapping_id": "premis.object.size",
+      "summa_source": { "table": "capture_event", "field": "byte_count" },
+      "external_target": "object.objectCharacteristics.size",
+      "status": "optional",
+      "cardinality": "0..1",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "integer when present"
+    },
+    {
+      "mapping_id": "premis.object.format",
+      "summa_source": { "table": "capture_event", "field": "mime_type" },
+      "external_target": "object.objectCharacteristics.format",
+      "status": "optional",
+      "cardinality": "0..1",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "content type string when present"
+    },
+    {
+      "mapping_id": "premis.event.capture",
+      "summa_source": { "table": "capture_event", "field": "captured_at" },
+      "external_target": "event.eventDateTime",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "capture event timestamp"
+    },
+    {
+      "mapping_id": "premis.event.provenance",
+      "summa_source": { "table": "provenance_event", "field": "event_type" },
+      "external_target": "event.eventType",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "event type summaries"
+    },
+    {
+      "mapping_id": "premis.agent.tool",
+      "summa_source": { "table": "provenance_event", "field": "tool_name" },
+      "external_target": "agent.agentName",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "tool/model/actor summaries only"
+    },
+    {
+      "mapping_id": "premis.rights.posture",
+      "summa_source": { "table": "work", "field": "rights_posture" },
+      "external_target": "rights.rightsStatement",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "local rights posture note"
+    }
+  ],
+  "required_fields": ["premis.object.identifier", "premis.object.fixity", "premis.event.capture"],
+  "optional_fields": [
+    "premis.object.size",
+    "premis.object.format",
+    "premis.event.provenance",
+    "premis.agent.tool",
+    "premis.rights.posture"
+  ],
+  "controlled_vocabularies": [
+    {
+      "field": "event.eventType",
+      "policy": "Summa event_type values are local and reported as local controlled values for this partial profile.",
+      "allowed_values": []
+    }
+  ],
+  "identifier_policy": {
+    "summary": "Use capture_event_id and content_hash as stable local preservation identifiers; no local filesystem path is public.",
+    "base_uri_required": false,
+    "stable_identifier_fields": ["capture_event.capture_event_id", "capture_event.content_hash"]
+  },
+  "private_public_policy": {
+    "default_mode": "public_only",
+    "public_excludes": ["transient payload notes", "raw payload bytes", "private paths", "public_blocker values"],
+    "internal_mode_requires_explicit_flag": true
+  },
+  "unsupported_fields": [
+    {
+      "field": "agent.firstClassAuthority",
+      "reason": "Summa currently stores tool/actor strings but does not have a first-class preservation agent authority table."
+    },
+    {
+      "field": "rights.detailedPermissions",
+      "reason": "Canonical rights posture is not a complete PREMIS rights statement."
+    }
+  ],
+  "lossy_mapping_rules": [
+    { "mapping_id": "premis.object.format", "reason": "MIME type is not a complete format registry identification." },
+    { "mapping_id": "premis.event.provenance", "reason": "Provenance events are summarized as PREMIS-like events." },
+    { "mapping_id": "premis.agent.tool", "reason": "Tool/model/actor strings are partial agents." },
+    { "mapping_id": "premis.rights.posture", "reason": "Local rights posture is not a full rights basis/act/restriction statement." }
+  ],
+  "validation_rules": [
+    { "rule_id": "premis.object.identifier", "severity": "error", "description": "Every exported capture object needs an object identifier." },
+    { "rule_id": "premis.object.fixity", "severity": "error", "description": "Captured content needs a fixity value." },
+    { "rule_id": "premis.event.capture", "severity": "error", "description": "Capture events need timestamps." },
+    { "rule_id": "premis.agent.partial", "severity": "warning", "description": "Agent structures are partial until Summa has first-class preservation agents." }
+  ],
+  "known_limitations": [
+    "This is a deterministic PREMIS-like JSON profile, not PREMIS XML schema validation.",
+    "Agent and rights sections are partial and reported as limitations."
+  ]
+}

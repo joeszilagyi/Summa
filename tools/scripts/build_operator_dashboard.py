@@ -38,9 +38,22 @@ def esc(value: Any) -> str:
 
 def status_class(value: Any) -> str:
     status = str(value).lower()
-    if status in {"pass", "available", "clean", "present", "ok", "populated"}:
+    if status in {"pass", "available", "clean", "present", "ok", "populated", "healthy"}:
         return "status-pass"
-    if status in {"warn", "dirty", "not_found", "missing", "absent", "uninitialized", "initialized_empty"}:
+    if status in {
+        "warn",
+        "dirty",
+        "not_found",
+        "missing",
+        "absent",
+        "uninitialized",
+        "initialized_empty",
+        "accumulating",
+        "insufficient_data",
+        "review_lagging",
+        "contradiction_spike",
+        "stalled",
+    }:
         return "status-warn"
     if status in {"fail", "invalid"}:
         return "status-fail"
@@ -58,6 +71,7 @@ def render_value_row(label: str, value: Any) -> str:
 def render_workspaces(report: dict[str, Any]) -> str:
     rows = []
     for workspace in report.get("workspaces", []):
+        saturation = workspace.get("saturation") if isinstance(workspace.get("saturation"), dict) else {}
         rows.append(
             "<tr>"
             f"<td>{esc(workspace.get('workspace_id'))}</td>"
@@ -65,10 +79,12 @@ def render_workspaces(report: dict[str, Any]) -> str:
             f"<td>{esc(workspace.get('schedule_posture'))}</td>"
             f"<td><span class=\"pill {status_class(workspace.get('workspace_root_status'))}\">{esc(workspace.get('workspace_root_status'))}</span></td>"
             f"<td><span class=\"pill {status_class(workspace.get('default_subject_manifest_status'))}\">{esc(workspace.get('default_subject_manifest_status'))}</span></td>"
+            f"<td>{esc(saturation.get('state', 'not_evaluated'))}</td>"
+            f"<td>{esc(saturation.get('scheduler_action', 'run'))}</td>"
             "</tr>"
         )
     if not rows:
-        rows.append("<tr><td colspan=\"5\" class=\"empty\">No resolved workspaces</td></tr>")
+        rows.append("<tr><td colspan=\"7\" class=\"empty\">No resolved workspaces</td></tr>")
     return "\n".join(rows)
 
 
@@ -155,6 +171,36 @@ def render_canonical_notes(report: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def render_loop_health_cycle_rows(report: dict[str, Any]) -> str:
+    loop = report.get("loop_health", {})
+    rows = []
+    for cycle in loop.get("per_cycle_metrics", [])[:8]:
+        rows.append(
+            "<tr>"
+            f"<td>{esc(cycle.get('cycle_id'))}</td>"
+            f"<td>{esc(cycle.get('cycle_depth'))}</td>"
+            f"<td>{esc(cycle.get('new_reviewable_count'))}</td>"
+            f"<td>{esc(cycle.get('new_accepted_count'))}</td>"
+            f"<td>{esc(cycle.get('new_contradiction_count'))}</td>"
+            f"<td>{esc(cycle.get('yield_score'))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append("<tr><td colspan=\"6\" class=\"empty\">No loop cycle metrics available</td></tr>")
+    return "\n".join(rows)
+
+
+def render_loop_health_notes(report: dict[str, Any]) -> str:
+    loop = report.get("loop_health", {})
+    notes = []
+    notes.extend(f"warning: {item}" for item in loop.get("warnings", []))
+    notes.extend(f"limitation: {item}" for item in loop.get("limitations", []))
+    rows = [f"<tr><td colspan=\"2\">{esc(note)}</td></tr>" for note in notes if note]
+    if not rows:
+        rows.append("<tr><td colspan=\"2\" class=\"empty\">No loop-health warnings or limitations</td></tr>")
+    return "\n".join(rows)
+
+
 def render_dashboard(report: dict[str, Any], *, title: str) -> str:
     checks = report.get("checks", {})
     summary = report.get("summary", {})
@@ -164,6 +210,11 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
     public_gates = report.get("public_gates", {})
     public_surfaces = public_gates.get("surfaces", {})
     canonical_store = report.get("canonical_store", {})
+    loop_health = report.get("loop_health", {})
+    loop_aggregate = loop_health.get("aggregate_metrics", {}) if isinstance(loop_health, dict) else {}
+    loop_backlog = loop_health.get("review_backlog", {}) if isinstance(loop_health, dict) else {}
+    loop_contradictions = loop_health.get("contradictions", {}) if isinstance(loop_health, dict) else {}
+    loop_resolution = loop_health.get("ingestion_resolution", {}) if isinstance(loop_health, dict) else {}
     public_rows = "\n".join(render_status_row(name, value) for name, value in sorted(public_surfaces.items()))
 
     return f"""<!doctype html>
@@ -255,8 +306,35 @@ def render_dashboard(report: dict[str, Any], *, title: str) -> str:
       </tbody></table>
     </section>
     <section>
+      <h2>Loop Health</h2>
+      <div class="grid">
+        <table><tbody>
+          {render_status_row('status', loop_health.get('health_status'))}
+          {render_value_row('yield_trend', loop_aggregate.get('yield_trend'))}
+          {render_value_row('lookback_cycles', loop_health.get('lookback_cycles'))}
+          {render_value_row('reviewable_ingested', loop_resolution.get('reviewable_ingested_count'))}
+          {render_value_row('review_decisions_applied', loop_resolution.get('review_decision_applied_count'))}
+          {render_value_row('resolution_coverage', loop_resolution.get('resolution_coverage'))}
+        </tbody></table>
+        <table><tbody>
+          {render_value_row('pending_review_count', loop_backlog.get('pending_review_count'))}
+          {render_value_row('oldest_pending_age_days', loop_backlog.get('oldest_pending_age_days'))}
+          {render_value_row('median_pending_age_days', loop_backlog.get('median_pending_age_days'))}
+          {render_value_row('total_contradictions', loop_contradictions.get('total_contradictions'))}
+          {render_value_row('new_contradictions', loop_contradictions.get('new_contradictions'))}
+          {render_value_row('contradictions_per_new_source_claim', loop_contradictions.get('contradictions_per_new_source_claim'))}
+        </tbody></table>
+        <table><thead><tr><th>Cycle</th><th>Depth</th><th>Reviewable</th><th>Accepted</th><th>Contradictions</th><th>Yield</th></tr></thead><tbody>
+          {render_loop_health_cycle_rows(report)}
+        </tbody></table>
+      </div>
+      <table><tbody>
+        {render_loop_health_notes(report)}
+      </tbody></table>
+    </section>
+    <section>
       <h2>Workspaces</h2>
-      <table><thead><tr><th>Workspace</th><th>Lifecycle</th><th>Schedule</th><th>Root</th><th>Manifest</th></tr></thead><tbody>
+      <table><thead><tr><th>Workspace</th><th>Lifecycle</th><th>Schedule</th><th>Root</th><th>Manifest</th><th>Saturation</th><th>Action</th></tr></thead><tbody>
         {render_workspaces(report)}
       </tbody></table>
     </section>

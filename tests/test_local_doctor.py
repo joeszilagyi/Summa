@@ -38,6 +38,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
         "migration_ledger_posture",
         "db_integrity_smoke",
         "canonical_store_population",
+        "loop_health",
         "workspace_locks",
         "public_private_sharing_gate",
     }
@@ -46,6 +47,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
     assert isinstance(report["workspaces"], list)
     assert isinstance(report["databases"], list)
     assert isinstance(report["canonical_store"], dict)
+    assert isinstance(report["loop_health"], dict)
     assert isinstance(report["locks"], list)
     assert set(report["backup_posture"]).issuperset({"policy_status", "status"})
     assert set(report["migration_posture"]).issuperset({"ledger_count", "status"})
@@ -240,6 +242,7 @@ def test_local_doctor_text_summary_cli(tmp_path: Path) -> None:
     assert "schema_version=local-doctor-report.v1" in proc.stdout
     assert "check.public_private_sharing_gate=" in proc.stdout
     assert "canonical_store.status=" in proc.stdout
+    assert "loop_health.status=" in proc.stdout
 
 
 def test_local_doctor_cli_writes_report_without_fixing(tmp_path: Path) -> None:

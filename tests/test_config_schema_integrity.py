@@ -18,6 +18,12 @@ EXPLICIT_SCHEMA_PAIRS = {
     Path("durability_policies/local_first_crown_jewels.v1.json"): Path(
         "crown_jewel_store_policy.schema.json"
     ),
+    Path("standards_profiles/dcmi.v1.json"): Path("standards_profiles/standards_profile.schema.json"),
+    Path("standards_profiles/premis.v1.json"): Path("standards_profiles/standards_profile.schema.json"),
+    Path("standards_profiles/rico.v1.json"): Path("standards_profiles/standards_profile.schema.json"),
+    Path("standards_profiles/nara_preservation_readiness.v1.json"): Path(
+        "standards_profiles/standards_profile.schema.json"
+    ),
 }
 
 

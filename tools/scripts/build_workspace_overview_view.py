@@ -135,6 +135,36 @@ def publish_readiness_for(
     }
 
 
+def saturation_visibility_for(workspace: dict[str, Any]) -> dict[str, Any]:
+    scheduler_policy = workspace.get("scheduler_policy")
+    saturation = scheduler_policy.get("saturation_state") if isinstance(scheduler_policy, dict) else None
+    if not isinstance(saturation, dict):
+        return {
+            "state": "not_evaluated",
+            "scheduler_action": "run",
+            "reason_codes": ["not_evaluated"],
+            "interpretation": "No saturation evaluation is recorded for this workspace.",
+        }
+    state = str(saturation.get("state") or "not_evaluated")
+    action = str(saturation.get("scheduler_action") or "run")
+    raw_reasons = saturation.get("reason_codes")
+    reason_codes = [str(reason) for reason in raw_reasons] if isinstance(raw_reasons, list) else []
+    if state in {"saturated", "cooldown"}:
+        interpretation = f"Workspace is {state}; scheduler action is {action}."
+    else:
+        interpretation = "Workspace is not saturated under the recorded policy."
+    return {
+        "state": state,
+        "scheduler_action": action,
+        "reason_codes": reason_codes,
+        "policy_id": saturation.get("policy_id"),
+        "evaluated_at": saturation.get("evaluated_at"),
+        "next_eligible_cycle": saturation.get("next_eligible_cycle"),
+        "recent_yield_summary": saturation.get("recent_yield_summary"),
+        "interpretation": interpretation,
+    }
+
+
 def workspace_entry(
     workspace: dict[str, Any],
     *,
@@ -153,6 +183,7 @@ def workspace_entry(
         manifest_status=manifest_status,
         manifest_payload=manifest_payload,
     )
+    saturation = saturation_visibility_for(workspace)
 
     entry: dict[str, Any] = {
         "workspace_id": workspace_id,
@@ -166,6 +197,7 @@ def workspace_entry(
         "default_subject_manifest": workspace.get("default_subject_manifest"),
         "default_subject_manifest_status": manifest_status,
         "publish_readiness": readiness,
+        "saturation": saturation,
     }
 
     if resolved_root is not None:
@@ -240,6 +272,9 @@ def build_overview_payload(args: argparse.Namespace) -> dict[str, Any]:
         "total_workspaces": len(entries),
         "active_workspaces": sum(1 for entry in entries if entry["lifecycle_state"] == "active"),
         "scheduled_workspaces": sum(1 for entry in entries if entry["schedule_posture"] == "scheduled"),
+        "saturated_workspaces": sum(
+            1 for entry in entries if entry["saturation"]["state"] in {"saturated", "cooldown"}
+        ),
         "workspace_root_ok": sum(1 for entry in entries if entry["workspace_root_status"] == "ok"),
         "default_subject_manifest_ok": sum(
             1 for entry in entries if entry["default_subject_manifest_status"] == "ok"
@@ -274,6 +309,7 @@ def render_text(payload: dict[str, Any]) -> str:
         lines.append(
             f"workspace[{index}].publish_readiness={workspace['publish_readiness']['state']}"
         )
+        lines.append(f"workspace[{index}].saturation={workspace['saturation']['state']}")
     return "\n".join(lines) + "\n"
 
 

@@ -512,31 +512,50 @@ def smoke_run_topic_cycle(ctx: SmokeContext) -> tuple[str | None, str]:
     if payload.get("schema_version") != "topic-cycle-run.v1":
         raise OperatorPathSmokeError("topic cycle returned an unexpected schema_version")
     if payload.get("status") != "completed":
-        raise OperatorPathSmokeError(f"topic cycle did not complete: {payload.get('error_summary')}")
+        raise OperatorPathSmokeError(
+            f"topic cycle did not complete: {payload.get('error_summary')}"
+        )
     if payload.get("canonical_db", {}).get("mutated") is not True:
         raise OperatorPathSmokeError("topic cycle did not report canonical-store mutation")
     checks = {stage["name"]: stage for stage in payload.get("stages", [])}
     for required_stage in ("ingest_candidate_batch", "ingest_execution_artifacts"):
         if checks.get(required_stage, {}).get("status") != "passed":
             raise OperatorPathSmokeError(f"topic cycle stage did not pass: {required_stage}")
-    return str(cycle_run_dir / "topic-cycle-run.json"), "ran real topic-cycle path over smoke fixtures"
+    return str(
+        cycle_run_dir / "topic-cycle-run.json"
+    ), "ran real topic-cycle path over smoke fixtures"
 
 
 def smoke_canonical_family_counts(ctx: SmokeContext) -> tuple[str | None, str]:
     if ctx.canonical_db_path is None:
-        raise OperatorPathSmokeError("canonical family counts require an initialized canonical store")
+        raise OperatorPathSmokeError(
+            "canonical family counts require an initialized canonical store"
+        )
     conn = sqlite3.connect(ctx.canonical_db_path)
     try:
         counts = {
-            "provenance_event": int(conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0]),
+            "provenance_event": int(
+                conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0]
+            ),
             "work": int(conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]),
             "source_claim": int(conn.execute("SELECT COUNT(*) FROM source_claim").fetchone()[0]),
             "capture_event": int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0]),
-            "extraction_record": int(conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]),
+            "extraction_record": int(
+                conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]
+            ),
         }
     finally:
         conn.close()
-    if any(counts[key] < 1 for key in ("provenance_event", "work", "source_claim", "capture_event", "extraction_record")):
+    if any(
+        counts[key] < 1
+        for key in (
+            "provenance_event",
+            "work",
+            "source_claim",
+            "capture_event",
+            "extraction_record",
+        )
+    ):
         raise OperatorPathSmokeError(f"canonical family counts were unexpectedly sparse: {counts}")
     return str(ctx.canonical_db_path), f"canonical family counts after ingest: {counts}"
 
@@ -557,7 +576,9 @@ def smoke_review_queue(ctx: SmokeContext) -> tuple[str | None, str]:
     if payload.get("schema_version") != "review-queue.v1":
         raise OperatorPathSmokeError("review queue build returned an unexpected schema_version")
     if payload.get("counts", {}).get("total_items", 0) < 1:
-        raise OperatorPathSmokeError("review queue build did not report any pending canonical review items")
+        raise OperatorPathSmokeError(
+            "review queue build did not report any pending canonical review items"
+        )
     return str(ctx.canonical_db_path), "built review queue view from the ingested canonical store"
 
 
@@ -849,7 +870,9 @@ def run_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 command_text(
                     [
                         sys.executable,
-                        str(ctx.repo_root / "tools" / "source_db_tools" / "init_canonical_store.py"),
+                        str(
+                            ctx.repo_root / "tools" / "source_db_tools" / "init_canonical_store.py"
+                        ),
                         "--db",
                         "<canonical-store>",
                     ]

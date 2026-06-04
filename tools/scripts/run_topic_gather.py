@@ -355,7 +355,9 @@ def resolve_gather_inputs(
 
 def validate_iteration_args(args: argparse.Namespace) -> None:
     if not args.facet:
-        raise GatherDriverError("--facet is required unless --feedback-plan supplies the next action")
+        raise GatherDriverError(
+            "--facet is required unless --feedback-plan supplies the next action"
+        )
     if args.cycle_depth < 1:
         raise GatherDriverError("--cycle-depth must be at least 1")
     if args.prior_state_limit < 0:
@@ -383,7 +385,9 @@ def load_feedback_plan(raw_path: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise GatherDriverError(f"feedback plan is not valid JSON: {path} (line {exc.lineno})") from exc
+        raise GatherDriverError(
+            f"feedback plan is not valid JSON: {path} (line {exc.lineno})"
+        ) from exc
     if not isinstance(payload, dict):
         raise GatherDriverError(f"feedback plan must be a JSON object: {path}")
     return {
@@ -425,7 +429,9 @@ def apply_feedback_plan_defaults(
     if args.cycle_depth is None:
         plan_cycle_depth = next_action.get("cycle_depth")
         if not isinstance(plan_cycle_depth, int) or plan_cycle_depth < 1:
-            raise GatherDriverError("feedback plan next_action.cycle_depth must be a positive integer")
+            raise GatherDriverError(
+                "feedback plan next_action.cycle_depth must be a positive integer"
+            )
         args.cycle_depth = plan_cycle_depth
 
     if not args.previous_run_id:
@@ -745,7 +751,9 @@ def build_candidate_batch(
         "mode": mode,
         "iteration_mode": iteration_mode,
         "cycle_depth": args.cycle_depth,
-        "previous_run_ids": list(prior_state["previous_run_ids"]) if prior_state else list(args.previous_run_id),
+        "previous_run_ids": list(prior_state["previous_run_ids"])
+        if prior_state
+        else list(args.previous_run_id),
         "phase": phase,
         "engine": {
             "requested_engine": args.engine,
@@ -819,7 +827,9 @@ def build_candidate_batch(
             "feedback_plan_enabled": feedback_plan is not None,
             "feedback_plan_hash": feedback_plan["hash"] if feedback_plan else None,
             "next_action_id": next_action["action_id"] if next_action is not None else None,
-            "scoring_policy_id": next_action["scoring_policy_id"] if next_action is not None else None,
+            "scoring_policy_id": next_action["scoring_policy_id"]
+            if next_action is not None
+            else None,
             "cycle_depth": args.cycle_depth,
             "stamped_output_path": live_result["stamped_output_path"]
             if live_result is not None
@@ -967,7 +977,10 @@ def main() -> int:
         )
         if next_action is not None:
             selected_bundle_id = next_action.get("selected_prompt_bundle_id")
-            if isinstance(selected_bundle_id, str) and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]:
+            if (
+                isinstance(selected_bundle_id, str)
+                and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]
+            ):
                 raise GatherDriverError(
                     "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
                 )

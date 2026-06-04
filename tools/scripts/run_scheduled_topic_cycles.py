@@ -227,6 +227,8 @@ def run_scheduled_cycles(
             "runtime_consumed_seconds": 0.0,
             "outcome": "skipped",
             "failure_reason": None,
+            "saturation": record.get("saturation") if isinstance(record.get("saturation"), dict) else None,
+            "saturation_override": bool(record.get("saturation_override", False)),
             "scheduler_failure_state_record": None,
             "ledger_path": None,
         }
@@ -247,6 +249,20 @@ def run_scheduled_cycles(
             manifest["failed_workspace_count"] += 1
             manifest["workspace_results"].append(result)
             exit_code = 1
+            continue
+        saturation = result.get("saturation")
+        if (
+            isinstance(saturation, dict)
+            and saturation.get("scheduler_action") in {"halt", "cooldown"}
+            and not result["saturation_override"]
+        ):
+            result["outcome"] = "deferred"
+            result["failure_reason"] = (
+                "saturation policy deferred workspace: "
+                f"{saturation.get('state')} ({', '.join(saturation.get('reason_codes', []))})"
+            )
+            manifest["deferred_workspace_count"] += 1
+            manifest["workspace_results"].append(result)
             continue
         ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
         result["ledger_path"] = str(ledger_path)

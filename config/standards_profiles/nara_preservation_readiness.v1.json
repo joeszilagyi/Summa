@@ -1,0 +1,119 @@
+{
+  "schema_version": "standards-profile.v1",
+  "profile_id": "nara_preservation_readiness.v1",
+  "profile_name": "NARA-style preservation readiness report",
+  "profile_version": "1",
+  "external_standard": {
+    "name": "NARA Digital Preservation overview",
+    "version_or_reference": "NARA Digital Preservation Program overview",
+    "reference_url": "https://www.archives.gov/preservation/digital-preservation/about"
+  },
+  "export_format": "readiness_report_json",
+  "target_artifact_type": "standards-profile-export.v1",
+  "conformance_level": "report-only",
+  "summa_source_tables": ["work", "source_access", "capture_event", "extraction_record", "provenance_event", "review_state_history"],
+  "field_mappings": [
+    {
+      "mapping_id": "nara.fixity.recorded",
+      "summa_source": { "table": "capture_event", "field": "content_hash" },
+      "external_target": "readiness.fixity_present",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "capture events should have content_hash values"
+    },
+    {
+      "mapping_id": "nara.actions.recorded",
+      "summa_source": { "table": "provenance_event", "field": "event_type" },
+      "external_target": "readiness.actions_recorded",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "provenance events exist"
+    },
+    {
+      "mapping_id": "nara.capture.timestamps",
+      "summa_source": { "table": "capture_event", "field": "captured_at" },
+      "external_target": "readiness.capture_timestamps",
+      "status": "required",
+      "cardinality": "1..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "capture timestamps exist"
+    },
+    {
+      "mapping_id": "nara.format.recorded",
+      "summa_source": { "table": "capture_event", "field": "mime_type" },
+      "external_target": "readiness.format_recorded",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": true,
+      "privacy": "public",
+      "validation": "content type when present"
+    },
+    {
+      "mapping_id": "nara.payload.policy",
+      "summa_source": { "table": "capture_event", "field": "payload_storage_policy_class" },
+      "external_target": "readiness.raw_payload_policy_recorded",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": false,
+      "privacy": "public",
+      "validation": "payload retention policy class when present"
+    },
+    {
+      "mapping_id": "nara.review.audit",
+      "summa_source": { "table": "review_state_history", "field": "changed_at" },
+      "external_target": "readiness.review_audit_present",
+      "status": "optional",
+      "cardinality": "0..n",
+      "lossy": false,
+      "privacy": "internal",
+      "validation": "review history events when present"
+    }
+  ],
+  "required_fields": ["nara.fixity.recorded", "nara.actions.recorded", "nara.capture.timestamps"],
+  "optional_fields": ["nara.format.recorded", "nara.payload.policy", "nara.review.audit"],
+  "controlled_vocabularies": [
+    {
+      "field": "readiness.status",
+      "policy": "Readiness status values are local report outcomes.",
+      "allowed_values": ["pass", "warn", "fail", "not_applicable"]
+    }
+  ],
+  "identifier_policy": {
+    "summary": "Readiness report references Summa row counts and stable record refs, not transfer-package filenames.",
+    "base_uri_required": false,
+    "stable_identifier_fields": ["capture_event.capture_event_id", "provenance_event.provenance_event_id"]
+  },
+  "private_public_policy": {
+    "default_mode": "public_only",
+    "public_excludes": ["raw payloads", "local paths", "private review notes", "private publication states"],
+    "internal_mode_requires_explicit_flag": true
+  },
+  "unsupported_fields": [
+    {
+      "field": "NARA transfer package",
+      "reason": "This profile is a readiness report and does not produce or validate a NARA transfer package."
+    },
+    {
+      "field": "format registry validation",
+      "reason": "Summa records MIME/content types but does not validate them against a preservation format registry in F33."
+    }
+  ],
+  "lossy_mapping_rules": [
+    { "mapping_id": "nara.format.recorded", "reason": "MIME type is a weak format signal compared with format validation." }
+  ],
+  "validation_rules": [
+    { "rule_id": "nara.fixity", "severity": "error", "description": "Fixity should be present for captured content." },
+    { "rule_id": "nara.actions", "severity": "error", "description": "Actions taken on files should be recorded and tracked." },
+    { "rule_id": "nara.public_private", "severity": "warning", "description": "Public/private separation should be visible through publication states and blockers." },
+    { "rule_id": "nara.transfer_package", "severity": "info", "description": "Transfer-package requirements are reported as missing rather than claimed complete." }
+  ],
+  "known_limitations": [
+    "This is a NARA-style readiness report, not NARA compliance or transfer acceptance.",
+    "Format registry validation and transfer-package manifests are future profile work."
+  ]
+}

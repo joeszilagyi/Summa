@@ -239,6 +239,46 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     assert "max_attempts" in payload["workspace_results"][0]["failure_reason"]
 
 
+def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "saturated_subject")
+    record = planned_record(workspace_id="saturated_subject", workspace=workspace, manifest=manifest)
+    record["saturation"] = {
+        "schema_version": "topic-saturation.v1",
+        "workspace_id": "saturated_subject",
+        "subject_id": "saturated_subject",
+        "policy_id": "topic-saturation.test",
+        "state": "saturated",
+        "scheduler_action": "halt",
+        "reason_codes": ["consecutive_low_yield"],
+        "recent_yield_summary": {"cycle_count": 2},
+    }
+    selection = write_selection(tmp_path, [record])
+    runner = write_fake_cycle_runner(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--cycle-runner",
+            str(runner),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["attempted_workspace_count"] == 0
+    assert payload["deferred_workspace_count"] == 1
+    result = payload["workspace_results"][0]
+    assert result["outcome"] == "deferred"
+    assert "saturation policy deferred workspace" in result["failure_reason"]
+
+
 def test_scheduled_runner_records_cycle_failure_through_runtime_ledger(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "failing_subject")
     selection = write_selection(
