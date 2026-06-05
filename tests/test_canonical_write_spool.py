@@ -6,10 +6,12 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tools.source_db_tools import canonical_store, canonical_write_spool
+from tools.scripts import ingest_gather_candidate_batch as ingest_batch_script
 from tools.scripts import replay_canonical_write_spool as replay_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -194,6 +196,33 @@ def test_invalid_candidate_batch_does_not_create_replayable_spool(tmp_path: Path
 
     assert proc.returncode == 1
     assert "validation failed" in proc.stderr
+    assert not spool_dir.exists()
+
+
+def test_ingest_validation_failure_does_not_spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = bootstrap_db(tmp_path)
+    spool_dir = tmp_path / "spool"
+    args = SimpleNamespace(
+        db=str(db_path),
+        batch=str(CANDIDATE_BATCH),
+        dry_run=False,
+        no_strict=False,
+        degraded_spool=True,
+        spool_dir=str(spool_dir),
+        format="json",
+    )
+
+    def fail_ingest(*_args: object, **_kwargs: object) -> None:
+        raise ingest_batch_script.canonical_ingest.CanonicalIngestError(
+            "validation failed: synthetic ingest check"
+        )
+
+    monkeypatch.setattr(ingest_batch_script, "parse_args", lambda: args)
+    monkeypatch.setattr(ingest_batch_script.canonical_ingest, "ingest_candidate_batch", fail_ingest)
+
+    exit_code = ingest_batch_script.main()
+
+    assert exit_code == 1
     assert not spool_dir.exists()
 
 

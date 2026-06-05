@@ -25,6 +25,12 @@ from tools.source_db_tools import (  # noqa: E402
 )
 
 
+def _is_deterministic_validation_failure(exc: BaseException) -> bool:
+    return isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
+        exc
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -175,6 +181,9 @@ def main() -> int:
         canonical_store.CanonicalStoreError,
         canonical_write_spool.CanonicalWriteSpoolError,
     ) as exc:
+        if _is_deterministic_validation_failure(exc):
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
         if not args.dry_run and args.degraded_spool:
             try:
                 report = _spool_candidate_batch(
