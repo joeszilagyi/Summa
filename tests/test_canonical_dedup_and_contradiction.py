@@ -224,6 +224,9 @@ def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tm
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
+    merge_count = 0
+    reconciliation_count = 0
+    entity = {"authority_record_id": None, "review_state": None}
     try:
         with conn:
             ingest_batch(conn, first_batch, batch_name="batch-a.json", db_path=db_path)
@@ -241,6 +244,113 @@ def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tm
     assert len(duplicate_events) == 1
     assert len(work_identifiers) == 1
     assert report["counts"]["deduped"]["work"] == 1
+
+
+def test_rejected_work_identifier_does_not_exactly_match(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="seed-work",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work_row = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Seeded Work",
+                confidence_score=1.0,
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/xyz123",
+                confidence_score=0.0,
+                review_state="rejected",
+            )
+            work_match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={"identifiers": [{"scheme": "doi", "value": "10.1000/xyz123"}]},
+                work_type="article",
+                title="Different Work",
+                workspace_id=None,
+            )
+            existing_work_rows = conn.execute("SELECT work_id, work_key_v1 FROM work").fetchall()
+    finally:
+        conn.close()
+
+    assert work_match is None
+    assert len(existing_work_rows) == 1
+
+
+def test_record_work_identifier_replay_without_review_state_preserves_established_state(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="seed-work-identifier",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work_row = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded-identifier",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Seeded Work",
+                confidence_score=1.0,
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            baseline = canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/xyz-preserve",
+                confidence_score=0.95,
+                review_state="accepted",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            replay = canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/xyz-preserve",
+                confidence_score=0.10,
+            )
+            row = conn.execute(
+                """
+                SELECT review_state, confidence_score
+                FROM work_identifier
+                WHERE work_identifier_id=?
+                """,
+                (baseline.row_id,),
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.10
 
 
 def test_same_title_different_locator_does_not_collapse(tmp_path: Path) -> None:
@@ -403,6 +513,84 @@ def test_claim_without_batch_scoped_key_is_stable_across_batches(tmp_path: Path)
     assert len(rows) == 1
 
 
+def test_work_fallback_without_explicit_identity_is_stable_across_batches(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            {
+                "candidate_id": "cand:implicit-work.1",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps({"work_type": "article"}, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+        run_id="gather-implicit-work-a",
+    )
+    second_batch = build_batch(
+        [
+            {
+                "candidate_id": "cand:implicit-work.2",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps({"work_type": "article"}, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+        run_id="gather-implicit-work-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="implicit-work-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="implicit-work-b.json", db_path=db_path)
+        rows = conn.execute("SELECT work_key_v1 FROM work ORDER BY work_id").fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert len(set(row["work_key_v1"] for row in rows)) == 1
+
+
+def test_claim_key_fallback_does_not_use_candidate_id() -> None:
+    candidate_alpha = {
+        "candidate_id": "cand:claim-empty-text-1",
+        "candidate_type": "open_question",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": "alpha",
+    }
+    candidate_beta = {
+        "candidate_id": "cand:claim-empty-text-2",
+        "candidate_type": "open_question",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": "alpha",
+    }
+    first_key = canonical_ingest._claim_key_for_candidate(
+        candidate_alpha,
+        workspace_id=None,
+        claim_text="",
+        claim_type="candidate_open_question",
+        about_object_ref="about:unknown",
+    )
+    second_key = canonical_ingest._claim_key_for_candidate(
+        candidate_beta,
+        workspace_id=None,
+        claim_text="",
+        claim_type="candidate_open_question",
+        about_object_ref="about:unknown",
+    )
+
+    assert first_key == second_key
+
+
 def test_authority_label_match_creates_reviewable_reconciliation_candidate(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -510,6 +698,70 @@ def test_exact_authority_identifier_match_records_merge_event_without_auto_accep
         for row in authority_rows
     )
     assert report["counts"]["deduped"]["authority"] == 1
+
+
+def test_rejected_authority_identifier_does_not_auto_merge(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    merge_count = 0
+    reconciliation_count = 0
+    entity = {"authority_record_id": None, "review_state": None}
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith.orcid",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.add_authority_identifier(
+                conn,
+                authority_record_id=authority_id,
+                scheme="orcid",
+                value="0000-0002-1825-0097",
+                is_primary=1,
+                confidence_score=0.0,
+                review_state="rejected",
+                verified_at=FIXED_TIMESTAMP,
+            )
+            report = ingest_batch(
+                conn,
+                build_batch(
+                    [
+                        entity_candidate(
+                            "cand:entity.2",
+                            label="Jane Smith",
+                            identifiers=[
+                                {"scheme": "orcid", "value": "0000-0002-1825-0097"}
+                            ],
+                        )
+                    ],
+                    run_id="gather-entity-identity-rejected",
+                ),
+                batch_name="entity-identity-rejected.json",
+                db_path=db_path,
+            )
+            merge_count = conn.execute(
+                "SELECT COUNT(*) FROM authority_merge_event"
+            ).fetchone()[0]
+            reconciliation_count = conn.execute(
+                "SELECT COUNT(*) FROM authority_reconciliation"
+            ).fetchone()[0]
+            entity = conn.execute(
+                "SELECT authority_record_id, review_state FROM extraction_detected_entity"
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert merge_count == 0
+    assert reconciliation_count == 1
+    assert entity["authority_record_id"] is None
+    assert entity["review_state"] == "proposed"
+    assert report["counts"]["reconciled"]["authority_reconciliation"] == 1
 
 
 def test_structured_taught_by_impossibility_creates_contradiction_and_review_history(tmp_path: Path) -> None:
@@ -975,6 +1227,205 @@ def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -
         conn.close()
 
     assert contradiction_count == 1
+
+
+@pytest.mark.parametrize("stale_state", ["rejected", "deprecated", "demoted"])
+def test_excluded_claim_states_do_not_drive_structured_contradiction(
+    tmp_path: Path,
+    stale_state: str,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            stale_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="baseline-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-stale-{stale_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture stale claim setup",
+                provenance_event_key_v1=f"prov:stale:{stale_state}",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=stale_provenance.event_key,
+                source_claim_key_v1=f"claim:{stale_state}:quantity.1",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 10,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                review_state=stale_state,
+                confidence_score=0.96,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            active_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="active-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-active-{stale_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture active claim setup",
+                provenance_event_key_v1=f"prov:active:{stale_state}",
+            )
+            active_claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=active_provenance.event_key,
+                source_claim_key_v1=f"claim:active:{stale_state}:quantity.2",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 12,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                confidence_score=0.95,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            contradictions = canonical_reconciliation.detect_structured_contradictions_for_claim(
+                conn,
+                source_claim_id=active_claim.row_id,
+                provenance_event_ref=active_provenance.event_key,
+                changed_at=FIXED_TIMESTAMP,
+            )
+            contradiction_count = conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert len(contradictions) == 1
+    assert contradiction_count == 0
+
+
+@pytest.mark.parametrize("established_state", ["accepted", "approved", "curated", "reviewed"])
+def test_established_claims_are_not_demoted_by_structured_contradictions(
+    tmp_path: Path,
+    established_state: str,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            stale_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="baseline-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-established-{established_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture baseline established claim",
+                provenance_event_key_v1=f"prov:established:base:{established_state}",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=stale_provenance.event_key,
+                source_claim_key_v1=f"claim:established:{established_state}:quantity.1",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 10,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                review_state=established_state,
+                confidence_score=0.96,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+            active_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="active-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-active-{established_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture conflicting established claim",
+                provenance_event_key_v1=f"prov:established:active:{established_state}",
+            )
+            active_claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=active_provenance.event_key,
+                source_claim_key_v1=f"claim:established:active:{established_state}:quantity.2",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 12,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                review_state=established_state,
+                confidence_score=0.95,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+            history_before = conn.execute(
+                "SELECT COUNT(*) FROM review_state_history"
+            ).fetchone()[0]
+            contradictions = canonical_reconciliation.detect_structured_contradictions_for_claim(
+                conn,
+                source_claim_id=active_claim.row_id,
+                provenance_event_ref=active_provenance.event_key,
+                changed_at=FIXED_TIMESTAMP,
+            )
+            contradiction_count = conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0]
+            history_after = conn.execute(
+                "SELECT COUNT(*) FROM review_state_history"
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT source_claim_id, review_state FROM source_claim ORDER BY source_claim_id"
+            ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(contradictions) >= 1
+    assert contradiction_count == 1
+    assert history_before == history_after
+    for row in rows:
+        assert row["review_state"] == established_state
 
 
 def test_reconciliation_and_contradictions_are_idempotent_on_reingest(tmp_path: Path) -> None:

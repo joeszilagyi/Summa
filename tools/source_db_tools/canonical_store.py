@@ -757,8 +757,30 @@ def check_canonical_store(db_path: Path) -> CheckResult:
 
 
 def stable_write_key(prefix: str, *parts: Any) -> str:
-    seed = "|".join("" if part is None else str(part) for part in parts)
+    seed = json.dumps(
+        [prefix, *(_stable_write_key_part(part) for part in parts)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     return f"{prefix}:{uuid.uuid5(WRITE_KEY_NAMESPACE, seed)}"
+
+
+def _stable_write_key_part(part: Any) -> dict[str, Any]:
+    if part is None:
+        return {"type": "null"}
+    if isinstance(part, bool):
+        return {"type": "bool", "value": part}
+    if isinstance(part, int):
+        return {"type": "int", "value": part}
+    if isinstance(part, float):
+        return {"type": "float", "value": part}
+    if isinstance(part, str):
+        return {"type": "str", "value": part}
+    return {
+        "type": f"{part.__class__.__module__}.{part.__class__.__qualname__}",
+        "value": str(part),
+    }
 
 
 def _require_nonblank(value: Any, field_name: str) -> str:
@@ -850,6 +872,15 @@ def _merged_review_state(existing: Any, proposed: str) -> str:
     ):
         return existing_text
     return proposed
+
+
+def _preserve_authority_envelope(
+    existing_review_state: str | None,
+    proposed_review_state: str,
+) -> bool:
+    return not _pending_review_state(existing_review_state) and _pending_review_state(
+        proposed_review_state
+    )
 
 
 def _first_present(*values: Any) -> Any:
@@ -1127,6 +1158,59 @@ def upsert_work(
         return CanonicalWriteResult("work", _inserted_rowid(cursor), work_key, True)
 
     merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+        preserve_established_envelope = True
+    confidence_value = existing["confidence_score"] if preserve_established_envelope else _first_present(
+        score,
+        existing["confidence_score"],
+    )
+    provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+    accepted_for_citation_value = (
+        existing["accepted_for_citation"]
+        if preserve_established_envelope
+        else max(
+            int(existing["accepted_for_citation"] or 0),
+            1 if int(accepted_for_citation) else 0,
+        )
+    )
     _update_row(
         conn,
         "work",
@@ -1145,29 +1229,18 @@ def upsert_work(
                 existing["refetchability_status"],
             ),
             "review_state": merged_review_state,
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
+            "publication_state": publication_state_value,
+            "confidence_score": confidence_value,
             "raw_cite_text": _first_present(
                 _optional_nonblank(raw_cite_text, "raw_cite_text"), existing["raw_cite_text"]
             ),
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"), existing["public_blocker"]
-            ),
-            "accepted_for_citation": max(
-                int(existing["accepted_for_citation"] or 0),
-                1 if int(accepted_for_citation) else 0,
-            ),
-            "provenance_event_ref": provenance_event_ref,
+            "authority_level": authority_level_value,
+            "public_blocker": public_blocker_value,
+            "accepted_for_citation": accepted_for_citation_value,
+            "provenance_event_ref": provenance_value,
             "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
             "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
             "created_at": _first_present(existing["created_at"], created_at_value),
@@ -1214,7 +1287,14 @@ def record_source_access(
         last_seen_at, field_name="last_seen_at", default=first_seen_value
     )
     if work_id is not None:
-        criteria = {"work_id": work_id, "original_locator": locator}
+        criteria = {
+            "work_id": work_id,
+            "original_locator": locator,
+            "canonical_url": _optional_nonblank(canonical_url, "canonical_url"),
+            "source_locus_id": _optional_nonblank(source_locus_id, "source_locus_id"),
+            "source_lead_id": _optional_nonblank(source_lead_id, "source_lead_id"),
+            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
+        }
     elif source_lead_id is not None:
         criteria = {
             "source_lead_id": _require_nonblank(source_lead_id, "source_lead_id"),
@@ -1226,55 +1306,77 @@ def record_source_access(
             "original_locator": locator,
             "canonical_url": _optional_nonblank(canonical_url, "canonical_url"),
             "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
-            "provenance_event_ref": provenance_event_ref,
         }
     existing = _lookup_row(conn, "source_access", "source_access_id", criteria)
     if existing is None:
-        cursor = conn.execute(
-            """
-            INSERT INTO source_access (
-              work_id,
-              source_locus_id,
-              source_lead_id,
-              original_locator,
-              canonical_url,
-              access_class,
-              refetchability_status,
-              rights_posture,
-              citation_hint,
-              review_state,
-              publication_state,
-              authority_level,
-              public_blocker,
-              workspace_id,
-              provenance_event_ref,
-              first_seen_at,
-              last_seen_at,
-              record_last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                work_id,
-                _optional_nonblank(source_locus_id, "source_locus_id"),
-                _optional_nonblank(source_lead_id, "source_lead_id"),
-                locator,
-                _optional_nonblank(canonical_url, "canonical_url"),
-                _optional_nonblank(access_class, "access_class"),
-                _optional_nonblank(refetchability_status, "refetchability_status"),
-                _optional_nonblank(rights_posture, "rights_posture"),
-                _optional_nonblank(citation_hint, "citation_hint"),
-                review_state_value,
-                _optional_nonblank(publication_state, "publication_state"),
-                _optional_nonblank(authority_level, "authority_level"),
-                _optional_nonblank(public_blocker, "public_blocker"),
-                _optional_nonblank(workspace_id, "workspace_id"),
-                provenance_event_ref,
-                first_seen_value,
-                last_seen_value,
-                timestamp,
-            ),
-        )
-        return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO source_access (
+                  work_id,
+                  source_locus_id,
+                  source_lead_id,
+                  original_locator,
+                  canonical_url,
+                  access_class,
+                  refetchability_status,
+                  rights_posture,
+                  citation_hint,
+                  review_state,
+                  publication_state,
+                  authority_level,
+                  public_blocker,
+                  workspace_id,
+                  provenance_event_ref,
+                  first_seen_at,
+                  last_seen_at,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    _optional_nonblank(source_locus_id, "source_locus_id"),
+                    _optional_nonblank(source_lead_id, "source_lead_id"),
+                    locator,
+                    _optional_nonblank(canonical_url, "canonical_url"),
+                    _optional_nonblank(access_class, "access_class"),
+                    _optional_nonblank(refetchability_status, "refetchability_status"),
+                    _optional_nonblank(rights_posture, "rights_posture"),
+                    _optional_nonblank(citation_hint, "citation_hint"),
+                    review_state_value,
+                    _optional_nonblank(publication_state, "publication_state"),
+                    _optional_nonblank(authority_level, "authority_level"),
+                    _optional_nonblank(public_blocker, "public_blocker"),
+                    _optional_nonblank(workspace_id, "workspace_id"),
+                    provenance_event_ref,
+                    first_seen_value,
+                    last_seen_value,
+                    timestamp,
+                ),
+            )
+            return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
+        except sqlite3.IntegrityError:
+            existing = conn.execute(
+                """
+                SELECT * FROM source_access WHERE work_id=? AND original_locator=? LIMIT 1
+                """,
+                (work_id, locator),
+            ).fetchone()
+            if existing is None:
+                raise
+            _update_row(
+                conn,
+                "source_access",
+                "source_access_id",
+                int(existing["source_access_id"]),
+                {
+                    "review_state": _merged_review_state(existing["review_state"], review_state_value),
+                    "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
+                    "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
+                    "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
+                },
+            )
+            return CanonicalWriteResult("source_access", int(existing["source_access_id"]), None, False)
 
     _update_row(
         conn,
@@ -1357,12 +1459,9 @@ def record_source_claim(
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_key = source_claim_key_v1 or stable_write_key(
         "claim",
-        provenance_event_ref,
-        about_object_ref,
-        claim_type,
+        _optional_nonblank(about_object_ref, "about_object_ref") or "about:unknown",
+        _optional_nonblank(claim_type, "claim_type") or "claim",
         claim_text_value,
-        capture_event_id,
-        extraction_id,
     )
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_SOURCE_CLAIM_REVIEW_STATE
@@ -1421,6 +1520,56 @@ def record_source_claim(
         )
         return CanonicalWriteResult("source_claim", _inserted_rowid(cursor), claim_key, True)
 
+    merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+        preserve_established_envelope = True
+
+    claim_text_update_value = (
+        existing["claim_text"] if preserve_established_envelope else claim_text_value
+    )
+    claim_confidence_value = (
+        existing["confidence_score"] if preserve_established_envelope else _first_present(score, existing["confidence_score"])
+    )
+    claim_provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    claim_publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    claim_authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    claim_public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+
     _update_row(
         conn,
         "source_claim",
@@ -1431,7 +1580,7 @@ def record_source_claim(
                 _optional_nonblank(about_object_ref, "about_object_ref"),
                 existing["about_object_ref"],
             ),
-            "claim_text": claim_text_value,
+            "claim_text": claim_text_update_value,
             "public_summary": _first_present(
                 _optional_nonblank(public_summary, "public_summary"),
                 existing["public_summary"],
@@ -1439,24 +1588,15 @@ def record_source_claim(
             "claim_type": _first_present(
                 _optional_nonblank(claim_type, "claim_type"), existing["claim_type"]
             ),
-            "review_state": _merged_review_state(existing["review_state"], review_state_value),
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"),
-                existing["public_blocker"],
-            ),
+            "review_state": merged_review_state,
+            "publication_state": claim_publication_state_value,
+            "authority_level": claim_authority_level_value,
+            "public_blocker": claim_public_blocker_value,
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
-            "provenance_event_ref": provenance_event_ref,
+            "confidence_score": claim_confidence_value,
+            "provenance_event_ref": claim_provenance_value,
             "evidence_locator_ref": _first_present(
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
                 existing["evidence_locator_ref"],
@@ -1918,12 +2058,12 @@ def record_source_relationship(
         "source_relationship",
         "source_relationship_id",
         {
-            "provenance_event_ref": provenance_event_ref,
             "from_object_ref": from_ref,
             "to_object_ref": _optional_nonblank(to_object_ref, "to_object_ref"),
             "predicate": predicate_value,
             "target_label": _optional_nonblank(target_label, "target_label"),
             "evidence_note": _optional_nonblank(evidence_note, "evidence_note"),
+            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
         },
     )
     if existing is None:
@@ -1967,6 +2107,46 @@ def record_source_relationship(
         )
         return CanonicalWriteResult("source_relationship", _inserted_rowid(cursor), None, True)
 
+    merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    relationship_confidence_value = (
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(score, existing["confidence_score"])
+    )
+    relationship_provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    relationship_publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    relationship_authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    relationship_public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+
     _update_row(
         conn,
         "source_relationship",
@@ -1979,24 +2159,15 @@ def record_source_relationship(
             "evidence_note": _first_present(
                 _optional_nonblank(evidence_note, "evidence_note"), existing["evidence_note"]
             ),
-            "review_state": _merged_review_state(existing["review_state"], review_state_value),
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"),
-                existing["public_blocker"],
-            ),
+            "review_state": merged_review_state,
+            "publication_state": relationship_publication_state_value,
+            "authority_level": relationship_authority_level_value,
+            "public_blocker": relationship_public_blocker_value,
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
-            "provenance_event_ref": provenance_event_ref,
+            "confidence_score": relationship_confidence_value,
+            "provenance_event_ref": relationship_provenance_value,
             "evidence_locator_ref": _first_present(
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
                 existing["evidence_locator_ref"],

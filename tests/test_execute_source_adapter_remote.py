@@ -9,9 +9,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from tools.scripts import execute_source_adapter as source_executor
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
+VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
 PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_remote_url_manifest_adapter.py"
 ADAPTER = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "remote_url_manifest" / "source_adapter.json"
 
@@ -26,6 +29,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
         type(self).request_paths.append(self.path)
         if self.path == "/text":
             body = b"remote fixture text\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/plain":
+            body = b"remote fixture text"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -186,6 +196,161 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def test_execute_remote_fetches_emits_denied_evidence_rows(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        records = [
+            {
+                "sequence": 1,
+                "relative_path": "one",
+                "preserved": {
+                    "original_locator": {"entry_url": f"{base_url}/text"},
+                    "rights_posture": "public",
+                    "source_metadata": {"hazard_flags": []},
+                },
+                "source_specific": {"manifest_url": f"{base_url}/manifest.json"},
+            },
+            {
+                "sequence": 2,
+                "relative_path": "two",
+                "preserved": {
+                    "original_locator": {"entry_url": f"{base_url}/html"},
+                    "rights_posture": "public",
+                    "source_metadata": {"hazard_flags": []},
+                },
+                "source_specific": {"manifest_url": f"{base_url}/manifest.json"},
+            },
+            {
+                "sequence": 3,
+                "relative_path": "three",
+                "preserved": {
+                    "original_locator": {"entry_url": f"{base_url}/plain"},
+                    "rights_posture": "public",
+                    "source_metadata": {"hazard_flags": []},
+                },
+                "source_specific": {"manifest_url": f"{base_url}/manifest.json"},
+            },
+        ]
+        gate_report = {
+            "planned_actions": [
+                {
+                    "url": f"{base_url}/text",
+                    "status": "planned",
+                    "method": "GET",
+                },
+                {
+                    "url": f"{base_url}/plain",
+                    "status": "planned",
+                    "method": "POST",
+                },
+            ],
+            "checks": {
+                "network_policy": {
+                    "user_agent": "SummaRemoteTest/1.0",
+                    "allow_http": True,
+                    "robots_mode": "respect_robots",
+                },
+                "rate_limits": {"min_interval_seconds": 0},
+                "allowlist": {"hosts": [], "url_prefixes": [base_url]},
+            },
+        }
+        capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary = (
+            source_executor.execute_remote_fetches(
+                records=records,
+                adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+                run_id="remote-denial-test",
+                created_at="2026-06-03T12:34:56Z",
+                handoff_hash="a" * 64,
+                gate_report=gate_report,
+                timeout_seconds=2,
+                max_response_bytes=1024,
+            )
+        )
+
+        assert failed is True
+        assert summary["urls_attempted"] == 1
+        assert summary["urls_succeeded"] == 1
+        assert summary["urls_denied"] == 2
+        assert [record["status"] for record in capture_events] == ["completed", "denied", "denied"]
+        assert [record["status"] for record in extraction_records] == ["completed", "denied", "denied"]
+        assert capture_events[1]["failure_reason"] == "network_gate_action_missing"
+        assert capture_events[2]["failure_reason"] == "unsupported_request_method"
+        assert extraction_records[1]["failure_reason"] == "network_gate_action_missing"
+        assert extraction_records[2]["failure_reason"] == "unsupported_request_method"
+        assert text_artifacts["extracted-text/extraction-0001.txt"] == "remote fixture text\n"
+        assert "payloads/capture-0001.bin" in binary_artifacts
+    finally:
+        server.shutdown()
+
+
+def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: Path, monkeypatch) -> None:
+    records = [
+        {
+            "sequence": 1,
+            "relative_path": "one",
+            "preserved": {
+                "original_locator": {"entry_url": "https://example.test/one"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://example.test/manifest.json"},
+        },
+        {
+            "sequence": 2,
+            "relative_path": "two",
+            "preserved": {
+                "original_locator": {"entry_url": "https://example.test/two"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://example.test/manifest.json"},
+        },
+    ]
+    gate_report = {
+        "schema_version": "network-safety-gate-report.v1",
+        "decision": "allow",
+        "execution_allowed": True,
+        "counts": {"errors": 0, "warnings": 0},
+        "planned_actions": [
+            {"url": "https://example.test/one", "status": "refused", "method": "GET"},
+            {"url": "https://example.test/two", "status": "refused", "method": "GET"},
+        ],
+        "checks": {
+            "network_policy": {
+                "user_agent": "SummaRemoteTest/1.0",
+                "allow_http": True,
+                "robots_mode": "respect_robots",
+            },
+            "rate_limits": {"min_interval_seconds": 0},
+            "allowlist": {"hosts": [], "url_prefixes": ["https://example.test/"]},
+        },
+    }
+    gate_request_path = tmp_path / "gate-request.json"
+    gate_request_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: gate_report)
+
+    execution_record, denial_record, capture_events, extraction_records, _, _ = source_executor.execute_remote_url_manifest(
+        records=records,
+        run_id="remote-denial-only",
+        created_at="2026-06-03T12:34:56Z",
+        handoff_path=tmp_path / "handoff.jsonl",
+        handoff_hash="a" * 64,
+        adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+        gate_request_path=gate_request_path,
+        dry_run=False,
+        allow_network=True,
+        timeout_seconds=2,
+        max_response_bytes=1024,
+    )
+
+    assert denial_record is None
+    assert execution_record["network_access_attempted"] is True
+    assert execution_record["urls_denied"] == 2
+    assert capture_events[0]["status"] == "denied"
+    assert extraction_records[0]["status"] == "denied"
+
+
 def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path) -> None:
     server, base_url = fixture_server()
     try:
@@ -209,12 +374,74 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert captures[0]["network_access_attempted"] is True
         assert captures[0]["content_hash"] == hashlib.sha256(b"remote fixture text\n").hexdigest()
         assert captures[0]["byte_count"] == len(b"remote fixture text\n")
+        assert captures[0]["content_length_header"] == str(len(b"remote fixture text\n"))
         assert captures[0]["transient_payload_path"] == "payloads/capture-0001.bin"
         assert (output / captures[0]["transient_payload_path"]).read_bytes() == b"remote fixture text\n"
         assert extractions[0]["capture_id"] == captures[0]["capture_id"]
         assert extractions[0]["status"] == "completed"
         assert (output / extractions[0]["extracted_text_path"]).read_text(encoding="utf-8") == "remote fixture text\n"
         assert FixtureHandler.request_paths == ["/text"]
+    finally:
+        server.shutdown()
+
+
+def test_gate_pass_writes_exact_text_without_trailing_newline(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        body = b"remote fixture text"
+        url = f"{base_url}/plain"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-plain-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        extracted_path = output / extractions[0]["extracted_text_path"]
+        assert extracted_path.read_bytes() == body
+        assert extractions[0]["content_hash"] == hashlib.sha256(body).hexdigest()
+        assert extractions[0]["byte_count_out"] == len(body)
+
+        validator_proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(output)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+    finally:
+        server.shutdown()
+
+
+def test_validator_detects_mutated_extracted_text_artifact(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/plain"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-plain-mismatch-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        extracted_path = output / extractions[0]["extracted_text_path"]
+        extracted_path.write_text("remote fixture text\n", encoding="utf-8")
+
+        validator_proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(output)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert validator_proc.returncode == 1, validator_proc.stdout + validator_proc.stderr
+        assert "EXTRACTED_TEXT_HASH_MISMATCH" in validator_proc.stdout
+        assert "EXTRACTED_TEXT_BYTE_COUNT_MISMATCH" in validator_proc.stdout
     finally:
         server.shutdown()
 

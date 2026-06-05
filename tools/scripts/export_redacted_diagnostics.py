@@ -16,6 +16,8 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
+import uuid
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -36,6 +38,8 @@ except Exception:  # pragma: no cover - defensive import guard for standalone us
 
 
 MANIFEST_SCHEMA_VERSION = "redacted-diagnostic-manifest.v1"
+MANIFEST_FILENAME = "diagnostic-manifest.json"
+DIAGNOSTIC_OUTPUT_PROFILE = "public_bundle"
 REDACTION_REPORT_SCHEMA_VERSION = "redacted-diagnostic-redaction-report.v1"
 EXPORT_REPORT_SCHEMA_VERSION = "redacted-diagnostic-export-report.v1"
 DEFAULT_GENERATED_AT = "runtime"
@@ -797,8 +801,51 @@ def compute_export_id(db_path: Path, generated_at: str, subject: str | None) -> 
     return f"redacted-diagnostics:{digest}"
 
 
+def _contains_sqlite_file(path: Path) -> bool:
+    return any(item.suffix.lower() == ".sqlite" for item in path.glob("**/*") if item.is_file())
+
+
+def _is_recognized_redacted_diagnostic_bundle(path: Path) -> bool:
+    manifest_path = path / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("schema_version") == MANIFEST_SCHEMA_VERSION
+
+
+def _is_canonical_workspace_root(path: Path) -> bool:
+    return (
+        (path / ".indexer" / "subject_manifest.json").is_file()
+        or (
+            (path / "source.txt").is_file()
+            and (path / "state").is_dir()
+            and (path / "runs").is_dir()
+        )
+    )
+
+
+def _assert_diagnostic_output_target_safe(output_dir: Path, overwrite: bool) -> None:
+    if output_dir == REPO_ROOT:
+        raise DiagnosticExportError(f"refusing to write output to repository root: {output_dir}")
+    if output_dir == Path.cwd().resolve():
+        raise DiagnosticExportError(f"refusing to write output to current working directory: {output_dir}")
+    if output_dir == Path.home().resolve():
+        raise DiagnosticExportError(f"refusing to write output to home directory: {output_dir}")
+    if ".git" in output_dir.parts:
+        raise DiagnosticExportError(f"refusing to write output under .git path: {output_dir}")
+    if "runtime" in output_dir.parts or "dbs" in output_dir.parts:
+        raise DiagnosticExportError(f"refusing to write output into reserved workspace path: {output_dir}")
+    if _is_canonical_workspace_root(output_dir):
+        raise DiagnosticExportError(f"refusing to write output to canonical workspace root: {output_dir}")
+    if _contains_sqlite_file(output_dir):
+        raise DiagnosticExportError(f"refusing to overwrite path with sqlite artifacts: {output_dir}")
+
+
 def run_leak_scan(output_dir: Path) -> dict[str, Any]:
-    return scan_directory(output_dir, profile="public_bundle")
+    return scan_directory(output_dir, profile=DIAGNOSTIC_OUTPUT_PROFILE)
 
 
 def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
@@ -806,8 +853,16 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
     if not db_path.is_file():
         raise DiagnosticExportError(f"canonical DB not found: {db_path}")
     output_dir = Path(args.output_dir).expanduser().resolve()
-    if output_dir.exists() and not args.overwrite:
-        raise DiagnosticExportError(f"output directory already exists: {output_dir}")
+    _assert_diagnostic_output_target_safe(output_dir, args.overwrite)
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise DiagnosticExportError(f"output path is not a directory: {output_dir}")
+        if not args.overwrite:
+            raise DiagnosticExportError(f"output directory already exists: {output_dir}")
+        if not _is_recognized_redacted_diagnostic_bundle(output_dir):
+            raise DiagnosticExportError(
+                f"output directory exists but is not a recognized redacted diagnostics bundle: {output_dir}"
+            )
     if args.url_redaction == "full" and not args.internal_full_fidelity:
         raise DiagnosticExportError("--url-redaction full requires --internal-full-fidelity")
 
@@ -820,127 +875,140 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
         internal_full_fidelity=bool(args.internal_full_fidelity),
     )
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage_root = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=output_dir.parent))
+    backup_root = None
     included: list[str] = []
-    omitted: list[dict[str, str]] = [
-        {
-            "section": "payload_bodies",
-            "reason": "Source payload bodies are not part of redacted diagnostics.",
-        },
-        {"section": "complete_text", "reason": "Complete extracted text is omitted by default."},
-        {"section": "operator_notes", "reason": "Private operator notes are omitted by default."},
-        {"section": "model_prompt_bodies", "reason": "Prompt bodies are omitted by default."},
-    ]
+    omitted: list[dict[str, str]] = []
     warnings: list[str] = []
     errors: list[str] = []
-
-    conn = canonical_store.connect_existing_read_only(db_path)
+    leak_report: dict[str, Any] | None = None
+    final_manifest: dict[str, Any] | None = None
     try:
-        graph_closure_summary: dict[str, Any] | None = None
-        if args.include_graph_closure:
-            graph_closure_summary = build_graph_closure_summary(db_path, generated_at, redactor)
-            write_json(output_dir / "graph-closure-summary.json", graph_closure_summary)
-            included.append("graph-closure-summary.json")
+        omitted = [
+            {
+                "section": "payload_bodies",
+                "reason": "Source payload bodies are not part of redacted diagnostics.",
+            },
+            {"section": "complete_text", "reason": "Complete extracted text is omitted by default."},
+            {"section": "operator_notes", "reason": "Private operator notes are omitted by default."},
+            {"section": "model_prompt_bodies", "reason": "Prompt bodies are omitted by default."},
+        ]
+
+        conn = canonical_store.connect_existing_read_only(db_path)
+        try:
+            graph_closure_summary: dict[str, Any] | None = None
+            if args.include_graph_closure:
+                graph_closure_summary = build_graph_closure_summary(db_path, generated_at, redactor)
+                write_json(stage_root / "graph-closure-summary.json", graph_closure_summary)
+                included.append("graph-closure-summary.json")
+            else:
+                omitted.append({"section": "graph_closure", "reason": "Disabled by operator flag."})
+
+            sections = {
+                "canonical-summary.json": build_canonical_summary(conn, db_path, redactor),
+                "graph-shape.json": build_graph_shape(conn, graph_closure_summary),
+                "review-state-summary.json": build_review_state_summary(conn),
+                "relationship-summary.json": build_relationship_summary(conn),
+                "source-access-summary.json": build_source_access_summary(conn, redactor),
+                "cycle-ledger-summary.json": build_cycle_ledger_summary(conn, redactor),
+            }
+            for name, payload in sections.items():
+                write_json(stage_root / name, payload)
+                included.append(name)
+        finally:
+            conn.close()
+
+        workspace = Path(args.workspace).expanduser().resolve() if args.workspace else None
+        write_json(
+            stage_root / "artifact-summary.json", summarize_workspace_artifacts(workspace, redactor)
+        )
+        included.append("artifact-summary.json")
+        if args.include_cycle_manifests:
+            write_json(
+                stage_root / "cycle-summary.json", summarize_cycle_manifests(workspace, redactor)
+            )
+            included.append("cycle-summary.json")
         else:
-            omitted.append({"section": "graph_closure", "reason": "Disabled by operator flag."})
+            omitted.append({"section": "cycle_manifests", "reason": "Disabled by operator flag."})
+        write_json(stage_root / "spool-summary.json", build_spool_summary(workspace, redactor))
+        included.append("spool-summary.json")
 
-        sections = {
-            "canonical-summary.json": build_canonical_summary(conn, db_path, redactor),
-            "graph-shape.json": build_graph_shape(conn, graph_closure_summary),
-            "review-state-summary.json": build_review_state_summary(conn),
-            "relationship-summary.json": build_relationship_summary(conn),
-            "source-access-summary.json": build_source_access_summary(conn, redactor),
-            "cycle-ledger-summary.json": build_cycle_ledger_summary(conn, redactor),
+        if args.include_local_doctor_summary:
+            write_json(
+                stage_root / "local-doctor-summary.json",
+                build_local_doctor_summary(REPO_ROOT, redactor),
+            )
+            included.append("local-doctor-summary.json")
+        else:
+            omitted.append({"section": "local_doctor", "reason": "Disabled by operator flag."})
+
+        write_json(stage_root / "redaction-report.json", build_redaction_report(args, redactor))
+        included.append("redaction-report.json")
+
+        provisional_manifest = build_manifest(
+            args=args,
+            db_path=db_path,
+            output_dir=stage_root,
+            generated_at=generated_at,
+            export_id=export_id,
+            redactor=redactor,
+            included_sections=included,
+            omitted_sections=omitted,
+            leak_report=None,
+            warnings=warnings,
+            errors=errors,
+        )
+        write_json(stage_root / "diagnostic-manifest.json", provisional_manifest)
+
+        leak_report = run_leak_scan(stage_root)
+        write_json(stage_root / "leak-scan-report.json", leak_report)
+        final_manifest = build_manifest(
+            args=args,
+            db_path=db_path,
+            output_dir=stage_root,
+            generated_at=generated_at,
+            export_id=export_id,
+            redactor=redactor,
+            included_sections=included,
+            omitted_sections=omitted,
+            leak_report=leak_report,
+            warnings=warnings,
+            errors=errors,
+        )
+        final_manifest["leak_scan"] = {
+            "status": leak_report.get("status"),
+            "finding_count": leak_report.get("counts", {}).get("findings"),
+            "report_path": "leak-scan-report.json",
         }
-        for name, payload in sections.items():
-            write_json(output_dir / name, payload)
-            included.append(name)
+        write_json(stage_root / "diagnostic-manifest.json", final_manifest)
+
+        if leak_report.get("status") != "pass" and not args.internal_full_fidelity:
+            findings = leak_report.get("findings") or []
+            first = findings[0] if isinstance(findings, list) and findings else {}
+            raise DiagnosticExportError(f"diagnostic leak scan failed: {first}")
+
+        if output_dir.exists():
+            backup_root = output_dir.parent / f".{output_dir.name}.backup.{uuid.uuid4().hex[:8]}"
+            output_dir.replace(backup_root)
+        stage_root.replace(output_dir)
+        if backup_root is not None and backup_root.exists():
+            shutil.rmtree(backup_root, ignore_errors=True)
+    except Exception:
+        if backup_root is not None and backup_root.exists() and not output_dir.exists():
+            backup_root.replace(output_dir)
+        raise
     finally:
-        conn.close()
-
-    workspace = Path(args.workspace).expanduser().resolve() if args.workspace else None
-    write_json(
-        output_dir / "artifact-summary.json", summarize_workspace_artifacts(workspace, redactor)
-    )
-    included.append("artifact-summary.json")
-    if args.include_cycle_manifests:
-        write_json(
-            output_dir / "cycle-summary.json", summarize_cycle_manifests(workspace, redactor)
-        )
-        included.append("cycle-summary.json")
-    else:
-        omitted.append({"section": "cycle_manifests", "reason": "Disabled by operator flag."})
-    write_json(output_dir / "spool-summary.json", build_spool_summary(workspace, redactor))
-    included.append("spool-summary.json")
-
-    if args.include_local_doctor_summary:
-        write_json(
-            output_dir / "local-doctor-summary.json",
-            build_local_doctor_summary(REPO_ROOT, redactor),
-        )
-        included.append("local-doctor-summary.json")
-    else:
-        omitted.append({"section": "local_doctor", "reason": "Disabled by operator flag."})
-
-    write_json(output_dir / "redaction-report.json", build_redaction_report(args, redactor))
-    included.append("redaction-report.json")
-
-    provisional_manifest = build_manifest(
-        args=args,
-        db_path=db_path,
-        output_dir=output_dir,
-        generated_at=generated_at,
-        export_id=export_id,
-        redactor=redactor,
-        included_sections=included,
-        omitted_sections=omitted,
-        leak_report=None,
-        warnings=warnings,
-        errors=errors,
-    )
-    write_json(output_dir / "diagnostic-manifest.json", provisional_manifest)
-
-    leak_report = run_leak_scan(output_dir)
-    write_json(output_dir / "leak-scan-report.json", leak_report)
-    final_manifest = build_manifest(
-        args=args,
-        db_path=db_path,
-        output_dir=output_dir,
-        generated_at=generated_at,
-        export_id=export_id,
-        redactor=redactor,
-        included_sections=included,
-        omitted_sections=omitted,
-        leak_report=leak_report,
-        warnings=warnings,
-        errors=errors,
-    )
-    write_json(output_dir / "diagnostic-manifest.json", final_manifest)
-    leak_report = run_leak_scan(output_dir)
-    write_json(output_dir / "leak-scan-report.json", leak_report)
-    final_manifest["leak_scan"] = {
-        "status": leak_report.get("status"),
-        "finding_count": leak_report.get("counts", {}).get("findings"),
-        "report_path": "leak-scan-report.json",
-    }
-    write_json(output_dir / "diagnostic-manifest.json", final_manifest)
-
-    if leak_report.get("status") != "pass" and not args.internal_full_fidelity:
-        findings = leak_report.get("findings") or []
-        first = findings[0] if isinstance(findings, list) and findings else {}
-        raise DiagnosticExportError(f"diagnostic leak scan failed: {first}")
+        shutil.rmtree(stage_root, ignore_errors=True)
 
     return {
         "schema_version": EXPORT_REPORT_SCHEMA_VERSION,
-        "status": "pass" if leak_report.get("status") == "pass" else "internal_with_leak_warnings",
+        "status": "pass",
         "output_dir": str(output_dir),
         "manifest_path": str(output_dir / "diagnostic-manifest.json"),
-        "leak_scan_status": leak_report.get("status"),
+        "leak_scan_status": "pass" if (leak_report or {}).get("status") == "pass" else "internal_with_leak_warnings",
         "included_section_count": len(included),
-        "privacy_classification": final_manifest["privacy_classification"],
+        "privacy_classification": final_manifest["privacy_classification"] if final_manifest else "local_operator_redacted",
     }
 
 

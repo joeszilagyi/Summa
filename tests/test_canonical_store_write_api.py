@@ -257,6 +257,360 @@ def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) 
     assert int(row["accepted_for_citation"]) == 1
 
 
+def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority",
+        )
+        baseline = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority",
+            provenance_event_ref=accepted_prov.event_key,
+            work_type="article",
+            title="Fixture Authority Work",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            accepted_for_citation=1,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-proposed",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority",
+            provenance_event_ref=proposed_prov.event_key,
+            work_type="article",
+            title="Fixture Authority Work Updated",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            accepted_for_citation=0,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT work_type, title, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation FROM work WHERE work_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["work_type"] == "article"
+    assert row["title"] == "Fixture Authority Work Updated"
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert int(row["accepted_for_citation"]) == 1
+
+
+def test_work_upsert_acceptance_replay_preserves_authority_envelope(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-replay",
+        )
+        baseline = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority-replay",
+            provenance_event_ref=accepted_provenance.event_key,
+            work_type="article",
+            title="Fixture Authority Work",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            accepted_for_citation=1,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        replay_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-replay-again",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-replay-again",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority-replay",
+            provenance_event_ref=replay_provenance.event_key,
+            work_type="article",
+            title="Fixture Authority Work Replayed",
+            review_state="accepted",
+            confidence_score=0.1,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            accepted_for_citation=0,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation, title FROM work WHERE work_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert int(row["accepted_for_citation"]) == 1
+    assert row["title"] == "Fixture Authority Work Replayed"
+
+
+def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority",
+        )
+        baseline = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=accepted_prov.event_key,
+            source_claim_key_v1="claim:fixture-authority",
+            about_object_ref="work:fixture-authority",
+            claim_text="Baseline claim with high confidence.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority-proposed",
+        )
+        canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=proposed_prov.event_key,
+            source_claim_key_v1="claim:fixture-authority",
+            about_object_ref="work:fixture-authority",
+            claim_text="Baseline claim with low confidence.",
+            claim_type="fixture_claim",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT claim_text, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert row["claim_text"] == "Baseline claim with high confidence."
+
+
+def test_source_claim_acceptance_replay_preserves_claim_text_and_provenance(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority",
+        )
+        baseline = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=accepted_provenance.event_key,
+            source_claim_key_v1="claim:fixture-authority-replay",
+            about_object_ref="work:fixture-authority",
+            claim_text="Claim text should be preserved.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-replay-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority-replay-2",
+        )
+        canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=proposed_provenance.event_key,
+            source_claim_key_v1="claim:fixture-authority-replay",
+            about_object_ref="work:fixture-authority",
+            claim_text="Mutated claim text should not overwrite.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT claim_text, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["claim_text"] == "Claim text should be preserved."
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+
+
+def test_source_relationship_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-relationship-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-relationship-authority",
+        )
+        baseline = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=accepted_prov.event_key,
+            from_object_ref="work:fixture-alpha",
+            predicate="mentions",
+            to_object_ref="entity:fixture-alpha",
+            target_label="Fixture Alpha",
+            evidence_note="Baseline relation",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-relationship-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-relationship-authority-proposed",
+        )
+        canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=proposed_prov.event_key,
+            from_object_ref="work:fixture-alpha",
+            predicate="mentions",
+            to_object_ref="entity:fixture-alpha",
+            target_label="Fixture Alpha",
+            evidence_note="Baseline relation",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_relationship WHERE source_relationship_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+
+
 def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -322,6 +676,121 @@ def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None
     assert row["record_last_updated"] == NEWER_TIMESTAMP
 
 
+def test_source_relationship_is_deduplicated_by_logical_identity(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="relationship-first",
+            event_type="fixture_ingest",
+            run_id="run-first",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:relationship-run-first",
+        )
+        first = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            from_object_ref="work:1",
+            to_object_ref="entity:alpha",
+            predicate="mentions",
+            target_label="Alpha",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="relationship-second",
+            event_type="fixture_ingest",
+            run_id="run-second",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:relationship-run-second",
+        )
+        second = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            from_object_ref="work:1",
+            to_object_ref="entity:alpha",
+            predicate="mentions",
+            target_label="Alpha",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE from_object_ref=?",
+            ("work:1",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert count == 1
+
+
+def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-first",
+            event_type="fixture_ingest",
+            run_id="claim-run-first",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-run-first",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-second",
+            event_type="fixture_ingest",
+            run_id="claim-run-second",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-run-second",
+        )
+        second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE about_object_ref=?",
+            ("work:fixture-alpha",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert count == 1
+
+
 def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -365,11 +834,13 @@ def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path
     assert counts["source_claim"] == 0
 
 
-def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path: Path) -> None:
+def test_source_access_without_work_or_lead_replays_by_locator_without_duplicate_rows(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        provenance = canonical_store.record_provenance_event(
+        first_provenance = canonical_store.record_provenance_event(
             conn,
             object_namespace="fixture_ingest",
             object_id="fixture-004",
@@ -380,7 +851,7 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
         )
         first = canonical_store.record_source_access(
             conn,
-            provenance_event_ref=provenance.event_key,
+            provenance_event_ref=first_provenance.event_key,
             original_locator="https://example.test/source-access-fallback",
             canonical_url="https://example.test/source-access-fallback",
             workspace_id="delta_subject",
@@ -389,25 +860,43 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
             last_seen_at=FIXED_TIMESTAMP,
             record_last_updated=FIXED_TIMESTAMP,
         )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004b",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-fallback-replay",
+        )
         second = canonical_store.record_source_access(
             conn,
-            provenance_event_ref=provenance.event_key,
+            provenance_event_ref=second_provenance.event_key,
             original_locator="https://example.test/source-access-fallback",
             canonical_url="https://example.test/source-access-fallback",
             workspace_id="delta_subject",
             citation_hint="Fixture fallback source access updated",
-            first_seen_at=FIXED_TIMESTAMP,
-            last_seen_at=FIXED_TIMESTAMP,
-            record_last_updated=FIXED_TIMESTAMP,
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
         )
         conn.commit()
         row = conn.execute(
             """
-            SELECT provenance_event_ref, citation_hint
+            SELECT provenance_event_ref, citation_hint, first_seen_at, last_seen_at
             FROM source_access
             WHERE source_access_id=?
             """,
             (first.row_id,),
+        ).fetchone()
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM source_access
+            WHERE original_locator=?
+              AND workspace_id=?
+            """,
+            ("https://example.test/source-access-fallback", "delta_subject"),
         ).fetchone()
     finally:
         conn.close()
@@ -415,8 +904,12 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
     assert first.created is True
     assert second.created is False
     assert second.row_id == first.row_id
-    assert row["provenance_event_ref"] == provenance.event_key
+    assert row_count is not None
+    assert int(row_count["row_count"]) == 1
+    assert row["provenance_event_ref"] == second_provenance.event_key
     assert row["citation_hint"] == "Fixture fallback source access updated"
+    assert row["first_seen_at"] == FIXED_TIMESTAMP
+    assert row["last_seen_at"] == NEWER_TIMESTAMP
 
 
 def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
@@ -559,3 +1052,89 @@ def test_source_access_lead_identity_includes_workspace_and_locator(tmp_path: Pa
         "Fixture source access one",
         "Fixture source access two",
     ]
+
+
+def test_source_access_work_id_replay_does_not_blend_distinct_leads(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-006",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-work-id-replay",
+        )
+        work = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-source-access-work-id",
+            provenance_event_ref=provenance.event_key,
+            work_type="article",
+            title="Fixture Source Access Work",
+            workspace_id="theta_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            created_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        first = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead-alpha",
+            source_locus_id="locus-alpha",
+            original_locator="https://example.test/source-access-work-id",
+            canonical_url="https://example.test/source-alpha",
+            citation_hint="Fixture source access alpha",
+            workspace_id="theta_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        second = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead-beta",
+            source_locus_id="locus-beta",
+            original_locator="https://example.test/source-access-work-id",
+            canonical_url="https://example.test/source-beta",
+            citation_hint="Fixture source access beta",
+            workspace_id="theta_subject",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM source_access
+            WHERE work_id=? AND original_locator=?
+            """,
+            (work.row_id, "https://example.test/source-access-work-id"),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT source_lead_id, source_locus_id, canonical_url, citation_hint,
+                   first_seen_at, last_seen_at, record_last_updated
+            FROM source_access
+            WHERE source_access_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert int(row_count["row_count"]) == 1
+    assert first.row_id == second.row_id
+    assert str(row["source_lead_id"]) == "lead-alpha"
+    assert str(row["source_locus_id"]) == "locus-alpha"
+    assert str(row["canonical_url"]) == "https://example.test/source-alpha"
+    assert str(row["citation_hint"]) == "Fixture source access alpha"
+    assert row["first_seen_at"] == OLDER_TIMESTAMP
+    assert row["last_seen_at"] == FIXED_TIMESTAMP
+    assert row["record_last_updated"] == FIXED_TIMESTAMP

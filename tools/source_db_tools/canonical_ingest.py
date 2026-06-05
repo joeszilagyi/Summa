@@ -357,11 +357,12 @@ def _work_key_for_candidate(
             normalized_type,
             normalized_title,
         )
+    fallback_work_title = _default_work_title(candidate)
     return canonical_store.stable_write_key(
         "work",
         _key_scope(workspace_id),
         "candidate",
-        _normalize_key_text(candidate["candidate_id"]),
+        _normalize_key_text(fallback_work_title) or "work-candidate-fallback",
     )
 
 
@@ -388,7 +389,7 @@ def _claim_key_for_candidate(
         _key_scope(workspace_id),
         normalized_type,
         about_object_ref or "about:unknown",
-        _normalize_key_text(candidate["candidate_id"]),
+        _normalize_key_text(candidate.get("text")) or "claim-fallback-empty",
     )
 
 
@@ -414,8 +415,8 @@ def _source_lead_key_for_candidate(
 
 def _default_work_title(candidate: dict[str, Any]) -> str:
     text = str(candidate.get("text") or "").strip()
-    first_line = text.splitlines()[0] if text else candidate["candidate_id"]
-    return first_line[:240]
+    first_line = text.splitlines()[0] if text else ""
+    return first_line[:240] or "work-candidate-fallback"
 
 
 def _apply_curation_counts(report: dict[str, Any], counts: dict[str, int]) -> None:
@@ -519,6 +520,8 @@ def ingest_candidate_batch(
                     to_object_ref=structured.get("to_object_ref"),
                     target_label=structured.get("target_label"),
                     evidence_note=structured.get("evidence_note"),
+                    review_state=structured.get("review_state"),
+                    confidence_score=structured.get("confidence_score"),
                     workspace_id=workspace_id,
                 )
                 _bump(report, "inserted" if result.created else "updated", "source_relationship")
@@ -585,12 +588,15 @@ def ingest_candidate_batch(
                         for identifier in canonical_reconciliation.candidate_identifiers(
                             structured
                         ):
+                            identifier_confidence = structured.get("confidence_score")
+                            if work_match is not None and identifier_confidence is None:
+                                identifier_confidence = work_match.confidence_score
                             identifier_result = canonical_reconciliation.record_work_identifier(
                                 conn,
                                 work_id=work_result.row_id,
                                 scheme=identifier["scheme"],
                                 value=identifier["value"],
-                                confidence_score=work_match.confidence_score if work_match else 1.0,
+                                confidence_score=identifier_confidence,
                                 record_last_updated=created_at,
                             )
                             _bump(

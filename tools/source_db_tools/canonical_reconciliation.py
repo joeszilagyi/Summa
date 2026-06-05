@@ -25,6 +25,8 @@ WORK_DUPLICATE_EVENT_TYPE = "work_duplicate_encountered"
 AUTHORITY_MATCH_EXACT_IDENTIFIER = 1.0
 AUTHORITY_MATCH_LABEL_AND_TYPE = 0.75
 AUTHORITY_MATCH_LABEL_AND_TYPE_AMBIGUOUS = 0.5
+AUTO_MERGE_REVIEW_STATES = ("accepted", "approved", "curated", "reviewed")
+AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD = 0.0
 WORK_MATCH_EXACT_IDENTIFIER = 1.0
 WORK_MATCH_TITLE_TYPE_AND_SOURCE = 0.95
 STRUCTURED_CONTRADICTION_CONFIDENCE = 1.0
@@ -35,6 +37,9 @@ QUANTITY_CONFLICT_RULE = "structured_quantity_conflict"
 TAUGHT_BY_IMPOSSIBLE_RULE = "structured_taught_by_impossible_life_overlap"
 RELATIONAL_TEMPORAL_RULE = "relational_temporal_lifespan_overlap"
 RELATIONAL_EVENT_YEAR_RULE = "relational_temporal_event_year_outside_lifespan"
+CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES = tuple(
+    sorted(canonical_store.PRIOR_STATE_EXCLUDED_REVIEW_STATES)
+)
 STRUCTURED_CLAIM_TYPES = {
     "birth_year",
     "death_year",
@@ -333,6 +338,9 @@ def update_review_state(
         target_id=target_id,
     )
     previous_state = None if row["review_state"] is None else str(row["review_state"])
+    previous_state_value = str(previous_state or "").strip().lower()
+    if previous_state_value in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES:
+        return False
     if previous_state == new_state_value:
         return False
     conn.execute(
@@ -366,7 +374,7 @@ def record_work_identifier(
     confidence_score: float | int | None = None,
     review_state: str | None = None,
     record_last_updated: str | None = None,
-) -> canonical_store.CanonicalWriteResult:
+    ) -> canonical_store.CanonicalWriteResult:
     normalized = identifier_normalization.identifier_storage_values(scheme, value)
     timestamp = _normalize_timestamp(
         record_last_updated,
@@ -374,9 +382,10 @@ def record_work_identifier(
         default=canonical_store.now_rfc3339(),
     )
     score = _normalize_confidence_score(confidence_score)
-    review_state_value = _normalize_review_state(
-        review_state or canonical_store.DEFAULT_WORK_REVIEW_STATE,
-        field_name="review_state",
+    review_state_value = (
+        _normalize_review_state(review_state, field_name="review_state")
+        if review_state is not None
+        else None
     )
     conflicting = conn.execute(
         """
@@ -392,13 +401,18 @@ def record_work_identifier(
         )
     existing = conn.execute(
         """
-        SELECT work_identifier_id
+        SELECT work_identifier_id, review_state
         FROM work_identifier
         WHERE work_id=? AND scheme=? AND value=?
         """,
         (work_id, normalized["scheme"], normalized["value"]),
     ).fetchone()
     if existing is None:
+        review_state_value = (
+            review_state_value
+            if review_state_value is not None
+            else canonical_store.DEFAULT_WORK_REVIEW_STATE
+        )
         cursor = conn.execute(
             """
             INSERT INTO work_identifier (
@@ -428,6 +442,24 @@ def record_work_identifier(
             f"{normalized['scheme']}:{normalized['value']}",
             True,
         )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    preserve_established = False
+    merged_review_state = existing["review_state"]
+    if review_state_value is not None:
+        proposed_state_text = str(review_state_value).strip().lower()
+        preserve_established = (
+            existing_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+            and (
+                proposed_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                or canonical_store._pending_review_state(review_state_value)
+            )
+        )
+        merged_review_state = existing["review_state"] if preserve_established else canonical_store._merged_review_state(
+            existing["review_state"],
+            review_state_value,
+        )
     conn.execute(
         """
         UPDATE work_identifier
@@ -443,7 +475,7 @@ def record_work_identifier(
             normalized["validity_status"],
             normalized["validation_warning"],
             score,
-            review_state_value,
+            merged_review_state,
             timestamp,
             int(existing["work_identifier_id"]),
         ),
@@ -467,15 +499,28 @@ def find_existing_work_match(
     identifiers = candidate_identifiers(structured)
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         rows = conn.execute(
             """
             SELECT work.work_id, work.work_key_v1
             FROM work_identifier
             INNER JOIN work ON work.work_id = work_identifier.work_id
             WHERE work_identifier.scheme=? AND work_identifier.value=?
+              AND work_identifier.validity_status='valid'
+              AND work.review_state IN ({})
+              AND work_identifier.review_state IN ({})
+              AND COALESCE(work_identifier.confidence_score, 0.0) >= ?
             ORDER BY work.work_id
-            """,
-            (normalized["scheme"], normalized["value"]),
+            """.format(
+                review_state_placeholders, review_state_placeholders
+            ),
+            (
+                normalized["scheme"],
+                normalized["value"],
+                *AUTO_MERGE_REVIEW_STATES,
+                *AUTO_MERGE_REVIEW_STATES,
+                AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
+            ),
         ).fetchall()
         distinct_ids = {int(row["work_id"]) for row in rows}
         if len(distinct_ids) > 1:
@@ -615,6 +660,7 @@ def find_existing_authority_match(
     identifiers = candidate_identifiers(structured)
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         row = conn.execute(
             """
             SELECT authority_record.authority_record_id
@@ -622,9 +668,21 @@ def find_existing_authority_match(
             INNER JOIN authority_record
               ON authority_record.authority_record_id = authority_identifier.authority_record_id
             WHERE authority_identifier.scheme=? AND authority_identifier.value=?
+              AND authority_identifier.validity_status='valid'
+              AND authority_record.review_state IN ({})
+              AND authority_identifier.review_state IN ({})
+              AND COALESCE(authority_identifier.confidence_score, 0.0) >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
-            """,
-            (normalized["scheme"], normalized["value"]),
+            """.format(
+                review_state_placeholders, review_state_placeholders
+            ),
+            (
+                normalized["scheme"],
+                normalized["value"],
+                *AUTO_MERGE_REVIEW_STATES,
+                *AUTO_MERGE_REVIEW_STATES,
+                AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
+            ),
         ).fetchone()
         if row is not None:
             return [
@@ -751,7 +809,7 @@ def record_authority_reconciliation(
     )
     existing = conn.execute(
         """
-        SELECT authority_reconciliation_id
+        SELECT authority_reconciliation_id, review_state
         FROM authority_reconciliation
         WHERE reconciliation_key_v1=?
         """,
@@ -805,7 +863,23 @@ def record_authority_reconciliation(
             score,
             score,
             evidence_context,
-            review_state_value,
+            (
+                existing["review_state"]
+                if (
+                    existing["review_state"] is not None
+                    and str(existing["review_state"]).strip().lower()
+                    in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                    and (
+                        str(review_state_value).strip().lower()
+                        in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                        or canonical_store._pending_review_state(review_state_value)
+                    )
+                )
+                else canonical_store._merged_review_state(
+                    existing["review_state"],
+                    review_state_value,
+                )
+            ),
             created_at,
             created_at,
             int(existing["authority_reconciliation_id"]),
@@ -1016,26 +1090,34 @@ def _claims_for_ref_and_type(
     about_object_ref: str,
     claim_type: str,
     workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
 ) -> list[sqlite3.Row]:
+    exclusion_clause = ""
+    params: list[Any] = [about_object_ref, claim_type]
+    if excluded_review_states:
+        placeholders = ", ".join("?" for _ in excluded_review_states)
+        exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({placeholders})"
+        params.extend([canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE, *excluded_review_states])
     if workspace_id is None:
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type=?
+            WHERE about_object_ref=? AND claim_type=?{exclusion_clause}
             ORDER BY source_claim_id
             """,
-            (about_object_ref, claim_type),
+            tuple(params),
         ).fetchall()
     else:
+        params.append(workspace_id)
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type=? AND workspace_id=?
+            WHERE about_object_ref=? AND claim_type=?{exclusion_clause} AND workspace_id=?
             ORDER BY source_claim_id
             """,
-            (about_object_ref, claim_type, workspace_id),
+            tuple(params),
         ).fetchall()
     return list(rows)
 
@@ -1046,11 +1128,18 @@ def _claims_for_ref_and_types(
     about_object_ref: str,
     claim_types: set[str],
     workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
 ) -> list[sqlite3.Row]:
     if not claim_types:
         return []
     placeholders = ", ".join("?" for _ in claim_types)
     params: list[Any] = [about_object_ref, *sorted(claim_types)]
+    exclusion_clause = ""
+    if excluded_review_states:
+        exclusion_placeholders = ", ".join("?" for _ in excluded_review_states)
+        exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({exclusion_placeholders})"
+        params.append(canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE)
+        params.extend(excluded_review_states)
     workspace_clause = ""
     if workspace_id is not None:
         workspace_clause = " AND workspace_id=?"
@@ -1060,7 +1149,7 @@ def _claims_for_ref_and_types(
             f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type IN ({placeholders}){workspace_clause}
+            WHERE about_object_ref=? AND claim_type IN ({placeholders}){exclusion_clause}{workspace_clause}
             ORDER BY source_claim_id
             """,
             tuple(params),

@@ -228,6 +228,22 @@ def first_nonblank(row: sqlite3.Row, *candidates: str) -> str | None:
     return None
 
 
+def first_nonblank_float(row: sqlite3.Row, *candidates: str) -> float | None:
+    columns = row_columns(row)
+    for field_name in candidates:
+        if field_name not in columns:
+            continue
+        raw_value = row[field_name]
+        try:
+            score = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if score != score:
+            continue
+        return score
+    return None
+
+
 def read_schema_version(conn: sqlite3.Connection) -> int | None:
     row = conn.execute("PRAGMA user_version").fetchone()
     return None if row is None else int(row[0])
@@ -282,13 +298,18 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
     try:
         conn = connect_read_only(index_path)
         try:
+            integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+            if integrity_row is None or str(integrity_row[0]).strip().lower() != "ok":
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: integrity check failed"
+                )
             if not has_projection_index_marker(conn):
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: missing marker"
                 )
             metadata = conn.execute(
                 """
-                SELECT projection_schema_version, profile, source_database_fingerprint
+                SELECT projection_schema_version, profile, source_database_fingerprint, projection_records_digest
                 FROM projection_metadata
                 LIMIT 1
                 """
@@ -311,6 +332,45 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: source fingerprint mismatch"
                 )
+            expected_records_digest = projection_records_digest(payload["records"])
+            if str(metadata["projection_records_digest"]) != expected_records_digest:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: projection records digest mismatch"
+                )
+            indexed_records = conn.execute(
+                """
+                SELECT projection_id, object_ref, object_type, object_pk, title, subtitle,
+                       review_state, publication_state, confidence_score, authority_level,
+                       public_blocker, lineage_state, visible_profiles_json, suppressed_fields_json,
+                       indexed_fields_json
+                FROM search_projection
+                ORDER BY object_type ASC, object_pk ASC, projection_id ASC
+                """
+            ).fetchall()
+            actual_records = [
+                {
+                    "projection_id": row["projection_id"],
+                    "object_ref": row["object_ref"],
+                    "object_type": row["object_type"],
+                    "object_pk": int(row["object_pk"]),
+                    "title": row["title"],
+                    "subtitle": row["subtitle"],
+                    "review_state": row["review_state"],
+                    "publication_state": row["publication_state"],
+                    "confidence_score": row["confidence_score"],
+                    "authority_level": row["authority_level"],
+                    "public_blocker": row["public_blocker"],
+                    "lineage_state": row["lineage_state"],
+                    "visible_profiles": json.loads(row["visible_profiles_json"]),
+                    "suppressed_fields": json.loads(row["suppressed_fields_json"]),
+                    "indexed_fields": json.loads(row["indexed_fields_json"]),
+                }
+                for row in indexed_records
+            ]
+            if projection_records_digest(actual_records) != expected_records_digest:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: projection records digest mismatch"
+                )
             projection_count = conn.execute("SELECT COUNT(*) FROM search_projection").fetchone()
             fts_count = conn.execute("SELECT COUNT(*) FROM search_projection_fts").fetchone()
             expected_count = int(payload["counts"]["indexed_rows"])
@@ -326,6 +386,37 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
             conn.close()
     except sqlite3.DatabaseError as exc:
         raise SearchProjectionError(f"projection index validation failed for {index_path}") from exc
+
+
+def projection_records_digest(records: list[dict[str, Any]]) -> str:
+    canonical_records = [
+        {
+            "authority_level": record["authority_level"],
+            "confidence_score": record["confidence_score"],
+            "indexed_fields": record["indexed_fields"],
+            "lineage_state": record["lineage_state"],
+            "object_pk": record["object_pk"],
+            "object_ref": record["object_ref"],
+            "object_type": record["object_type"],
+            "projection_id": record["projection_id"],
+            "public_blocker": record["public_blocker"],
+            "publication_state": record["publication_state"],
+            "review_state": record["review_state"],
+            "subtitle": record["subtitle"],
+            "suppressed_fields": record["suppressed_fields"],
+            "title": record["title"],
+            "visible_profiles": record["visible_profiles"],
+        }
+        for record in records
+    ]
+    canonical_json = json.dumps(
+        canonical_records,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
@@ -414,6 +505,7 @@ def projection_record(
 
     publication_state = normalize_publication_state(row["publication_state"] if "publication_state" in columns else None)
     authority_level = first_nonblank(row, "authority_level", "authority_tier", "authority_status")
+    confidence_score = first_nonblank_float(row, "confidence_score", "confidence")
     public_blocker = first_nonblank(row, "public_blocker")
     if "public_blocked" in columns and public_blocker is None and row["public_blocked"]:
         public_blocker = "blocked"
@@ -444,6 +536,7 @@ def projection_record(
             "review_state": review_state,
             "publication_state": publication_state,
             "authority_level": authority_level,
+            "confidence_score": confidence_score,
             "public_blocker": public_blocker,
             "lineage_state": lineage_state,
             "visible_profiles": visible_profiles,
@@ -570,6 +663,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
               source_schema_version TEXT,
               profile TEXT NOT NULL,
               generated_at TEXT NOT NULL,
+              projection_records_digest TEXT NOT NULL,
               raw_payload_indexed INTEGER NOT NULL,
               full_text_indexed INTEGER NOT NULL,
               private_paths_exposed INTEGER NOT NULL
@@ -583,6 +677,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
               subtitle TEXT,
               review_state TEXT NOT NULL,
               publication_state TEXT NOT NULL,
+              confidence_score REAL,
               authority_level TEXT,
               public_blocker TEXT,
               lineage_state TEXT NOT NULL,
@@ -610,10 +705,11 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
               source_schema_version,
               profile,
               generated_at,
+              projection_records_digest,
               raw_payload_indexed,
               full_text_indexed,
               private_paths_exposed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["schema_version"],
@@ -622,6 +718,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 None if payload["source"]["schema_version"] is None else str(payload["source"]["schema_version"]),
                 payload["profile"],
                 payload["generated_at"],
+                projection_records_digest(payload["records"]),
                 int(bool(payload["policy"]["raw_payload_indexed"])),
                 int(bool(payload["policy"]["full_text_indexed"])),
                 int(bool(payload["policy"]["private_paths_exposed"])),
@@ -633,9 +730,9 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 """
                 INSERT INTO search_projection (
                   projection_id, object_ref, object_type, object_pk, title, subtitle,
-                  review_state, publication_state, authority_level, public_blocker,
+                  review_state, publication_state, confidence_score, authority_level, public_blocker,
                   lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["projection_id"],
@@ -646,6 +743,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                     record["subtitle"],
                     record["review_state"],
                     record["publication_state"],
+                    record["confidence_score"],
                     record["authority_level"],
                     record["public_blocker"],
                     record["lineage_state"],

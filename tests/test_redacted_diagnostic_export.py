@@ -402,3 +402,33 @@ def test_internal_full_fidelity_is_explicit_and_marked_private(tmp_path: Path) -
     assert manifest["privacy_classification"] == "internal_private"
     assert any(PRIVATE_SENTINEL in str(record["locator"]) for record in source_access["records"])
     assert manifest["leak_scan"]["status"] == "fail"
+
+
+def test_export_rejects_unrecognized_output_dir_with_overwrite(tmp_path: Path) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "diagnostics"
+    output_dir.mkdir()
+    (output_dir / "notes.txt").write_text("do-not-overwrite", encoding="utf-8")
+
+    proc = run_export(db_path, workspace, output_dir)
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "not a recognized redacted diagnostics bundle" in proc.stderr
+
+
+def test_export_overwrites_valid_diagnostic_bundle(tmp_path: Path) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "diagnostics"
+
+    first = run_export(db_path, workspace, output_dir)
+    second = run_export(db_path, workspace, output_dir)
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert second.returncode == 0, second.stdout + second.stderr
+    first_payload = json.loads(first.stdout)
+    second_payload = json.loads(second.stdout)
+    assert first_payload["manifest_path"] == str((output_dir / "diagnostic-manifest.json").resolve())
+    assert second_payload["manifest_path"] == str((output_dir / "diagnostic-manifest.json").resolve())
+    assert second_payload["status"] == "pass"
+    manifest = load_json(output_dir / "diagnostic-manifest.json")
+    assert manifest["schema_version"] == "redacted-diagnostic-manifest.v1"

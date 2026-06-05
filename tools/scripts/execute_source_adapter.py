@@ -56,7 +56,7 @@ MAX_EXTRACT_TEXT_BYTES = 64 * 1024
 DEFAULT_REMOTE_TIMEOUT_SECONDS = 10.0
 DEFAULT_REMOTE_MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_REMOTE_REDIRECTS = 3
-SAFE_TEXT_STATUS = {"completed", "failed", "skipped"}
+SAFE_TEXT_STATUS = {"completed", "failed", "skipped", "denied"}
 SAFE_RUN_STATUS = {"completed", "denied", "failed", "dry_run"}
 LOCAL_VARIANTS = {"local_source", "structured_data", "local_git_repo"}
 REMOTE_VARIANTS = {"remote_url_manifest"}
@@ -64,6 +64,10 @@ REMOTE_VARIANTS = {"remote_url_manifest"}
 
 class SourceAcquisitionError(RuntimeError):
     """Raised when execution inputs are invalid or unsupported."""
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +157,15 @@ def sha256_bytes(payload: bytes) -> str:
 
 def sha256_text(payload: str) -> str:
     return sha256_bytes(payload.encode("utf-8"))
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
 
 
 def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
@@ -272,12 +285,18 @@ def is_probably_binary(payload: bytes) -> bool:
         return False
     if b"\x00" in payload:
         return True
-    sample = payload[:4096]
-    printable = 0
-    for byte_value in sample:
-        if byte_value in {9, 10, 13} or 32 <= byte_value <= 126:
-            printable += 1
-    return printable / len(sample) < 0.75
+    return False
+
+
+def is_probably_text(decoded_text: str) -> bool:
+    if not decoded_text:
+        return True
+    sample = decoded_text[:4096]
+    text_like = 0
+    for char in sample:
+        if char.isprintable() or char.isspace():
+            text_like += 1
+    return text_like / len(sample) >= 0.75
 
 
 def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
@@ -286,9 +305,12 @@ def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
     if is_probably_binary(payload):
         return None, "binary_unsupported", "binaryish_payload"
     try:
-        return payload.decode("utf-8"), "utf8", None
+        decoded_text = payload.decode("utf-8")
     except UnicodeDecodeError:
         return None, "invalid_utf8", "invalid_utf8"
+    if not is_probably_text(decoded_text):
+        return None, "binary_unsupported", "binaryish_payload"
+    return decoded_text, "utf8", None
 
 
 def guess_content_type(path: Path, *, fallback: str = "application/octet-stream") -> str:
@@ -332,6 +354,8 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
             reader = csv.DictReader(handle)
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
+            if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                return {}, [{"context": "line:1", "reason": "duplicate CSV header"}]
             for row_index, row in enumerate(reader, start=1):
                 row_map[f"row:{row_index}"] = dict(row)
     except UnicodeDecodeError:
@@ -345,9 +369,14 @@ def load_json_record_map(
     path: Path, *, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicate_object_pairs,
+        )
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    except DuplicateJsonKeyError as exc:
+        return {}, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
         return {}, [{"context": f"line:{exc.lineno},column:{exc.colno}", "reason": exc.msg}]
 
@@ -370,7 +399,10 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
         if not raw_line.strip():
             continue
         try:
-            value = json.loads(raw_line)
+            value = json.loads(raw_line, object_pairs_hook=no_duplicate_object_pairs)
+        except DuplicateJsonKeyError as exc:
+            errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+            continue
         except json.JSONDecodeError as exc:
             errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
             continue
@@ -449,11 +481,12 @@ def build_extraction_record(
     encoding_result: str,
     failure_reason: str | None,
     extracted_text_path: str | None,
+    status_override: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     content_hash = sha256_text(content_text) if content_text is not None else None
     byte_count_out = len(content_text.encode("utf-8")) if content_text is not None else 0
-    status = (
+    status = status_override or (
         "completed"
         if content_text is not None and failure_reason is None
         else "skipped"
@@ -491,6 +524,57 @@ def build_extraction_record(
     if extra_fields:
         payload.update(extra_fields)
     return payload
+
+
+def build_remote_denied_capture_event(
+    *,
+    record: dict[str, Any],
+    adapter_payload: dict[str, Any],
+    run_id: str,
+    handoff_hash: str,
+    created_at: str,
+    capture_id: str,
+    url: str,
+    method: str,
+    failure_reason: str,
+    user_agent: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "capture_id": capture_id,
+        "run_id": run_id,
+        "handoff_hash": handoff_hash,
+        "handoff_sequences": [record["sequence"]],
+        "adapter_id": adapter_payload["adapter_id"],
+        "workspace_id": adapter_payload["workspace_id"],
+        "adapter_type": "remote_url_manifest",
+        "source_reference": {
+            "relative_path": record["relative_path"],
+            "remote_url": url,
+            "manifest_url": record["source_specific"].get("manifest_url"),
+        },
+        "original_locator": record["preserved"]["original_locator"],
+        "normalized_url": urlparse(url).geturl(),
+        "final_url": url,
+        "redirect_count": 0,
+        "http_status_code": None,
+        "request_method": method,
+        "user_agent": user_agent,
+        "content_hash": None,
+        "byte_count": 0,
+        "content_length_header": None,
+        "content_type": "application/octet-stream",
+        "captured_at": created_at,
+        "capture_method": "remote_url_fetch",
+        "transient_payload_path": None,
+        "payload_retention_policy": "transient_run_artifact",
+        "network_access_attempted": True,
+        "rights_posture": record["preserved"].get("rights_posture"),
+        "status": "denied",
+        "failure_reason": failure_reason,
+        "canonical_persistence_attempted": False,
+        "verification_status": "unverified",
+    }
 
 
 def dry_run_execution_record(
@@ -795,9 +879,7 @@ def execute_local_source(
             extracted_text_path = None
             if extracted_text is not None:
                 extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                text_artifacts[extracted_text_path] = (
-                    extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-                )
+                text_artifacts[extracted_text_path] = extracted_text
             else:
                 failed = True
             extraction_records.append(
@@ -1116,9 +1198,7 @@ def execute_local_git_repo(
         extracted_text_path = None
         if extracted_text is not None:
             extracted_text_path = f"extracted-text/{extraction_id}.txt"
-            text_artifacts[extracted_text_path] = (
-                extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-            )
+            text_artifacts[extracted_text_path] = extracted_text
         else:
             failed = True
         extraction_records.append(
@@ -1206,10 +1286,25 @@ class NoAutoRedirectHandler(HTTPRedirectHandler):
 
 
 def extract_content_type(headers: Any) -> str:
-    value = headers.get("Content-Type") if headers is not None else None
+    response_headers = normalize_response_headers(headers)
+    value = response_headers.get("content-type")
     if not isinstance(value, str) or not value.strip():
         return "application/octet-stream"
     return value.split(";", 1)[0].strip().casefold() or "application/octet-stream"
+
+
+def normalize_response_headers(headers: Any) -> dict[str, Any]:
+    if headers is None:
+        return {}
+    if hasattr(headers, "items"):
+        try:
+            items = headers.items()
+        except Exception:
+            return {}
+        return {str(key).casefold(): value for key, value in items if key is not None}
+    if isinstance(headers, dict):
+        return {str(key).casefold(): value for key, value in headers.items() if key is not None}
+    return {}
 
 
 def is_extractable_content_type(content_type: str) -> bool:
@@ -1433,20 +1528,111 @@ def execute_remote_fetches(
     ):
         original_locator = record["preserved"]["original_locator"]
         url = original_locator["entry_url"]
+        capture_id = make_capture_id(index)
+        extraction_id = make_extraction_id(index)
         gate_action = action_map.get(url)
         if gate_action is None or gate_action.get("status") != "planned":
             failed = True
             summary["urls_denied"] += 1
+            denied_reason = (
+                "network_gate_action_missing"
+                if gate_action is None
+                else "network_gate_action_not_planned"
+            )
+            request_method = str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
+            capture_events.append(
+                build_remote_denied_capture_event(
+                    record=record,
+                    adapter_payload=adapter_payload,
+                    run_id=run_id,
+                    handoff_hash=handoff_hash,
+                    created_at=created_at,
+                    capture_id=capture_id,
+                    url=url,
+                    method=request_method,
+                    failure_reason=denied_reason,
+                    user_agent=user_agent,
+                )
+            )
+            extraction_records.append(
+                build_extraction_record(
+                    extraction_id=extraction_id,
+                    run_id=run_id,
+                    capture_id=capture_id,
+                    adapter_payload=adapter_payload,
+                    adapter_type="remote_url_manifest",
+                    handoff_sequence=record["sequence"],
+                    relative_path=record["relative_path"],
+                    input_hash=None,
+                    byte_count_in=0,
+                    extraction_method="remote_text_extract",
+                    hazard_flags=list(
+                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                    ),
+                    content_text=None,
+                    encoding_result="not_attempted",
+                    failure_reason=denied_reason,
+                    extracted_text_path=None,
+                    status_override="denied",
+                    extra_fields={
+                        "content_type": "application/octet-stream",
+                        "remote_url": url,
+                        "final_url": url,
+                        "network_access_attempted": True,
+                    },
+                )
+            )
             continue
         method = str(gate_action.get("method") or "GET").upper()
         if method not in {"GET", "HEAD"}:
             failed = True
             summary["urls_denied"] += 1
+            capture_events.append(
+                build_remote_denied_capture_event(
+                    record=record,
+                    adapter_payload=adapter_payload,
+                    run_id=run_id,
+                    handoff_hash=handoff_hash,
+                    created_at=created_at,
+                    capture_id=capture_id,
+                    url=url,
+                    method=method,
+                    failure_reason="unsupported_request_method",
+                    user_agent=user_agent,
+                )
+            )
+            extraction_records.append(
+                build_extraction_record(
+                    extraction_id=extraction_id,
+                    run_id=run_id,
+                    capture_id=capture_id,
+                    adapter_payload=adapter_payload,
+                    adapter_type="remote_url_manifest",
+                    handoff_sequence=record["sequence"],
+                    relative_path=record["relative_path"],
+                    input_hash=None,
+                    byte_count_in=0,
+                    extraction_method="remote_text_extract",
+                    hazard_flags=list(
+                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                    ),
+                    content_text=None,
+                    encoding_result="not_attempted",
+                    failure_reason="unsupported_request_method",
+                    extracted_text_path=None,
+                    status_override="denied",
+                    extra_fields={
+                        "content_type": "application/octet-stream",
+                        "remote_url": url,
+                        "final_url": url,
+                        "network_access_attempted": True,
+                    },
+                )
+            )
             continue
         if index > 1 and min_interval_seconds > 0:
             time.sleep(min_interval_seconds)
 
-        capture_id = make_capture_id(index)
         fetch_result = remote_fetch_one(
             url=url,
             method=method,
@@ -1471,8 +1657,7 @@ def execute_remote_fetches(
             failed = True
             summary["urls_failed"] += 1
 
-        headers = fetch_result.get("headers")
-        response_headers: dict[str, Any] = headers if isinstance(headers, dict) else {}
+        response_headers = normalize_response_headers(fetch_result.get("headers"))
         capture_event = {
             "schema_version": CAPTURE_SCHEMA_VERSION,
             "capture_id": capture_id,
@@ -1496,7 +1681,7 @@ def execute_remote_fetches(
             "user_agent": user_agent,
             "content_hash": content_hash,
             "byte_count": byte_count,
-            "content_length_header": response_headers.get("Content-Length"),
+            "content_length_header": response_headers.get("content-length"),
             "content_type": content_type,
             "captured_at": created_at,
             "capture_method": "remote_url_fetch",
@@ -1529,9 +1714,7 @@ def execute_remote_fetches(
                 extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
                 if extracted_text is not None:
                     extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                    text_artifacts[extracted_text_path] = (
-                        extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-                    )
+                    text_artifacts[extracted_text_path] = extracted_text
                 else:
                     failed = True
         extraction_records.append(
@@ -1708,7 +1891,8 @@ def execute_remote_url_manifest(
         executor_mode="remote",
         dry_run=False,
         status="failed" if failed else "completed",
-        network_access_attempted=remote_summary["urls_attempted"] > 0,
+        network_access_attempted=remote_summary["urls_attempted"] > 0
+        or remote_summary["urls_denied"] > 0,
         network_access_allowed=bool(gate_report["execution_allowed"]),
         network_access_denied_reason=None,
         gate_report=gate_report,

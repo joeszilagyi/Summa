@@ -9,6 +9,7 @@ import json
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -34,6 +35,7 @@ from tools.validators.validate_static_knowledge_tree_output import (
 SCRIPT_PATH = "tools/scripts/build_public_sharing_bundle.py"
 BUNDLE_SCHEMA_VERSION = "public-sharing-bundle.v1"
 REPORT_SCHEMA_VERSION = "public-sharing-bundle-report.v1"
+MANIFEST_FILENAME = "manifest.json"
 
 
 class PublicSharingBundleError(RuntimeError):
@@ -78,6 +80,17 @@ def resolve_existing_file(path: Path, *, label: str) -> Path:
     if not resolved.is_file():
         raise PublicSharingBundleError(f"{label} path is not a file: {resolved}")
     return resolved
+
+
+def _is_recognized_public_sharing_bundle_root(path: Path) -> bool:
+    manifest_path = path / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = load_json(manifest_path, label="existing public sharing bundle manifest")
+    except PublicSharingBundleError:
+        return False
+    return manifest.get("schema_version") == BUNDLE_SCHEMA_VERSION
 
 
 def ensure_static_output_passes(build_manifest_path: Path) -> dict[str, Any]:
@@ -221,10 +234,15 @@ def build_bundle(
         raise PublicSharingBundleError(f"output directory already exists: {output_dir}")
     if output_dir.exists() and not output_dir.is_dir():
         raise PublicSharingBundleError(f"output path is not a directory: {output_dir}")
+    if output_dir.exists() and not _is_recognized_public_sharing_bundle_root(output_dir):
+        raise PublicSharingBundleError(
+            f"output directory exists but is not a recognized public sharing bundle: {output_dir}"
+        )
     output_dir.parent.mkdir(parents=True, exist_ok=True)
 
     emitted_at = generated_at or now_rfc3339()
     temp_root = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=output_dir.parent))
+    backup_root: Path | None = None
     try:
         site_root = temp_root / "site"
         included_artifacts: list[dict[str, str]] = []
@@ -283,11 +301,18 @@ def build_bundle(
             raise PublicSharingBundleError(f"public sharing red-team gate failed: {summary}")
 
         if output_dir.exists():
-            shutil.rmtree(output_dir)
+            backup_root = output_dir.parent / f".{output_dir.name}.backup.{uuid.uuid4().hex[:8]}"
+            output_dir.replace(backup_root)
         temp_root.replace(output_dir)
     except Exception:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        if backup_root is not None and backup_root.exists() and not output_dir.exists():
+            backup_root.replace(output_dir)
         raise
+    else:
+        if backup_root is not None and backup_root.exists():
+            shutil.rmtree(backup_root, ignore_errors=True)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
     return {
         "schema_version": REPORT_SCHEMA_VERSION,

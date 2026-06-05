@@ -82,6 +82,25 @@ def test_sqlite_safety_integrity_failure_returns_nonzero(tmp_path: Path) -> None
     assert payload["status"] == "fail"
 
 
+def test_sqlite_safety_reserved_path_characters_survive_readonly_access(tmp_path: Path) -> None:
+    db = tmp_path / "a?b#c.sqlite"
+    output = tmp_path / "q?x#y.sqlite"
+    create_wal_db(db)
+
+    result = run_tool("integrity-check", str(db))
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "pass"
+    assert payload["database"] == str(db)
+
+    backup_result = run_tool("backup", str(db), "--output", str(output))
+    assert backup_result.returncode == 0, backup_result.stdout + backup_result.stderr
+    assert output.is_file()
+    verify = run_tool("restore-verify", str(output))
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+    assert json.loads(verify.stdout)["status"] == "pass"
+
+
 def test_sqlite_safety_profile_marks_wal_sidecars_runtime(tmp_path: Path) -> None:
     db = tmp_path / "source.sqlite"
     create_wal_db(db)

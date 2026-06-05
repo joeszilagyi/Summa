@@ -24,10 +24,14 @@ class SQLiteSafetyError(RuntimeError):
     """Raised when a SQLite safety operation fails."""
 
 
+def _readonly_uri(path: Path) -> str:
+    return f"{path.resolve().as_uri()}?mode=ro"
+
+
 def connect_readonly(path: Path) -> sqlite3.Connection:
     if not path.exists() or not path.is_file():
         raise SQLiteSafetyError(f"database not found: {path}")
-    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    return sqlite3.connect(_readonly_uri(path), uri=True)
 
 
 def run_check(path: Path, *, quick: bool = False) -> dict[str, Any]:
@@ -60,8 +64,17 @@ def backup_database(
     *,
     workspace_id: str | None = None,
     lock_root: Path | None = None,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
+    source_path = source.resolve()
+    destination_path = destination.resolve()
+    if source_path == destination_path:
+        raise SQLiteSafetyError("source and destination must not be the same database path")
+    if destination.exists() and not overwrite:
+        raise SQLiteSafetyError(f"destination already exists: {destination}")
+
     destination.parent.mkdir(parents=True, exist_ok=True)
+    backup_path: Path | None = None
     lock_context = None
     if workspace_id:
         lock_kwargs: dict[str, Any] = {"command": "sqlite_safety.backup"}
@@ -74,19 +87,40 @@ def backup_database(
     try:
         if lock_context is not None:
             lock_context.__enter__()
-        source_conn = sqlite3.connect(f"file:{source.resolve()}?mode=ro", uri=True)
+        source_conn = sqlite3.connect(_readonly_uri(source_path), uri=True)
         try:
-            dest_conn = sqlite3.connect(destination)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{destination.name}.tmp.",
+                suffix=".db",
+                dir=destination.parent,
+                delete=False,
+            ) as temp_file:
+                backup_path = Path(temp_file.name)
+            temp_conn = sqlite3.connect(backup_path)
             try:
-                source_conn.backup(dest_conn)
+                source_conn.backup(temp_conn)
             finally:
-                dest_conn.close()
+                temp_conn.close()
         finally:
             source_conn.close()
+        if backup_path is None:
+            raise SQLiteSafetyError(f"backup temporary path was not created: {destination}")
+        check = run_check(backup_path)
+        if check["status"] != "pass":
+            raise SQLiteSafetyError(f"backup integrity check failed: {check['messages']}")
+        backup_path.replace(destination)
+    except Exception:
+        if backup_path is not None and backup_path.exists():
+            backup_path.unlink()
+        raise
     finally:
         if lock_context is not None:
             lock_context.__exit__(None, None, None)
-    check = run_check(destination)
+    if destination.exists():
+        check = run_check(destination)
+    else:
+        raise SQLiteSafetyError(f"backup failed to produce destination database: {destination}")
     return {
         "database": str(source),
         "backup_path": str(destination),
@@ -147,6 +181,11 @@ def parse_args() -> argparse.Namespace:
     backup = sub.add_parser("backup")
     backup.add_argument("database", type=Path)
     backup.add_argument("--output", type=Path, required=True)
+    backup.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow replacing an existing destination database.",
+    )
     backup.add_argument("--workspace-id")
     backup.add_argument("--lock-root", type=Path)
 
@@ -170,6 +209,7 @@ def main() -> int:
                 args.output,
                 workspace_id=args.workspace_id,
                 lock_root=args.lock_root,
+                overwrite=args.overwrite,
             )
         elif args.command == "restore-verify":
             report = restore_verify(args.backup)

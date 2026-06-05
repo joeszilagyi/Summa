@@ -385,7 +385,13 @@ def validate_normalized_record(record: dict[str, Any]) -> None:
             raise RuntimeError(f"{record['locus_id']}: {key} must be between 0 and 1")
 
 
-def upsert_source_locus(conn: sqlite3.Connection, record: dict[str, Any], *, updated_at: str) -> None:
+def upsert_source_locus(
+    conn: sqlite3.Connection,
+    record: dict[str, Any],
+    *,
+    updated_at: str,
+    overwrite_curation: bool = False,
+) -> None:
     validate_normalized_record(record)
     columns = [
         "locus_id",
@@ -432,7 +438,11 @@ def upsert_source_locus(conn: sqlite3.Connection, record: dict[str, Any], *, upd
         "is_deprecated": 1 if record["is_deprecated"] else 0,
         "record_last_updated": updated_at,
     }
-    update_columns = [column for column in columns if column != "locus_id"]
+    if overwrite_curation:
+        update_columns = [column for column in columns if column != "locus_id"]
+    else:
+        # Preserve existing curation and operational fields unless explicit override requested.
+        update_columns = ["record_last_updated"]
     sql = f"""
     INSERT INTO source_locus ({', '.join(columns)})
     VALUES ({', '.join('?' for _ in columns)})
@@ -623,6 +633,7 @@ def seed_database(
     discovered_by: str,
     assign_unknown_leads: bool = False,
     lead_country_slug: str | None = None,
+    overwrite_curation: bool = False,
 ) -> dict[str, Any]:
     ensure_schema(conn)
     raw_records = load_seed_records(seed_path)
@@ -637,7 +648,12 @@ def seed_database(
             discovered_at=discovered_at,
             discovered_by=discovered_by,
         )
-        upsert_source_locus(conn, record, updated_at=discovered_at)
+        upsert_source_locus(
+            conn,
+            record,
+            updated_at=discovered_at,
+            overwrite_curation=overwrite_curation,
+        )
         inserted_or_updated += 1
         records.append(record)
     assigned_unknown_leads = 0
@@ -692,6 +708,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     seed.add_argument("--discovered-at", default="2026-04-28T00:00:00+00:00")
     seed.add_argument("--discovered-by", default="codex_phase3a")
     seed.add_argument("--assign-unknown-to-unlinked-leads", action="store_true")
+    seed.add_argument(
+        "--overwrite-curation",
+        action="store_true",
+        help="Allow reseeding to replace existing curation fields for matching locus_id.",
+    )
     seed.add_argument("--lead-country-slug")
     seed.add_argument("--report-json", type=Path)
 
@@ -727,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
                 discovered_by=args.discovered_by,
                 assign_unknown_leads=args.assign_unknown_to_unlinked_leads,
                 lead_country_slug=args.lead_country_slug,
+                overwrite_curation=args.overwrite_curation,
             )
         elif args.command == "update-productivity":
             metrics = update_productivity(

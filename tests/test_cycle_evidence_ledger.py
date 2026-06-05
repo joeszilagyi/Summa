@@ -218,3 +218,110 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
             )
     finally:
         conn.close()
+
+
+def test_cycle_events_for_subject_returns_latest_when_limited(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-1",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            previous_run_ids=["run-0"],
+            mode="local",
+            started_at="2026-06-01T00:00:00Z",
+            status="running",
+        )
+        cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-2",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            previous_run_ids=["run-1"],
+            mode="local",
+            started_at="2026-06-02T00:00:00Z",
+            status="running",
+        )
+        cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-3",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            previous_run_ids=["run-2"],
+            mode="local",
+            started_at="2026-06-03T00:00:00Z",
+            status="running",
+        )
+        assert [event["run_id"] for event in cycle_evidence_ledger.list_cycle_events_for_subject(conn, "fixture_subject", limit=1)] == ["run-3"]
+        assert [event["run_id"] for event in cycle_evidence_ledger.list_cycle_events_for_subject(conn, "fixture_subject")] == ["run-1", "run-2", "run-3"]
+    finally:
+        conn.close()
+
+
+def test_cycle_event_start_replays_are_idempotent_by_run_id(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-duplicate",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            mode="local",
+            started_at="2026-06-01T00:00:00Z",
+            status="running",
+        )
+        second_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-duplicate",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            mode="local",
+            started_at="2026-06-01T00:00:00Z",
+            status="running",
+        )
+        assert first_id == second_id
+        event = cycle_evidence_ledger.load_cycle_event(conn, first_id)
+        assert event is not None
+        assert event["started_at"] == "2026-06-01T00:00:00Z"
+        expected_id = cycle_evidence_ledger.build_cycle_event_id(
+            run_id="run-duplicate",
+            started_at="2026-06-03T00:00:00Z",
+            workspace_ref=str(tmp_path / "workspace"),
+        )
+        assert first_id == expected_id
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="ledger replay mismatch",
+        ):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-duplicate",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at="2026-06-03T00:00:00Z",
+                status="running",
+            )
+    finally:
+        conn.close()

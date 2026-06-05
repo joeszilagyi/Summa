@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -28,6 +29,41 @@ def bootstrap_db(tmp_path: Path) -> Path:
 
 def load_fixture_batch() -> tuple[dict[str, object], str]:
     return canonical_ingest.load_validated_candidate_batch(FIXTURE_BATCH)
+
+
+def batch_hash(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_batch_payload() -> dict[str, object]:
+    return {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": "relationship-confidence",
+        "created_at": FIXED_TIMESTAMP,
+        "candidates": [
+            {
+                "candidate_id": "cand:entity-a",
+                "candidate_type": "person",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps(
+                    {
+                        "from_object_ref": "authority:person-a",
+                        "to_object_ref": "authority:person-b",
+                        "predicate": "mentions",
+                        "target_label": "Person B",
+                        "evidence_note": "Derived from test candidate.",
+                        "review_state": "accepted",
+                        "confidence_score": 0.93,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        ],
+    }
 
 
 def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: Path) -> None:
@@ -281,3 +317,80 @@ def test_candidate_batch_ingest_rolls_back_on_write_failure(tmp_path: Path, monk
         conn.close()
 
     assert all(count == 0 for count in counts.values())
+
+
+def test_candidate_batch_relationship_keeps_confidence_and_review_state(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch_payload()
+    batch_path = tmp_path / "relationship-batch.json"
+    batch_path.write_text(json.dumps(batch, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=batch_path,
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        relationship = conn.execute(
+            "SELECT review_state, confidence_score FROM source_relationship"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert relationship["review_state"] == "accepted"
+    assert relationship["confidence_score"] == pytest.approx(0.93)
+
+
+def build_work_batch_payload() -> dict[str, object]:
+    return {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": "work-identifier-confidence",
+        "created_at": FIXED_TIMESTAMP,
+        "candidates": [
+            {
+                "candidate_id": "cand:work.1",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps(
+                    {
+                        "work_key": "work.example.1",
+                        "title": "Work Without Identifier Confidence",
+                        "work_type": "article",
+                        "identifier_scheme": "doi",
+                        "identifier_value": "10.1000/xyz",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        ],
+    }
+
+
+def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_work_batch_payload()
+    batch_path = tmp_path / "work-confidence-batch.json"
+    batch_path.write_text(json.dumps(batch, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=batch_path,
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        identifier = conn.execute("SELECT confidence_score FROM work_identifier").fetchone()
+    finally:
+        conn.close()
+
+    assert identifier is not None
+    assert identifier["confidence_score"] is None
