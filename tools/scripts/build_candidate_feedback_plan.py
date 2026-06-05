@@ -329,14 +329,21 @@ def provenance_map_by_key(history: list[dict[str, Any]]) -> dict[str, dict[str, 
     return {entry["event_key"]: entry for entry in history}
 
 
-def lead_scope_sql(subject_id: str, work_ids: list[int]) -> tuple[str, tuple[Any, ...]]:
+def lead_scope_sql(
+    subject_id: str,
+    work_ids: list[int],
+    *,
+    table_alias: str | None = None,
+) -> tuple[str, tuple[Any, ...]]:
+    workspace_column = "workspace_id" if table_alias is None else f"{table_alias}.workspace_id"
+    work_id_column = "work_id" if table_alias is None else f"{table_alias}.work_id"
     if work_ids:
         placeholders = ", ".join("?" for _ in work_ids)
         return (
-            f"(workspace_id=? OR work_id IN ({placeholders}))",
+            f"({workspace_column}=? OR {work_id_column} IN ({placeholders}))",
             (subject_id, *work_ids),
         )
-    return "workspace_id=?", (subject_id,)
+    return f"{workspace_column}=?", (subject_id,)
 
 
 def claim_scope_sql(subject_id: str, work_ids: list[int]) -> tuple[str, tuple[Any, ...]]:
@@ -470,7 +477,7 @@ def load_source_access_leads(
     weights: dict[str, float],
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    scope_sql, scope_params = lead_scope_sql(subject_id, work_ids)
+    scope_sql, scope_params = lead_scope_sql(subject_id, work_ids, table_alias="access")
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
         f"""
@@ -482,7 +489,7 @@ def load_source_access_leads(
         FROM source_access AS access
         LEFT JOIN work
           ON work.work_id = access.work_id
-        WHERE {scope_sql.replace("workspace_id", "access.workspace_id").replace("work_id", "access.work_id")}
+        WHERE {scope_sql}
           AND access.review_state IN ({placeholders})
         ORDER BY COALESCE(access.last_seen_at, access.first_seen_at, access.record_last_updated) DESC, access.source_access_id ASC
         """,
