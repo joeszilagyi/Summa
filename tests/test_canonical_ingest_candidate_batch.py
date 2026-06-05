@@ -193,6 +193,44 @@ def test_candidate_batch_unknown_candidate_is_preserved_with_warning(tmp_path: P
     assert "unknown candidate type preserved as a source claim" in warning_messages
 
 
+def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch, batch_hash = load_fixture_batch()
+    subject_id = str(batch["subject"]["subject_id"])
+    tuned_candidates: list[dict[str, object]] = []
+    for candidate in batch["candidates"]:
+        candidate_copy = dict(candidate)
+        if candidate_copy.get("candidate_type") == "person":
+            structured = json.loads(str(candidate_copy["text"]))
+            structured["confidence_score"] = 0.91
+            candidate_copy["text"] = json.dumps(
+                structured, ensure_ascii=False, separators=(",", ":")
+            )
+        tuned_candidates.append(candidate_copy)
+    tuned_batch = dict(batch)
+    tuned_batch["candidates"] = tuned_candidates
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                tuned_batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
+        prior_state = canonical_store.load_gather_prior_state(conn, subject_id=subject_id)
+    finally:
+        conn.close()
+
+    assert prior_state["record_counts"]["entities"]["total"] >= 1
+    assert prior_state["record_counts"]["entities"]["selected"] >= 1
+    assert {
+        record["entity_label"] for record in prior_state["records"]["entities"]
+    } >= {"Alpha Example"}
+
+
 def test_candidate_batch_dry_run_reports_intended_writes_without_mutation(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
