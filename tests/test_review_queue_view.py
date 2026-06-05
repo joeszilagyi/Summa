@@ -22,6 +22,7 @@ def create_review_db(tmp_path: Path) -> Path:
               title TEXT,
               review_state TEXT,
               confidence_score REAL,
+              accepted_for_citation INTEGER NOT NULL DEFAULT 0,
               workspace_id TEXT,
               authority_level TEXT,
               public_blocker TEXT,
@@ -340,3 +341,47 @@ def test_review_queue_writer_records_history_and_provenance(tmp_path: Path) -> N
     assert provenance_row["tool_name"] == "tools/source_db_tools/review_queue.py"
     assert provenance_row["run_id"] == "review-run-1"
     assert provenance_row["note_text"] == "ready for citation"
+
+
+def test_review_queue_preserves_accepted_for_citation_on_later_demote(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+
+    accept_result = run_cli(
+        [
+            str(db),
+            "accept",
+            "work:2",
+            "--changed-by",
+            "reviewer.alex",
+            "--run-id",
+            "review-run-2-accept",
+        ]
+    )
+    assert accept_result.returncode == 0, accept_result.stdout + accept_result.stderr
+
+    demote_result = run_cli(
+        [
+            str(db),
+            "demote",
+            "work:2",
+            "--changed-by",
+            "reviewer.alex",
+            "--reason",
+            "follow-up review",
+            "--run-id",
+            "review-run-2-demote",
+        ]
+    )
+    assert demote_result.returncode == 0, demote_result.stdout + demote_result.stderr
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        work_row = conn.execute(
+            "SELECT review_state, accepted_for_citation FROM work WHERE work_id=2"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert work_row["review_state"] == "demoted"
+    assert int(work_row["accepted_for_citation"]) == 1
