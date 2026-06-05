@@ -15,11 +15,14 @@ jobs:
         tools/common/search_leak_policy.py
         tools/common/standards_profiles.py
         tools/scripts/apply_review_decision.py
+        tools/scripts/audit_canonical_graph_closure.py
+        tools/scripts/audit_rebuildability.py
         tools/scripts/build_candidate_feedback_plan.py
         tools/scripts/build_release_readiness_bundle.py
         tools/scripts/evaluate_network_safety_gate.py
         tools/scripts/execute_source_adapter.py
         tools/scripts/export_standards_profile.py
+        tools/scripts/export_redacted_diagnostics.py
         tools/scripts/ingest_execution_artifacts.py
         tools/scripts/ingest_gather_candidate_batch.py
         tools/scripts/operator_path_smoke.py
@@ -28,6 +31,7 @@ jobs:
         tools/scripts/run_topic_cycle.py
         tools/scripts/run_topic_gather.py
         tools/scripts/select_scheduled_workspaces.py
+        tools/source_db_tools/canonical_graph_closure.py
         tools/source_db_tools/canonical_ingest.py
         tools/source_db_tools/canonical_reconciliation.py
         tools/source_db_tools/canonical_store.py

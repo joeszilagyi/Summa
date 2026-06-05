@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "build_operator_dashboard.py"
 
@@ -27,6 +26,7 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
                     "scheduler_eligibility": "pass",
                     "public_private_gate": "pass",
                     "workspace_locks": "pass",
+                    "graph_closure": "no_rows",
                 },
                 "backup_posture": {"policy_status": "pass", "status": "pass"},
                 "scheduler": {"selector_status": "pass", "status": "pass"},
@@ -77,6 +77,15 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
                     "warnings": [],
                     "limitations": ["cycle_history_unavailable"],
                 },
+                "graph_closure": {
+                    "status": "no_rows",
+                    "orphan_error_count": 0,
+                    "unresolved_tracked_count": 0,
+                    "repairable_count": 0,
+                    "quarantined_count": 0,
+                    "read_only": True,
+                    "top_issues": [],
+                },
                 "public_gates": {
                     "surfaces": {
                         "public_presentation_schema": "present",
@@ -115,7 +124,15 @@ def test_operator_dashboard_renders_from_synthetic_doctor_report(tmp_path: Path)
     assert report["status"] == "pass"
     assert report["read_only"] is True
     assert "Summa Operator Health" in body
-    for label in ["Canonical Store", "Loop Health", "Workspaces", "Databases", "Locks", "Findings"]:
+    for label in [
+        "Canonical Store",
+        "Loop Health",
+        "Graph Closure",
+        "Workspaces",
+        "Databases",
+        "Locks",
+        "Findings",
+    ]:
         assert f"<h2>{label}</h2>" in body
     for health in [
         "crown_jewel_backup_posture",

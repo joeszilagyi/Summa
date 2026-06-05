@@ -14,6 +14,7 @@ Purpose:
 - optionally ingest validated acquisition execution artifacts or run a local
   source-adapter handoff
 - optionally build a candidate-feedback plan before or after ingestion
+- run graph-closure audit before cycle close and write a report artifact
 - write a `topic-cycle-run.v1` manifest with stage statuses, artifacts, hashes,
   counts, warnings, and failures
 
@@ -56,6 +57,17 @@ Live-safe local behavior:
 - remote fetch is still disabled in this command
 - source claims remain proposed or needs-review records; the cycle does not
   apply review decisions
+- graph closure checks attachment/reviewability, not factual truth
+
+Graph closure:
+
+- enabled by default
+- writes `<run-dir>/graph-closure-report.json`
+- records status, report path/hash, true orphan count, unresolved tracked count,
+  repairable count, and quarantined count in the cycle manifest
+- `--graph-closure-strict` fails the cycle on true orphan rows
+- `--no-graph-closure` disables the audit explicitly and records that in the
+  manifest
 
 Relationship to smoke:
 

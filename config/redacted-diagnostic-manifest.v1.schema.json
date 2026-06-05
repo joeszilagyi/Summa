@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "redacted-diagnostic-manifest.v1.schema.json",
+  "title": "redacted-diagnostic-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "export_id",
+    "read_only",
+    "redaction_mode",
+    "privacy_classification",
+    "canonical_db",
+    "scope",
+    "redaction_policy",
+    "included_sections",
+    "omitted_sections",
+    "files",
+    "leak_scan",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": { "const": "redacted-diagnostic-manifest.v1" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "export_id": { "type": "string", "minLength": 1 },
+    "read_only": { "const": true },
+    "redaction_mode": {
+      "type": "string",
+      "enum": ["redacted", "internal_full_fidelity"]
+    },
+    "privacy_classification": {
+      "type": "string",
+      "enum": ["local_operator_redacted", "internal_private"]
+    },
+    "canonical_db": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["db_hash_sha256", "byte_count"],
+      "properties": {
+        "db_path": { "type": ["string", "null"] },
+        "db_hash_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "byte_count": { "type": "integer", "minimum": 0 },
+        "schema_version": { "type": ["integer", "null"] },
+        "current_migration_id": { "type": ["string", "null"] }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "workspace"],
+      "properties": {
+        "subject": { "type": ["string", "null"] },
+        "workspace": { "type": ["string", "null"] }
+      }
+    },
+    "redaction_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path_redaction",
+        "url_redaction",
+        "redaction_key_fingerprint",
+        "redaction_key_written"
+      ],
+      "properties": {
+        "path_redaction": {
+          "type": "string",
+          "enum": ["omit", "basename", "hmac", "hashed"]
+        },
+        "url_redaction": {
+          "type": "string",
+          "enum": ["omit", "domain_only", "hmac", "full"]
+        },
+        "redaction_key_fingerprint": { "type": ["string", "null"] },
+        "redaction_key_written": { "const": false }
+      }
+    },
+    "included_sections": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "omitted_sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section", "reason"],
+        "properties": {
+          "section": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "byte_count"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "byte_count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "leak_scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "finding_count", "report_path"],
+      "properties": {
+        "status": {
+          "type": ["string", "null"],
+          "enum": ["pass", "fail", "not_run", null]
+        },
+        "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+        "report_path": { "type": ["string", "null"] }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "redaction_mode": { "const": "redacted" }
+        }
+      },
+      "then": {
+        "properties": {
+          "privacy_classification": { "const": "local_operator_redacted" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "redaction_mode": { "const": "internal_full_fidelity" }
+        }
+      },
+      "then": {
+        "properties": {
+          "privacy_classification": { "const": "internal_private" }
+        }
+      }
+    }
+  ]
+}

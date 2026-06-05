@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+from tests.publication_fixture_store import (
+    FIXED_TIMESTAMP,
+    PRIVATE_SENTINEL,
+    UNREVIEWED_SENTINEL,
+    create_populated_canonical_store,
+)
 from tools.validators.validate_knowledge_tree_export import EXIT_PASS as EXIT_EXPORT_PASS
 from tools.validators.validate_knowledge_tree_export import validate_knowledge_tree_export
-from tools.validators.validate_public_knowledge_tree_presentation import EXIT_PASS as EXIT_PRESENTATION_PASS
-from tools.validators.validate_public_knowledge_tree_presentation import validate_public_knowledge_tree_presentation
-
-from tests.publication_fixture_store import FIXED_TIMESTAMP, PRIVATE_SENTINEL, UNREVIEWED_SENTINEL, create_populated_canonical_store
-
+from tools.validators.validate_public_knowledge_tree_presentation import (
+    EXIT_PASS as EXIT_PRESENTATION_PASS,
+)
+from tools.validators.validate_public_knowledge_tree_presentation import (
+    validate_public_knowledge_tree_presentation,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "tools" / "scripts" / "build_publication_artifacts.py"
@@ -38,6 +46,37 @@ def run_wrapper(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def insert_orphan_source_claim(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """
+            INSERT INTO source_claim (
+              source_claim_key_v1,
+              claim_text,
+              public_summary,
+              claim_type,
+              review_state,
+              created_at,
+              record_last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "claim:publication:orphan",
+                "orphan claim",
+                "orphan claim",
+                "factual",
+                "accepted",
+                FIXED_TIMESTAMP,
+                FIXED_TIMESTAMP,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> None:
     db_path = create_populated_canonical_store(tmp_path)
     output_dir = tmp_path / "site-build"
@@ -62,9 +101,11 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
     presentation_path = output_dir / "public_presentation.json"
     publish_root = output_dir / "static"
     leak_report_path = output_dir / "leak-scan-report.json"
+    graph_report_path = output_dir / "graph-closure-report.json"
     assert export_path.is_file()
     assert presentation_path.is_file()
     assert leak_report_path.is_file()
+    assert graph_report_path.is_file()
     assert (publish_root / "index.html").is_file()
     assert (publish_root / "search" / "results.html").is_file()
     assert (output_dir / "search" / "local_search_projection.json").is_file()
@@ -72,13 +113,18 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
     assert (output_dir / "search" / "local_search.sqlite").is_file()
 
     export_report, export_exit = validate_knowledge_tree_export(export_path)
-    presentation_report, presentation_exit = validate_public_knowledge_tree_presentation(presentation_path)
+    presentation_report, presentation_exit = validate_public_knowledge_tree_presentation(
+        presentation_path
+    )
     assert export_exit == EXIT_EXPORT_PASS, export_report
     assert presentation_exit == EXIT_PRESENTATION_PASS, presentation_report
 
     leak_report = json.loads(leak_report_path.read_text(encoding="utf-8"))
     assert leak_report["status"] == "pass"
     assert report["leak_scan"]["status"] == "pass"
+    graph_report = json.loads(graph_report_path.read_text(encoding="utf-8"))
+    assert graph_report["status"] in {"pass", "pass_with_unresolved"}
+    assert report["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}
 
     for path in sorted(publish_root.rglob("*")):
         if not path.is_file():
@@ -90,6 +136,29 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
         assert UNREVIEWED_SENTINEL not in body
     assert PRIVATE_SENTINEL not in export_path.read_text(encoding="utf-8")
     assert PRIVATE_SENTINEL not in presentation_path.read_text(encoding="utf-8")
+
+
+def test_publication_strict_graph_closure_preflight_fails_on_orphan(tmp_path: Path) -> None:
+    db_path = create_populated_canonical_store(tmp_path)
+    insert_orphan_source_claim(db_path)
+    output_dir = tmp_path / "site-build"
+
+    result = run_builder(
+        "--db",
+        str(db_path),
+        "--output-dir",
+        str(output_dir),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+        "--graph-closure-strict",
+    )
+
+    assert result.returncode == 1
+    assert "graph closure preflight found true orphan errors" in result.stderr
+    graph_report_path = output_dir / "graph-closure-report.json"
+    assert graph_report_path.is_file()
+    graph_report = json.loads(graph_report_path.read_text(encoding="utf-8"))
+    assert graph_report["status"] == "fail"
 
 
 def test_index_build_knowledge_tree_wrapper_help_and_dry_run() -> None:

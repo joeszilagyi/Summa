@@ -12,6 +12,8 @@ Purpose:
 - write a final `release-readiness-report.json`
 - write a `release-readiness-bundle-manifest.json` with sources, staged paths,
   hashes, commands, statuses, warnings, and errors
+- optionally stage or generate `graph-closure-report.json` as a strict
+  release-readiness signal
 
 Required staged filenames:
 
@@ -56,6 +58,8 @@ Strictness:
 - default behavior returns nonzero when the final release-readiness report is
   `block`
 - `--report-only` still records the blocked status but exits zero
+- `--graph-closure-strict` turns true graph-closure orphan errors into a
+  release-readiness block when a graph-closure report is supplied or generated
 - missing required reports, invalid JSON, upstream command setup failures, and
   overwrite refusal always fail
 
@@ -66,6 +70,8 @@ Output layout:
 - `<output-dir>/static-output-validator-report.json`
 - `<output-dir>/local-search-projection-validator-report.json`
 - `<output-dir>/leak-scan-report.json`
+- `<output-dir>/graph-closure-report.json` when `--graph-closure-report` or
+  `--graph-closure-db` is supplied
 - `<output-dir>/release-readiness-report.json`
 - `<output-dir>/release-readiness-report.txt`
 - `<output-dir>/release-readiness-bundle-manifest.json`
