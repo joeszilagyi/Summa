@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -67,3 +70,92 @@ def test_gather_doc_describes_llm_runner_as_live_engine_path() -> None:
 
     assert "live mode uses the shared `llm_runner.sh` abstraction" in doc_text
     assert "legacy gather scripts" not in doc_text
+
+
+def _run_llm_runner_with_fake_engine(
+    tmp_path: Path,
+    *,
+    engine: str,
+    prompt_text: str,
+) -> tuple[list[str], str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / f"{engine}.args"
+    stdin_file = tmp_path / f"{engine}.stdin"
+    fake_engine = bin_dir / engine
+    fake_engine.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '%s\n' "$@" > "$ARGS_FILE"
+            cat > "$STDIN_FILE"
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_engine.chmod(0o755)
+
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text(prompt_text, encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    stdout_file = tmp_path / "stdout.txt"
+    stderr_file = tmp_path / "stderr.txt"
+    script = textwrap.dedent(
+        f"""\
+        set -euo pipefail
+        runtime_log_event() {{
+          :
+        }}
+        export PATH="{bin_dir}:$PATH"
+        source "{RUNNER_PATH}"
+        llm_runner_set_engine "{engine}"
+        llm_runner_init
+        prompt_text="$(<"{prompt_file}")"
+        llm_runner_run_quiet "{work_dir}" "$prompt_text" "phase" "pytest"
+        """
+    )
+    proc = subprocess.run(
+        ["bash", "-lc", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "ARGS_FILE": str(args_file),
+            "STDIN_FILE": str(stdin_file),
+        },
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    stdin = stdin_file.read_text(encoding="utf-8")
+    return args, stdin
+
+
+def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> None:
+    prompt_text = "x" * 200_000
+    args, stdin = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+    )
+
+    assert args[0] == "exec"
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+
+
+def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> None:
+    prompt_text = "y" * 200_000
+    args, stdin = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="claude",
+        prompt_text=prompt_text,
+    )
+
+    assert args[0] == "-p"
+    assert "--dangerously-skip-permissions" in args
+    assert args[-2:] == ["--effort", "high"]
+    assert stdin == prompt_text
