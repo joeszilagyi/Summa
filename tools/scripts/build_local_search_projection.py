@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import tempfile
@@ -41,6 +42,7 @@ from tools.validators.validate_local_search_projection import validate_local_sea
 
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -556,6 +558,10 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         projected_records: list[dict[str, Any]] = []
         excluded_records: list[dict[str, str]] = []
         for target in TARGETS:
+            if not SQL_IDENTIFIER_RE.fullmatch(target.table):
+                raise RuntimeError(f"invalid projection target table: {target.table}")
+            if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
+                raise RuntimeError(f"invalid projection target primary key column: {target.pk_column}")
             if not table_exists(conn, target.table):
                 continue
             rows = conn.execute(f"SELECT * FROM {target.table} ORDER BY {target.pk_column}").fetchall()

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def positive_int(value: str) -> int:
@@ -48,6 +51,8 @@ def _decode_metadata_value(row: sqlite3.Row) -> Any:
 
 
 def _rows_for_work(conn: sqlite3.Connection, table: str, work_id: int) -> list[dict[str, Any]]:
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise RuntimeError(f"invalid SQL identifier: {table}")
     if not table_exists(conn, table):
         return []
     columns = _table_columns(conn, table)
