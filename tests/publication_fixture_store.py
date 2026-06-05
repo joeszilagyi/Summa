@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from tools.source_db_tools import canonical_store
@@ -573,4 +572,3 @@ def create_populated_canonical_store(tmp_path: Path, *, name: str = "canonical.s
     finally:
         conn.close()
     return db_path
-
