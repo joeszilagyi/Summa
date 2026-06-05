@@ -98,7 +98,7 @@ def _load_text(path: Path, *, label: str) -> str:
     except OSError as exc:
         raise OSError(f"{label} could not be read: {path}") from exc
     except UnicodeDecodeError as exc:
-        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8")
+        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8") from exc
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
