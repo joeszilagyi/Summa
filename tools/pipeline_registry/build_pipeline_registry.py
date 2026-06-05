@@ -233,7 +233,7 @@ def validate_dataset_keys(rows_by_table: dict[str, list[dict[str, Any]]]) -> Non
             if key in seen:
                 raise SystemExit(
                     f"duplicate {table} key at row {index}: "
-                    + ", ".join(f"{column}={value!r}" for column, value in zip(key_columns, key))
+                    + ", ".join(f"{column}={value!r}" for column, value in zip(key_columns, key, strict=True))
                 )
             seen.add(key)
 
