@@ -338,6 +338,9 @@ def update_review_state(
         target_id=target_id,
     )
     previous_state = None if row["review_state"] is None else str(row["review_state"])
+    previous_state_value = str(previous_state or "").strip().lower()
+    if previous_state_value in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES:
+        return False
     if previous_state == new_state_value:
         return False
     conn.execute(
