@@ -1607,7 +1607,7 @@ def record_source_claim(
             "capture_event_id": _first_present(capture_event_id, existing["capture_event_id"]),
             "extraction_id": _first_present(extraction_id, existing["extraction_id"]),
             "created_at": _first_present(existing["created_at"], created_at_value),
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult("source_claim", int(existing["source_claim_id"]), claim_key, False)
@@ -1758,7 +1758,7 @@ def record_capture_event(
                 existing["public_blocker"],
             ),
             "provenance_event_ref": provenance_event_ref,
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult("capture_event", int(existing["capture_event_id"]), None, False)
@@ -1915,7 +1915,7 @@ def record_extraction_record(
                 existing["public_blocker"],
             ),
             "provenance_event_ref": provenance_event_ref,
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult("extraction_record", int(existing["extraction_id"]), None, False)
@@ -2016,7 +2016,7 @@ def record_extraction_detected_entity(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
             "provenance_event_ref": provenance_event_ref,
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult(
@@ -2175,7 +2175,7 @@ def record_source_relationship(
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
                 existing["evidence_locator_ref"],
             ),
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult(

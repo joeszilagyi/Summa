@@ -912,6 +912,212 @@ def test_source_access_without_work_or_lead_replays_by_locator_without_duplicate
     assert row["last_seen_at"] == NEWER_TIMESTAMP
 
 
+def test_write_api_preserves_record_last_updated_monotonicity_on_replay(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        claim_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="monotonic-claim",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:monotonic-claim",
+        )
+        claim_first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=claim_prov.event_key,
+            source_claim_key_v1="claim:monotonic",
+            about_object_ref="work:monotonic",
+            claim_text="Monotonic claim.",
+            claim_type="fixture_claim",
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        claim_second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=claim_prov.event_key,
+            source_claim_key_v1="claim:monotonic",
+            about_object_ref="work:monotonic",
+            claim_text="Monotonic claim.",
+            claim_type="fixture_claim",
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+
+        capture_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="monotonic-capture",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:monotonic-capture",
+        )
+        capture_first = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=capture_prov.event_key,
+            original_locator="https://example.test/monotonic-capture",
+            captured_at=NEWER_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="c" * 64,
+            workspace_id="monotonic_subject",
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        capture_second = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=capture_prov.event_key,
+            original_locator="https://example.test/monotonic-capture",
+            captured_at=NEWER_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="c" * 64,
+            workspace_id="monotonic_subject",
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+
+        extraction_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="monotonic-extraction",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:monotonic-extraction",
+        )
+        extraction_first = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=extraction_prov.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="d" * 64,
+            output_hash="e" * 64,
+            byte_count_in=10,
+            byte_count_out=5,
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        extraction_second = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=extraction_prov.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="d" * 64,
+            output_hash="e" * 64,
+            byte_count_in=10,
+            byte_count_out=5,
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+
+        entity_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="monotonic-entity",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:monotonic-entity",
+        )
+        entity_first = canonical_store.record_extraction_detected_entity(
+            conn,
+            provenance_event_ref=entity_prov.event_key,
+            extraction_id=extraction_first.row_id,
+            capture_event_id=capture_first.row_id,
+            entity_label="Monotonic Entity",
+            normalized_label="monotonic entity",
+            entity_type="person",
+            workspace_id="monotonic_subject",
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        entity_second = canonical_store.record_extraction_detected_entity(
+            conn,
+            provenance_event_ref=entity_prov.event_key,
+            extraction_id=extraction_first.row_id,
+            capture_event_id=capture_first.row_id,
+            entity_label="Monotonic Entity",
+            normalized_label="monotonic entity",
+            entity_type="person",
+            workspace_id="monotonic_subject",
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+
+        relationship_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="monotonic-relationship",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:monotonic-relationship",
+        )
+        relationship_first = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=relationship_prov.event_key,
+            from_object_ref="work:monotonic",
+            predicate="mentions",
+            to_object_ref="entity:monotonic",
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        relationship_second = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=relationship_prov.event_key,
+            from_object_ref="work:monotonic",
+            predicate="mentions",
+            to_object_ref="entity:monotonic",
+            workspace_id="monotonic_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        conn.commit()
+        claim_row = conn.execute(
+            "SELECT record_last_updated FROM source_claim WHERE source_claim_id=?",
+            (claim_first.row_id,),
+        ).fetchone()
+        capture_row = conn.execute(
+            "SELECT record_last_updated FROM capture_event WHERE capture_event_id=?",
+            (capture_first.row_id,),
+        ).fetchone()
+        extraction_row = conn.execute(
+            "SELECT record_last_updated FROM extraction_record WHERE extraction_id=?",
+            (extraction_first.row_id,),
+        ).fetchone()
+        entity_row = conn.execute(
+            "SELECT record_last_updated FROM extraction_detected_entity WHERE detected_entity_id=?",
+            (entity_first.row_id,),
+        ).fetchone()
+        relationship_row = conn.execute(
+            "SELECT record_last_updated FROM source_relationship WHERE source_relationship_id=?",
+            (relationship_first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert claim_first.created is True
+    assert claim_second.created is False
+    assert capture_first.created is True
+    assert capture_second.created is False
+    assert extraction_first.created is True
+    assert extraction_second.created is False
+    assert entity_first.created is True
+    assert entity_second.created is False
+    assert relationship_first.created is True
+    assert relationship_second.created is False
+    assert claim_row["record_last_updated"] == NEWER_TIMESTAMP
+    assert capture_row["record_last_updated"] == NEWER_TIMESTAMP
+    assert extraction_row["record_last_updated"] == NEWER_TIMESTAMP
+    assert entity_row["record_last_updated"] == NEWER_TIMESTAMP
+    assert relationship_row["record_last_updated"] == NEWER_TIMESTAMP
+
+
 def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
