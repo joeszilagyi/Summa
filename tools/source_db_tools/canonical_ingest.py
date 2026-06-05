@@ -588,12 +588,15 @@ def ingest_candidate_batch(
                         for identifier in canonical_reconciliation.candidate_identifiers(
                             structured
                         ):
+                            identifier_confidence = structured.get("confidence_score")
+                            if work_match is not None and identifier_confidence is None:
+                                identifier_confidence = work_match.confidence_score
                             identifier_result = canonical_reconciliation.record_work_identifier(
                                 conn,
                                 work_id=work_result.row_id,
                                 scheme=identifier["scheme"],
                                 value=identifier["value"],
-                                confidence_score=work_match.confidence_score if work_match else 1.0,
+                                confidence_score=identifier_confidence,
                                 record_last_updated=created_at,
                             )
                             _bump(

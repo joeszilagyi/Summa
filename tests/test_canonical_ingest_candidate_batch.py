@@ -343,3 +343,54 @@ def test_candidate_batch_relationship_keeps_confidence_and_review_state(tmp_path
     assert report["status"] == "completed"
     assert relationship["review_state"] == "accepted"
     assert relationship["confidence_score"] == pytest.approx(0.93)
+
+
+def build_work_batch_payload() -> dict[str, object]:
+    return {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": "work-identifier-confidence",
+        "created_at": FIXED_TIMESTAMP,
+        "candidates": [
+            {
+                "candidate_id": "cand:work.1",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps(
+                    {
+                        "work_key": "work.example.1",
+                        "title": "Work Without Identifier Confidence",
+                        "work_type": "article",
+                        "identifier_scheme": "doi",
+                        "identifier_value": "10.1000/xyz",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        ],
+    }
+
+
+def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_work_batch_payload()
+    batch_path = tmp_path / "work-confidence-batch.json"
+    batch_path.write_text(json.dumps(batch, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=batch_path,
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        identifier = conn.execute("SELECT confidence_score FROM work_identifier").fetchone()
+    finally:
+        conn.close()
+
+    assert identifier is not None
+    assert identifier["confidence_score"] is None
