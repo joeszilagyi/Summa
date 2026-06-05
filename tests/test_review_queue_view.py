@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from tools.source_db_tools import review_queue
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL = REPO_ROOT / "tools" / "scripts" / "build_review_queue_view.py"
@@ -385,3 +389,37 @@ def test_review_queue_preserves_accepted_for_citation_on_later_demote(tmp_path: 
 
     assert work_row["review_state"] == "demoted"
     assert int(work_row["accepted_for_citation"]) == 1
+
+
+def test_review_queue_rolls_back_when_provenance_write_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = create_review_db(tmp_path)
+
+    def fail_record_event(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("provenance write failed")
+
+    monkeypatch.setattr(review_queue.provenance_events, "record_event", fail_record_event)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    with pytest.raises(RuntimeError, match="provenance write failed"):
+        review_queue.change_review_state(
+            conn,
+            "work:1",
+            new_state="accepted",
+            changed_by="reviewer.alex",
+            run_id="review-run-rollback",
+        )
+
+    try:
+        work_row = conn.execute(
+            "SELECT review_state, accepted_for_citation FROM work WHERE work_id=1"
+        ).fetchone()
+        history_count = conn.execute("SELECT COUNT(*) AS count FROM review_state_history").fetchone()["count"]
+        provenance_count = conn.execute("SELECT COUNT(*) AS count FROM provenance_event").fetchone()["count"]
+    finally:
+        conn.close()
+
+    assert work_row["review_state"] == "needs_review"
+    assert int(work_row["accepted_for_citation"]) == 0
+    assert history_count == 0
+    assert provenance_count == 0

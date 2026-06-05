@@ -420,32 +420,36 @@ def change_review_state(
         f"UPDATE {target.table} SET {', '.join(assignments)} WHERE {target.pk_column}=?",
         params,
     )
-    record_review_history(
-        conn,
-        target=target,
-        object_pk=object_pk,
-        previous_state=previous_state,
-        new_state=new_state,
-        changed_by=changed_by,
-        changed_at=changed_at,
-        reason=reason,
-        note=note,
-        source_run_id=run_id,
-    )
-    event_type = "demoted" if new_state == "demoted" else "reviewed"
-    provenance_events.record_event(
-        conn,
-        object_namespace=target.namespace,
-        object_id=object_pk,
-        event_type=event_type,
-        actor_type="human",
-        actor_id=changed_by,
-        tool_name=SCRIPT_PATH,
-        run_id=run_id,
-        event_timestamp=changed_at,
-        note_text=note or reason or f"review state changed to {new_state}",
-    )
-    conn.commit()
+    try:
+        record_review_history(
+            conn,
+            target=target,
+            object_pk=object_pk,
+            previous_state=previous_state,
+            new_state=new_state,
+            changed_by=changed_by,
+            changed_at=changed_at,
+            reason=reason,
+            note=note,
+            source_run_id=run_id,
+        )
+        event_type = "demoted" if new_state == "demoted" else "reviewed"
+        provenance_events.record_event(
+            conn,
+            object_namespace=target.namespace,
+            object_id=object_pk,
+            event_type=event_type,
+            actor_type="human",
+            actor_id=changed_by,
+            tool_name=SCRIPT_PATH,
+            run_id=run_id,
+            event_timestamp=changed_at,
+            note_text=note or reason or f"review state changed to {new_state}",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {
         "object_ref": f"{target_type}:{object_pk}",
         "object_namespace": target.namespace,
