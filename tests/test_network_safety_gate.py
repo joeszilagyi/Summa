@@ -125,6 +125,19 @@ def test_network_safety_gate_allows_api_call_with_not_applicable_robots_posture(
     assert payload["planned_actions"][0]["status"] == "planned"
 
 
+def test_allowlisted_rejects_subdomain_forgery_for_bare_host_prefix() -> None:
+    assert gate.allowlisted(
+        "https://api.github.com.attacker.com/path",
+        hosts=[],
+        prefixes=["https://api.github.com"],
+    ) is False
+    assert gate.allowlisted(
+        "https://api.github.com/path",
+        hosts=[],
+        prefixes=["https://api.github.com"],
+    ) is True
+
+
 def test_network_safety_gate_refuses_dirty_worktree_when_required(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
