@@ -457,6 +457,42 @@ def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_migration_runner_preserves_original_error_when_rollback_fails(tmp_path: Path) -> None:
+    class FailingRollbackConnection(sqlite3.Connection):
+        def rollback(self) -> None:  # type: ignore[override]
+            raise sqlite3.OperationalError("rollback failed")
+
+    db_path = tmp_path / "broken_migration_with_bad_rollback.sqlite"
+    conn = sqlite3.connect(db_path, factory=FailingRollbackConnection)
+    conn.row_factory = sqlite3.Row
+    bad_sql = tmp_path / "0002_bad.sql"
+    bad_sql.write_text("CREATE TABLE broken (\n", encoding="utf-8")
+    migrations = (
+        canonical_store.MIGRATIONS[0],
+        canonical_store.MigrationSpec(
+            version=2,
+            migration_id="0002_bad",
+            sql_path=bad_sql,
+            notes="Intentional fixture failure.",
+        ),
+    )
+    try:
+        with pytest.raises(
+            canonical_store.CanonicalStoreError, match="failed to apply canonical store migrations"
+        ) as excinfo:
+            canonical_store.apply_migrations(
+                conn,
+                target_version=2,
+                applied_at=FIXED_TIMESTAMP,
+                applied_by="pytest",
+                migrations=migrations,
+            )
+        assert isinstance(excinfo.value.__cause__, sqlite3.Error)
+        assert "rollback failed" not in str(excinfo.value)
+    finally:
+        conn.close()
+
+
 def test_existing_source_db_helpers_work_against_bootstrapped_store(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
