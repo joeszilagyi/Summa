@@ -215,7 +215,7 @@ llm_runner_run_quiet() {
 # ---------------------------------------------------------------------------
 llm_runner_run_to_file() {
   local tmp_dir="$1" prompt_text="$2" output_file="$3" phase="$4" tool_name="${5:-llm_runner}"
-  local stderr_file start_ts end_ts elapsed rc
+  local stderr_file output_tmp_file start_ts end_ts elapsed rc
 
   [[ "$_LLM_RUNNER_INITIALIZED" == "1" ]] || {
     printf 'llm_runner: llm_runner_init must be called before llm_runner_run_to_file\n' >&2
@@ -230,12 +230,17 @@ llm_runner_run_to_file() {
     return 1
   fi
 
-  : > "$output_file"
+  output_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").tmp.XXXXXX")"
+  trap 'rm -f "$output_tmp_file"' RETURN
   stderr_file="$(mktemp "${tmp_dir%/}/llm.${phase}.stderr.XXXXXX")"
   : > "$stderr_file"
   start_ts="$(date +%s)"
 
-  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_file" "$stderr_file"; then
+  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
+    if ! mv -- "$output_tmp_file" "$output_file"; then
+      return 1
+    fi
+    trap - RETURN
     end_ts="$(date +%s)"
     elapsed=$((end_ts - start_ts))
     runtime_log_event LLM_OK \
