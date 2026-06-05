@@ -1028,3 +1028,89 @@ def test_source_access_lead_identity_includes_workspace_and_locator(tmp_path: Pa
         "Fixture source access one",
         "Fixture source access two",
     ]
+
+
+def test_source_access_work_id_replay_does_not_blend_distinct_leads(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-006",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-work-id-replay",
+        )
+        work = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-source-access-work-id",
+            provenance_event_ref=provenance.event_key,
+            work_type="article",
+            title="Fixture Source Access Work",
+            workspace_id="theta_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            created_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        first = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead-alpha",
+            source_locus_id="locus-alpha",
+            original_locator="https://example.test/source-access-work-id",
+            canonical_url="https://example.test/source-alpha",
+            citation_hint="Fixture source access alpha",
+            workspace_id="theta_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        second = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead-beta",
+            source_locus_id="locus-beta",
+            original_locator="https://example.test/source-access-work-id",
+            canonical_url="https://example.test/source-beta",
+            citation_hint="Fixture source access beta",
+            workspace_id="theta_subject",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM source_access
+            WHERE work_id=? AND original_locator=?
+            """,
+            (work.row_id, "https://example.test/source-access-work-id"),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT source_lead_id, source_locus_id, canonical_url, citation_hint,
+                   first_seen_at, last_seen_at, record_last_updated
+            FROM source_access
+            WHERE source_access_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert int(row_count["row_count"]) == 1
+    assert first.row_id == second.row_id
+    assert str(row["source_lead_id"]) == "lead-alpha"
+    assert str(row["source_locus_id"]) == "locus-alpha"
+    assert str(row["canonical_url"]) == "https://example.test/source-alpha"
+    assert str(row["citation_hint"]) == "Fixture source access alpha"
+    assert row["first_seen_at"] == OLDER_TIMESTAMP
+    assert row["last_seen_at"] == FIXED_TIMESTAMP
+    assert row["record_last_updated"] == FIXED_TIMESTAMP

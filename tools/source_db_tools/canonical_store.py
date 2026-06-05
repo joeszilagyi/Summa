@@ -1265,7 +1265,14 @@ def record_source_access(
         last_seen_at, field_name="last_seen_at", default=first_seen_value
     )
     if work_id is not None:
-        criteria = {"work_id": work_id, "original_locator": locator}
+        criteria = {
+            "work_id": work_id,
+            "original_locator": locator,
+            "canonical_url": _optional_nonblank(canonical_url, "canonical_url"),
+            "source_locus_id": _optional_nonblank(source_locus_id, "source_locus_id"),
+            "source_lead_id": _optional_nonblank(source_lead_id, "source_lead_id"),
+            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
+        }
     elif source_lead_id is not None:
         criteria = {
             "source_lead_id": _require_nonblank(source_lead_id, "source_lead_id"),
@@ -1281,51 +1288,74 @@ def record_source_access(
         }
     existing = _lookup_row(conn, "source_access", "source_access_id", criteria)
     if existing is None:
-        cursor = conn.execute(
-            """
-            INSERT INTO source_access (
-              work_id,
-              source_locus_id,
-              source_lead_id,
-              original_locator,
-              canonical_url,
-              access_class,
-              refetchability_status,
-              rights_posture,
-              citation_hint,
-              review_state,
-              publication_state,
-              authority_level,
-              public_blocker,
-              workspace_id,
-              provenance_event_ref,
-              first_seen_at,
-              last_seen_at,
-              record_last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                work_id,
-                _optional_nonblank(source_locus_id, "source_locus_id"),
-                _optional_nonblank(source_lead_id, "source_lead_id"),
-                locator,
-                _optional_nonblank(canonical_url, "canonical_url"),
-                _optional_nonblank(access_class, "access_class"),
-                _optional_nonblank(refetchability_status, "refetchability_status"),
-                _optional_nonblank(rights_posture, "rights_posture"),
-                _optional_nonblank(citation_hint, "citation_hint"),
-                review_state_value,
-                _optional_nonblank(publication_state, "publication_state"),
-                _optional_nonblank(authority_level, "authority_level"),
-                _optional_nonblank(public_blocker, "public_blocker"),
-                _optional_nonblank(workspace_id, "workspace_id"),
-                provenance_event_ref,
-                first_seen_value,
-                last_seen_value,
-                timestamp,
-            ),
-        )
-        return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO source_access (
+                  work_id,
+                  source_locus_id,
+                  source_lead_id,
+                  original_locator,
+                  canonical_url,
+                  access_class,
+                  refetchability_status,
+                  rights_posture,
+                  citation_hint,
+                  review_state,
+                  publication_state,
+                  authority_level,
+                  public_blocker,
+                  workspace_id,
+                  provenance_event_ref,
+                  first_seen_at,
+                  last_seen_at,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    _optional_nonblank(source_locus_id, "source_locus_id"),
+                    _optional_nonblank(source_lead_id, "source_lead_id"),
+                    locator,
+                    _optional_nonblank(canonical_url, "canonical_url"),
+                    _optional_nonblank(access_class, "access_class"),
+                    _optional_nonblank(refetchability_status, "refetchability_status"),
+                    _optional_nonblank(rights_posture, "rights_posture"),
+                    _optional_nonblank(citation_hint, "citation_hint"),
+                    review_state_value,
+                    _optional_nonblank(publication_state, "publication_state"),
+                    _optional_nonblank(authority_level, "authority_level"),
+                    _optional_nonblank(public_blocker, "public_blocker"),
+                    _optional_nonblank(workspace_id, "workspace_id"),
+                    provenance_event_ref,
+                    first_seen_value,
+                    last_seen_value,
+                    timestamp,
+                ),
+            )
+            return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
+        except sqlite3.IntegrityError:
+            existing = conn.execute(
+                """
+                SELECT * FROM source_access WHERE work_id=? AND original_locator=? LIMIT 1
+                """,
+                (work_id, locator),
+            ).fetchone()
+            if existing is None:
+                raise
+            _update_row(
+                conn,
+                "source_access",
+                "source_access_id",
+                int(existing["source_access_id"]),
+                {
+                    "review_state": _merged_review_state(existing["review_state"], review_state_value),
+                    "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
+                    "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
+                    "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
+                },
+            )
+            return CanonicalWriteResult("source_access", int(existing["source_access_id"]), None, False)
 
     _update_row(
         conn,
