@@ -46,6 +46,7 @@ from tools.validators.validate_public_knowledge_tree_presentation import (
 SCRIPT_PATH = "tools/scripts/build_static_knowledge_tree.py"
 SCHEMA_VERSION = "knowledge-tree-build-manifest.v1"
 STYLESHEET_PATH = "assets/site.css"
+BUILD_MANIFEST_FILENAME = "build-manifest.json"
 
 DEFAULT_NOTES = [
     "published_via_atomic_swap",
@@ -164,10 +165,26 @@ def resolve_existing_file(raw_path: str, *, label: str) -> Path:
     return path
 
 
+def _is_empty_directory(path: Path) -> bool:
+    return not any(path.iterdir())
+
+
+def _is_static_knowledge_tree_publish_root(path: Path) -> bool:
+    manifest_path = path / BUILD_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return False
+    _, exit_code = validate_build_manifest(manifest_path)
+    return exit_code == EXIT_BUILD_MANIFEST_PASS
+
+
 def resolve_publish_root(raw_path: str) -> Path:
     path = resolve_path(raw_path)
     if path.exists() and not path.is_dir():
         raise StaticKnowledgeTreeBuildError(f"publish root exists and is not a directory: {path}")
+    if path.exists() and path.is_dir() and not _is_empty_directory(path) and not _is_static_knowledge_tree_publish_root(path):
+        raise StaticKnowledgeTreeBuildError(
+            f"publish root exists but is not a recognized static-tree output directory: {path}"
+        )
     if not path.parent.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -606,10 +623,10 @@ def publish_stage_dir(
             backup_root.replace(publish_root)
             _fsync_directory(publish_root.parent)
         raise StaticKnowledgeTreeBuildError(f"atomic publish failed: {exc}") from exc
-    else:
-        if backup_root is not None and backup_root.exists():
-            shutil.rmtree(backup_root)
-    return {"backup_restored": False}
+    return {
+        "backup_root": str(backup_root) if backup_root is not None else None,
+        "backup_restored": False,
+    }
 
 
 def build_static_knowledge_tree(
