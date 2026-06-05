@@ -87,6 +87,28 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+def _assert_append_only_replay_compatible(
+    table: str,
+    key: str,
+    row: sqlite3.Row | None,
+    expected: dict[str, Any],
+    *,
+    ignore: frozenset[str] = frozenset(),
+) -> None:
+    if row is None:
+        raise CycleEvidenceLedgerError(f"ledger replay conflict for {table} {key}: existing row not found")
+    mismatches = [
+        field
+        for field, value in expected.items()
+        if field not in ignore and row[field] != value
+    ]
+    if mismatches:
+        field_list = ", ".join(mismatches)
+        raise CycleEvidenceLedgerError(
+            f"ledger replay mismatch for {table} {key}: {field_list}"
+        )
+
+
 def _file_size(path: Path) -> int | None:
     try:
         return path.stat().st_size if path.is_file() else None
@@ -131,6 +153,28 @@ def record_cycle_event_start(
         run_id=run_id_text, started_at=started, workspace_ref=workspace_ref
     )
     now = now_rfc3339()
+    expected = {
+        "cycle_event_id": event_id,
+        "run_id": run_id_text,
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref,
+        "subject_key": subject_key,
+        "domain_pack_id": domain_pack_id,
+        "cycle_depth": cycle_depth,
+        "previous_run_ids_json": _json_sequence(previous_run_ids),
+        "mode": mode,
+        "started_at": started,
+        "status": _require_nonblank(status, "status"),
+        "topic_cycle_manifest_path": topic_cycle_manifest_path,
+        "topic_cycle_manifest_hash": topic_cycle_manifest_hash,
+        "canonical_db_ref": canonical_db_ref,
+        "final_feedback_plan_ref": final_feedback_plan_ref,
+        "row_count_delta_json": _json_mapping(row_count_delta),
+        "warning_count": int(warning_count),
+        "error_count": int(error_count),
+        "metadata_json": _json_mapping(metadata),
+        "record_last_updated": now,
+    }
     cursor = conn.execute(
         """
         INSERT INTO cycle_event (
@@ -140,53 +184,25 @@ def record_cycle_event_start(
           final_feedback_plan_ref, row_count_delta_json, warning_count, error_count,
           metadata_json, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id) DO UPDATE SET
-          workspace_id=excluded.workspace_id,
-          workspace_ref=excluded.workspace_ref,
-          subject_key=excluded.subject_key,
-          domain_pack_id=excluded.domain_pack_id,
-          cycle_depth=excluded.cycle_depth,
-          previous_run_ids_json=excluded.previous_run_ids_json,
-          mode=excluded.mode,
-          started_at=excluded.started_at,
-          status=excluded.status,
-          topic_cycle_manifest_path=excluded.topic_cycle_manifest_path,
-          topic_cycle_manifest_hash=excluded.topic_cycle_manifest_hash,
-          canonical_db_ref=excluded.canonical_db_ref,
-          final_feedback_plan_ref=excluded.final_feedback_plan_ref,
-          row_count_delta_json=excluded.row_count_delta_json,
-          warning_count=excluded.warning_count,
-          error_count=excluded.error_count,
-          metadata_json=excluded.metadata_json,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(run_id) DO NOTHING
         RETURNING cycle_event_id
         """,
-        (
-            event_id,
-            run_id_text,
-            workspace_id,
-            workspace_ref,
-            subject_key,
-            domain_pack_id,
-            cycle_depth,
-            _json_sequence(previous_run_ids),
-            mode,
-            started,
-            _require_nonblank(status, "status"),
-            topic_cycle_manifest_path,
-            topic_cycle_manifest_hash,
-            canonical_db_ref,
-            final_feedback_plan_ref,
-            _json_mapping(row_count_delta),
-            int(warning_count),
-            int(error_count),
-            _json_mapping(metadata),
-            now,
-        ),
+        tuple(expected.values()),
     )
     row = cursor.fetchone()
     if row is None:
-        raise CycleEvidenceLedgerError("record_cycle_event_start did not return cycle_event_id")
+        existing_row = conn.execute(
+            "SELECT * FROM cycle_event WHERE run_id=?",
+            (run_id_text,),
+        ).fetchone()
+        _assert_append_only_replay_compatible(
+            "cycle_event",
+            f"run_id={run_id_text}",
+            existing_row,
+            expected,
+            ignore=frozenset({"record_last_updated"}),
+        )
+        return str(existing_row["cycle_event_id"])
     return str(row[0])
 
 
@@ -259,7 +275,27 @@ def record_cycle_stage_start(
     stage_id = stage_event_id or stable_id("stage", event_id, stage_order, stage)
     created = started_at or now_rfc3339()
     now = now_rfc3339()
-    conn.execute(
+    expected = {
+        "stage_event_id": stage_id,
+        "cycle_event_id": event_id,
+        "run_id": run_id_text,
+        "stage_name": stage,
+        "stage_order": int(stage_order),
+        "started_at": created,
+        "status": _require_nonblank(status, "status"),
+        "required_stage": _bool_int(required_stage),
+        "skipped_reason": skipped_reason,
+        "command_name": command_name,
+        "helper_name": helper_name,
+        "input_artifact_ref_id": input_artifact_ref_id,
+        "output_artifact_ref_id": output_artifact_ref_id,
+        "validation_status": validation_status,
+        "error_summary": error_summary,
+        "metadata_json": _json_mapping(metadata),
+        "created_at": created,
+        "record_last_updated": now,
+    }
+    cursor = conn.execute(
         """
         INSERT INTO cycle_stage_event (
           stage_event_id, cycle_event_id, run_id, stage_name, stage_order, started_at,
@@ -267,41 +303,22 @@ def record_cycle_stage_start(
           input_artifact_ref_id, output_artifact_ref_id, validation_status,
           error_summary, metadata_json, created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(stage_event_id) DO UPDATE SET
-          started_at=excluded.started_at,
-          status=excluded.status,
-          required_stage=excluded.required_stage,
-          skipped_reason=excluded.skipped_reason,
-          command_name=excluded.command_name,
-          helper_name=excluded.helper_name,
-          input_artifact_ref_id=excluded.input_artifact_ref_id,
-          output_artifact_ref_id=excluded.output_artifact_ref_id,
-          validation_status=excluded.validation_status,
-          error_summary=excluded.error_summary,
-          metadata_json=excluded.metadata_json,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(stage_event_id) DO NOTHING
         """,
-        (
-            stage_id,
-            event_id,
-            run_id_text,
-            stage,
-            int(stage_order),
-            created,
-            _require_nonblank(status, "status"),
-            _bool_int(required_stage),
-            skipped_reason,
-            command_name,
-            helper_name,
-            input_artifact_ref_id,
-            output_artifact_ref_id,
-            validation_status,
-            error_summary,
-            _json_mapping(metadata),
-            created,
-            now,
-        ),
+        tuple(expected.values()),
     )
+    if cursor.rowcount == 0:
+        existing_row = conn.execute(
+            "SELECT * FROM cycle_stage_event WHERE stage_event_id=?",
+            (stage_id,),
+        ).fetchone()
+        _assert_append_only_replay_compatible(
+            "cycle_stage_event",
+            f"stage_event_id={stage_id}",
+            existing_row,
+            expected,
+            ignore=frozenset({"created_at", "record_last_updated"}),
+        )
     return stage_id
 
 
@@ -361,6 +378,22 @@ def record_cycle_artifact_ref(
     )
     now = now_rfc3339()
     created = created_at or now
+    expected = {
+        "artifact_ref_id": artifact_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "artifact_type": artifact_type_text,
+        "artifact_path": artifact_path_text,
+        "artifact_hash": artifact_hash,
+        "byte_count": byte_count,
+        "privacy_classification": _require_nonblank(privacy_classification, "privacy_classification"),
+        "public_safe": _bool_int(public_safe),
+        "schema_id": schema_id,
+        "validation_status": validation_status,
+        "created_at": created,
+        "metadata_json": _json_mapping(metadata),
+        "record_last_updated": now,
+    }
     conn.execute(
         """
         INSERT INTO cycle_artifact_ref (
@@ -368,33 +401,23 @@ def record_cycle_artifact_ref(
           artifact_hash, byte_count, privacy_classification, public_safe, schema_id,
           validation_status, created_at, metadata_json, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(artifact_ref_id) DO UPDATE SET
-          artifact_hash=excluded.artifact_hash,
-          byte_count=excluded.byte_count,
-          privacy_classification=excluded.privacy_classification,
-          public_safe=excluded.public_safe,
-          schema_id=excluded.schema_id,
-          validation_status=excluded.validation_status,
-          metadata_json=excluded.metadata_json,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(artifact_ref_id) DO NOTHING
         """,
-        (
-            artifact_id,
-            event_id,
-            stage_event_id,
-            artifact_type_text,
-            artifact_path_text,
-            artifact_hash,
-            byte_count,
-            _require_nonblank(privacy_classification, "privacy_classification"),
-            _bool_int(public_safe),
-            schema_id,
-            validation_status,
-            created,
-            _json_mapping(metadata),
-            now,
-        ),
+        tuple(expected.values()),
     )
+    cursor = conn.execute(
+        "SELECT * FROM cycle_artifact_ref WHERE artifact_ref_id=?",
+        (artifact_id,),
+    )
+    existing_row = cursor.fetchone()
+    if existing_row is not None:
+        _assert_append_only_replay_compatible(
+            "cycle_artifact_ref",
+            f"artifact_ref_id={artifact_id}",
+            existing_row,
+            expected,
+            ignore=frozenset({"created_at", "record_last_updated"}),
+        )
     return artifact_id
 
 
@@ -423,6 +446,22 @@ def record_cycle_candidate_considered(
     now = now_rfc3339()
     created = created_at or now
     normalized_score = None if score is None else float(score)
+    expected = {
+        "candidate_considered_id": candidate_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "candidate_kind": kind,
+        "candidate_ref_type": candidate_ref_type,
+        "candidate_ref_id": candidate_ref_id,
+        "candidate_label": candidate_label,
+        "score": normalized_score,
+        "score_policy_id": score_policy_id,
+        "rationale": rationale,
+        "reason_json": _json_mapping(reason),
+        "selected": _bool_int(selected),
+        "created_at": created,
+        "record_last_updated": now,
+    }
     conn.execute(
         """
         INSERT INTO cycle_candidate_considered (
@@ -430,31 +469,20 @@ def record_cycle_candidate_considered(
           candidate_ref_type, candidate_ref_id, candidate_label, score, score_policy_id,
           rationale, reason_json, selected, created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(candidate_considered_id) DO UPDATE SET
-          candidate_label=excluded.candidate_label,
-          score=excluded.score,
-          score_policy_id=excluded.score_policy_id,
-          rationale=excluded.rationale,
-          reason_json=excluded.reason_json,
-          selected=excluded.selected,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(candidate_considered_id) DO NOTHING
         """,
-        (
-            candidate_id,
-            event_id,
-            stage_event_id,
-            kind,
-            candidate_ref_type,
-            candidate_ref_id,
-            candidate_label,
-            normalized_score,
-            score_policy_id,
-            rationale,
-            _json_mapping(reason),
-            _bool_int(selected),
-            created,
-            now,
-        ),
+        tuple(expected.values()),
+    )
+    existing_row = conn.execute(
+        "SELECT * FROM cycle_candidate_considered WHERE candidate_considered_id=?",
+        (candidate_id,),
+    ).fetchone()
+    _assert_append_only_replay_compatible(
+        "cycle_candidate_considered",
+        f"candidate_considered_id={candidate_id}",
+        existing_row,
+        expected,
+        ignore=frozenset({"created_at", "record_last_updated"}),
     )
     return candidate_id
 
@@ -488,6 +516,20 @@ def record_cycle_candidate_excluded(
     )
     now = now_rfc3339()
     created = created_at or now
+    expected = {
+        "candidate_excluded_id": excluded_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "candidate_kind": kind,
+        "candidate_ref_type": candidate_ref_type,
+        "candidate_ref_id": candidate_ref_id,
+        "candidate_label": candidate_label,
+        "exclusion_reason": reason_text,
+        "policy_id": policy_id,
+        "retryable": _bool_int(retryable),
+        "created_at": created,
+        "record_last_updated": now,
+    }
     conn.execute(
         """
         INSERT INTO cycle_candidate_excluded (
@@ -495,27 +537,20 @@ def record_cycle_candidate_excluded(
           candidate_ref_type, candidate_ref_id, candidate_label, exclusion_reason,
           policy_id, retryable, created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(candidate_excluded_id) DO UPDATE SET
-          candidate_label=excluded.candidate_label,
-          exclusion_reason=excluded.exclusion_reason,
-          policy_id=excluded.policy_id,
-          retryable=excluded.retryable,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(candidate_excluded_id) DO NOTHING
         """,
-        (
-            excluded_id,
-            event_id,
-            stage_event_id,
-            kind,
-            candidate_ref_type,
-            candidate_ref_id,
-            candidate_label,
-            reason_text,
-            policy_id,
-            _bool_int(retryable),
-            created,
-            now,
-        ),
+        tuple(expected.values()),
+    )
+    existing_row = conn.execute(
+        "SELECT * FROM cycle_candidate_excluded WHERE candidate_excluded_id=?",
+        (excluded_id,),
+    ).fetchone()
+    _assert_append_only_replay_compatible(
+        "cycle_candidate_excluded",
+        f"candidate_excluded_id={excluded_id}",
+        existing_row,
+        expected,
+        ignore=frozenset({"created_at", "record_last_updated"}),
     )
     return excluded_id
 
@@ -544,6 +579,20 @@ def record_cycle_tool_failure(
     )
     now = now_rfc3339()
     created = created_at or now
+    expected = {
+        "tool_failure_id": failure_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "tool_name": tool,
+        "command_name": command_name,
+        "exit_code": exit_code,
+        "failure_kind": kind,
+        "error_summary": summary,
+        "artifact_ref_id": artifact_ref_id,
+        "retryable": _bool_int(retryable),
+        "created_at": created,
+        "record_last_updated": now,
+    }
     conn.execute(
         """
         INSERT INTO cycle_tool_failure (
@@ -551,28 +600,20 @@ def record_cycle_tool_failure(
           exit_code, failure_kind, error_summary, artifact_ref_id, retryable,
           created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(tool_failure_id) DO UPDATE SET
-          command_name=excluded.command_name,
-          exit_code=excluded.exit_code,
-          error_summary=excluded.error_summary,
-          artifact_ref_id=excluded.artifact_ref_id,
-          retryable=excluded.retryable,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(tool_failure_id) DO NOTHING
         """,
-        (
-            failure_id,
-            event_id,
-            stage_event_id,
-            tool,
-            command_name,
-            exit_code,
-            kind,
-            summary,
-            artifact_ref_id,
-            _bool_int(retryable),
-            created,
-            now,
-        ),
+        tuple(expected.values()),
+    )
+    existing_row = conn.execute(
+        "SELECT * FROM cycle_tool_failure WHERE tool_failure_id=?",
+        (failure_id,),
+    ).fetchone()
+    _assert_append_only_replay_compatible(
+        "cycle_tool_failure",
+        f"tool_failure_id={failure_id}",
+        existing_row,
+        expected,
+        ignore=frozenset({"created_at", "record_last_updated"}),
     )
     return failure_id
 
@@ -596,29 +637,37 @@ def record_cycle_operator_override(
     )
     now = now_rfc3339()
     created = created_at or now
+    expected = {
+        "operator_override_id": override_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "override_kind": kind,
+        "override_value": override_value,
+        "reason": reason,
+        "actor": actor,
+        "created_at": created,
+        "record_last_updated": now,
+    }
     conn.execute(
         """
         INSERT INTO cycle_operator_override (
           operator_override_id, cycle_event_id, stage_event_id, override_kind,
           override_value, reason, actor, created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(operator_override_id) DO UPDATE SET
-          override_value=excluded.override_value,
-          reason=excluded.reason,
-          actor=excluded.actor,
-          record_last_updated=excluded.record_last_updated
+        ON CONFLICT(operator_override_id) DO NOTHING
         """,
-        (
-            override_id,
-            event_id,
-            stage_event_id,
-            kind,
-            override_value,
-            reason,
-            actor,
-            created,
-            now,
-        ),
+        tuple(expected.values()),
+    )
+    existing_row = conn.execute(
+        "SELECT * FROM cycle_operator_override WHERE operator_override_id=?",
+        (override_id,),
+    ).fetchone()
+    _assert_append_only_replay_compatible(
+        "cycle_operator_override",
+        f"operator_override_id={override_id}",
+        existing_row,
+        expected,
+        ignore=frozenset({"created_at", "record_last_updated"}),
     )
     return override_id
 

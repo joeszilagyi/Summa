@@ -294,18 +294,34 @@ def test_cycle_event_start_replays_are_idempotent_by_run_id(tmp_path: Path) -> N
             domain_pack_id="general.v1",
             cycle_depth=1,
             mode="local",
-            started_at="2026-06-03T00:00:00Z",
+            started_at="2026-06-01T00:00:00Z",
             status="running",
         )
         assert first_id == second_id
         event = cycle_evidence_ledger.load_cycle_event(conn, first_id)
         assert event is not None
-        assert event["started_at"] == "2026-06-03T00:00:00Z"
+        assert event["started_at"] == "2026-06-01T00:00:00Z"
         expected_id = cycle_evidence_ledger.build_cycle_event_id(
             run_id="run-duplicate",
             started_at="2026-06-03T00:00:00Z",
             workspace_ref=str(tmp_path / "workspace"),
         )
         assert first_id == expected_id
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="ledger replay mismatch",
+        ):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-duplicate",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at="2026-06-03T00:00:00Z",
+                status="running",
+            )
     finally:
         conn.close()
