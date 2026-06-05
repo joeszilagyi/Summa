@@ -626,14 +626,17 @@ def list_cycle_events_for_subject(
     sql = """
         SELECT * FROM cycle_event
         WHERE subject_key=?
-        ORDER BY started_at, run_id, cycle_event_id
+        ORDER BY started_at DESC, run_id DESC, cycle_event_id DESC
     """
     params: tuple[object, ...] = (_require_nonblank(subject_key, "subject_key"),)
     if limit is not None:
         sql += " LIMIT ?"
         params = (*params, int(limit))
     rows = conn.execute(sql, params).fetchall()
-    return [_row_to_dict(row) for row in rows]
+    events = [_row_to_dict(row) for row in rows]
+    if limit is None:
+        events.reverse()
+    return events
 
 
 def list_cycle_stage_events(conn: sqlite3.Connection, cycle_event_id: str) -> list[dict[str, Any]]:
