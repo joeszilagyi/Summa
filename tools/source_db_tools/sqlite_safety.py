@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -75,48 +76,46 @@ def backup_database(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     backup_path: Path | None = None
-    lock_context = None
-    if workspace_id:
-        lock_kwargs: dict[str, Any] = {"command": "sqlite_safety.backup"}
-        if lock_root is not None:
-            lock_kwargs["lock_root"] = lock_root
-        lock_context = acquire_workspace_lock(
+    lock_context = (
+        acquire_workspace_lock(
             workspace_id,
-            **lock_kwargs,
+            **(
+                {"command": "sqlite_safety.backup"}
+                | ({"lock_root": lock_root} if lock_root is not None else {})
+            ),
         )
+        if workspace_id
+        else nullcontext()
+    )
     try:
-        if lock_context is not None:
-            lock_context.__enter__()
-        source_conn = sqlite3.connect(_readonly_uri(source_path), uri=True)
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{destination.name}.tmp.",
-                suffix=".db",
-                dir=destination.parent,
-                delete=False,
-            ) as temp_file:
-                backup_path = Path(temp_file.name)
-            temp_conn = sqlite3.connect(backup_path)
+        with lock_context:
+            source_conn = sqlite3.connect(_readonly_uri(source_path), uri=True)
             try:
-                source_conn.backup(temp_conn)
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=f".{destination.name}.tmp.",
+                    suffix=".db",
+                    dir=destination.parent,
+                    delete=False,
+                ) as temp_file:
+                    backup_path = Path(temp_file.name)
+                temp_conn = sqlite3.connect(backup_path)
+                try:
+                    source_conn.backup(temp_conn)
+                finally:
+                    temp_conn.close()
             finally:
-                temp_conn.close()
-        finally:
-            source_conn.close()
-        if backup_path is None:
-            raise SQLiteSafetyError(f"backup temporary path was not created: {destination}")
-        check = run_check(backup_path)
-        if check["status"] != "pass":
-            raise SQLiteSafetyError(f"backup integrity check failed: {check['messages']}")
-        backup_path.replace(destination)
+                source_conn.close()
+            if backup_path is None:
+                raise SQLiteSafetyError(f"backup temporary path was not created: {destination}")
+            check = run_check(backup_path)
+            if check["status"] != "pass":
+                raise SQLiteSafetyError(f"backup integrity check failed: {check['messages']}")
+            backup_path.replace(destination)
     except Exception:
         if backup_path is not None and backup_path.exists():
             backup_path.unlink()
         raise
-    finally:
-        if lock_context is not None:
-            lock_context.__exit__(None, None, None)
     if destination.exists():
         check = run_check(destination)
     else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import contextmanager
 import sqlite3
 from pathlib import Path
 
@@ -76,3 +77,56 @@ def test_backup_database_rejects_same_path(tmp_path: Path) -> None:
         assert "must not be the same database path" in str(exc)
     else:
         raise AssertionError("expected same-path safety guard")
+
+
+def test_backup_database_uses_lock_context_manager_on_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source_db = tmp_path / "source.sqlite"
+    destination_db = tmp_path / "destination.sqlite"
+    make_database(source_db, marker="source")
+
+    exit_args: list[tuple[object, object, object]] = []
+
+    @contextmanager
+    def fake_lock(*_args, **_kwargs):
+        try:
+            yield
+        except BaseException as exc:
+            exit_args.append((type(exc), exc, exc.__traceback__))
+            raise
+        else:
+            exit_args.append((None, None, None))
+
+    class FakeSourceConn:
+        def backup(self, _target) -> None:
+            raise RuntimeError("forced backup failure")
+
+        def close(self) -> None:
+            pass
+
+    class FakeTempConn:
+        def close(self) -> None:
+            pass
+
+    def fake_connect(path, *args, **kwargs):
+        if kwargs.get("uri"):
+            return FakeSourceConn()
+        return FakeTempConn()
+
+    monkeypatch.setattr(sqlite_safety, "acquire_workspace_lock", fake_lock)
+    monkeypatch.setattr(sqlite_safety.sqlite3, "connect", fake_connect)
+
+    try:
+        sqlite_safety.backup_database(
+            source_db,
+            destination_db,
+            workspace_id="fixture-workspace",
+        )
+    except RuntimeError as exc:
+        assert "forced backup failure" in str(exc)
+    else:
+        raise AssertionError("expected forced backup failure")
+
+    assert exit_args and exit_args[0][0] is RuntimeError
+    assert not destination_db.exists()
