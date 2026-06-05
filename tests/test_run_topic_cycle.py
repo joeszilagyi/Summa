@@ -329,6 +329,49 @@ def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> N
     assert "outer load failure" not in str(excinfo.value)
 
 
+def test_topic_cycle_unexpected_exception_writes_failed_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-unexpected-exception"
+
+    def boom(**_kwargs):
+        raise ValueError("boom from runtime stage")
+
+    monkeypatch.setattr(module, "resolve_runtime_stage", boom)
+
+    args = module.parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-unexpected-exception",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--mode",
+            "local",
+        ]
+    )
+
+    manifest, exit_code = module.run_topic_cycle(args)
+    persisted = load_manifest(run_dir)
+
+    assert exit_code == 1
+    assert manifest["status"] == "failed"
+    assert persisted["status"] == "failed"
+    assert manifest["error_summary"] == "boom from runtime stage"
+    assert persisted["error_summary"] == "boom from runtime stage"
+    assert manifest["failure_stage"] == "cycle_setup"
+    assert persisted["failure_stage"] == "cycle_setup"
+
+
 def test_topic_cycle_final_status_recomputes_after_evidence_spool(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
