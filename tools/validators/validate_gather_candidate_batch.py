@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -460,8 +461,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
         rendered_prompt_hash = prompt.get("rendered_prompt_hash")
         rendered_prompt_path = prompt.get("rendered_prompt_path")
         if isinstance(rendered_prompt, str):
-            import hashlib
-
             actual_hash = hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
             if rendered_prompt_hash != actual_hash:
                 add_error(
@@ -560,8 +559,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
         context_text = prior_state.get("context_text")
         context_hash = prior_state.get("context_hash")
         if isinstance(context_text, str):
-            import hashlib
-
             actual_hash = hashlib.sha256(context_text.encode("utf-8")).hexdigest()
             if context_hash != actual_hash:
                 add_error(
@@ -770,8 +767,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="rendered prompt wrapped block count must equal source_text_wrapping.blocks length",
                     path="$.source_text_wrapping.blocks",
                 )
-            import hashlib
-
             for index, actual in enumerate(parsed_blocks):
                 if index >= len(recorded_blocks):
                     break
