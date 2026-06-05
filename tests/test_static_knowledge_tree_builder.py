@@ -64,8 +64,14 @@ def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> N
 def test_build_static_knowledge_tree_restores_previous_output_on_publish_failure(tmp_path: Path) -> None:
     publish_root = tmp_path / "public-site"
     publish_root.mkdir()
-    original_body = "<html><body>previous</body></html>\n"
-    (publish_root / "index.html").write_text(original_body, encoding="utf-8")
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T175959Z",
+        built_at="2026-06-02T17:59:59Z",
+    )
+    original_body = (publish_root / "index.html").read_text(encoding="utf-8")
 
     def fail_after_backup() -> None:
         raise RuntimeError("simulated publish failure")
@@ -85,7 +91,50 @@ def test_build_static_knowledge_tree_restores_previous_output_on_publish_failure
         raise AssertionError("expected publish failure")
 
     assert (publish_root / "index.html").read_text(encoding="utf-8") == original_body
-    assert not (publish_root / "build-manifest.json").exists()
+    assert (publish_root / "build-manifest.json").is_file()
+
+
+def test_build_static_knowledge_tree_rejects_unrecognized_existing_publish_root(tmp_path: Path) -> None:
+    publish_root = tmp_path / "public-site"
+    publish_root.mkdir()
+    (publish_root / "notes.txt").write_text("not a knowledge-tree publish output", encoding="utf-8")
+
+    try:
+        builder.build_static_knowledge_tree(
+            export_fixture(),
+            presentation_fixture(),
+            publish_root,
+            build_id="build-20260602T175960Z",
+            built_at="2026-06-02T17:59:00Z",
+        )
+    except builder.StaticKnowledgeTreeBuildError as exc:
+        assert "publish root exists but is not a recognized static-tree output directory" in str(exc)
+    else:
+        raise AssertionError("expected publish root validation failure")
+
+
+def test_build_static_knowledge_tree_keeps_backup_after_publish(tmp_path: Path) -> None:
+    publish_root = tmp_path / "public-site"
+
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T175958Z",
+        built_at="2026-06-02T17:59:58Z",
+    )
+
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T175961Z",
+        built_at="2026-06-02T18:00:01Z",
+    )
+
+    backups = list(tmp_path.glob(f".{publish_root.name}.backup.*"))
+    assert backups, "expected a backup directory to remain after publish"
+    assert all((backup / "build-manifest.json").is_file() for backup in backups)
 
 
 def test_builder_cli_emits_json_payload(tmp_path: Path) -> None:
