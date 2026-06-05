@@ -12,6 +12,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
+VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
 PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_remote_url_manifest_adapter.py"
 ADAPTER = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "remote_url_manifest" / "source_adapter.json"
 
@@ -26,6 +27,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
         type(self).request_paths.append(self.path)
         if self.path == "/text":
             body = b"remote fixture text\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/plain":
+            body = b"remote fixture text"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -215,6 +223,67 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert extractions[0]["status"] == "completed"
         assert (output / extractions[0]["extracted_text_path"]).read_text(encoding="utf-8") == "remote fixture text\n"
         assert FixtureHandler.request_paths == ["/text"]
+    finally:
+        server.shutdown()
+
+
+def test_gate_pass_writes_exact_text_without_trailing_newline(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        body = b"remote fixture text"
+        url = f"{base_url}/plain"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-plain-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        extracted_path = output / extractions[0]["extracted_text_path"]
+        assert extracted_path.read_bytes() == body
+        assert extractions[0]["content_hash"] == hashlib.sha256(body).hexdigest()
+        assert extractions[0]["byte_count_out"] == len(body)
+
+        validator_proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(output)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+    finally:
+        server.shutdown()
+
+
+def test_validator_detects_mutated_extracted_text_artifact(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/plain"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-plain-mismatch-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        extracted_path = output / extractions[0]["extracted_text_path"]
+        extracted_path.write_text("remote fixture text\n", encoding="utf-8")
+
+        validator_proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(output)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert validator_proc.returncode == 1, validator_proc.stdout + validator_proc.stderr
+        assert "EXTRACTED_TEXT_HASH_MISMATCH" in validator_proc.stdout
+        assert "EXTRACTED_TEXT_BYTE_COUNT_MISMATCH" in validator_proc.stdout
     finally:
         server.shutdown()
 

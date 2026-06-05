@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -460,8 +461,10 @@ def validate_extraction_records(
     *,
     expected_run_id: str,
     capture_ids: set[str],
+    artifact_root: Path,
     errors: list[dict[str, Any]],
 ) -> None:
+    artifact_root_resolved = artifact_root.resolve()
     for index, record in enumerate(records):
         base = f"$[{index}]"
         if record.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
@@ -541,6 +544,60 @@ def validate_extraction_records(
             code="INVALID_CONTENT_HASH",
             message="content_hash must be null or a 64-character lowercase SHA-256 hex digest",
         )
+        if record.get("status") == "completed":
+            extracted_text_path = record.get("extracted_text_path")
+            if not isinstance(extracted_text_path, str) or not extracted_text_path.strip():
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_PATH_REQUIRED",
+                    message="completed extraction records must include extracted_text_path",
+                    path=f"{base}.extracted_text_path",
+                )
+                continue
+            artifact_path = (artifact_root_resolved / extracted_text_path).resolve()
+            try:
+                artifact_path.relative_to(artifact_root_resolved)
+            except ValueError:
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_PATH_INVALID",
+                    message="extracted_text_path escapes the artifact root",
+                    path=f"{base}.extracted_text_path",
+                )
+                continue
+            try:
+                artifact_bytes = artifact_path.read_bytes()
+            except FileNotFoundError:
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_ARTIFACT_MISSING",
+                    message=f"extracted text artifact does not exist: {artifact_path}",
+                    path=f"{base}.extracted_text_path",
+                )
+                continue
+            except OSError as exc:
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_ARTIFACT_UNREADABLE",
+                    message=f"extracted text artifact could not be read: {exc}",
+                    path=f"{base}.extracted_text_path",
+                )
+                continue
+            actual_hash = hashlib.sha256(artifact_bytes).hexdigest()
+            if record.get("content_hash") != actual_hash:
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_HASH_MISMATCH",
+                    message="extracted text artifact hash does not match content_hash",
+                    path=f"{base}.content_hash",
+                )
+            if record.get("byte_count_out") != len(artifact_bytes):
+                add_error(
+                    errors,
+                    code="EXTRACTED_TEXT_BYTE_COUNT_MISMATCH",
+                    message="extracted text artifact byte_count does not match byte_count_out",
+                    path=f"{base}.byte_count_out",
+                )
 
 
 def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any], int]:
@@ -549,7 +606,7 @@ def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any],
     errors: list[dict[str, Any]] = []
 
     try:
-        execution_record, capture_events, extraction_records, _paths = load_execution_artifacts(target)
+        execution_record, capture_events, extraction_records, paths = load_execution_artifacts(target)
     except FileNotFoundError as exc:
         add_error(errors, code="INPUT_NOT_FOUND", message=str(exc))
         return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_INPUT_UNAVAILABLE
@@ -584,6 +641,7 @@ def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any],
         extraction_records,
         expected_run_id=expected_run_id,
         capture_ids=capture_ids,
+        artifact_root=paths["run_dir"],
         errors=errors,
     )
 

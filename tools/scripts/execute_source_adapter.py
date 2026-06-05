@@ -804,9 +804,7 @@ def execute_local_source(
             extracted_text_path = None
             if extracted_text is not None:
                 extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                text_artifacts[extracted_text_path] = (
-                    extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-                )
+                text_artifacts[extracted_text_path] = extracted_text
             else:
                 failed = True
             extraction_records.append(
@@ -1125,9 +1123,7 @@ def execute_local_git_repo(
         extracted_text_path = None
         if extracted_text is not None:
             extracted_text_path = f"extracted-text/{extraction_id}.txt"
-            text_artifacts[extracted_text_path] = (
-                extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-            )
+            text_artifacts[extracted_text_path] = extracted_text
         else:
             failed = True
         extraction_records.append(
@@ -1538,9 +1534,7 @@ def execute_remote_fetches(
                 extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
                 if extracted_text is not None:
                     extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                    text_artifacts[extracted_text_path] = (
-                        extracted_text if extracted_text.endswith("\n") else extracted_text + "\n"
-                    )
+                    text_artifacts[extracted_text_path] = extracted_text
                 else:
                     failed = True
         extraction_records.append(
