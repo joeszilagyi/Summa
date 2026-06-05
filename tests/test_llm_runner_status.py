@@ -77,7 +77,10 @@ def _run_llm_runner_with_fake_engine(
     *,
     engine: str,
     prompt_text: str,
-) -> tuple[list[str], str]:
+    exit_code: int = 0,
+    use_run_to_file: bool = False,
+    output_file: Path | None = None,
+) -> tuple[list[str], str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     args_file = tmp_path / f"{engine}.args"
@@ -90,6 +93,8 @@ def _run_llm_runner_with_fake_engine(
             set -euo pipefail
             printf '%s\n' "$@" > "$ARGS_FILE"
             cat > "$STDIN_FILE"
+            printf 'engine-output\n'
+            exit "$EXIT_CODE"
             """
         ),
         encoding="utf-8",
@@ -100,8 +105,14 @@ def _run_llm_runner_with_fake_engine(
     prompt_file.write_text(prompt_text, encoding="utf-8")
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    stdout_file = tmp_path / "stdout.txt"
-    stderr_file = tmp_path / "stderr.txt"
+    output_path = output_file or (tmp_path / "output.txt")
+    output_path.write_text("existing output\n", encoding="utf-8")
+    if use_run_to_file:
+        runner_call = (
+            f'llm_runner_run_to_file "{work_dir}" "$prompt_text" "{output_path}" "phase" "pytest"'
+        )
+    else:
+        runner_call = f'llm_runner_run_quiet "{work_dir}" "$prompt_text" "phase" "pytest"'
     script = textwrap.dedent(
         f"""\
         set -euo pipefail
@@ -113,7 +124,7 @@ def _run_llm_runner_with_fake_engine(
         llm_runner_set_engine "{engine}"
         llm_runner_init
         prompt_text="$(<"{prompt_file}")"
-        llm_runner_run_quiet "{work_dir}" "$prompt_text" "phase" "pytest"
+        {runner_call}
         """
     )
     proc = subprocess.run(
@@ -126,17 +137,24 @@ def _run_llm_runner_with_fake_engine(
             **os.environ,
             "ARGS_FILE": str(args_file),
             "STDIN_FILE": str(stdin_file),
+            "EXIT_CODE": str(exit_code),
         },
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    if exit_code == 0:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    elif use_run_to_file:
+        assert "LLM (" in proc.stderr, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == exit_code, proc.stdout + proc.stderr
     args = args_file.read_text(encoding="utf-8").splitlines()
     stdin = stdin_file.read_text(encoding="utf-8")
-    return args, stdin
+    output = output_path.read_text(encoding="utf-8")
+    return args, stdin, output
 
 
 def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> None:
     prompt_text = "x" * 200_000
-    args, stdin = _run_llm_runner_with_fake_engine(
+    args, stdin, _output = _run_llm_runner_with_fake_engine(
         tmp_path,
         engine="codex",
         prompt_text=prompt_text,
@@ -149,7 +167,7 @@ def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> Non
 
 def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> None:
     prompt_text = "y" * 200_000
-    args, stdin = _run_llm_runner_with_fake_engine(
+    args, stdin, _output = _run_llm_runner_with_fake_engine(
         tmp_path,
         engine="claude",
         prompt_text=prompt_text,
@@ -159,3 +177,37 @@ def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> No
     assert "--dangerously-skip-permissions" in args
     assert args[-2:] == ["--effort", "high"]
     assert stdin == prompt_text
+
+
+def test_llm_runner_run_to_file_preserves_existing_output_on_failure(tmp_path: Path) -> None:
+    prompt_text = "z" * 10_000
+    output_file = tmp_path / "result.txt"
+    args, stdin, output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+        exit_code=2,
+        use_run_to_file=True,
+        output_file=output_file,
+    )
+
+    assert args[0] == "exec"
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+    assert output == "existing output\n"
+
+
+def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None:
+    prompt_text = "q" * 10_000
+    output_file = tmp_path / "result.txt"
+    args, stdin, output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="claude",
+        prompt_text=prompt_text,
+        use_run_to_file=True,
+        output_file=output_file,
+    )
+
+    assert args[0] == "-p"
+    assert stdin == prompt_text
+    assert output == "engine-output\n"
