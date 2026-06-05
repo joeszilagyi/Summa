@@ -389,11 +389,13 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
         errors.append("considered_candidates must be a non-empty array")
         considered_ids: set[str] = set()
     else:
-        considered_ids = {
-            item.get("candidate_id")
-            for item in considered
-            if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
-        }
+        considered_ids = set()
+        for item in considered:
+            if not isinstance(item, Mapping):
+                continue
+            candidate_id = item.get("candidate_id")
+            if isinstance(candidate_id, str) and candidate_id:
+                considered_ids.add(candidate_id)
         for index, item in enumerate(considered):
             if not isinstance(item, Mapping):
                 errors.append(f"considered_candidates[{index}] must be an object")
