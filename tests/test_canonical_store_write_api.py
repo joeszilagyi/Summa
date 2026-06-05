@@ -350,3 +350,65 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
     assert second.row_id == first.row_id
     assert row["provenance_event_ref"] == provenance.event_key
     assert row["citation_hint"] == "Fixture fallback source access updated"
+
+
+def test_source_access_lead_identity_includes_workspace_and_locator(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-005",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-lead-identity",
+        )
+        first = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            source_lead_id="lead-shared",
+            original_locator="https://example.test/source-access/one",
+            workspace_id="workspace-one",
+            citation_hint="Fixture source access one",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            source_lead_id="lead-shared",
+            original_locator="https://example.test/source-access/two",
+            workspace_id="workspace-two",
+            citation_hint="Fixture source access two",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        rows = conn.execute(
+            """
+            SELECT source_access_id, source_lead_id, original_locator, workspace_id, citation_hint
+            FROM source_access
+            WHERE source_lead_id=?
+            ORDER BY source_access_id ASC
+            """,
+            ("lead-shared",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is True
+    assert second.row_id != first.row_id
+    assert [int(row["source_access_id"]) for row in rows] == [first.row_id, second.row_id]
+    assert [str(row["original_locator"]) for row in rows] == [
+        "https://example.test/source-access/one",
+        "https://example.test/source-access/two",
+    ]
+    assert [str(row["workspace_id"]) for row in rows] == ["workspace-one", "workspace-two"]
+    assert [str(row["citation_hint"]) for row in rows] == [
+        "Fixture source access one",
+        "Fixture source access two",
+    ]
