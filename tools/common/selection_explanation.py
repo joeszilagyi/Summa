@@ -191,12 +191,14 @@ def selected_feedback_candidate(
     selected_object_ref = next_action.get("selected_object_ref")
     if selected_object_ref is not None:
         for item in considered_candidates:
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+            raw_metadata = item.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
             if metadata.get("object_ref") == selected_object_ref:
                 return dict(item)
     selected_facet = next_action.get("selected_facet")
     for item in considered_candidates:
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+        raw_metadata = item.get("metadata")
+        metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
         if item.get("candidate_type") == "facet" and metadata.get("facet") == selected_facet:
             return dict(item)
     raise SelectionExplanationError("feedback next action did not match a considered candidate")
