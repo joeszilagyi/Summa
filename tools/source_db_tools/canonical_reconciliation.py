@@ -37,6 +37,9 @@ QUANTITY_CONFLICT_RULE = "structured_quantity_conflict"
 TAUGHT_BY_IMPOSSIBLE_RULE = "structured_taught_by_impossible_life_overlap"
 RELATIONAL_TEMPORAL_RULE = "relational_temporal_lifespan_overlap"
 RELATIONAL_EVENT_YEAR_RULE = "relational_temporal_event_year_outside_lifespan"
+CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES = tuple(
+    sorted(canonical_store.PRIOR_STATE_EXCLUDED_REVIEW_STATES)
+)
 STRUCTURED_CLAIM_TYPES = {
     "birth_year",
     "death_year",
@@ -1044,26 +1047,34 @@ def _claims_for_ref_and_type(
     about_object_ref: str,
     claim_type: str,
     workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
 ) -> list[sqlite3.Row]:
+    exclusion_clause = ""
+    params: list[Any] = [about_object_ref, claim_type]
+    if excluded_review_states:
+        placeholders = ", ".join("?" for _ in excluded_review_states)
+        exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({placeholders})"
+        params.extend([canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE, *excluded_review_states])
     if workspace_id is None:
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type=?
+            WHERE about_object_ref=? AND claim_type=?{exclusion_clause}
             ORDER BY source_claim_id
             """,
-            (about_object_ref, claim_type),
+            tuple(params),
         ).fetchall()
     else:
+        params.append(workspace_id)
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type=? AND workspace_id=?
+            WHERE about_object_ref=? AND claim_type=?{exclusion_clause} AND workspace_id=?
             ORDER BY source_claim_id
             """,
-            (about_object_ref, claim_type, workspace_id),
+            tuple(params),
         ).fetchall()
     return list(rows)
 
@@ -1074,11 +1085,18 @@ def _claims_for_ref_and_types(
     about_object_ref: str,
     claim_types: set[str],
     workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
 ) -> list[sqlite3.Row]:
     if not claim_types:
         return []
     placeholders = ", ".join("?" for _ in claim_types)
     params: list[Any] = [about_object_ref, *sorted(claim_types)]
+    exclusion_clause = ""
+    if excluded_review_states:
+        exclusion_placeholders = ", ".join("?" for _ in excluded_review_states)
+        exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({exclusion_placeholders})"
+        params.append(canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE)
+        params.extend(excluded_review_states)
     workspace_clause = ""
     if workspace_id is not None:
         workspace_clause = " AND workspace_id=?"
@@ -1088,7 +1106,7 @@ def _claims_for_ref_and_types(
             f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type IN ({placeholders}){workspace_clause}
+            WHERE about_object_ref=? AND claim_type IN ({placeholders}){exclusion_clause}{workspace_clause}
             ORDER BY source_claim_id
             """,
             tuple(params),

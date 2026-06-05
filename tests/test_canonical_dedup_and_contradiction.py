@@ -1169,6 +1169,98 @@ def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -
     assert contradiction_count == 1
 
 
+@pytest.mark.parametrize("stale_state", ["rejected", "deprecated", "demoted"])
+def test_excluded_claim_states_do_not_drive_structured_contradiction(
+    tmp_path: Path,
+    stale_state: str,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            stale_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="baseline-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-stale-{stale_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture stale claim setup",
+                provenance_event_key_v1=f"prov:stale:{stale_state}",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=stale_provenance.event_key,
+                source_claim_key_v1=f"claim:{stale_state}:quantity.1",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 10,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                review_state=stale_state,
+                confidence_score=0.96,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            active_provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="active-state",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id=f"structured-contradiction-active-{stale_state}",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture active claim setup",
+                provenance_event_key_v1=f"prov:active:{stale_state}",
+            )
+            active_claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=active_provenance.event_key,
+                source_claim_key_v1=f"claim:active:{stale_state}:quantity.2",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 12,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                confidence_score=0.95,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            contradictions = canonical_reconciliation.detect_structured_contradictions_for_claim(
+                conn,
+                source_claim_id=active_claim.row_id,
+                provenance_event_ref=active_provenance.event_key,
+                changed_at=FIXED_TIMESTAMP,
+            )
+            contradiction_count = conn.execute(
+                "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+            ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert contradictions == []
+    assert contradiction_count == 0
+
+
 def test_reconciliation_and_contradictions_are_idempotent_on_reingest(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(
