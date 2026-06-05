@@ -1744,3 +1744,26 @@ def test_invalid_structured_year_rolls_back_ingest(tmp_path: Path) -> None:
         conn.close()
 
     assert all(count == 0 for count in counts.values())
+
+
+def test_normalize_year_rejects_nonpositive_integer_values() -> None:
+    with pytest.raises(
+        canonical_reconciliation.CanonicalReconciliationError,
+        match="positive integer",
+    ):
+        canonical_reconciliation.normalize_year(0)
+    with pytest.raises(
+        canonical_reconciliation.CanonicalReconciliationError,
+        match="positive integer",
+    ):
+        canonical_reconciliation.normalize_year(-44)
+    with pytest.raises(
+        canonical_reconciliation.CanonicalReconciliationError,
+        match="positive integer",
+    ):
+        canonical_reconciliation.normalize_year("0")
+    with pytest.raises(
+        canonical_reconciliation.CanonicalReconciliationError,
+        match="positive integer",
+    ):
+        canonical_reconciliation.normalize_year("-44")

@@ -179,16 +179,24 @@ def normalize_year(value: Any) -> int | None:
     if isinstance(value, bool):
         raise CanonicalReconciliationError("year values must be numeric")
     if isinstance(value, int):
+        if value < 1:
+            raise CanonicalReconciliationError("year value must be a positive integer")
         return value
     text = str(value).strip()
     if not text:
         return None
     iso_match = re.fullmatch(r"(-?\d{1,6})(?:-\d{2}-\d{2})?", text)
     if iso_match is not None:
-        return int(iso_match.group(1))
+        year = int(iso_match.group(1))
+        if year < 1:
+            raise CanonicalReconciliationError("year value must be a positive integer")
+        return year
     if not re.fullmatch(r"-?\d{1,6}", text):
         raise CanonicalReconciliationError(f"year value must be an integer: {value!r}")
-    return int(text)
+    year = int(text)
+    if year < 1:
+        raise CanonicalReconciliationError("year value must be a positive integer")
+    return year
 
 
 def normalize_quantity(value: Any) -> float | int | None:
