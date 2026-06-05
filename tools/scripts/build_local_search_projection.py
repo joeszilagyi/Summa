@@ -26,8 +26,8 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json
-from tools.common.local_search_contract import (
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.local_search_contract import (  # noqa: E402
     PROJECTION_SCHEMA_VERSION,
     PUBLIC_SEARCHABLE_PUBLICATION_STATES,
     VISIBILITY_PROFILES,
@@ -35,9 +35,9 @@ from tools.common.local_search_contract import (
     is_searchable_review_state,
     normalize_publication_state,
 )
-from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS
-from tools.validators.validate_correction_ledger import validate_correction_ledger
-from tools.validators.validate_local_search_projection import validate_local_search_projection_payload
+from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS  # noqa: E402
+from tools.validators.validate_correction_ledger import validate_correction_ledger  # noqa: E402
+from tools.validators.validate_local_search_projection import validate_local_search_projection_payload  # noqa: E402
 
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"

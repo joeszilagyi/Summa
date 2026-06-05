@@ -24,9 +24,9 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json
-from tools.common.leak_scanner import scan_directory
-from tools.validators.validate_static_knowledge_tree_output import (
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.leak_scanner import scan_directory  # noqa: E402
+from tools.validators.validate_static_knowledge_tree_output import (  # noqa: E402
     EXIT_PASS as EXIT_STATIC_OUTPUT_PASS,
     validate_static_knowledge_tree_output,
 )

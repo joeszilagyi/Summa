@@ -23,8 +23,8 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json
-from tools.validators.validate_public_safekeeping_manifest import (
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.validators.validate_public_safekeeping_manifest import (  # noqa: E402
     EXIT_PASS as EXIT_SAFEKEEPING_PASS,
     validate_public_safekeeping_manifest,
 )

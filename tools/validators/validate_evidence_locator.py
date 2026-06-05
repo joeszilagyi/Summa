@@ -35,15 +35,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.evidence_locator_contract import (
+from tools.common.evidence_locator_contract import (  # noqa: E402
     EVIDENCE_LOCATOR_ID_PREFIX,
     HIGHLIGHT_KINDS,
     REDACTION_POSTURES,
     SCHEMA_VERSION,
     SPAN_KINDS,
 )
-from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS
-from tools.source_db_tools.rights_retention import QUOTE_ELIGIBILITY_VALUES, rights_postures
+from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS  # noqa: E402
+from tools.source_db_tools.rights_retention import QUOTE_ELIGIBILITY_VALUES, rights_postures  # noqa: E402
 
 
 VALIDATOR_NAME = "evidence_locator"

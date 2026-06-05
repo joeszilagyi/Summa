@@ -23,15 +23,15 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json
-from tools.common.local_search_contract import (
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.local_search_contract import (  # noqa: E402
     RESULTS_SCHEMA_VERSION,
     RESULT_CLASS_BY_OBJECT_TYPE,
     SEARCH_SCOPE_TO_OBJECT_TYPES,
 )
-from tools.scripts.build_local_search_projection import looks_like_private_path
-from tools.validators.validate_local_search_results import EXIT_PASS as EXIT_VALIDATOR_PASS
-from tools.validators.validate_local_search_results import validate_local_search_results
+from tools.scripts.build_local_search_projection import looks_like_private_path  # noqa: E402
+from tools.validators.validate_local_search_results import EXIT_PASS as EXIT_VALIDATOR_PASS  # noqa: E402
+from tools.validators.validate_local_search_results import validate_local_search_results  # noqa: E402
 
 
 SCRIPT_PATH = "tools/scripts/query_local_search.py"

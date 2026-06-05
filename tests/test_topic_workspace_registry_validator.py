@@ -9,7 +9,7 @@ VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import validate_topic_workspace_registry
+import validate_topic_workspace_registry  # noqa: E402
 
 
 def write_manifest(workspace_root: Path, *, subject_id: str) -> Path:

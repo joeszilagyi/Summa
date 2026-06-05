@@ -27,17 +27,17 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json, atomic_write_text
-from tools.validators.validate_knowledge_tree_build_manifest import (
+from tools.common.atomic_write import atomic_write_json, atomic_write_text  # noqa: E402
+from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
     EXIT_PASS as EXIT_BUILD_MANIFEST_PASS,
     hash_file,
     validate_build_manifest,
 )
-from tools.validators.validate_knowledge_tree_export import (
+from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     EXIT_PASS as EXIT_EXPORT_PASS,
     validate_knowledge_tree_export,
 )
-from tools.validators.validate_public_knowledge_tree_presentation import (
+from tools.validators.validate_public_knowledge_tree_presentation import (  # noqa: E402
     EXIT_PASS as EXIT_PRESENTATION_PASS,
     validate_public_knowledge_tree_presentation,
 )

@@ -23,9 +23,9 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-import identifier_normalization
-import canonical_store
-import source_types
+import identifier_normalization  # noqa: E402
+import canonical_store  # noqa: E402
+import source_types  # noqa: E402
 
 REPORT_SCHEMA_VERSION = "legacy-backfill-report.v1"
 SCRIPT_PATH = "tools/source_db_tools/legacy_backfill.py"

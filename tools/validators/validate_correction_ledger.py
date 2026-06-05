@@ -40,7 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.correction_ledger_contract import (
+from tools.common.correction_ledger_contract import (  # noqa: E402
     CORRECTION_ACTIONS,
     EVIDENCE_LOCATOR_REF_PREFIX,
     FIELD_REVIEW_ENTRY_REF_PREFIX,

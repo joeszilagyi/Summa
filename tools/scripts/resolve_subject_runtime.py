@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.llm_source_text_wrapper import default_template_id
+from tools.common.llm_source_text_wrapper import default_template_id  # noqa: E402
 
 PHASE_KEYS = ("01a", "01r")
 SUBJECT_MANIFEST_SCHEMA_VERSION = "subject-manifest.v1"

@@ -17,7 +17,7 @@ if str(TOOLS_COMMON) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import migration_ledger
+import migration_ledger  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("migration_ledger_validator_for_tests", VALIDATORS_DIR / "validate_migration_ledger.py")
 assert spec is not None

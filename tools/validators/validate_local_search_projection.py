@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.local_search_contract import (
+from tools.common.local_search_contract import (  # noqa: E402
     INDEXED_FIELD_POLICIES,
     LINEAGE_STATES,
     PROJECTION_SCHEMA_VERSION,
@@ -48,7 +48,7 @@ from tools.common.local_search_contract import (
     VISIBILITY_PROFILES,
     is_public_profile,
 )
-from tools.common.search_leak_policy import (
+from tools.common.search_leak_policy import (  # noqa: E402
     contains_private_path,
     contains_secret_marker,
     is_private_note_field,

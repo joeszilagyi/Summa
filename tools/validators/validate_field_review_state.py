@@ -26,14 +26,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.field_review_state_contract import (
+from tools.common.field_review_state_contract import (  # noqa: E402
     EVIDENCE_LOCATOR_REF_PREFIX,
     EVIDENCE_TYPES,
     FIELD_REVIEW_STATES,
     RECORD_REVIEW_STATES,
     SCHEMA_VERSION,
 )
-from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS
+from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS  # noqa: E402
 
 
 VALIDATOR_NAME = "field_review_state"

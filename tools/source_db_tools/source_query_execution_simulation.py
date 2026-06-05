@@ -21,7 +21,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-import source_query_plan
+import source_query_plan  # noqa: E402
 
 
 REPORT_SCHEMA_VERSION = "source-query-execution-simulation-report.v1"

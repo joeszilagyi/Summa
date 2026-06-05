@@ -24,8 +24,8 @@ if str(CURRENT_DIR) not in sys.path:
     # Allow direct script execution while importing sibling SQLite tool modules.
     sys.path.insert(0, str(CURRENT_DIR))
 
-import export_bibliography
-import schema_profile_validation
+import export_bibliography  # noqa: E402
+import schema_profile_validation  # noqa: E402
 
 
 def positive_int(value: str) -> int:
