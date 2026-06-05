@@ -150,14 +150,14 @@ llm_runner_init() {
 _llm_runner_exec_codex() {
   local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
-    codex exec "${_LLM_RUNNER_CODEX_ARGS[@]}" "$prompt_text" \
+    printf '%s' "$prompt_text" | codex exec "${_LLM_RUNNER_CODEX_ARGS[@]}" - \
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
 _llm_runner_exec_claude() {
   local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
-    claude -p "$prompt_text" \
+    printf '%s' "$prompt_text" | claude -p \
       --dangerously-skip-permissions \
       --model "$LLM_RUNNER_CLAUDE_MODEL" \
       --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
