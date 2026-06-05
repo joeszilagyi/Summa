@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from tools.common.atomic_write import atomic_write_json, atomic_write_jsonl
+from tools.common.atomic_write import _fsync_directory, atomic_write_json, atomic_write_jsonl
 from tools.validators.common import write_json
 
 
@@ -33,3 +33,25 @@ def test_validator_write_json_rejects_nonstandard_json_constants(tmp_path) -> No
         write_json(str(output), {"value": -math.inf})
 
     assert not output.exists()
+
+
+def test_fsync_directory_is_best_effort_on_fsync_failure(monkeypatch, tmp_path) -> None:
+    opened_fds: list[int] = []
+
+    def fake_open(_path, _flags):
+        opened_fds.append(11)
+        return 11
+
+    def fake_fsync(_fd):
+        raise OSError("simulated fsync failure")
+
+    def fake_close(fd):
+        opened_fds.append(fd)
+
+    monkeypatch.setattr("tools.common.atomic_write.os.open", fake_open)
+    monkeypatch.setattr("tools.common.atomic_write.os.fsync", fake_fsync)
+    monkeypatch.setattr("tools.common.atomic_write.os.close", fake_close)
+
+    _fsync_directory(tmp_path)
+
+    assert opened_fds == [11, 11]
