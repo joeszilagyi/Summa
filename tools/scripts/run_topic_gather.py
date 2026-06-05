@@ -595,11 +595,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def parse_stamp_footer(text: str) -> dict[str, str]:
-    marker = "\n---\nRUN_META_VERSION: "
-    start = text.rfind(marker)
+    footer_delimiter = "\n---\n"
+    footer_prefix = f"{footer_delimiter}RUN_META_VERSION: "
+    start = text.rfind(footer_prefix)
     if start < 0:
         raise GatherDriverError("stamped engine output is missing the llm_runner footer")
-    footer_text = text[start + 5 :]
+    footer_text = text[start + len(footer_delimiter) :]
     values: dict[str, str] = {}
     for line in footer_text.splitlines():
         if not line.strip():
