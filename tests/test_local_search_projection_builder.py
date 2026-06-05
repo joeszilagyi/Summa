@@ -276,3 +276,118 @@ def test_public_projection_builder_blocks_secret_like_leaks(tmp_path: Path) -> N
     combined = result.stdout + result.stderr
     assert "public search leak validation failed" in combined
     assert "SECRET_MARKER_EXPOSED" in combined
+
+
+def test_builder_refuses_same_source_and_index_path(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(db),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "index output path must differ from source database path" in combined
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM work").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert int(row[0]) == 4
+
+
+def test_builder_refuses_existing_non_projection_index_db(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "not_a_projection.sqlite"
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("CREATE TABLE keep_me (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO keep_me(value) VALUES ('sentinel')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "refusing to overwrite existing SQLite file without projection marker" in combined
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute("SELECT value FROM keep_me").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] == "sentinel"
+
+
+def test_builder_replaces_existing_projection_index(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    output_json = tmp_path / "local_projection.json"
+    index_db = tmp_path / "local_projection.sqlite"
+
+    first = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("UPDATE work SET title='Updated Public Work' WHERE work_id=1")
+        conn.commit()
+    finally:
+        conn.close()
+
+    second = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert second.returncode == 0, second.stdout + second.stderr
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT title
+            FROM search_projection
+            WHERE object_ref='work:1'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] == "Updated Public Work"

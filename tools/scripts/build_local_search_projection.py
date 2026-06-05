@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -240,6 +241,93 @@ def database_fingerprint(db_path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def has_projection_index_marker(conn: sqlite3.Connection) -> bool:
+    if not table_exists(conn, "projection_metadata"):
+        return False
+    if not table_exists(conn, "search_projection"):
+        return False
+    if not table_exists(conn, "search_projection_fts"):
+        return False
+    row = conn.execute("SELECT 1 FROM projection_metadata LIMIT 1").fetchone()
+    return row is not None
+
+
+def ensure_safe_index_target(source_db_path: Path, index_path: Path) -> None:
+    source_resolved = source_db_path.resolve()
+    index_resolved = index_path.resolve()
+    if source_resolved == index_resolved:
+        raise SearchProjectionError(
+            f"index output path must differ from source database path: {index_resolved}"
+        )
+    if not index_resolved.exists():
+        return
+    if not index_resolved.is_file():
+        raise SearchProjectionError(f"index output path is not a file: {index_resolved}")
+    try:
+        conn = connect_read_only(index_resolved)
+        try:
+            if not has_projection_index_marker(conn):
+                raise SearchProjectionError(
+                    f"refusing to overwrite existing SQLite file without projection marker: {index_resolved}"
+                )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise SearchProjectionError(
+            f"refusing to overwrite existing SQLite file without projection marker: {index_resolved}"
+        ) from exc
+
+
+def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) -> None:
+    try:
+        conn = connect_read_only(index_path)
+        try:
+            if not has_projection_index_marker(conn):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing marker"
+                )
+            metadata = conn.execute(
+                """
+                SELECT projection_schema_version, profile, source_database_fingerprint
+                FROM projection_metadata
+                LIMIT 1
+                """
+            ).fetchone()
+            if metadata is None:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing metadata"
+                )
+            if str(metadata["projection_schema_version"]) != str(payload["schema_version"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: schema version mismatch"
+                )
+            if str(metadata["profile"]) != str(payload["profile"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: profile mismatch"
+                )
+            if str(metadata["source_database_fingerprint"]) != str(
+                payload["source"]["database_fingerprint"]
+            ):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: source fingerprint mismatch"
+                )
+            projection_count = conn.execute("SELECT COUNT(*) FROM search_projection").fetchone()
+            fts_count = conn.execute("SELECT COUNT(*) FROM search_projection_fts").fetchone()
+            expected_count = int(payload["counts"]["indexed_rows"])
+            if projection_count is None or int(projection_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection row count mismatch"
+                )
+            if fts_count is None or int(fts_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection_fts row count mismatch"
+                )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise SearchProjectionError(f"projection index validation failed for {index_path}") from exc
+
+
 def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
     profiles = ["local"]
     if public_blocker or lineage_state == "superseded":
@@ -461,10 +549,17 @@ def render_text(payload: dict[str, Any]) -> str:
 
 def write_index(index_path: Path, payload: dict[str, Any]) -> None:
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    if index_path.exists():
-        index_path.unlink()
-    conn = sqlite3.connect(index_path)
+    temp_path: Path | None = None
+    conn: sqlite3.Connection | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=index_path.parent,
+            prefix=f".{index_path.name}.",
+            suffix=".tmp",
+        ) as handle:
+            temp_path = Path(handle.name)
+        conn = sqlite3.connect(temp_path)
         conn.executescript(
             """
             PRAGMA journal_mode=DELETE;
@@ -576,13 +671,24 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 ),
             )
         conn.commit()
-    finally:
         conn.close()
+        conn = None
+        validate_projection_index_file(temp_path, payload)
+        temp_path.replace(index_path)
+        temp_path = None
+    finally:
+        if conn is not None:
+            conn.close()
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def main() -> int:
     args = parse_args()
     try:
+        source_db_path = resolve_existing_file(args.db)
+        index_path = resolve_path(args.index_db)
+        ensure_safe_index_target(source_db_path, index_path)
         payload = build_projection_payload(args)
         if is_public_profile(args.profile):
             validation_errors = validate_local_search_projection_payload(payload)
@@ -592,7 +698,7 @@ def main() -> int:
                     for error in validation_errors[:5]
                 )
                 raise SearchProjectionError(f"public search leak validation failed: {summary}")
-        write_index(resolve_path(args.index_db), payload)
+        write_index(index_path, payload)
         if args.output_json:
             atomic_write_json(resolve_path(args.output_json), payload)
     except (SearchProjectionError, sqlite3.DatabaseError, OSError, ValueError) as exc:
