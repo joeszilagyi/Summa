@@ -103,6 +103,31 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def load_events(ledger_path: Path) -> list[dict[str, Any]]:
+    raw_text = ledger_path.read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
+    has_trailing_newline = raw_text.endswith("\n")
+    events: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_number == len(lines) and not has_trailing_newline:
+                break
+            raise RuntimeLedgerError(
+                f"runtime ledger {ledger_path} contains invalid JSON on line {line_number}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeLedgerError(
+                f"runtime ledger {ledger_path} contains a non-object record on line {line_number}"
+            )
+        events.append(payload)
+    return events
+
+
 def parse_json_object(raw: str | None, label: str) -> Any:
     if raw is None:
         return None

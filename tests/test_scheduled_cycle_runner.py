@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.common import scheduler_failure_reconciliation
 from tools.scripts import run_scheduled_topic_cycles as scheduled_runner
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -247,6 +248,35 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     assert payload["deferred_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "deferred"
     assert "max_attempts" in payload["workspace_results"][0]["failure_reason"]
+
+
+def test_read_runtime_ledger_ignores_truncated_final_line(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledgers" / "workspace.runtime-ledger.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema_version": "runtime-ledger.v1",
+                        "event_id": "event-1",
+                        "run_id": "run-1",
+                        "workspace_id": "workspace",
+                        "event_type": "command_end",
+                        "occurred_at": "2026-06-03T12:00:00Z",
+                        "status": "ok",
+                    },
+                    sort_keys=True,
+                ),
+                "{\"schema_version\": \"runtime-ledger.v1\", \"event_id\": \"event-2\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    events = scheduler_failure_reconciliation.read_runtime_ledger(ledger, workspace_id="workspace")
+
+    assert [event["event_id"] for event in events] == ["event-1"]
 
 
 def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Path) -> None:

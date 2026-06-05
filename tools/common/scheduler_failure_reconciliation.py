@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from tools.common.runtime_ledger import RuntimeLedgerError, load_events as load_runtime_events
 
 
 FAILURE_EVENT_TYPE = "command_failure"
@@ -46,20 +47,13 @@ def read_runtime_ledger(path: Path, *, workspace_id: str) -> list[dict[str, Any]
     if not path.is_file():
         raise SchedulerFailureReconciliationError(f"runtime ledger path is not a file: {path}")
 
+    try:
+        loaded_events = load_runtime_events(path)
+    except (OSError, RuntimeLedgerError) as exc:
+        raise SchedulerFailureReconciliationError(f"could not read runtime ledger {path}") from exc
+
     events: list[dict[str, Any]] = []
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        try:
-            payload = json.loads(raw_line)
-        except json.JSONDecodeError as exc:
-            raise SchedulerFailureReconciliationError(
-                f"runtime ledger {path} contains invalid JSON on line {line_number}"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise SchedulerFailureReconciliationError(
-                f"runtime ledger {path} contains a non-object record on line {line_number}"
-            )
+    for line_number, payload in enumerate(loaded_events, start=1):
         if payload.get("workspace_id") != workspace_id:
             continue
         occurred_at = payload.get("occurred_at")
