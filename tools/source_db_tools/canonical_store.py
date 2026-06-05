@@ -2213,18 +2213,14 @@ def record_review_state_history(
     )
     existing = conn.execute(
         """
-        SELECT review_state_history_key_v1
+        SELECT rowid, review_state_history_key_v1
         FROM review_state_history
         WHERE review_state_history_key_v1=?
         """,
         (key,),
     ).fetchone()
     if existing is not None:
-        row = conn.execute(
-            "SELECT rowid FROM review_state_history WHERE review_state_history_key_v1=?",
-            (key,),
-        ).fetchone()
-        return CanonicalWriteResult("review_state_history", int(row["rowid"]), key, False)
+        return CanonicalWriteResult("review_state_history", int(existing["rowid"]), key, False)
     cursor = conn.execute(
         """
         INSERT INTO review_state_history (
