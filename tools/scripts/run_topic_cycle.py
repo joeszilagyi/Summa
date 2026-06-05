@@ -54,6 +54,10 @@ REMOTE_FETCH_ENABLED = False
 class TopicCycleError(RuntimeError):
     """Raised when a topic cycle cannot continue safely."""
 
+    def __init__(self, message: str, *, stage_name: str | None = None) -> None:
+        super().__init__(message)
+        self.stage_name = stage_name
+
 
 @dataclass
 class StageRecord:
@@ -410,7 +414,7 @@ def fail_stage(stage: StageRecord, message: str) -> NoReturn:
     stage.status = "failed"
     stage.error_message = message
     stage.ended_at = utc_now()
-    raise TopicCycleError(f"{stage.name}: {message}")
+    raise TopicCycleError(f"{stage.name}: {message}", stage_name=stage.name)
 
 
 def finish_stage(stage: StageRecord, *, status: str = "passed") -> None:
@@ -1477,10 +1481,14 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return_code = 0
     except TopicCycleError as exc:
         manifest["status"] = "failed"
-        last_failed = next(
-            (stage for stage in reversed(manifest["stages"]) if stage["status"] == "failed"), None
-        )
-        manifest["failure_stage"] = last_failed["name"] if last_failed else "cycle_setup"
+        if exc.stage_name:
+            manifest["failure_stage"] = exc.stage_name
+        else:
+            last_failed = next(
+                (stage for stage in reversed(manifest["stages"]) if stage["status"] == "failed"),
+                None,
+            )
+            manifest["failure_stage"] = last_failed["name"] if last_failed else "cycle_setup"
         manifest["error_summary"] = str(exc)
         return_code = 1
     finally:
