@@ -374,6 +374,7 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert captures[0]["network_access_attempted"] is True
         assert captures[0]["content_hash"] == hashlib.sha256(b"remote fixture text\n").hexdigest()
         assert captures[0]["byte_count"] == len(b"remote fixture text\n")
+        assert captures[0]["content_length_header"] == str(len(b"remote fixture text\n"))
         assert captures[0]["transient_payload_path"] == "payloads/capture-0001.bin"
         assert (output / captures[0]["transient_payload_path"]).read_bytes() == b"remote fixture text\n"
         assert extractions[0]["capture_id"] == captures[0]["capture_id"]

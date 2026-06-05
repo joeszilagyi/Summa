@@ -1286,10 +1286,25 @@ class NoAutoRedirectHandler(HTTPRedirectHandler):
 
 
 def extract_content_type(headers: Any) -> str:
-    value = headers.get("Content-Type") if headers is not None else None
+    response_headers = normalize_response_headers(headers)
+    value = response_headers.get("content-type")
     if not isinstance(value, str) or not value.strip():
         return "application/octet-stream"
     return value.split(";", 1)[0].strip().casefold() or "application/octet-stream"
+
+
+def normalize_response_headers(headers: Any) -> dict[str, Any]:
+    if headers is None:
+        return {}
+    if hasattr(headers, "items"):
+        try:
+            items = headers.items()
+        except Exception:
+            return {}
+        return {str(key).casefold(): value for key, value in items if key is not None}
+    if isinstance(headers, dict):
+        return {str(key).casefold(): value for key, value in headers.items() if key is not None}
+    return {}
 
 
 def is_extractable_content_type(content_type: str) -> bool:
@@ -1642,8 +1657,7 @@ def execute_remote_fetches(
             failed = True
             summary["urls_failed"] += 1
 
-        headers = fetch_result.get("headers")
-        response_headers: dict[str, Any] = headers if isinstance(headers, dict) else {}
+        response_headers = normalize_response_headers(fetch_result.get("headers"))
         capture_event = {
             "schema_version": CAPTURE_SCHEMA_VERSION,
             "capture_id": capture_id,
@@ -1667,7 +1681,7 @@ def execute_remote_fetches(
             "user_agent": user_agent,
             "content_hash": content_hash,
             "byte_count": byte_count,
-            "content_length_header": response_headers.get("Content-Length"),
+            "content_length_header": response_headers.get("content-length"),
             "content_type": content_type,
             "captured_at": created_at,
             "capture_method": "remote_url_fetch",
