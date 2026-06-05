@@ -619,14 +619,13 @@ def build_db(
 
     output_db.parent.mkdir(parents=True, exist_ok=True)
 
-    temp_handle = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         prefix=f".{output_db.name}.",
         suffix=".tmp",
         dir=output_db.parent,
         delete=False,
-    )
-    temp_db = Path(temp_handle.name)
-    temp_handle.close()
+    ) as temp_handle:
+        temp_db = Path(temp_handle.name)
 
     try:
         conn = sqlite3.connect(temp_db)
