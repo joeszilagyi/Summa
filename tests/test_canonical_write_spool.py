@@ -363,3 +363,26 @@ def test_spool_record_does_not_embed_raw_payload_text(tmp_path: Path) -> None:
     candidate_text = batch["candidates"][0]["text"]
     assert candidate_text not in text
     assert record["raw_payload_policy"] == "artifact_references_only"
+
+
+def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
+    spool_dir = tmp_path / "spool"
+    proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(tmp_path / "missing.sqlite"),
+            "--batch",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    record_path, _record = first_spool_record(spool_dir)
+    moved_path = tmp_path / "moved.json"
+    record_path.replace(moved_path)
+
+    with pytest.raises(canonical_write_spool.CanonicalWriteSpoolError, match="path mismatch"):
+        canonical_write_spool.load_spool_record(moved_path)
