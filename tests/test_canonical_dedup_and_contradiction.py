@@ -224,9 +224,6 @@ def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tm
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
-    merge_count = 0
-    reconciliation_count = 0
-    entity = {"authority_record_id": None, "review_state": None}
     try:
         with conn:
             ingest_batch(conn, first_batch, batch_name="batch-a.json", db_path=db_path)
