@@ -1443,3 +1443,61 @@ def test_source_access_work_id_replay_does_not_blend_distinct_leads(tmp_path: Pa
     assert row["first_seen_at"] == OLDER_TIMESTAMP
     assert row["last_seen_at"] == FIXED_TIMESTAMP
     assert row["record_last_updated"] == FIXED_TIMESTAMP
+
+
+def test_record_review_state_history_uses_single_lookup_for_existing_rows(
+    tmp_path: Path,
+) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest.canonical_store",
+    )
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        first = canonical_store.record_review_state_history(
+            conn,
+            target_namespace="source_claim",
+            target_id="claim:1",
+            previous_state="proposed",
+            new_state="needs_review",
+            changed_by="pytest",
+            changed_at=FIXED_TIMESTAMP,
+            source_tool="pytest",
+            source_run_id="history-run",
+        )
+        second = canonical_store.record_review_state_history(
+            conn,
+            target_namespace="source_claim",
+            target_id="claim:1",
+            previous_state="proposed",
+            new_state="needs_review",
+            changed_by="pytest",
+            changed_at=FIXED_TIMESTAMP,
+            source_tool="pytest",
+            source_run_id="history-run",
+        )
+    finally:
+        executed_sql = getattr(conn, "executed_sql", [])
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    rowid_lookups = [
+        sql
+        for sql in executed_sql
+        if sql.strip().startswith("SELECT rowid FROM review_state_history")
+    ]
+    assert len(rowid_lookups) == 0
