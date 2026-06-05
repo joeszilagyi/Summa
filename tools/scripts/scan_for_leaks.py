@@ -19,7 +19,7 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.leak_scanner import REPORT_SCHEMA_VERSION, PROFILES, LeakScannerError, load_allowlist, scan_directory  # noqa: E402
+from tools.common.leak_scanner import PROFILES, LeakScannerError, load_allowlist, scan_directory  # noqa: E402
 from tools.validators.common import EXIT_INPUT_UNAVAILABLE, EXIT_PASS, EXIT_VALIDATION_FAILED, add_report_args, write_json, write_text  # noqa: E402
 
 
