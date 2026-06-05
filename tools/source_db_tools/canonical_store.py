@@ -1359,12 +1359,7 @@ def record_source_access(
             )
             return CanonicalWriteResult("source_access", _inserted_rowid(cursor), None, True)
         except sqlite3.IntegrityError:
-            existing = conn.execute(
-                """
-                SELECT * FROM source_access WHERE work_id=? AND original_locator=? LIMIT 1
-                """,
-                (work_id, locator),
-            ).fetchone()
+            existing = _lookup_row(conn, "source_access", "source_access_id", criteria)
             if existing is None:
                 raise
             _update_row(

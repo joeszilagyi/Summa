@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,38 @@ def bootstrap_db(tmp_path: Path) -> Path:
         applied_by="pytest.write_api",
     )
     return db_path
+
+
+class SourceAccessIntegrityProxy:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._skipped_lookup = False
+        self._raised = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+    def execute(self, sql: str, params: object = ()) -> object:
+        if (
+            not self._skipped_lookup
+            and isinstance(sql, str)
+            and sql.lstrip().upper().startswith("SELECT * FROM SOURCE_ACCESS")
+        ):
+            self._skipped_lookup = True
+
+            class _EmptyCursor:
+                def fetchone(self) -> None:
+                    return None
+
+            return _EmptyCursor()
+        if (
+            not self._raised
+            and isinstance(sql, str)
+            and sql.lstrip().upper().startswith("INSERT INTO SOURCE_ACCESS")
+        ):
+            self._raised = True
+            raise sqlite3.IntegrityError("simulated source_access integrity failure")
+        return self._conn.execute(sql, params)
 
 
 def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
@@ -910,6 +943,72 @@ def test_source_access_without_work_or_lead_replays_by_locator_without_duplicate
     assert row["citation_hint"] == "Fixture fallback source access updated"
     assert row["first_seen_at"] == FIXED_TIMESTAMP
     assert row["last_seen_at"] == NEWER_TIMESTAMP
+
+
+def test_source_access_integrity_fallback_handles_null_work_id(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004-null-work",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-null-work",
+        )
+        baseline = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/source-access-null-work",
+            canonical_url="https://example.test/source-access-null-work",
+            citation_hint="Fixture null-work source access",
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        proxied = SourceAccessIntegrityProxy(conn)
+        replay = canonical_store.record_source_access(
+            proxied,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/source-access-null-work",
+            canonical_url="https://example.test/source-access-null-work",
+            citation_hint="Fixture null-work source access updated",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT citation_hint, first_seen_at, last_seen_at, record_last_updated
+            FROM source_access
+            WHERE source_access_id=?
+            """,
+            (baseline.row_id,),
+        ).fetchone()
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM source_access
+            WHERE original_locator=?
+              AND work_id IS NULL
+            """,
+            ("https://example.test/source-access-null-work",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert row_count is not None
+    assert int(row_count["row_count"]) == 1
+    assert row["citation_hint"] == "Fixture null-work source access"
+    assert row["first_seen_at"] == OLDER_TIMESTAMP
+    assert row["last_seen_at"] == NEWER_TIMESTAMP
+    assert row["record_last_updated"] == NEWER_TIMESTAMP
 
 
 def test_write_api_preserves_record_last_updated_monotonicity_on_replay(tmp_path: Path) -> None:
