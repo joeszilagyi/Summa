@@ -434,6 +434,35 @@ def test_run_topic_gather_keeps_network_access_flag_false(tmp_path: Path) -> Non
     assert payload["engine_output_ref"] is None
 
 
+def test_parse_stamp_footer_uses_footer_delimiter_length() -> None:
+    text = (
+        "prefix text that includes a footer-like separator\n"
+        "---\n"
+        "not a real footer yet\n"
+        "and more body text\n"
+        "\n---\n"
+        "RUN_META_VERSION: 1\n"
+        "GENERATED_BY: codex\n"
+        "MODEL: test-model\n"
+        "PLACE: gather\n"
+        "FACET: sources\n"
+        "PHASE: 01a\n"
+        "RUN_TS: 2026-06-03T123456Z\n"
+    )
+
+    parsed = driver.parse_stamp_footer(text)
+
+    assert parsed == {
+        "run_meta_version": "1",
+        "generated_by": "codex",
+        "model": "test-model",
+        "place": "gather",
+        "facet": "sources",
+        "phase": "01a",
+        "run_ts": "2026-06-03T123456Z",
+    }
+
+
 def test_index_run_gather_wrapper_help_and_dry_run(tmp_path: Path) -> None:
     help_result = run_wrapper(["--help"])
     assert help_result.returncode == 0, help_result.stdout + help_result.stderr
