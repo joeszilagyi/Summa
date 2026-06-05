@@ -405,6 +405,30 @@ def test_builder_replaces_existing_projection_index(tmp_path: Path) -> None:
     assert row[0] == "Updated Public Work"
 
 
+def test_builder_detects_tampered_projection_rows(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    payload = builder.build_projection_payload(
+        SimpleNamespace(
+            db=str(db),
+            profile="local",
+            correction_ledger=None,
+            generated_at="2026-06-02T00:00:00Z",
+        )
+    )
+    builder.write_index(index_db, payload)
+
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("UPDATE search_projection SET title='Tampered Title' WHERE object_ref='work:1'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(builder.SearchProjectionError, match="projection records digest mismatch"):
+        builder.validate_projection_index_file(index_db, payload)
+
+
 def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: Path, monkeypatch) -> None:
     db = create_search_db(tmp_path)
     index_db = tmp_path / "local_projection.sqlite"
