@@ -119,6 +119,29 @@ def test_network_safety_gate_refuses_exceeded_budget() -> None:
     assert "SIDE_EFFECT_BUDGET_EXCEEDED" in codes
 
 
+def test_network_safety_gate_refuses_actions_that_exceed_min_interval_cadence() -> None:
+    request = base_request()
+    request["rate_limits"] = {
+        "max_requests_per_minute": 10,
+        "min_interval_seconds": 30.0,
+    }
+    request["planned_actions"] = [
+        {
+            "action_id": f"fetch-{index}",
+            "action_kind": "fetch_manifest",
+            "url": f"https://archives.example.gov/subject/alpha/manifest-{index}.jsonl",
+            "method": "GET",
+            "side_effect_units": 1,
+        }
+        for index in range(4)
+    ]
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "refuse"
+    assert any(error["code"] == "RATE_LIMIT_EXCEEDED" for error in payload["errors"])
+
+
 def test_network_safety_gate_allows_api_call_with_not_applicable_robots_posture() -> None:
     request = base_request()
     request["network_policy"] = {
