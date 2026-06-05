@@ -296,7 +296,7 @@ def repoint_authority_references(
     changed_at: str,
     dry_run: bool,
 ) -> dict[str, int]:
-    updates = {
+    planned = {
         "extraction_detected_entity.authority_record_id": conn.execute(
             "SELECT COUNT(*) FROM extraction_detected_entity WHERE authority_record_id=?",
             (losing_authority_id,),
@@ -307,8 +307,8 @@ def repoint_authority_references(
         ).fetchone()[0],
     }
     if dry_run:
-        return {key: int(value) for key, value in updates.items()}
-    conn.execute(
+        return {key: int(value) for key, value in planned.items()}
+    extraction_cursor = conn.execute(
         """
         UPDATE extraction_detected_entity
         SET authority_record_id=?, record_last_updated=?
@@ -316,7 +316,7 @@ def repoint_authority_references(
         """,
         (winning_authority_id, changed_at, losing_authority_id),
     )
-    conn.execute(
+    work_subject_cursor = conn.execute(
         """
         UPDATE work_subject
         SET authority_record_id=?, record_last_updated=?
@@ -324,7 +324,10 @@ def repoint_authority_references(
         """,
         (winning_authority_id, changed_at, losing_authority_id),
     )
-    return {key: int(value) for key, value in updates.items()}
+    return {
+        "extraction_detected_entity.authority_record_id": int(extraction_cursor.rowcount),
+        "work_subject.authority_record_id": int(work_subject_cursor.rowcount),
+    }
 
 
 def _base_result(
