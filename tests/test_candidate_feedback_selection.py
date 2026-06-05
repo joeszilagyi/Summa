@@ -439,6 +439,13 @@ def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) ->
     assert metrics["successful_extractions"] == 1
 
 
+def test_lead_scope_sql_supports_explicit_table_aliases() -> None:
+    scope_sql, params = planner.lead_scope_sql("alpha_subject", [1, 2], table_alias="access")
+
+    assert scope_sql == "(access.workspace_id=? OR access.work_id IN (?, ?))"
+    assert params == ("alpha_subject", 1, 2)
+
+
 def validate_plan(path: Path) -> dict[str, object]:
     report, exit_code = validator.validate_candidate_feedback_plan(path)
     assert exit_code == validator.EXIT_PASS, report
