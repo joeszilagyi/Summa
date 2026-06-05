@@ -785,7 +785,7 @@ def record_authority_reconciliation(
     )
     existing = conn.execute(
         """
-        SELECT authority_reconciliation_id
+        SELECT authority_reconciliation_id, review_state
         FROM authority_reconciliation
         WHERE reconciliation_key_v1=?
         """,
@@ -839,7 +839,23 @@ def record_authority_reconciliation(
             score,
             score,
             evidence_context,
-            review_state_value,
+            (
+                existing["review_state"]
+                if (
+                    existing["review_state"] is not None
+                    and str(existing["review_state"]).strip().lower()
+                    in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                    and (
+                        str(review_state_value).strip().lower()
+                        in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                        or canonical_store._pending_review_state(review_state_value)
+                    )
+                )
+                else canonical_store._merged_review_state(
+                    existing["review_state"],
+                    review_state_value,
+                )
+            ),
             created_at,
             created_at,
             int(existing["authority_reconciliation_id"]),
