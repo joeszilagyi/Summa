@@ -157,10 +157,10 @@ def acquire_workspace_lock(
             flags = fcntl.LOCK_EX | fcntl.LOCK_NB
             try:
                 fcntl.flock(handle.fileno(), flags)
-            except BlockingIOError:
+            except BlockingIOError as exc:
                 handle.close()
                 if not wait or (timeout_seconds and time.monotonic() - start >= timeout_seconds):
-                    raise WorkspaceLockError(f"workspace lock is already held: {lock_path}")
+                    raise WorkspaceLockError(f"workspace lock is already held: {lock_path}") from exc
                 time.sleep(0.1)
                 continue
 
