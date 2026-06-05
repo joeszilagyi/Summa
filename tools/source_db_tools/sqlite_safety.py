@@ -24,10 +24,14 @@ class SQLiteSafetyError(RuntimeError):
     """Raised when a SQLite safety operation fails."""
 
 
+def _readonly_uri(path: Path) -> str:
+    return f"{path.resolve().as_uri()}?mode=ro"
+
+
 def connect_readonly(path: Path) -> sqlite3.Connection:
     if not path.exists() or not path.is_file():
         raise SQLiteSafetyError(f"database not found: {path}")
-    return sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    return sqlite3.connect(_readonly_uri(path), uri=True)
 
 
 def run_check(path: Path, *, quick: bool = False) -> dict[str, Any]:
@@ -83,7 +87,7 @@ def backup_database(
     try:
         if lock_context is not None:
             lock_context.__enter__()
-        source_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+        source_conn = sqlite3.connect(_readonly_uri(source_path), uri=True)
         try:
             with tempfile.NamedTemporaryFile(
                 mode="wb",
