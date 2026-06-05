@@ -1030,8 +1030,8 @@ def execution_ingest_stage(
                 _execution_record, _capture_events, _extraction_records, paths, input_hashes = (
                     canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
                 )
-            except Exception:
-                fail_stage(stage, str(exc))
+            except Exception as retry_exc:
+                fail_stage(stage, str(retry_exc))
             artifact_refs = [
                 {
                     "artifact_type": key,

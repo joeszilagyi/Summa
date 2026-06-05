@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
@@ -117,6 +121,16 @@ def insert_orphan_source_claim(db_path: Path) -> None:
 
 def load_manifest(run_dir: Path) -> dict[str, object]:
     return json.loads((run_dir / "topic-cycle-run.json").read_text(encoding="utf-8"))
+
+
+def load_run_topic_cycle_module():
+    spec = importlib.util.spec_from_file_location("run_topic_cycle_for_tests", SCRIPT)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def stages_by_name(manifest: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -232,6 +246,37 @@ def test_topic_cycle_rejects_unknown_existing_manifest_status(tmp_path: Path) ->
 
     assert proc.returncode != 0
     assert "unknown status" in proc.stderr
+
+
+def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> None:
+    module = load_run_topic_cycle_module()
+    calls = {"count": 0}
+
+    def fake_load_validated_execution_artifacts(execution_run_dir: Path):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("outer load failure")
+        raise RuntimeError("retry load failure")
+
+    module.canonical_ingest.load_validated_execution_artifacts = (  # type: ignore[attr-defined]
+        fake_load_validated_execution_artifacts
+    )
+
+    args = SimpleNamespace(mode="live", degraded_spool=True)
+    manifest = {"stages": []}
+
+    with pytest.raises(module.TopicCycleError) as excinfo:
+        module.execution_ingest_stage(
+            args=args,
+            manifest=manifest,
+            db_path=tmp_path / "canonical.sqlite",
+            execution_run_dir=EXECUTION_RUN,
+            run_dir=tmp_path / "cycle-degraded-spool",
+        )
+
+    assert calls["count"] == 2
+    assert "retry load failure" in str(excinfo.value)
+    assert "outer load failure" not in str(excinfo.value)
 
 
 def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
