@@ -1136,7 +1136,18 @@ def upsert_work(
         return CanonicalWriteResult("work", _inserted_rowid(cursor), work_key, True)
 
     merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
-    preserve_established_envelope = _preserve_authority_envelope(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+        preserve_established_envelope = True
     confidence_value = existing["confidence_score"] if preserve_established_envelope else _first_present(
         score,
         existing["confidence_score"],

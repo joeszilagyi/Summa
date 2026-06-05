@@ -329,6 +329,77 @@ def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_pa
     assert int(row["accepted_for_citation"]) == 1
 
 
+def test_work_upsert_acceptance_replay_preserves_authority_envelope(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-replay",
+        )
+        baseline = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority-replay",
+            provenance_event_ref=accepted_provenance.event_key,
+            work_type="article",
+            title="Fixture Authority Work",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            accepted_for_citation=1,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        replay_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-replay-again",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-replay-again",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority-replay",
+            provenance_event_ref=replay_provenance.event_key,
+            work_type="article",
+            title="Fixture Authority Work Replayed",
+            review_state="accepted",
+            confidence_score=0.1,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            accepted_for_citation=0,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation, title FROM work WHERE work_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert int(row["accepted_for_citation"]) == 1
+    assert row["title"] == "Fixture Authority Work Replayed"
+
+
 def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
