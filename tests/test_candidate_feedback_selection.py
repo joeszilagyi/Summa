@@ -478,7 +478,7 @@ def test_unknown_extraction_status_is_neutral_for_source_access_leads(tmp_path: 
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
-    conn = sqlite3.connect(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
             conn.execute(
@@ -511,7 +511,7 @@ def test_unknown_extraction_status_is_neutral_for_entity_leads(tmp_path: Path) -
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
-    conn = sqlite3.connect(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
             conn.execute(
@@ -533,6 +533,53 @@ def test_unknown_extraction_status_is_neutral_for_entity_leads(tmp_path: Path) -
     assert any(
         "unknown extraction_status treated as neutral for detected entity lead scoring" in warning
         for warning in payload["warnings"]
+    )
+
+
+def test_candidate_feedback_includes_entity_leads_without_extraction_records(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            prov = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="entity-without-capture",
+                event_type="feedback_test",
+                actor_type="pytest",
+                actor_id="pytest.candidate_feedback_selection",
+                tool_name="tests.test_candidate_feedback_selection",
+                run_id="entity-without-capture",
+                event_timestamp=FIXED_CREATED_AT,
+                note_text="candidate visibility fixture",
+                provenance_event_key_v1="prov:feedback:test-entity",
+            )
+            entity = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=prov.event_key,
+                entity_label="Unbacked Entity",
+                normalized_label="unbacked entity",
+                entity_type="person",
+                review_state="proposed",
+                confidence_score=0.81,
+                workspace_id=subject_id,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+    finally:
+        conn.close()
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+
+    assert payload["next_action"]["action_kind"] == "facet_lead"
+    assert payload["next_action"]["selected_facet"] == "people"
+    assert payload["next_action"]["selected_object_ref"] == f"detected_entity:{entity.row_id}"
+    assert any(
+        item["object_ref"] == f"detected_entity:{entity.row_id}"
+        for item in payload["lead_scores"]
     )
 
 

@@ -660,7 +660,7 @@ def load_entity_leads(
           ON extraction.extraction_id = entity.extraction_id
         LEFT JOIN capture_event capture
           ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(extraction.workspace_id, capture.workspace_id)=?
+        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id)=?
           AND entity.review_state IN ({placeholders})
         ORDER BY entity.detected_entity_id
         """,
