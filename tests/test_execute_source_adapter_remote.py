@@ -66,6 +66,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/text")
             self.end_headers()
+        elif self.path == "/redirect-lower":
+            self.send_response(302)
+            self.send_header("location", "/text")
+            self.end_headers()
         elif self.path == "/redirect-out":
             self.send_response(302)
             self.send_header("Location", "http://example.invalid/outside")
@@ -528,6 +532,26 @@ def test_redirect_inside_allowlist_is_captured(tmp_path: Path) -> None:
         assert captures[0]["redirect_count"] == 1
         assert captures[0]["final_url"] == f"{base_url}/text"
         assert FixtureHandler.request_paths == ["/redirect", "/text"]
+    finally:
+        server.shutdown()
+
+
+def test_redirect_with_lowercase_location_header_is_captured(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/redirect-lower"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-redirect-lower-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        captures = load_jsonl(output / "capture-events.jsonl")
+        assert captures[0]["status"] == "completed"
+        assert captures[0]["redirect_count"] == 1
+        assert captures[0]["final_url"] == f"{base_url}/text"
+        assert FixtureHandler.request_paths == ["/redirect-lower", "/text"]
     finally:
         server.shutdown()
 
