@@ -945,14 +945,6 @@ def record_authority_merge_event(
         """,
         (from_authority_record_id, into_authority_record_id, merge_reason),
     ).fetchone()
-    conn.execute(
-        """
-        UPDATE authority_record
-        SET merged_into_authority_record_id=?, reconciliation_status='merged', record_last_updated=?
-        WHERE authority_record_id=?
-        """,
-        (into_authority_record_id, merged_at, from_authority_record_id),
-    )
     if existing is not None:
         return canonical_store.CanonicalWriteResult(
             "authority_merge_event",
@@ -965,6 +957,14 @@ def record_authority_merge_event(
             ),
             False,
         )
+    conn.execute(
+        """
+        UPDATE authority_record
+        SET merged_into_authority_record_id=?, reconciliation_status='merged', record_last_updated=?
+        WHERE authority_record_id=?
+        """,
+        (into_authority_record_id, merged_at, from_authority_record_id),
+    )
     cursor = conn.execute(
         """
         INSERT INTO authority_merge_event (
