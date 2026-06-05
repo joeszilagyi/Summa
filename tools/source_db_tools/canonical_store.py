@@ -852,6 +852,15 @@ def _merged_review_state(existing: Any, proposed: str) -> str:
     return proposed
 
 
+def _preserve_authority_envelope(
+    existing_review_state: str | None,
+    proposed_review_state: str,
+) -> bool:
+    return not _pending_review_state(existing_review_state) and _pending_review_state(
+        proposed_review_state
+    )
+
+
 def _first_present(*values: Any) -> Any:
     for value in values:
         if value is None:
@@ -1127,6 +1136,48 @@ def upsert_work(
         return CanonicalWriteResult("work", _inserted_rowid(cursor), work_key, True)
 
     merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(existing["review_state"], review_state_value)
+    confidence_value = existing["confidence_score"] if preserve_established_envelope else _first_present(
+        score,
+        existing["confidence_score"],
+    )
+    provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+    accepted_for_citation_value = (
+        existing["accepted_for_citation"]
+        if preserve_established_envelope
+        else max(
+            int(existing["accepted_for_citation"] or 0),
+            1 if int(accepted_for_citation) else 0,
+        )
+    )
     _update_row(
         conn,
         "work",
@@ -1145,29 +1196,18 @@ def upsert_work(
                 existing["refetchability_status"],
             ),
             "review_state": merged_review_state,
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
+            "publication_state": publication_state_value,
+            "confidence_score": confidence_value,
             "raw_cite_text": _first_present(
                 _optional_nonblank(raw_cite_text, "raw_cite_text"), existing["raw_cite_text"]
             ),
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"), existing["public_blocker"]
-            ),
-            "accepted_for_citation": max(
-                int(existing["accepted_for_citation"] or 0),
-                1 if int(accepted_for_citation) else 0,
-            ),
-            "provenance_event_ref": provenance_event_ref,
+            "authority_level": authority_level_value,
+            "public_blocker": public_blocker_value,
+            "accepted_for_citation": accepted_for_citation_value,
+            "provenance_event_ref": provenance_value,
             "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
             "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
             "created_at": _first_present(existing["created_at"], created_at_value),
@@ -1418,6 +1458,44 @@ def record_source_claim(
         )
         return CanonicalWriteResult("source_claim", _inserted_rowid(cursor), claim_key, True)
 
+    merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    claim_confidence_value = (
+        existing["confidence_score"] if preserve_established_envelope else _first_present(score, existing["confidence_score"])
+    )
+    claim_provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    claim_publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    claim_authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    claim_public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+
     _update_row(
         conn,
         "source_claim",
@@ -1436,24 +1514,15 @@ def record_source_claim(
             "claim_type": _first_present(
                 _optional_nonblank(claim_type, "claim_type"), existing["claim_type"]
             ),
-            "review_state": _merged_review_state(existing["review_state"], review_state_value),
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"),
-                existing["public_blocker"],
-            ),
+            "review_state": merged_review_state,
+            "publication_state": claim_publication_state_value,
+            "authority_level": claim_authority_level_value,
+            "public_blocker": claim_public_blocker_value,
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
-            "provenance_event_ref": provenance_event_ref,
+            "confidence_score": claim_confidence_value,
+            "provenance_event_ref": claim_provenance_value,
             "evidence_locator_ref": _first_present(
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
                 existing["evidence_locator_ref"],
@@ -1964,6 +2033,46 @@ def record_source_relationship(
         )
         return CanonicalWriteResult("source_relationship", _inserted_rowid(cursor), None, True)
 
+    merged_review_state = _merged_review_state(existing["review_state"], review_state_value)
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"],
+        review_state_value,
+    )
+    relationship_confidence_value = (
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(score, existing["confidence_score"])
+    )
+    relationship_provenance_value = (
+        existing["provenance_event_ref"]
+        if preserve_established_envelope
+        else provenance_event_ref
+    )
+    relationship_publication_state_value = (
+        existing["publication_state"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(publication_state, "publication_state"),
+            existing["publication_state"],
+        )
+    )
+    relationship_authority_level_value = (
+        existing["authority_level"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(authority_level, "authority_level"),
+            existing["authority_level"],
+        )
+    )
+    relationship_public_blocker_value = (
+        existing["public_blocker"]
+        if preserve_established_envelope
+        else _first_present(
+            _optional_nonblank(public_blocker, "public_blocker"),
+            existing["public_blocker"],
+        )
+    )
+
     _update_row(
         conn,
         "source_relationship",
@@ -1976,24 +2085,15 @@ def record_source_relationship(
             "evidence_note": _first_present(
                 _optional_nonblank(evidence_note, "evidence_note"), existing["evidence_note"]
             ),
-            "review_state": _merged_review_state(existing["review_state"], review_state_value),
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
-            ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
-            ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"),
-                existing["public_blocker"],
-            ),
+            "review_state": merged_review_state,
+            "publication_state": relationship_publication_state_value,
+            "authority_level": relationship_authority_level_value,
+            "public_blocker": relationship_public_blocker_value,
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "confidence_score": _first_present(score, existing["confidence_score"]),
-            "provenance_event_ref": provenance_event_ref,
+            "confidence_score": relationship_confidence_value,
+            "provenance_event_ref": relationship_provenance_value,
             "evidence_locator_ref": _first_present(
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
                 existing["evidence_locator_ref"],

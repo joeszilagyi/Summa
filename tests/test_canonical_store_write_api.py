@@ -257,6 +257,218 @@ def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) 
     assert int(row["accepted_for_citation"]) == 1
 
 
+def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority",
+        )
+        baseline = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority",
+            provenance_event_ref=accepted_prov.event_key,
+            work_type="article",
+            title="Fixture Authority Work",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            accepted_for_citation=1,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-work-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-work-authority-proposed",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-authority",
+            provenance_event_ref=proposed_prov.event_key,
+            work_type="article",
+            title="Fixture Authority Work Updated",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            accepted_for_citation=0,
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT work_type, title, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation FROM work WHERE work_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["work_type"] == "article"
+    assert row["title"] == "Fixture Authority Work Updated"
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert int(row["accepted_for_citation"]) == 1
+
+
+def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority",
+        )
+        baseline = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=accepted_prov.event_key,
+            source_claim_key_v1="claim:fixture-authority",
+            about_object_ref="work:fixture-authority",
+            claim_text="Baseline claim with high confidence.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority-proposed",
+        )
+        canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=proposed_prov.event_key,
+            source_claim_key_v1="claim:fixture-authority",
+            about_object_ref="work:fixture-authority",
+            claim_text="Baseline claim with low confidence.",
+            claim_type="fixture_claim",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+
+
+def test_source_relationship_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-relationship-authority",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-relationship-authority",
+        )
+        baseline = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=accepted_prov.event_key,
+            from_object_ref="work:fixture-alpha",
+            predicate="mentions",
+            to_object_ref="entity:fixture-alpha",
+            target_label="Fixture Alpha",
+            evidence_note="Baseline relation",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-relationship-authority-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-relationship-authority-proposed",
+        )
+        canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=proposed_prov.event_key,
+            from_object_ref="work:fixture-alpha",
+            predicate="mentions",
+            to_object_ref="entity:fixture-alpha",
+            target_label="Fixture Alpha",
+            evidence_note="Baseline relation",
+            review_state="proposed",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_relationship WHERE source_relationship_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+
+
 def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
