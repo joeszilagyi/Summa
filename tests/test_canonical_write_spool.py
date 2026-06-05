@@ -84,7 +84,9 @@ def test_spool_record_validation() -> None:
     invalid_status = dict(record)
     invalid_status["replay_status"] = "unknown"
     invalid_status["spool_record_checksum"] = canonical_write_spool.record_checksum(invalid_status)
-    with pytest.raises(canonical_write_spool.CanonicalWriteSpoolError, match="invalid replay status"):
+    with pytest.raises(
+        canonical_write_spool.CanonicalWriteSpoolError, match="invalid replay status"
+    ):
         canonical_write_spool.validate_spool_record(invalid_status)
 
 

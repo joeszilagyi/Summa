@@ -32,9 +32,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     "summa-select-scheduled-workspaces": "tools.scripts.select_scheduled_workspaces:main",
     "summa-apply-review-decision": "tools.scripts.apply_review_decision:main",
     "summa-evaluate-network-safety-gate": ("tools.scripts.evaluate_network_safety_gate:main"),
-    "summa-replay-canonical-write-spool": (
-        "tools.scripts.replay_canonical_write_spool:main"
-    ),
+    "summa-replay-canonical-write-spool": ("tools.scripts.replay_canonical_write_spool:main"),
 }
 
 RUNTIME_OPERATOR_CONSOLE_COMMANDS = {

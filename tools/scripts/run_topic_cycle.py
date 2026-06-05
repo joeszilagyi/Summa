@@ -499,7 +499,9 @@ def validate_store_stage(
         finish_stage(stage)
         add_stage(manifest, stage)
     except Exception as exc:
-        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
+            exc
+        ):
             fail_stage(stage, str(exc))
         if args.degraded_spool:
             stage.validation = {"status": "degraded", "error": str(exc)}
@@ -786,7 +788,9 @@ def candidate_ingest_stage(
         add_stage(manifest, stage)
         return report
     except Exception as exc:
-        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
+            exc
+        ):
             fail_stage(stage, str(exc))
         if args.degraded_spool:
             record = canonical_write_spool.build_spool_record(
@@ -973,7 +977,9 @@ def execution_ingest_stage(
         add_stage(manifest, stage)
         return report
     except Exception as exc:
-        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
+            exc
+        ):
             fail_stage(stage, str(exc))
         if args.degraded_spool:
             try:

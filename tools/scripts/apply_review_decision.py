@@ -134,7 +134,9 @@ def run(argv: list[str] | None = None) -> dict[str, Any]:
 
 def spool_review_decision(args: argparse.Namespace, failure: BaseException) -> dict[str, Any]:
     if not args.spool_dir:
-        raise ApplyReviewDecisionCliError("--spool-dir is required with --degraded-spool") from failure
+        raise ApplyReviewDecisionCliError(
+            "--spool-dir is required with --degraded-spool"
+        ) from failure
     db_path = canonical_store.resolve_db_path(args.db)
     target = review_decision_apply.parse_review_target(args.target)
     record = canonical_write_spool.build_spool_record(

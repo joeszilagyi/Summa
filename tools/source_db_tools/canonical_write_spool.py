@@ -79,8 +79,9 @@ def build_spool_record_id(
     created_at: str,
 ) -> str:
     digest = hashlib.sha256(
-        "\x1f".join([operation_kind, artifact_hash or "", run_id or "", stage_name or "", created_at])
-        .encode("utf-8")
+        "\x1f".join(
+            [operation_kind, artifact_hash or "", run_id or "", stage_name or "", created_at]
+        ).encode("utf-8")
     ).hexdigest()[:24]
     return f"canonical-write-spool:{operation_kind}:{digest}"
 
@@ -165,7 +166,9 @@ def build_spool_record(
         "operation_input": dict(operation_input),
         "replay_recipe": dict(replay_recipe),
         "validation_status": "validated",
-        "failure_kind": classify_failure(failure) if isinstance(failure, BaseException) else "unknown",
+        "failure_kind": classify_failure(failure)
+        if isinstance(failure, BaseException)
+        else "unknown",
         "failure_message": failure_message,
         "retryable": bool(retryable),
         "replay_status": "pending",
@@ -184,7 +187,9 @@ def build_spool_record(
 
 def spool_record_path(spool_dir: Path, record: Mapping[str, Any]) -> Path:
     run_id = record.get("originating_run_id")
-    safe_run = str(run_id).replace("/", "_") if isinstance(run_id, str) and run_id else "unknown-run"
+    safe_run = (
+        str(run_id).replace("/", "_") if isinstance(run_id, str) and run_id else "unknown-run"
+    )
     record_id = str(record["spool_record_id"]).replace("/", "_").replace(":", "_")
     return spool_dir / "canonical-unavailable" / safe_run / f"{record_id}.json"
 
@@ -247,9 +252,13 @@ def validate_spool_record(record: Mapping[str, Any]) -> None:
     }
     missing = sorted(required - set(record))
     if missing:
-        raise CanonicalWriteSpoolError("missing required spool record fields: " + ", ".join(missing))
+        raise CanonicalWriteSpoolError(
+            "missing required spool record fields: " + ", ".join(missing)
+        )
     if record["schema_version"] != SCHEMA_VERSION:
-        raise CanonicalWriteSpoolError(f"unsupported spool record schema: {record['schema_version']}")
+        raise CanonicalWriteSpoolError(
+            f"unsupported spool record schema: {record['schema_version']}"
+        )
     if record["operation_kind"] not in ALLOWED_OPERATION_KINDS:
         raise CanonicalWriteSpoolError(f"unsupported operation kind: {record['operation_kind']}")
     if record["replay_status"] not in REPLAY_STATUSES:
@@ -381,7 +390,9 @@ def replay_spool_record(
             if isinstance(recipe.get("expected_state"), str)
             else None,
             dry_run=dry_run,
-            decided_at=recipe.get("decided_at") if isinstance(recipe.get("decided_at"), str) else None,
+            decided_at=recipe.get("decided_at")
+            if isinstance(recipe.get("decided_at"), str)
+            else None,
             run_id=recipe.get("run_id") if isinstance(recipe.get("run_id"), str) else None,
         )
     if operation == "cycle_evidence_write":

@@ -25,12 +25,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Spool record JSON file or directory containing canonical-write spool records.",
     )
     parser.add_argument("--output", help="Optional replay report JSON path.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate and plan without mutating DB or spool.")
-    parser.add_argument("--strict", action="store_true", help="Stop after the first replay failure.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Validate and plan without mutating DB or spool."
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="Stop after the first replay failure."
+    )
     parser.add_argument("--limit", type=int, help="Maximum pending records to attempt.")
     parser.add_argument("--format", choices=("json", "text"), default="json")
     parser.add_argument("--replay-run-id", help="Optional replay run id for deterministic reports.")
-    parser.add_argument("--started-at", help="Optional timestamp override for deterministic reports.")
+    parser.add_argument(
+        "--started-at", help="Optional timestamp override for deterministic reports."
+    )
     return parser.parse_args(argv)
 
 
@@ -61,7 +67,11 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "replay_run_id": args.replay_run_id or f"spool-replay:{started_at}",
         "started_at": started_at,
         "ended_at": None,
-        "canonical_db": {"path": str(db_path), "schema_version": None, "current_migration_id": None},
+        "canonical_db": {
+            "path": str(db_path),
+            "schema_version": None,
+            "current_migration_id": None,
+        },
         "spool_input_path": str(spool_path),
         "dry_run": bool(args.dry_run),
         "records_discovered": 0,
@@ -181,16 +191,19 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
 
 def render_text(report: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            f"status={report['status']}",
-            f"records_discovered={report['records_discovered']}",
-            f"records_attempted={report['records_attempted']}",
-            f"records_replayed={report['records_replayed']}",
-            f"records_failed={report['records_failed']}",
-            f"records_skipped={report['records_skipped']}",
-        ]
-    ) + "\n"
+    return (
+        "\n".join(
+            [
+                f"status={report['status']}",
+                f"records_discovered={report['records_discovered']}",
+                f"records_attempted={report['records_attempted']}",
+                f"records_replayed={report['records_replayed']}",
+                f"records_failed={report['records_failed']}",
+                f"records_skipped={report['records_skipped']}",
+            ]
+        )
+        + "\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         if not output_path.is_absolute():
             output_path = (Path.cwd() / output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

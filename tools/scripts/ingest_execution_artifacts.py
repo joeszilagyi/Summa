@@ -230,9 +230,7 @@ def main() -> int:
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     else:
         if report.get("status") == "spooled":
-            sys.stdout.write(
-                f"status=spooled\nspool_record_path={report['spool_record_path']}\n"
-            )
+            sys.stdout.write(f"status=spooled\nspool_record_path={report['spool_record_path']}\n")
         else:
             sys.stdout.write(canonical_ingest.render_report_text(report))
     return 0
