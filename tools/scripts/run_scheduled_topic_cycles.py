@@ -309,6 +309,7 @@ def run_scheduled_cycles(
         runtime_budget = get_runtime_budget_seconds(record)
         child_run_id = f"{run_id}.{workspace_id}.{result['attempt_number']}"
         child_run_dir = run_dir / workspace_id / child_run_id
+        child_started_at = utc_now()
         command = [
             sys.executable,
             str(runner),
@@ -323,7 +324,7 @@ def run_scheduled_cycles(
             "--run-id",
             child_run_id,
             "--timestamp",
-            started_at,
+            child_started_at,
             "--mode",
             args.mode,
             "--format",
@@ -344,7 +345,7 @@ def run_scheduled_cycles(
             workspace_id=workspace_id,
             run_id=child_run_id,
             event_type="command_start",
-            occurred_at=started_at,
+            occurred_at=child_started_at,
         )
         manifest["attempted_workspace_count"] += 1
         start = monotonic()

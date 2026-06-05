@@ -191,6 +191,75 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
     assert [line["event_type"] for line in lines] == ["command_start", "command_end"]
 
 
+def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, monkeypatch) -> None:
+    first_workspace, first_manifest = write_workspace(tmp_path, "first_subject")
+    second_workspace, second_manifest = write_workspace(tmp_path, "second_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="first_subject",
+                workspace=first_workspace,
+                manifest=first_manifest,
+            ),
+            planned_record(
+                workspace_id="second_subject",
+                workspace=second_workspace,
+                manifest=second_manifest,
+            ),
+        ],
+    )
+    runner = write_fake_cycle_runner(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    run_dir = tmp_path / "scheduled-run"
+    ledger_root = tmp_path / "ledgers"
+    timestamps = iter(
+        [
+            "2026-06-03T12:00:00Z",
+            "2026-06-03T12:00:10Z",
+            "2026-06-03T12:00:20Z",
+            "2026-06-03T12:00:30Z",
+            "2026-06-03T12:00:40Z",
+            "2026-06-03T12:00:50Z",
+        ]
+    )
+    monkeypatch.setattr(scheduled_runner, "utc_now", lambda: next(timestamps))
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "scheduled-run",
+            "--cycle-runner",
+            str(runner),
+            "--ledger-root",
+            str(ledger_root),
+        ]
+    )
+    captured_commands: list[list[str]] = []
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == 0
+    assert payload["started_at"] == "2026-06-03T12:00:00Z"
+    assert [command[command.index("--timestamp") + 1] for command in captured_commands] == [
+        "2026-06-03T12:00:10Z",
+        "2026-06-03T12:00:30Z",
+    ]
+    assert captured_commands[0][captured_commands[0].index("--timestamp") + 1] != payload[
+        "started_at"
+    ]
+
+
 def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "blocked_subject")
     selection = write_selection(
