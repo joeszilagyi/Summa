@@ -132,10 +132,14 @@ def insert_metadata(
             continue
         conn.execute(
             """
-            INSERT OR IGNORE INTO work_metadata (
+            INSERT INTO work_metadata (
               work_id, meta_key, meta_value, meta_type, first_seen_at,
               last_seen_at, record_last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(work_id, meta_key, meta_value) DO UPDATE SET
+              first_seen_at=MIN(COALESCE(first_seen_at, excluded.first_seen_at), excluded.first_seen_at),
+              last_seen_at=MAX(COALESCE(last_seen_at, excluded.last_seen_at), excluded.last_seen_at),
+              record_last_updated=MAX(record_last_updated, excluded.record_last_updated)
             """,
             (
                 work_id,
@@ -224,10 +228,12 @@ def insert_source_access(
     if url:
         conn.execute(
             """
-            INSERT OR IGNORE INTO work_url (
+            INSERT INTO work_url (
               work_id, url, url_role, url_status, refetchability_status,
               preferred_refetch_method, record_last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(work_id, url) DO UPDATE SET
+              record_last_updated=MAX(record_last_updated, excluded.record_last_updated)
             """,
             (work_id, url, "legacy_observed", "unknown", "unknown", "http_refetch", timestamp),
         )
