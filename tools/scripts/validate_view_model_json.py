@@ -293,7 +293,7 @@ def validate_view_model(target: Path, schema_dir: Path) -> dict[str, Any]:
     if not errors and not isinstance(schema_payload, dict):
         add_error(errors, code="SCHEMA_INVALID", message="schema top-level JSON value must be an object")
 
-    if not errors:
+    if not errors and isinstance(schema_payload, dict):
         validate_object_against_schema(payload, schema_payload, errors)
 
     return build_report(
