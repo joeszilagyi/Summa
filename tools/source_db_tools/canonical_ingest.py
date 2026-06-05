@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +198,18 @@ def _structured_claim_type(candidate_type: str, structured: dict[str, Any] | Non
     return f"candidate_{candidate_type}"
 
 
+def _normalize_key_text(value: Any) -> str:
+    if isinstance(value, dict) or isinstance(value, list):
+        value = _safe_json_text(value)
+    text = "" if value is None else str(value)
+    normalized = unicodedata.normalize("NFKC", text)
+    return " ".join(normalized.casefold().split())
+
+
+def _key_scope(workspace_id: str | None) -> str:
+    return workspace_id.strip() if isinstance(workspace_id, str) and workspace_id.strip() else "global"
+
+
 def _structured_about_object_ref(
     structured: dict[str, Any] | None,
 ) -> str | None:
@@ -285,30 +298,118 @@ def _work_key_for_candidate(
     candidate: dict[str, Any],
     structured: dict[str, Any] | None,
     *,
-    batch_hash: str,
+    workspace_id: str | None,
 ) -> str:
     if structured is not None:
         for field in ("work_key", "work_key_v1", "source_work_key"):
             value = structured.get(field)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-    return f"work:candidate:{batch_hash}:{candidate['candidate_id']}"
+    normalized_title = canonical_reconciliation.normalize_title(structured.get("title") if structured is not None else None)
+    normalized_type = canonical_reconciliation.normalize_authority_label(
+        structured.get("work_type") if structured is not None else None
+    )
+    normalized_type = normalized_type or "work"
+    identifiers = canonical_reconciliation.candidate_identifiers(structured)
+    for identifier in identifiers:
+        try:
+            normalized = canonical_reconciliation.normalize_external_identifier(
+                identifier["scheme"],
+                identifier["value"],
+            )
+            return canonical_store.stable_write_key(
+                "work",
+                _key_scope(workspace_id),
+                canonical_reconciliation.normalize_work_key(
+                    title=normalized_title,
+                    work_type=normalized_type,
+                    identifier_scheme=normalized["scheme"],
+                    identifier_value=normalized["value"],
+                )
+                or f"identifier:{normalized['scheme']}:{normalized['value']}",
+            )
+        except canonical_reconciliation.CanonicalReconciliationError:
+            continue
+    source_identifier = canonical_reconciliation.normalize_locator(
+        structured.get("canonical_url")
+        if structured is not None
+        else None,
+    )
+    if source_identifier is None and structured is not None:
+        source_identifier = canonical_reconciliation.normalize_locator(structured.get("original_locator"))
+    normalized_title_key = canonical_reconciliation.normalize_work_key(
+        title=normalized_title,
+        work_type=normalized_type,
+        source_identifier=source_identifier,
+        publication_year=None,
+    )
+    if normalized_title_key:
+        return canonical_store.stable_write_key(
+            "work",
+            _key_scope(workspace_id),
+            normalized_title_key,
+        )
+    if normalized_title:
+        return canonical_store.stable_write_key(
+            "work",
+            _key_scope(workspace_id),
+            "title",
+            normalized_type,
+            normalized_title,
+        )
+    return canonical_store.stable_write_key(
+        "work",
+        _key_scope(workspace_id),
+        "candidate",
+        _normalize_key_text(candidate["candidate_id"]),
+    )
 
 
 def _claim_key_for_candidate(
     candidate: dict[str, Any],
     *,
-    batch_hash: str,
+    workspace_id: str | None,
+    claim_text: str,
+    claim_type: str,
+    about_object_ref: str | None,
 ) -> str:
-    return f"claim:candidate:{batch_hash}:{candidate['candidate_id']}"
+    normalized_claim = _normalize_key_text(claim_text)
+    normalized_type = _normalize_key_text(claim_type)
+    if normalized_claim:
+        return canonical_store.stable_write_key(
+            "claim",
+            _key_scope(workspace_id),
+            normalized_type,
+            about_object_ref or "about:unknown",
+            normalized_claim,
+        )
+    return canonical_store.stable_write_key(
+        "claim",
+        _key_scope(workspace_id),
+        normalized_type,
+        about_object_ref or "about:unknown",
+        _normalize_key_text(candidate["candidate_id"]),
+    )
 
 
 def _source_lead_key_for_candidate(
     candidate: dict[str, Any],
     *,
-    batch_hash: str,
+    workspace_id: str | None,
+    structured: dict[str, Any] | None,
 ) -> str:
-    return f"source-lead:{batch_hash}:{candidate['candidate_id']}"
+    locator = None
+    if structured is not None:
+        locator = canonical_reconciliation.normalize_locator(structured.get("canonical_url"))
+        if locator is None:
+            locator = canonical_reconciliation.normalize_locator(structured.get("original_locator"))
+    if locator is None:
+        locator = _normalize_key_text(candidate.get("text", ""))
+    return canonical_store.stable_write_key(
+        "source-lead",
+        _key_scope(workspace_id),
+        locator,
+    )
 
 
 def _default_work_title(candidate: dict[str, Any]) -> str:
@@ -425,7 +526,9 @@ def ingest_candidate_batch(
 
         if candidate_type == "work":
             incoming_work_key = _work_key_for_candidate(
-                candidate, structured, batch_hash=batch_hash
+                candidate,
+                structured,
+                workspace_id=workspace_id,
             )
             work_key = incoming_work_key
             title = (
@@ -525,7 +628,9 @@ def ingest_candidate_batch(
                         provenance_event_ref=provenance_event_key,
                         work_id=work_result.row_id,
                         source_lead_id=_source_lead_key_for_candidate(
-                            candidate, batch_hash=batch_hash
+                            candidate,
+                            workspace_id=workspace_id,
+                            structured=structured,
                         ),
                         original_locator=str(
                             structured.get("original_locator")
@@ -549,18 +654,24 @@ def ingest_candidate_batch(
                     )
                 claim_text = structured.get("claim_text") if structured else None
                 if isinstance(claim_text, str) and claim_text.strip():
+                    work_claim_type = _structured_claim_type(
+                        candidate_type="work",
+                        structured=structured,
+                    )
+                    if work_claim_type == "candidate_work":
+                        work_claim_type = "candidate_work_claim"
                     claim_result = canonical_store.record_source_claim(
                         conn,
                         provenance_event_ref=provenance_event_key,
                         source_claim_key_v1=_claim_key_for_candidate(
-                            candidate, batch_hash=batch_hash
+                            candidate,
+                            workspace_id=workspace_id,
+                            claim_text=claim_text,
+                            claim_type=work_claim_type,
+                            about_object_ref=work_refs[candidate_id],
                         ),
-                        about_object_ref=work_refs[candidate_id],
                         claim_text=claim_text,
-                        claim_type=(
-                            structured.get("claim_type") if structured is not None else None
-                        )
-                        or "candidate_work_claim",
+                        claim_type=work_claim_type,
                         workspace_id=workspace_id,
                         created_at=created_at,
                         record_last_updated=created_at,
@@ -579,7 +690,11 @@ def ingest_candidate_batch(
                 source_lead_id = (
                     structured.get("source_lead_id")
                     if structured is not None and isinstance(structured.get("source_lead_id"), str)
-                    else _source_lead_key_for_candidate(candidate, batch_hash=batch_hash)
+                    else _source_lead_key_for_candidate(
+                        candidate,
+                        workspace_id=workspace_id,
+                        structured=structured,
+                    )
                 )
                 result = canonical_store.record_source_access(
                     conn,
@@ -655,7 +770,13 @@ def ingest_candidate_batch(
                 result = canonical_store.record_source_claim(
                     conn,
                     provenance_event_ref=provenance_event_key,
-                    source_claim_key_v1=_claim_key_for_candidate(candidate, batch_hash=batch_hash),
+                    source_claim_key_v1=_claim_key_for_candidate(
+                        candidate,
+                        workspace_id=workspace_id,
+                        claim_text=_structured_claim_text(candidate, structured),
+                        claim_type=_structured_claim_type(candidate_type, structured),
+                        about_object_ref=_structured_about_object_ref(structured),
+                    ),
                     about_object_ref=_structured_about_object_ref(structured),
                     claim_text=_structured_claim_text(candidate, structured),
                     public_summary=(

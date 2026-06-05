@@ -46,7 +46,7 @@ def build_batch(
 def work_candidate(
     candidate_id: str,
     *,
-    work_key: str,
+    work_key: str | None,
     title: str,
     work_type: str = "article",
     identifier_scheme: str | None = None,
@@ -55,10 +55,11 @@ def work_candidate(
     original_locator: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "work_key": work_key,
         "title": title,
         "work_type": work_type,
     }
+    if work_key is not None:
+        payload["work_key"] = work_key
     if identifier_scheme and identifier_value:
         payload["identifier_scheme"] = identifier_scheme
         payload["identifier_value"] = identifier_value
@@ -69,6 +70,30 @@ def work_candidate(
     return {
         "candidate_id": candidate_id,
         "candidate_type": "work",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def source_lead_candidate(
+    candidate_id: str,
+    *,
+    original_locator: str,
+    canonical_url: str | None = None,
+    source_lead_id: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "original_locator": original_locator,
+    }
+    if canonical_url is not None:
+        payload["canonical_url"] = canonical_url
+    if source_lead_id is not None:
+        payload["source_lead_id"] = source_lead_id
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": "source_lead",
         "origin": "llm_proposed",
         "persistence_status": "workspace_run_only",
         "review_status": "unverified",
@@ -254,6 +279,128 @@ def test_same_title_different_locator_does_not_collapse(tmp_path: Path) -> None:
         conn.close()
 
     assert count == 2
+
+
+def test_work_without_explicit_key_reuses_row_across_batches_by_normalized_identity(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            work_candidate(
+                "cand:implicit.work.1",
+                work_key=None,
+                title="Logical Work Title",
+                work_type="article",
+                canonical_url=None,
+            )
+        ],
+        run_id="gather-no-key-a",
+    )
+    second_batch = build_batch(
+        [
+            work_candidate(
+                "cand:implicit.work.2",
+                work_key=None,
+                title="  logical   work   title ",
+                work_type="article",
+                canonical_url=None,
+            )
+        ],
+        run_id="gather-no-key-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="implicit-work-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="implicit-work-b.json", db_path=db_path)
+        rows = conn.execute("SELECT work_key_v1 FROM work ORDER BY work_id").fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert len(set(row["work_key_v1"] for row in rows)) == 1
+
+
+def test_source_lead_without_explicit_id_reuses_row_across_batches(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            source_lead_candidate(
+                "cand:source-lead.1",
+                original_locator="https://example.test/lead/example",
+            )
+        ],
+        run_id="gather-source-lead-a",
+    )
+    second_batch = build_batch(
+        [
+            source_lead_candidate(
+                "cand:source-lead.2",
+                original_locator="https://example.test/lead/example",
+            )
+        ],
+        run_id="gather-source-lead-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="source-lead-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="source-lead-b.json", db_path=db_path)
+        rows = conn.execute(
+            "SELECT source_access_id, source_lead_id FROM source_access ORDER BY source_access_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["source_lead_id"] is not None
+
+
+def test_claim_without_batch_scoped_key_is_stable_across_batches(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:claim.1",
+                candidate_type="open_question",
+                payload={
+                    "about_object_ref": "work:fixture-claim",
+                    "claim_type": "summary",
+                    "summary": "The entity is notable.",
+                },
+            )
+        ],
+        run_id="gather-claim-a",
+    )
+    second_batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:claim.2",
+                candidate_type="open_question",
+                payload={
+                    "about_object_ref": "work:fixture-claim",
+                    "claim_type": "summary",
+                    "summary": "The entity is notable.",
+                },
+            )
+        ],
+        run_id="gather-claim-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="claim-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="claim-b.json", db_path=db_path)
+        rows = conn.execute("SELECT source_claim_id FROM source_claim ORDER BY source_claim_id").fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
 
 
 def test_authority_label_match_creates_reviewable_reconciliation_candidate(tmp_path: Path) -> None:
