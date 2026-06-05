@@ -298,6 +298,11 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
     try:
         conn = connect_read_only(index_path)
         try:
+            integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+            if integrity_row is None or str(integrity_row[0]).strip().lower() != "ok":
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: integrity check failed"
+                )
             if not has_projection_index_marker(conn):
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: missing marker"

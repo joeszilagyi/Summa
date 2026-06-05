@@ -5,7 +5,10 @@ import json
 import sqlite3
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +19,15 @@ spec = importlib.util.spec_from_file_location("local_search_projection_validator
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)
+
+builder_spec = importlib.util.spec_from_file_location(
+    "local_search_projection_builder_for_tests",
+    BUILDER,
+)
+builder = importlib.util.module_from_spec(builder_spec)
+assert builder_spec.loader is not None
+sys.modules[builder_spec.name] = builder
+builder_spec.loader.exec_module(builder)
 
 
 def create_search_db(tmp_path: Path) -> Path:
@@ -391,3 +403,56 @@ def test_builder_replaces_existing_projection_index(tmp_path: Path) -> None:
         conn.close()
     assert row is not None
     assert row[0] == "Updated Public Work"
+
+
+def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: Path, monkeypatch) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+
+    first = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("UPDATE work SET title='Updated Public Work' WHERE work_id=1")
+        conn.commit()
+    finally:
+        conn.close()
+
+    def fail_validation(index_path: Path, payload: dict[str, object]) -> None:
+        raise builder.SearchProjectionError("forced validation failure")
+
+    monkeypatch.setattr(builder, "validate_projection_index_file", fail_validation)
+
+    args = SimpleNamespace(
+        db=str(db),
+        profile="local",
+        correction_ledger=None,
+        generated_at="2026-06-02T00:00:00Z",
+    )
+    with pytest.raises(builder.SearchProjectionError):
+        builder.write_index(index_db, builder.build_projection_payload(args))
+
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT title
+            FROM search_projection
+            WHERE object_ref='work:1'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row[0] == "Public Work"
