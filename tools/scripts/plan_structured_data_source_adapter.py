@@ -46,6 +46,10 @@ class StructuredDataAdapterError(RuntimeError):
     """Raised when structured-data planning inputs are invalid."""
 
 
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", required=True, help="Path to a validated local source-adapter manifest.")
@@ -59,6 +63,15 @@ def resolve_path(raw_path: str, *, base_dir: Path) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (base_dir / path).resolve()
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
 
 
 def load_adapter(adapter_path: Path) -> dict[str, Any]:
@@ -207,6 +220,9 @@ def parse_csv_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str, 
             if reader.fieldnames is None:
                 errors.append({"context": "line:1", "reason": "csv header row is missing"})
                 return records, errors
+            if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                errors.append({"context": "line:1", "reason": "duplicate CSV header"})
+                return records, errors
             for row_index, _ in enumerate(reader, start=1):
                 records.append(
                     {
@@ -226,9 +242,14 @@ def parse_json_records(path: Path, *, record_path: str | None) -> tuple[list[dic
     records: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicate_object_pairs,
+        )
     except UnicodeDecodeError:
         return records, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    except DuplicateJsonKeyError as exc:
+        return records, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
         return records, [{"context": f"line:{exc.lineno},column:{exc.colno}", "reason": exc.msg}]
 
@@ -255,7 +276,10 @@ def parse_jsonl_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str
         if not raw_line.strip():
             continue
         try:
-            value = json.loads(raw_line)
+            value = json.loads(raw_line, object_pairs_hook=no_duplicate_object_pairs)
+        except DuplicateJsonKeyError as exc:
+            errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+            continue
         except json.JSONDecodeError as exc:
             errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
             continue

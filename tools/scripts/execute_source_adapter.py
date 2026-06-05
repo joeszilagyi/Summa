@@ -66,6 +66,10 @@ class SourceAcquisitionError(RuntimeError):
     """Raised when execution inputs are invalid or unsupported."""
 
 
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -153,6 +157,15 @@ def sha256_bytes(payload: bytes) -> str:
 
 def sha256_text(payload: str) -> str:
     return sha256_bytes(payload.encode("utf-8"))
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
 
 
 def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
@@ -341,6 +354,8 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
             reader = csv.DictReader(handle)
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
+            if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                return {}, [{"context": "line:1", "reason": "duplicate CSV header"}]
             for row_index, row in enumerate(reader, start=1):
                 row_map[f"row:{row_index}"] = dict(row)
     except UnicodeDecodeError:
@@ -354,9 +369,14 @@ def load_json_record_map(
     path: Path, *, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicate_object_pairs,
+        )
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    except DuplicateJsonKeyError as exc:
+        return {}, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
         return {}, [{"context": f"line:{exc.lineno},column:{exc.colno}", "reason": exc.msg}]
 
@@ -379,7 +399,10 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
         if not raw_line.strip():
             continue
         try:
-            value = json.loads(raw_line)
+            value = json.loads(raw_line, object_pairs_hook=no_duplicate_object_pairs)
+        except DuplicateJsonKeyError as exc:
+            errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+            continue
         except json.JSONDecodeError as exc:
             errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
             continue
