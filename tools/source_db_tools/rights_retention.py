@@ -41,7 +41,7 @@ def _validate_storage_policy_classes(payload: Any, *, field: str, expect_byte_st
         public_export_blocked = class_policy.get("public_export_blocked")
         if not isinstance(public_export_blocked, bool):
             raise ValueError(f"{field}.{class_name}.public_export_blocked must be a boolean")
-        normalized_policy = {"public_export_blocked": public_export_blocked}
+        normalized_policy: dict[str, Any] = {"public_export_blocked": public_export_blocked}
         if expect_byte_status:
             byte_retention_status = class_policy.get("byte_retention_status")
             if not isinstance(byte_retention_status, str) or not byte_retention_status.strip():
