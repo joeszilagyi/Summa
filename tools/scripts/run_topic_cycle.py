@@ -1511,6 +1511,15 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             manifest["failure_stage"] = last_failed["name"] if last_failed else "cycle_setup"
         manifest["error_summary"] = str(exc)
         return_code = 1
+    except Exception as exc:
+        manifest["status"] = "failed"
+        last_failed = next(
+            (stage for stage in reversed(manifest["stages"]) if stage["status"] == "failed"),
+            None,
+        )
+        manifest["failure_stage"] = last_failed["name"] if last_failed else "cycle_setup"
+        manifest["error_summary"] = str(exc)
+        return_code = 1
     finally:
         manifest["ended_at"] = utc_now()
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
