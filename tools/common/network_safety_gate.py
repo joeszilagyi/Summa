@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -219,6 +220,7 @@ def evaluate_request(
     max_actions = payload.get("side_effect_budget", {}).get("max_actions")
     max_units = payload.get("side_effect_budget", {}).get("max_side_effect_units")
     max_rpm = payload.get("rate_limits", {}).get("max_requests_per_minute")
+    min_interval = payload.get("rate_limits", {}).get("min_interval_seconds")
     total_units = 0
 
     action_reports: list[dict[str, Any]] = []
@@ -264,8 +266,19 @@ def evaluate_request(
         errors.append({"code": "ACTION_BUDGET_EXCEEDED", "message": "planned action count exceeds side_effect_budget.max_actions"})
     if isinstance(max_units, int) and total_units > max_units:
         errors.append({"code": "SIDE_EFFECT_BUDGET_EXCEEDED", "message": "planned side_effect_units exceed side_effect_budget.max_side_effect_units"})
-    if isinstance(max_rpm, int) and len(action_reports) > max_rpm:
-        errors.append({"code": "RATE_LIMIT_EXCEEDED", "message": "planned action count exceeds rate_limits.max_requests_per_minute"})
+    max_actions_per_minute = None
+    if isinstance(max_rpm, int):
+        max_actions_per_minute = max_rpm
+    if isinstance(min_interval, (int, float)) and min_interval > 0:
+        interval_cap = int(math.floor(60.0 / float(min_interval))) + 1
+        max_actions_per_minute = interval_cap if max_actions_per_minute is None else min(max_actions_per_minute, interval_cap)
+    if isinstance(max_actions_per_minute, int) and len(action_reports) > max_actions_per_minute:
+        errors.append(
+            {
+                "code": "RATE_LIMIT_EXCEEDED",
+                "message": "planned actions exceed the per-minute cadence implied by rate_limits",
+            }
+        )
 
     dirty_policy = payload.get("dirty_worktree_policy", {})
     if isinstance(dirty_policy, dict) and dirty_policy.get("require_clean_worktree") is True:
