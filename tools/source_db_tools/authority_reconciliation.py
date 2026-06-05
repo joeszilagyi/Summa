@@ -224,7 +224,11 @@ def accept_candidate(
             """
             UPDATE extraction_detected_entity
             SET authority_record_id=?,
-                review_state=COALESCE(review_state, 'accepted'),
+                review_state=CASE
+                    WHEN review_state IN ('machine_extracted', 'needs_review', 'proposed', 'recorded', 'unreviewed')
+                    THEN 'accepted'
+                    ELSE review_state
+                END,
                 record_last_updated=?
             WHERE detected_entity_id=?
             """,
