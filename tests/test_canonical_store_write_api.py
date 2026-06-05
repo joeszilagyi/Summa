@@ -162,6 +162,10 @@ def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
             "SELECT review_state, provenance_event_ref FROM source_relationship WHERE source_relationship_id=?",
             (relationship.row_id,),
         ).fetchone()
+        source_access_row = conn.execute(
+            "SELECT review_state, provenance_event_ref FROM source_access WHERE source_access_id=?",
+            (source_access.row_id,),
+        ).fetchone()
         history_row = conn.execute(
             "SELECT new_state FROM review_state_history WHERE rowid=?",
             (history.row_id,),
@@ -185,7 +189,9 @@ def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     assert extraction_row["review_state"] == "needs_review"
     assert entity_row["review_state"] == "proposed"
     assert relationship_row["review_state"] == "proposed"
+    assert source_access_row["review_state"] == "needs_review"
     assert work_row["provenance_event_ref"] == provenance.event_key
+    assert source_access_row["provenance_event_ref"] == provenance.event_key
     assert claim_row["provenance_event_ref"] == provenance.event_key
     assert capture_row["provenance_event_ref"] == provenance.event_key
     assert extraction_row["provenance_event_ref"] == provenance.event_key
@@ -290,3 +296,57 @@ def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path
     assert counts["provenance_event"] == 0
     assert counts["work"] == 0
     assert counts["source_claim"] == 0
+
+
+def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-fallback",
+        )
+        first = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/source-access-fallback",
+            canonical_url="https://example.test/source-access-fallback",
+            workspace_id="delta_subject",
+            citation_hint="Fixture fallback source access",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/source-access-fallback",
+            canonical_url="https://example.test/source-access-fallback",
+            workspace_id="delta_subject",
+            citation_hint="Fixture fallback source access updated",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT provenance_event_ref, citation_hint
+            FROM source_access
+            WHERE source_access_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert second.row_id == first.row_id
+    assert row["provenance_event_ref"] == provenance.event_key
+    assert row["citation_hint"] == "Fixture fallback source access updated"

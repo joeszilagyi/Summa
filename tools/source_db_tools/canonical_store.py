@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 2
-CURRENT_MIGRATION_ID = "0002_cycle_evidence_ledger"
+CURRENT_SCHEMA_VERSION = 3
+CURRENT_MIGRATION_ID = "0003_source_access_provenance_event_ref"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -56,6 +56,7 @@ REQUIRED_INDEXES = {
     "ix_provenance_event_run",
     "ix_review_state_history_target",
     "ix_source_access_work",
+    "ix_source_access_provenance_event_ref",
     "ix_source_access_workspace",
     "ix_source_claim_about",
     "ix_source_claim_review",
@@ -204,9 +205,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=2,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0002_cycle_evidence_ledger",
         sql_path=MIGRATIONS_DIR / "0002_cycle_evidence_ledger.sql",
         notes="Add local cycle evidence ledger operational tables.",
+    ),
+    MigrationSpec(
+        version=3,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0003_source_access_provenance_event_ref.sql",
+        notes="Add source_access provenance_event_ref for fallback lookup compatibility.",
     ),
 )
 
@@ -1200,10 +1207,11 @@ def record_source_access(
               authority_level,
               public_blocker,
               workspace_id,
+              provenance_event_ref,
               first_seen_at,
               last_seen_at,
               record_last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 work_id,
@@ -1220,6 +1228,7 @@ def record_source_access(
                 _optional_nonblank(authority_level, "authority_level"),
                 _optional_nonblank(public_blocker, "public_blocker"),
                 _optional_nonblank(workspace_id, "workspace_id"),
+                provenance_event_ref,
                 first_seen_value,
                 last_seen_value,
                 timestamp,
@@ -1274,6 +1283,7 @@ def record_source_access(
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
+            "provenance_event_ref": provenance_event_ref,
             "first_seen_at": _first_present(existing["first_seen_at"], first_seen_value),
             "last_seen_at": last_seen_value,
             "record_last_updated": timestamp,

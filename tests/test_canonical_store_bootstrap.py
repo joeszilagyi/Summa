@@ -220,6 +220,47 @@ def test_migration_runner_refuses_downgrade_and_unknown_future_version(tmp_path:
         canonical_store.check_canonical_store(future_path)
 
 
+def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event_ref(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical-v2.sqlite"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        canonical_store.apply_migrations(
+            conn,
+            target_version=2,
+            applied_at=FIXED_TIMESTAMP,
+            applied_by="pytest",
+            migrations=canonical_store.MIGRATIONS[:2],
+        )
+    finally:
+        conn.close()
+
+    result = canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+
+    assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert result.applied_migration_ids == ("0003_source_access_provenance_event_ref",)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(source_access)").fetchall()
+        }
+        indexes = canonical_store.actual_indexes(conn)
+        version_row = canonical_store.get_schema_version(conn)
+    finally:
+        conn.close()
+
+    assert "provenance_event_ref" in columns
+    assert "ix_source_access_provenance_event_ref" in indexes
+    assert version_row is not None
+    assert version_row.schema_version == 3
+    assert version_row.current_migration_id == "0003_source_access_provenance_event_ref"
+
+
 def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:
     db_path = tmp_path / "broken_migration.sqlite"
     conn = canonical_store.connect_canonical_store(db_path)
