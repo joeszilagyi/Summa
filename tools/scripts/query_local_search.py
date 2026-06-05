@@ -38,6 +38,28 @@ SCRIPT_PATH = "tools/scripts/query_local_search.py"
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 20
 TOKEN_PATTERN = re.compile(r"[0-9A-Za-z]+", re.ASCII)
+COMPOSITE_RANK_PENALTY_SCALE = 0.95
+CONFIDENCE_BONUS_SCALE = 0.75
+
+AUTHORITY_SCORE_BY_LEVEL = {
+    "primary": -0.35,
+    "trusted": -0.20,
+    "approved": -0.15,
+    "secondary": -0.10,
+}
+
+REVIEW_STATE_BONUS = {
+    "accepted": 0.0,
+    "approved": -0.10,
+    "curated": -0.05,
+    "reviewed": -0.03,
+}
+
+NEGATIVE_REVIEW_STATE_PENALTY = {
+    "rejected": 2.0,
+    "deprecated": 2.0,
+    "demoted": 2.0,
+}
 
 
 class SearchQueryError(RuntimeError):
@@ -119,6 +141,37 @@ def normalize_plain_query(raw_query: str) -> tuple[str, list[str], str]:
     return normalized_query, terms, fts_query
 
 
+def rank_value(value: Any, mapping: dict[str, float], fallback: float) -> float:
+    if not isinstance(value, str):
+        return fallback
+    return mapping.get(value.strip().lower(), fallback)
+
+
+def confidence_score(row: sqlite3.Row) -> float:
+    raw_confidence = row["confidence_score"]
+    try:
+        value = float(raw_confidence)
+    except (TypeError, ValueError):
+        return 0.0
+    if value != value or value < 0:
+        return 0.0
+    return value
+
+
+def composite_score(row: sqlite3.Row, bm25_score: float) -> float:
+    authority_score = rank_value(row["authority_level"], AUTHORITY_SCORE_BY_LEVEL, 0.0)
+    review_score = rank_value(row["review_state"], REVIEW_STATE_BONUS, 0.0)
+    penalty = NEGATIVE_REVIEW_STATE_PENALTY.get((row["review_state"] or "").strip().lower(), 0.0)
+    confidence = min(1.0, confidence_score(row))
+    return (
+        (bm25_score * COMPOSITE_RANK_PENALTY_SCALE)
+        + authority_score
+        + review_score
+        + penalty
+        - (confidence * CONFIDENCE_BONUS_SCALE)
+    )
+
+
 def build_scope_clause(scope: str) -> tuple[str, list[str]]:
     if scope == "all":
         return "", []
@@ -153,13 +206,19 @@ def load_matching_rows(
         FROM search_projection_fts
         JOIN search_projection AS sp USING (projection_id)
         WHERE search_projection_fts MATCH ?{scope_clause}
-        ORDER BY score ASC, sp.object_type ASC, sp.object_pk ASC
-        LIMIT ? OFFSET ?
         """,
-        [fts_query, *scope_params, limit, offset],
+        [fts_query, *scope_params],
     ).fetchall()
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            composite_score(row, float(row["score"])),
+            str(row["object_type"]),
+            int(row["object_pk"]),
+        ),
+    )
     total = 0 if total_row is None else int(total_row[0])
-    return rows, total
+    return rows[offset : offset + limit], total
 
 
 def field_matches_terms(text: str, terms: list[str]) -> bool:

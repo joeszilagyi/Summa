@@ -126,6 +126,64 @@ def build_local_index(tmp_path: Path) -> Path:
     return index_db
 
 
+def create_ranked_search_db(
+    tmp_path: Path,
+    records: list[tuple[int, str, str, float]],
+) -> Path:
+    db = tmp_path / "ranked_search.sqlite"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE work (
+              work_id INTEGER PRIMARY KEY,
+              work_type TEXT,
+              title TEXT,
+              review_state TEXT,
+              publication_state TEXT,
+              authority_level TEXT,
+              confidence_score REAL,
+              public_blocker TEXT,
+              workspace_id TEXT
+            )
+            """
+        )
+        insert_sql = """
+            INSERT INTO work (
+              work_id, work_type, title, review_state, publication_state,
+              authority_level, confidence_score, public_blocker, workspace_id
+            ) VALUES (?, 'book', ?, 'reviewed', 'public_release_allowed', ?, ?, NULL, 'alpha_subject')
+            """
+        conn.executemany(insert_sql, records)
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def build_ranked_index(
+    tmp_path: Path,
+    records: list[tuple[int, str, str, float]],
+) -> Path:
+    db = create_ranked_search_db(tmp_path, records)
+    index_db = tmp_path / "ranked_projection.sqlite"
+    output_json = tmp_path / "ranked_projection.json"
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return index_db
+
+
 def test_query_cli_normalizes_plain_text_and_validates_json(tmp_path: Path) -> None:
     index_db = build_local_index(tmp_path)
     results_json = tmp_path / "results.json"
@@ -272,3 +330,51 @@ def test_results_validator_rejects_private_path_and_public_visibility_contradict
     ]
     assert report["errors"][0]["path"] == "results[0].snippets[0].text"
     assert report["errors"][1]["path"] == "results[0].publication_state"
+
+
+def test_query_ranking_prefers_authority_level_for_equal_confidence_matches(tmp_path: Path) -> None:
+    index_db = build_ranked_index(
+        tmp_path,
+        [
+            (1, "alpha ranking sample", "secondary", 0.55),
+            (2, "alpha ranking sample", "primary", 0.55),
+        ],
+    )
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "alpha",
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["counts"]["returned"] == 2
+    assert payload["results"][0]["object_id"] == "work:2"
+
+
+def test_query_ranking_prefers_higher_confidence_for_equal_authority(tmp_path: Path) -> None:
+    index_db = build_ranked_index(
+        tmp_path,
+        [
+            (3, "beta confidence sample", "secondary", 0.20),
+            (4, "beta confidence sample", "secondary", 0.95),
+        ],
+    )
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "beta",
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["counts"]["returned"] == 2
+    assert payload["results"][0]["object_id"] == "work:4"

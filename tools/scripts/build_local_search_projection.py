@@ -228,6 +228,22 @@ def first_nonblank(row: sqlite3.Row, *candidates: str) -> str | None:
     return None
 
 
+def first_nonblank_float(row: sqlite3.Row, *candidates: str) -> float | None:
+    columns = row_columns(row)
+    for field_name in candidates:
+        if field_name not in columns:
+            continue
+        raw_value = row[field_name]
+        try:
+            score = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if score != score:
+            continue
+        return score
+    return None
+
+
 def read_schema_version(conn: sqlite3.Connection) -> int | None:
     row = conn.execute("PRAGMA user_version").fetchone()
     return None if row is None else int(row[0])
@@ -414,6 +430,7 @@ def projection_record(
 
     publication_state = normalize_publication_state(row["publication_state"] if "publication_state" in columns else None)
     authority_level = first_nonblank(row, "authority_level", "authority_tier", "authority_status")
+    confidence_score = first_nonblank_float(row, "confidence_score", "confidence")
     public_blocker = first_nonblank(row, "public_blocker")
     if "public_blocked" in columns and public_blocker is None and row["public_blocked"]:
         public_blocker = "blocked"
@@ -444,6 +461,7 @@ def projection_record(
             "review_state": review_state,
             "publication_state": publication_state,
             "authority_level": authority_level,
+            "confidence_score": confidence_score,
             "public_blocker": public_blocker,
             "lineage_state": lineage_state,
             "visible_profiles": visible_profiles,
@@ -583,6 +601,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
               subtitle TEXT,
               review_state TEXT NOT NULL,
               publication_state TEXT NOT NULL,
+              confidence_score REAL,
               authority_level TEXT,
               public_blocker TEXT,
               lineage_state TEXT NOT NULL,
@@ -633,9 +652,9 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 """
                 INSERT INTO search_projection (
                   projection_id, object_ref, object_type, object_pk, title, subtitle,
-                  review_state, publication_state, authority_level, public_blocker,
+                  review_state, publication_state, confidence_score, authority_level, public_blocker,
                   lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["projection_id"],
@@ -646,6 +665,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                     record["subtitle"],
                     record["review_state"],
                     record["publication_state"],
+                    record["confidence_score"],
                     record["authority_level"],
                     record["public_blocker"],
                     record["lineage_state"],
