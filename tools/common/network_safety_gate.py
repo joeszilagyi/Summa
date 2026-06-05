@@ -56,7 +56,11 @@ def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
         if host == normalized_host or host.endswith("." + normalized_host):
             return True
     for prefix in prefixes:
-        if normalized_url.startswith(prefix):
+        parsed_prefix = urlparse(prefix)
+        normalized_prefix = parsed_prefix.geturl()
+        if not parsed_prefix.path:
+            normalized_prefix = parsed_prefix._replace(path="/").geturl()
+        if normalized_url.startswith(normalized_prefix):
             return True
     return False
 
