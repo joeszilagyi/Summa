@@ -175,6 +175,34 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert stages["execute_source_adapter"]["status"] == "skipped"
 
 
+def test_topic_cycle_rejects_resume_on_fresh_run_dir(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-resume-fresh"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-resume-fresh",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+            "--resume",
+        ]
+    )
+
+    assert proc.returncode != 0
+    assert "--resume is reserved" in proc.stderr
+    assert not (run_dir / "topic-cycle-run.json").exists()
+
+
 def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     tmp_path: Path,
 ) -> None:
