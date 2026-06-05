@@ -757,8 +757,30 @@ def check_canonical_store(db_path: Path) -> CheckResult:
 
 
 def stable_write_key(prefix: str, *parts: Any) -> str:
-    seed = "|".join("" if part is None else str(part) for part in parts)
+    seed = json.dumps(
+        [prefix, *(_stable_write_key_part(part) for part in parts)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     return f"{prefix}:{uuid.uuid5(WRITE_KEY_NAMESPACE, seed)}"
+
+
+def _stable_write_key_part(part: Any) -> dict[str, Any]:
+    if part is None:
+        return {"type": "null"}
+    if isinstance(part, bool):
+        return {"type": "bool", "value": part}
+    if isinstance(part, int):
+        return {"type": "int", "value": part}
+    if isinstance(part, float):
+        return {"type": "float", "value": part}
+    if isinstance(part, str):
+        return {"type": "str", "value": part}
+    return {
+        "type": f"{part.__class__.__module__}.{part.__class__.__qualname__}",
+        "value": str(part),
+    }
 
 
 def _require_nonblank(value: Any, field_name: str) -> str:
