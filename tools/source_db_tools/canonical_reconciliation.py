@@ -469,15 +469,28 @@ def find_existing_work_match(
     identifiers = candidate_identifiers(structured)
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         rows = conn.execute(
             """
             SELECT work.work_id, work.work_key_v1
             FROM work_identifier
             INNER JOIN work ON work.work_id = work_identifier.work_id
             WHERE work_identifier.scheme=? AND work_identifier.value=?
+              AND work_identifier.validity_status='valid'
+              AND work.review_state IN ({})
+              AND work_identifier.review_state IN ({})
+              AND COALESCE(work_identifier.confidence_score, 0.0) >= ?
             ORDER BY work.work_id
-            """,
-            (normalized["scheme"], normalized["value"]),
+            """.format(
+                review_state_placeholders, review_state_placeholders
+            ),
+            (
+                normalized["scheme"],
+                normalized["value"],
+                *AUTO_MERGE_REVIEW_STATES,
+                *AUTO_MERGE_REVIEW_STATES,
+                AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
+            ),
         ).fetchall()
         distinct_ids = {int(row["work_id"]) for row in rows}
         if len(distinct_ids) > 1:
