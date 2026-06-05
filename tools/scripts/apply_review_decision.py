@@ -182,13 +182,12 @@ def spool_review_decision(args: argparse.Namespace, failure: BaseException) -> d
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+def _execute_review_decision(args: argparse.Namespace) -> dict[str, Any]:
     try:
         db_path = resolve_db_path(args.db)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
-            result = review_decision_apply.apply_review_decision(
+            return review_decision_apply.apply_review_decision(
                 conn,
                 target=args.target,
                 decision_action=args.decision,
@@ -209,43 +208,50 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         if args.degraded_spool and not args.dry_run:
             try:
-                result = spool_review_decision(args, exc)
+                return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                payload = {
-                    "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
-                    "status": "failed",
-                    "error": f"{exc}; spool failed: {spool_exc}",
-                }
-                print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
-                return 2
+                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
         else:
-            payload = {
-                "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
-                "status": "failed",
-                "error": str(exc),
-            }
-            print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
-            return 2
+            raise
     except Exception as exc:
         if args.degraded_spool and not args.dry_run:
             try:
-                result = spool_review_decision(args, exc)
+                return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                payload = {
-                    "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
-                    "status": "failed",
-                    "error": f"{exc}; spool failed: {spool_exc}",
-                }
-                print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
-                return 2
-        else:
-            payload = {
-                "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
-                "status": "failed",
-                "error": str(exc),
-            }
-            print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
-            return 2
+                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
+        raise
+
+
+def run(argv: list[str] | None = None) -> dict[str, Any]:
+    args = parse_args(argv)
+    return _execute_review_decision(args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        result = _execute_review_decision(args)
+    except (
+        ApplyReviewDecisionCliError,
+        review_decision_apply.ReviewDecisionApplyError,
+        canonical_store.CanonicalStoreError,
+        sqlite3.Error,
+    ) as exc:
+        payload = {
+            "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+            "status": "failed",
+            "error": str(exc),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+        return 2
+    except Exception as exc:
+        payload = {
+            "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+            "status": "failed",
+            "error": str(exc),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+        return 2
 
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))

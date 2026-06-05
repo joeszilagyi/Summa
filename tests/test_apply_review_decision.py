@@ -13,6 +13,7 @@ from tools.source_db_tools import (
     canonical_store,
     review_decision_apply,
 )
+from tools.scripts import apply_review_decision as apply_review_script
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -269,6 +270,40 @@ def test_cli_reject_claim_applies_decision_and_outputs_json(tmp_path: Path) -> N
     assert payload["status"] == "completed"
     assert payload["target"] == f"source_claim:{claim.row_id}"
     assert claim_row["review_state"] == "rejected"
+
+
+def test_run_spools_on_write_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = bootstrap_db(tmp_path)
+    spool_dir = tmp_path / "spool"
+
+    def fail_apply(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise review_decision_apply.ReviewDecisionApplyError("synthetic write failure")
+
+    monkeypatch.setattr(
+        apply_review_script.review_decision_apply, "apply_review_decision", fail_apply
+    )
+
+    result = apply_review_script.run(
+        [
+            "--db",
+            str(db_path),
+            "--target",
+            "source_claim:1",
+            "--decision",
+            "reject_claim",
+            "--reviewer",
+            "operator",
+            "--reason",
+            "exercise degraded spool",
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ]
+    )
+
+    assert result["status"] == "spooled"
+    assert spool_dir.exists()
+    assert Path(result["spool_record_path"]).is_file()
 
 
 def test_accept_authority_merge_repoints_safe_references_and_preserves_rows(tmp_path: Path) -> None:
