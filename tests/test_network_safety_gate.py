@@ -75,6 +75,7 @@ def test_network_safety_gate_allows_valid_dry_run_and_reports_actions(tmp_path: 
     assert payload["decision"] == "dry_run"
     assert payload["execution_allowed"] is False
     assert payload["counts"]["planned_actions"] == 2
+    assert payload["counts"]["total_side_effect_units"] == 2
     assert all(action["status"] == "planned" for action in payload["planned_actions"])
 
 

@@ -221,7 +221,8 @@ def evaluate_request(
             continue
         url = str(action.get("url", ""))
         method = action.get("method")
-        units = action.get("side_effect_units") if isinstance(action.get("side_effect_units"), int) else 0
+        raw_units = action.get("side_effect_units")
+        units = raw_units if isinstance(raw_units, int) and not isinstance(raw_units, bool) else 0
         total_units += units
         action_errors: list[str] = []
         if not hosts and not prefixes:
