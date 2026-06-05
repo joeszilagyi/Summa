@@ -20,6 +20,7 @@ if str(VALIDATORS_DIR) not in sys.path:
 import migration_ledger
 
 spec = importlib.util.spec_from_file_location("migration_ledger_validator_for_tests", VALIDATORS_DIR / "validate_migration_ledger.py")
+assert spec is not None
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)

@@ -11,6 +11,7 @@ support_builder_spec = importlib.util.spec_from_file_location(
     "redacted_support_bundle_builder_for_tests",
     SUPPORT_BUILDER_PATH,
 )
+assert support_builder_spec is not None
 support_builder = importlib.util.module_from_spec(support_builder_spec)
 assert support_builder_spec.loader is not None
 support_builder_spec.loader.exec_module(support_builder)

@@ -14,6 +14,7 @@ SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "scan_for_leaks.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "leak_scanner"
 
 common_spec = importlib.util.spec_from_file_location("leak_scanner_common_for_tests", COMMON_PATH)
+assert common_spec is not None
 scanner = importlib.util.module_from_spec(common_spec)
 assert common_spec.loader is not None
 sys.modules[common_spec.name] = scanner

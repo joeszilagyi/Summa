@@ -16,6 +16,7 @@ BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_local_search_projection.py"
 
 spec = importlib.util.spec_from_file_location("local_search_projection_validator_for_tests", VALIDATOR_PATH)
+assert spec is not None
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)
@@ -24,6 +25,7 @@ builder_spec = importlib.util.spec_from_file_location(
     "local_search_projection_builder_for_tests",
     BUILDER,
 )
+assert builder_spec is not None
 builder = importlib.util.module_from_spec(builder_spec)
 assert builder_spec.loader is not None
 sys.modules[builder_spec.name] = builder

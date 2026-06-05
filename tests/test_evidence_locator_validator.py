@@ -27,11 +27,13 @@ if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
 spec = importlib.util.spec_from_file_location("evidence_locator_validator_for_tests", VALIDATOR_PATH)
+assert spec is not None
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)
 
 field_review_spec = importlib.util.spec_from_file_location("field_review_state_validator_for_evidence_tests", FIELD_REVIEW_VALIDATOR_PATH)
+assert field_review_spec is not None
 field_review_validator = importlib.util.module_from_spec(field_review_spec)
 assert field_review_spec.loader is not None
 field_review_spec.loader.exec_module(field_review_validator)

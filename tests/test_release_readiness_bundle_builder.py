@@ -17,6 +17,7 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "release_readin
 spec = importlib.util.spec_from_file_location(
     "release_readiness_bundle_builder_for_tests", SCRIPT_PATH
 )
+assert spec is not None
 builder = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 sys.modules[spec.name] = builder

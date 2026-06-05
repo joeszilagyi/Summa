@@ -14,11 +14,13 @@ VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_static_knowledge
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "static_knowledge_tree_builder" / "valid_full" / "inputs"
 
 builder_spec = importlib.util.spec_from_file_location("static_knowledge_tree_builder_for_output_tests", BUILDER_PATH)
+assert builder_spec is not None
 builder = importlib.util.module_from_spec(builder_spec)
 assert builder_spec.loader is not None
 builder_spec.loader.exec_module(builder)
 
 validator_spec = importlib.util.spec_from_file_location("static_knowledge_tree_output_validator_for_tests", VALIDATOR_PATH)
+assert validator_spec is not None
 validator = importlib.util.module_from_spec(validator_spec)
 assert validator_spec.loader is not None
 validator_spec.loader.exec_module(validator)

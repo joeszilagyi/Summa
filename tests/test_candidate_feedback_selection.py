@@ -19,6 +19,7 @@ validator_spec = importlib.util.spec_from_file_location(
     "candidate_feedback_validator_for_selection_tests",
     VALIDATOR_PATH,
 )
+assert validator_spec is not None
 validator = importlib.util.module_from_spec(validator_spec)
 assert validator_spec.loader is not None
 validator_spec.loader.exec_module(validator)

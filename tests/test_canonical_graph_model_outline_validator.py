@@ -17,6 +17,7 @@ if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
 spec = importlib.util.spec_from_file_location("canonical_graph_model_outline_validator_for_tests", VALIDATOR_PATH)
+assert spec is not None
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)
