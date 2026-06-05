@@ -809,7 +809,7 @@ def record_authority_reconciliation(
     )
     existing = conn.execute(
         """
-        SELECT authority_reconciliation_id, review_state
+        SELECT authority_reconciliation_id, review_state, updated_at, record_last_updated
         FROM authority_reconciliation
         WHERE reconciliation_key_v1=?
         """,
@@ -880,8 +880,8 @@ def record_authority_reconciliation(
                     review_state_value,
                 )
             ),
-            created_at,
-            created_at,
+            canonical_store._max_nonnull_iso(existing["updated_at"], created_at),
+            canonical_store._max_nonnull_iso(existing["record_last_updated"], created_at),
             int(existing["authority_reconciliation_id"]),
         ),
     )

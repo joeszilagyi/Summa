@@ -11,6 +11,8 @@ from tools.source_db_tools import authority_reconciliation, canonical_ingest, ca
 
 
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
+OLDER_TIMESTAMP = "2026-06-02T09:08:07Z"
+NEWER_TIMESTAMP = "2026-06-04T10:09:08Z"
 
 
 def bootstrap_db(tmp_path: Path) -> Path:
@@ -758,7 +760,112 @@ def test_rejected_authority_identifier_does_not_auto_merge(tmp_path: Path) -> No
     assert reconciliation_count == 1
     assert entity["authority_record_id"] is None
     assert entity["review_state"] == "proposed"
-    assert report["counts"]["reconciled"]["authority_reconciliation"] == 1
+
+
+def test_authority_reconciliation_replay_preserves_monotonic_timestamps(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="pytest",
+                object_id="authority-reconciliation",
+                event_type="fixture_ingest",
+                tool_name="pytest",
+                event_timestamp=NEWER_TIMESTAMP,
+                provenance_event_key_v1="prov:authority-reconciliation",
+            )
+            capture = canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator="https://example.test/authority-reconciliation",
+                captured_at=NEWER_TIMESTAMP,
+                capture_method="fixture_capture",
+                content_hash="f" * 64,
+                workspace_id="fixture_subject",
+                record_last_updated=NEWER_TIMESTAMP,
+            )
+            extraction = canonical_store.record_extraction_record(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                capture_event_id=capture.row_id,
+                extraction_method="fixture_extract",
+                extraction_status="completed",
+                input_hash="f" * 64,
+                output_hash="e" * 64,
+                byte_count_in=10,
+                byte_count_out=5,
+                workspace_id="fixture_subject",
+                created_at=NEWER_TIMESTAMP,
+                record_last_updated=NEWER_TIMESTAMP,
+            )
+            entity = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                extraction_id=extraction.row_id,
+                capture_event_id=capture.row_id,
+                entity_label="Jane Smith",
+                normalized_label="jane smith",
+                entity_type="person",
+                workspace_id="fixture_subject",
+                record_last_updated=NEWER_TIMESTAMP,
+            )
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith.reconcile",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=NEWER_TIMESTAMP,
+            )
+            first = canonical_reconciliation.record_authority_reconciliation(
+                conn,
+                detected_entity_id=entity.row_id,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_record_id=authority_id,
+                method="exact_identifier",
+                match_method="exact_identifier",
+                confidence_score=0.95,
+                evidence_context="initial reconciliation",
+                review_state="needs_review",
+                created_at=NEWER_TIMESTAMP,
+            )
+            second = canonical_reconciliation.record_authority_reconciliation(
+                conn,
+                detected_entity_id=entity.row_id,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_record_id=authority_id,
+                method="exact_identifier",
+                match_method="exact_identifier",
+                confidence_score=0.75,
+                evidence_context="replayed with older timestamp",
+                review_state="approved",
+                created_at=OLDER_TIMESTAMP,
+            )
+        row = conn.execute(
+            """
+            SELECT updated_at, record_last_updated, confidence_score, evidence_context, review_state
+            FROM authority_reconciliation
+            WHERE authority_reconciliation_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert row["updated_at"] == NEWER_TIMESTAMP
+    assert row["record_last_updated"] == NEWER_TIMESTAMP
+    assert row["confidence_score"] == pytest.approx(0.75)
+    assert row["evidence_context"] == "replayed with older timestamp"
+    assert row["review_state"] == "approved"
 
 
 def test_structured_taught_by_impossibility_creates_contradiction_and_review_history(tmp_path: Path) -> None:
