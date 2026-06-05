@@ -168,7 +168,7 @@ def render_canonical_notes(report: dict[str, Any]) -> str:
     canonical_store = report.get("canonical_store", {})
     warnings = canonical_store.get("warnings", [])
     errors = canonical_store.get("errors", [])
-    notes = []
+    notes: list[str] = []
     interpretation = canonical_store.get("recommended_interpretation")
     if interpretation:
         notes.append(f"interpretation: {interpretation}")
@@ -201,7 +201,7 @@ def render_loop_health_cycle_rows(report: dict[str, Any]) -> str:
 
 def render_loop_health_notes(report: dict[str, Any]) -> str:
     loop = report.get("loop_health", {})
-    notes = []
+    notes: list[str] = []
     notes.extend(f"warning: {item}" for item in loop.get("warnings", []))
     notes.extend(f"limitation: {item}" for item in loop.get("limitations", []))
     rows = [f'<tr><td colspan="2">{esc(note)}</td></tr>' for note in notes if note]
