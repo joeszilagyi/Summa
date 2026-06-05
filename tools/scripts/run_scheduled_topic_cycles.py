@@ -182,7 +182,7 @@ def max_attempts_exceeded(record: dict[str, Any], *, prior_attempts: int) -> str
     return None
 
 
-def runtime_budget_missing(record: dict[str, Any]) -> int | None:
+def get_runtime_budget_seconds(record: dict[str, Any]) -> int | None:
     run_budget = record.get("run_budget")
     max_runtime = run_budget.get("max_runtime_seconds") if isinstance(run_budget, dict) else None
     return max_runtime if isinstance(max_runtime, int) else None
@@ -306,7 +306,7 @@ def run_scheduled_cycles(
             manifest["deferred_workspace_count"] += 1
             manifest["workspace_results"].append(result)
             continue
-        runtime_budget = runtime_budget_missing(record)
+        runtime_budget = get_runtime_budget_seconds(record)
         child_run_id = f"{run_id}.{workspace_id}.{result['attempt_number']}"
         child_run_dir = run_dir / workspace_id / child_run_id
         command = [
