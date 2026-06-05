@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -92,7 +93,7 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "current_migration_id": check.current_migration_id,
         }
         conn = canonical_store.connect_canonical_store(db_path)
-    except canonical_store.CanonicalStoreError as exc:
+    except (canonical_store.CanonicalStoreError, sqlite3.Error) as exc:
         report["status"] = "failed"
         report["warnings"].append(str(exc))
         report["ended_at"] = canonical_write_spool.now_rfc3339()
