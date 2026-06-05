@@ -218,6 +218,13 @@ def load_spool_record(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise CanonicalWriteSpoolError(f"spool record must be a JSON object: {path}")
     validate_spool_record(payload)
+    stored_spool_path = payload.get("spool_path")
+    if not isinstance(stored_spool_path, str):
+        raise CanonicalWriteSpoolError(f"spool record missing spool_path: {path}")
+    if Path(stored_spool_path).resolve() != path.resolve():
+        raise CanonicalWriteSpoolError(
+            f"spool record path mismatch: stored={stored_spool_path} actual={path}"
+        )
     return payload
 
 
