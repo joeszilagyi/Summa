@@ -41,6 +41,24 @@ def _result(
     }
 
 
+def _isbn10_check_digit_is_valid(value: str) -> bool:
+    total = 0
+    for index, char in enumerate(value[:9], start=1):
+        total += index * int(char)
+    check_digit = 10 if value[9] == "X" else int(value[9])
+    total += 10 * check_digit
+    return total % 11 == 0
+
+
+def _isbn13_check_digit_is_valid(value: str) -> bool:
+    total = 0
+    for index, char in enumerate(value[:12]):
+        digit = int(char)
+        total += digit if index % 2 == 0 else 3 * digit
+    expected = (10 - (total % 10)) % 10
+    return expected == int(value[12])
+
+
 def identifier_storage_values(scheme: Any, value: Any) -> dict[str, Any]:
     raw_scheme = normalize_scheme(scheme)
     raw_value = str(value or "").strip()
@@ -113,6 +131,24 @@ def identifier_storage_values(scheme: Any, value: Any) -> dict[str, Any]:
                 normalized_uri=None,
                 validity_status="invalid",
                 validation_warning="ISBN must normalize to 10 or 13 characters",
+            )
+        if len(normalized) == 10 and not _isbn10_check_digit_is_valid(normalized):
+            return _result(
+                scheme="isbn",
+                raw_value=raw_value,
+                value=normalized,
+                normalized_uri=None,
+                validity_status="invalid",
+                validation_warning="ISBN-10 check digit is invalid",
+            )
+        if len(normalized) == 13 and not _isbn13_check_digit_is_valid(normalized):
+            return _result(
+                scheme="isbn",
+                raw_value=raw_value,
+                value=normalized,
+                normalized_uri=None,
+                validity_status="invalid",
+                validation_warning="ISBN-13 check digit is invalid",
             )
         return _result(
             scheme="isbn",

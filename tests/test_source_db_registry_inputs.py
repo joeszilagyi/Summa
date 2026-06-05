@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DB_DIR = REPO_ROOT / "tools" / "source_db_tools"
@@ -94,6 +96,25 @@ def test_identifier_normalization_helpers_are_loadable() -> None:
     assert normalized["scheme"] == "doi"
     assert normalized["normalized_value"] == "10.1000/fixture"
     assert normalized["validity_status"] == "valid"
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_value", "expected_status"),
+    [
+        ("0-306-40615-2", "0306406152", "valid"),
+        ("0-306-40615-3", "0306406153", "invalid"),
+        ("978-0-306-40615-7", "9780306406157", "valid"),
+        ("978-0-306-40615-8", "9780306406158", "invalid"),
+    ],
+)
+def test_identifier_normalization_rejects_bad_isbn_check_digits(
+    raw_value: str, expected_value: str, expected_status: str
+) -> None:
+    normalized = identifier_normalization.identifier_storage_values("isbn", raw_value)
+
+    assert normalized["scheme"] == "isbn"
+    assert normalized["value"] == expected_value
+    assert normalized["validity_status"] == expected_status
 
 
 def test_validate_schema_profile_cli_uses_restored_helpers_and_registries(tmp_path: Path) -> None:
