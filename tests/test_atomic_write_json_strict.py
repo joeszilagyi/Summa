@@ -55,3 +55,20 @@ def test_fsync_directory_is_best_effort_on_fsync_failure(monkeypatch, tmp_path) 
     _fsync_directory(tmp_path)
 
     assert opened_fds == [11, 11]
+
+
+def test_atomic_write_text_keeps_renamed_output_when_directory_fsync_fails(
+    monkeypatch, tmp_path
+) -> None:
+    output = tmp_path / "artifact.txt"
+
+    def fake_fsync_directory(_path):
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr("tools.common.atomic_write._fsync_directory", fake_fsync_directory)
+
+    from tools.common.atomic_write import atomic_write_text
+
+    atomic_write_text(output, "payload\n")
+
+    assert output.read_text(encoding="utf-8") == "payload\n"
