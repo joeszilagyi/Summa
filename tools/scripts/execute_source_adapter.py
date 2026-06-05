@@ -272,12 +272,18 @@ def is_probably_binary(payload: bytes) -> bool:
         return False
     if b"\x00" in payload:
         return True
-    sample = payload[:4096]
-    printable = 0
-    for byte_value in sample:
-        if byte_value in {9, 10, 13} or 32 <= byte_value <= 126:
-            printable += 1
-    return printable / len(sample) < 0.75
+    return False
+
+
+def is_probably_text(decoded_text: str) -> bool:
+    if not decoded_text:
+        return True
+    sample = decoded_text[:4096]
+    text_like = 0
+    for char in sample:
+        if char.isprintable() or char.isspace():
+            text_like += 1
+    return text_like / len(sample) >= 0.75
 
 
 def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
@@ -286,9 +292,12 @@ def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
     if is_probably_binary(payload):
         return None, "binary_unsupported", "binaryish_payload"
     try:
-        return payload.decode("utf-8"), "utf8", None
+        decoded_text = payload.decode("utf-8")
     except UnicodeDecodeError:
         return None, "invalid_utf8", "invalid_utf8"
+    if not is_probably_text(decoded_text):
+        return None, "binary_unsupported", "binaryish_payload"
+    return decoded_text, "utf8", None
 
 
 def guess_content_type(path: Path, *, fallback: str = "application/octet-stream") -> str:
