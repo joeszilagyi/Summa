@@ -143,6 +143,31 @@ def test_view_model_validator_rejects_wrong_top_level_type(tmp_path: Path) -> No
     assert report["errors"][0]["path"] == "$.counts"
 
 
+def test_view_model_validator_rejects_non_object_schema_payload(tmp_path: Path) -> None:
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir()
+    (schema_dir / "workspace-overview.v1.schema.json").write_text(
+        json.dumps(["not", "an", "object"]) + "\n",
+        encoding="utf-8",
+    )
+    target = write_payload(tmp_path, MINIMAL_PAYLOADS["workspace-overview.v1"])
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(target), "--schema-dir", str(schema_dir), "--format", "json"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert report["status"] == "fail"
+    assert report["errors"][0]["code"] == "SCHEMA_INVALID"
+    assert report["errors"][0]["message"] == "schema top-level JSON value must be an object"
+
+
 def test_view_model_validator_rejects_nonstandard_json_constants(tmp_path: Path) -> None:
     target = tmp_path / "view-model.json"
     target.write_text(
