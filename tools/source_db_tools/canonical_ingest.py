@@ -520,6 +520,8 @@ def ingest_candidate_batch(
                     to_object_ref=structured.get("to_object_ref"),
                     target_label=structured.get("target_label"),
                     evidence_note=structured.get("evidence_note"),
+                    review_state=structured.get("review_state"),
+                    confidence_score=structured.get("confidence_score"),
                     workspace_id=workspace_id,
                 )
                 _bump(report, "inserted" if result.created else "updated", "source_relationship")
