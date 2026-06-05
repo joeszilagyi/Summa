@@ -48,6 +48,7 @@ from tools.validators.validate_source_acquisition_execution import (  # noqa: E4
 SCHEMA_VERSION = "topic-cycle-run.v1"
 DEFAULT_FACET = "sources"
 DEFAULT_PHASE = "01a"
+KNOWN_RUN_STATUSES = {"completed", "dry_run", "failed", "partial"}
 REMOTE_FETCH_ENABLED = False
 
 
@@ -436,6 +437,10 @@ def validate_existing_run_dir(run_dir: Path, *, force: bool, resume: bool) -> No
         return
     payload = read_json(manifest_path, label="existing topic-cycle manifest")
     status = payload.get("status")
+    if status not in KNOWN_RUN_STATUSES:
+        raise TopicCycleError(
+            f"topic cycle run already exists with unknown status {status!r}; use --force or a new run id"
+        )
     if status in {"completed", "dry_run"} and not force:
         raise TopicCycleError(
             f"topic cycle run already completed at {manifest_path}; use --force or a new run id"
