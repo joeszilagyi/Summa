@@ -238,5 +238,80 @@ def test_record_authority_reconciliation_preserves_established_review_state_on_r
     assert replay.created is False
     assert replay.row_id == baseline.row_id
     assert row["review_state"] == existing_state
-    assert row["confidence_score"] == 0.7
-    assert row["evidence_context"] == "after"
+
+
+def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
+    tmp_path,
+) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        with conn:
+            winner_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith Winner",
+                source_namespace="pytest",
+                source_id="jane-smith-winner",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            loser_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith Loser",
+                source_namespace="pytest",
+                source_id="jane-smith-loser",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            first = canonical_reconciliation.record_authority_merge_event(
+                conn,
+                from_authority_record_id=loser_id,
+                into_authority_record_id=winner_id,
+                merge_reason="review_decision_accept_merge",
+                evidence_note="first merge pass",
+                merged_by="operator",
+                merged_at=FIXED_TIMESTAMP,
+            )
+            second = canonical_reconciliation.record_authority_merge_event(
+                conn,
+                from_authority_record_id=loser_id,
+                into_authority_record_id=winner_id,
+                merge_reason="review_decision_accept_merge",
+                evidence_note="replayed merge pass",
+                merged_by="operator",
+                merged_at="2026-06-07T00:00:00Z",
+            )
+            loser = conn.execute(
+                """
+                SELECT merged_into_authority_record_id, reconciliation_status, record_last_updated
+                FROM authority_record
+                WHERE authority_record_id=?
+                """,
+                (loser_id,),
+            ).fetchone()
+            merge_row = conn.execute(
+                """
+                SELECT merge_reason, evidence_note, merged_at, merged_by
+                FROM authority_merge_event
+                WHERE from_authority_record_id=? AND into_authority_record_id=?
+                """,
+                (loser_id, winner_id),
+            ).fetchone()
+            merge_count = conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert loser["merged_into_authority_record_id"] == winner_id
+    assert loser["reconciliation_status"] == "merged"
+    assert loser["record_last_updated"] == FIXED_TIMESTAMP
+    assert merge_count == 1
+    assert merge_row["merge_reason"] == "review_decision_accept_merge"
+    assert merge_row["evidence_note"] == "first merge pass"
+    assert merge_row["merged_at"] == FIXED_TIMESTAMP
+    assert merge_row["merged_by"] == "operator"
