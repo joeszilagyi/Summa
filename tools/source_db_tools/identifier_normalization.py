@@ -11,7 +11,7 @@ DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$",
 ISBN_RE = re.compile(r"^[0-9]{9}[0-9Xx]$|^[0-9]{13}$")
 ISSN_RE = re.compile(r"^[0-9]{7}[0-9Xx]$")
 ORCID_RE = re.compile(r"^(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-\d{3}[0-9Xx])$", re.IGNORECASE)
-WIKIDATA_RE = re.compile(r"^(Q\d+)$", re.IGNORECASE)
+WIKIDATA_RE = re.compile(r"^([QP]\d+)$", re.IGNORECASE)
 SUPPORTED_SCHEMES = {"doi", "isbn", "issn", "orcid", "wikidata", "url", "http", "https", "local"}
 
 
@@ -209,14 +209,19 @@ def identifier_storage_values(scheme: Any, value: Any) -> dict[str, Any]:
                 value=raw_value.upper(),
                 normalized_uri=None,
                 validity_status="invalid",
-                validation_warning="Wikidata id must look like Q<number>",
+                validation_warning="Wikidata id must look like Q<number> or P<number>",
             )
         normalized = match.group(1).upper()
+        normalized_uri = (
+            f"https://www.wikidata.org/entity/{normalized}"
+            if normalized.startswith("Q")
+            else f"https://www.wikidata.org/wiki/Property:{normalized}"
+        )
         return _result(
             scheme="wikidata",
             raw_value=raw_value,
             value=normalized,
-            normalized_uri=f"https://www.wikidata.org/entity/{normalized}",
+            normalized_uri=normalized_uri,
             validity_status="valid",
             validation_warning=None,
         )

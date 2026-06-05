@@ -117,6 +117,24 @@ def test_identifier_normalization_rejects_bad_isbn_check_digits(
     assert normalized["validity_status"] == expected_status
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected_uri"),
+    [
+        ("Q42", "https://www.wikidata.org/entity/Q42"),
+        ("P31", "https://www.wikidata.org/wiki/Property:P31"),
+    ],
+)
+def test_identifier_normalization_accepts_wikidata_entities_and_properties(
+    raw_value: str, expected_uri: str
+) -> None:
+    normalized = identifier_normalization.identifier_storage_values("wikidata", raw_value)
+
+    assert normalized["scheme"] == "wikidata"
+    assert normalized["value"] == raw_value.upper()
+    assert normalized["normalized_uri"] == expected_uri
+    assert normalized["validity_status"] == "valid"
+
+
 def test_validate_schema_profile_cli_uses_restored_helpers_and_registries(tmp_path: Path) -> None:
     db = create_schema_profile_db(tmp_path)
     tool = REPO_ROOT / "tools" / "source_db_tools" / "validate_schema_profile.py"
