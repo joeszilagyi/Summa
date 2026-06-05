@@ -8,12 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from tools.source_db_tools import authority_reconciliation, canonical_store, export_bibliography, provenance_events, review_queue
-
+from tools.source_db_tools import (
+    authority_reconciliation,
+    canonical_store,
+    export_bibliography,
+    provenance_events,
+    review_queue,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = REPO_ROOT / "tools" / "source_db_tools" / "init_canonical_store.py"
-MIGRATION_SQL = REPO_ROOT / "tools" / "source_db_tools" / "schema" / "migrations" / "0001_canonical_store.sql"
 FIXED_TIMESTAMP = "2026-06-03T08:00:00Z"
 
 
@@ -30,6 +34,10 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 def expected_bootstrap_tables() -> set[str]:
     outline = canonical_store.load_canonical_outline()
     return canonical_store.expected_bootstrap_tables_from_outline(outline)
+
+
+def expected_migration_ids() -> tuple[str, ...]:
+    return tuple(migration.migration_id for migration in canonical_store.MIGRATIONS)
 
 
 def bootstrap_db(tmp_path: Path, *, name: str = "canonical.sqlite") -> Path:
@@ -57,7 +65,7 @@ def test_init_cli_can_bootstrap_and_check_store(tmp_path: Path) -> None:
 
     assert init_result.returncode == 0, init_result.stdout + init_result.stderr
     assert "status=ok" in init_result.stdout
-    assert "schema_version=1" in init_result.stdout
+    assert f"schema_version={canonical_store.CURRENT_SCHEMA_VERSION}" in init_result.stdout
     assert check_result.returncode == 0, check_result.stdout + check_result.stderr
     assert "action=check" in check_result.stdout
 
@@ -74,7 +82,7 @@ def test_empty_db_bootstrap_creates_required_tables_and_metadata(tmp_path: Path)
     assert db_path.exists()
     assert result.created is True
     assert result.changed is True
-    assert result.applied_migration_ids == (canonical_store.CURRENT_MIGRATION_ID,)
+    assert result.applied_migration_ids == expected_migration_ids()
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -85,9 +93,12 @@ def test_empty_db_bootstrap_creates_required_tables_and_metadata(tmp_path: Path)
         assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
         assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
         history_rows = canonical_store.load_applied_migrations(conn)
-        assert len(history_rows) == 1
-        assert history_rows[0]["migration_id"] == canonical_store.CURRENT_MIGRATION_ID
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == canonical_store.CURRENT_SCHEMA_VERSION
+        assert len(history_rows) == canonical_store.CURRENT_SCHEMA_VERSION
+        assert tuple(row["migration_id"] for row in history_rows) == expected_migration_ids()
+        assert (
+            int(conn.execute("PRAGMA user_version").fetchone()[0])
+            == canonical_store.CURRENT_SCHEMA_VERSION
+        )
     finally:
         conn.close()
 
@@ -119,7 +130,7 @@ def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
             f"SELECT COUNT(*) FROM {canonical_store.SCHEMA_VERSION_TABLE} WHERE schema_namespace=?",
             (canonical_store.SCHEMA_NAMESPACE,),
         ).fetchone()[0]
-        assert int(history_count) == 1
+        assert int(history_count) == canonical_store.CURRENT_SCHEMA_VERSION
         assert int(version_count) == 1
         assert canonical_store.actual_tables(conn) == set(first.tables) == set(second.tables)
     finally:
@@ -148,9 +159,18 @@ def test_outline_and_bootstrap_tables_do_not_drift(tmp_path: Path) -> None:
     outline = canonical_store.load_canonical_outline()
     classified = canonical_store.classified_outline_tables(outline)
 
-    assert canonical_store.expected_tables_from_outline(outline) >= canonical_store.DOCUMENTED_EXPECTED_SQLITE_TABLES
-    assert canonical_store.supporting_tables_from_outline(outline) == canonical_store.REQUIRED_SUPPORTING_SQLITE_TABLES
-    assert canonical_store.schema_metadata_tables_from_outline(outline) == canonical_store.REQUIRED_SCHEMA_METADATA_TABLES
+    assert (
+        canonical_store.expected_tables_from_outline(outline)
+        >= canonical_store.DOCUMENTED_EXPECTED_SQLITE_TABLES
+    )
+    assert (
+        canonical_store.supporting_tables_from_outline(outline)
+        == canonical_store.REQUIRED_SUPPORTING_SQLITE_TABLES
+    )
+    assert (
+        canonical_store.schema_metadata_tables_from_outline(outline)
+        == canonical_store.REQUIRED_SCHEMA_METADATA_TABLES
+    )
 
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -215,7 +235,9 @@ def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:
         ),
     )
     try:
-        with pytest.raises(canonical_store.CanonicalStoreError, match="failed to apply canonical store migrations"):
+        with pytest.raises(
+            canonical_store.CanonicalStoreError, match="failed to apply canonical store migrations"
+        ):
             canonical_store.apply_migrations(
                 conn,
                 target_version=2,
@@ -380,7 +402,10 @@ def test_existing_source_db_helpers_work_against_bootstrapped_store(tmp_path: Pa
 
 def test_migration_sql_contains_no_destructive_statements() -> None:
     sql_text = "\n".join(
-        line for line in MIGRATION_SQL.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("--")
+        line
+        for migration in canonical_store.MIGRATIONS
+        for line in migration.sql_path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("--")
     ).upper()
     assert "DROP TABLE" not in sql_text
     assert "CREATE TABLE AS SELECT" not in sql_text

@@ -40,14 +40,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
-    DEFERRED_CANDIDATE_KINDS,
     DEFAULT_SCORING_WEIGHTS,
+    DEFERRED_CANDIDATE_KINDS,
     LEAD_KINDS,
     NEXT_ACTION_KINDS,
     SCHEMA_VERSION,
     SCORING_POLICY_ID,
 )
-
+from tools.common.selection_explanation import (  # noqa: E402
+    validate_selection_explanation,
+)
 
 VALIDATOR_NAME = "candidate_feedback_plan"
 CONTRACT_VERSION = "1"
@@ -66,6 +68,7 @@ REQUIRED_KEYS = {
     "lead_scores",
     "next_action",
     "deferred",
+    "selection_explanation",
     "warnings",
     "errors",
 }
@@ -591,6 +594,41 @@ def validate_deferred(payload: dict[str, Any], errors: list[dict[str, Any]]) -> 
         validate_nonblank_string(item.get("reason"), field_name=f"{label}.reason", errors=errors, code="INVALID_DEFERRED")
 
 
+def validate_selection_explanation_contract(
+    payload: dict[str, Any], errors: list[dict[str, Any]]
+) -> None:
+    explanation = payload.get("selection_explanation")
+    if not isinstance(explanation, dict):
+        add_error(
+            errors,
+            code="SELECTION_EXPLANATION_NOT_OBJECT",
+            message="selection_explanation must be an object",
+        )
+        return
+    for message in validate_selection_explanation(explanation):
+        add_error(errors, code="INVALID_SELECTION_EXPLANATION", message=message)
+    next_action = payload.get("next_action")
+    if not isinstance(next_action, dict):
+        return
+    selected = explanation.get("selected_candidate")
+    if not isinstance(selected, dict):
+        return
+    selected_object_ref = next_action.get("selected_object_ref")
+    metadata = selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
+    if selected_object_ref is not None and metadata.get("object_ref") != selected_object_ref:
+        add_error(
+            errors,
+            code="INVALID_SELECTION_EXPLANATION",
+            message="selection_explanation selected lead must match next_action.selected_object_ref",
+        )
+    if selected_object_ref is None and metadata.get("facet") != next_action.get("selected_facet"):
+        add_error(
+            errors,
+            code="INVALID_SELECTION_EXPLANATION",
+            message="selection_explanation selected facet must match next_action.selected_facet",
+        )
+
+
 def validate_warning_error_lists(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
     for field_name in ("warnings", "errors"):
         validate_string_list(payload.get(field_name), field_name=field_name, errors=errors, code="INVALID_TEXT_LIST")
@@ -628,6 +666,7 @@ def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]
     validate_lead_scores(payload, enabled_facets, errors)
     validate_next_action(payload, enabled_facets, previous_run_ids, errors)
     validate_deferred(payload, errors)
+    validate_selection_explanation_contract(payload, errors)
     validate_warning_error_lists(payload, errors)
 
     next_action = payload.get("next_action")

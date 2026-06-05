@@ -243,6 +243,7 @@ def run_scheduled_cycles(
             "planned_run_id": record.get("planned_run_id"),
             "decision": record.get("decision"),
             "cycle_run_id": None,
+            "cycle_event_id": None,
             "cycle_manifest_path": None,
             "attempt_number": None,
             "max_attempts": None,
@@ -352,6 +353,16 @@ def run_scheduled_cycles(
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
         result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
+        child_manifest_path = child_run_dir / "topic-cycle-run.json"
+        if child_manifest_path.is_file():
+            try:
+                child_manifest = json.loads(child_manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                child_manifest = None
+            if isinstance(child_manifest, dict):
+                cycle_event_id = child_manifest.get("cycle_event_id")
+                if isinstance(cycle_event_id, str) and cycle_event_id:
+                    result["cycle_event_id"] = cycle_event_id
         artifact_refs = [
             {"artifact_type": "topic_cycle_manifest", "path": result["cycle_manifest_path"]}
         ]

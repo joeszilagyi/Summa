@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
 
@@ -163,6 +162,19 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert payload["selected_count"] == 1
     assert payload["skipped_count"] == 3
     assert payload["planned_run_record_count"] == 4
+    explanation = payload["selection_explanation"]
+    assert explanation["schema_version"] == "selection-explanation.v1"
+    assert explanation["selection_kind"] == "scheduled_workspace"
+    assert explanation["selected_candidate"]["candidate_id"] == "selected_workspace"
+    assert {
+        candidate["candidate_id"] for candidate in explanation["considered_candidates"]
+    } == {
+        "selected_workspace",
+        "manual_workspace",
+        "missing_manifest_workspace",
+        "inactive_workspace",
+    }
+    assert all(candidate["reason"] for candidate in explanation["excluded_candidates"])
     assert set(records_by_workspace) == {
         "selected_workspace",
         "manual_workspace",
@@ -178,6 +190,7 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
         "planned_run_id": "planner-fixture:selected_workspace",
         "planned_at": "2026-01-01T00:00:00Z",
         "workspace_id": "selected_workspace",
+        "selection_explanation_id": explanation["explanation_id"],
         "decision": "selected",
         "cadence_reason": "schedule_posture:scheduled",
         "skipped_reason": None,
@@ -187,6 +200,7 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
 
     manual = records_by_workspace["manual_workspace"]
     assert manual["decision"] == "skipped"
+    assert manual["selection_explanation_id"] == explanation["explanation_id"]
     assert manual["skipped_reason"] == "schedule_posture is manual; pass --include-manual to include it"
     assert manual["skipped_reasons"] == [manual["skipped_reason"]]
     assert manual["cadence_reason"] == "schedule_posture:manual"
@@ -241,6 +255,8 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
     assert payload["selected_count"] == 1
     assert payload["skipped_count"] == 0
     assert payload["selected_workspaces"][0]["workspace_id"] == "manual_workspace"
+    explanation = payload["selection_explanation"]
+    assert explanation["selected_candidate"]["candidate_id"] == "manual_workspace"
     assert payload["planned_run_records"] == [
         {
             **payload["planned_run_records"][0],
@@ -249,6 +265,7 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
             "planned_run_id": "planner-manual:manual_workspace",
             "planned_at": "2026-01-01T00:00:00Z",
             "workspace_id": "manual_workspace",
+            "selection_explanation_id": explanation["explanation_id"],
             "decision": "selected",
             "cadence_reason": "schedule_posture:manual",
             "skipped_reason": None,

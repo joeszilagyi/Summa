@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-capabilities.v1.schema.json",
+  "title": "Summa repository capabilities index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sections", "capabilities"],
+  "properties": {
+    "schema_version": { "const": "repository-capabilities.v1" },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "operator_commands",
+          "package_console_scripts",
+          "shell_wrappers",
+          "validators",
+          "canonical_store_tools",
+          "source_adapter_tools",
+          "topic_cycle_tools",
+          "review_curation_tools",
+          "publication_release_readiness_tools",
+          "standards_profiles",
+          "legacy_retired_surfaces",
+          "explicit_exclusions"
+        ]
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/capability" }
+    }
+  },
+  "$defs": {
+    "pathOrNull": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "category",
+        "status",
+        "network_behavior",
+        "mutates_canonical_store",
+        "public_private_risk",
+        "notes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "console_script",
+            "shell_wrapper",
+            "python_script",
+            "validator",
+            "standards_profile",
+            "internal_helper",
+            "legacy"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "operator_command",
+            "canonical_store_tool",
+            "source_adapter_tool",
+            "topic_cycle_tool",
+            "review_curation_tool",
+            "publication_tool",
+            "release_readiness_tool",
+            "standards_profile",
+            "validator",
+            "internal_helper",
+            "legacy_retired_surface",
+            "explicit_exclusion"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "live",
+            "experimental",
+            "validator_only",
+            "internal",
+            "legacy",
+            "retired",
+            "excluded"
+          ]
+        },
+        "path": { "$ref": "#/$defs/pathOrNull" },
+        "command": { "$ref": "#/$defs/pathOrNull" },
+        "package_command": { "$ref": "#/$defs/pathOrNull" },
+        "wrapper_path": { "$ref": "#/$defs/pathOrNull" },
+        "docs_path": { "$ref": "#/$defs/pathOrNull" },
+        "test_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "network_behavior": {
+          "type": "string",
+          "enum": ["none", "gated", "local_only", "unknown"]
+        },
+        "mutates_canonical_store": {
+          "type": "string",
+          "enum": ["true", "false", "unknown"]
+        },
+        "public_private_risk": {
+          "type": "string",
+          "enum": ["public_safe", "local_operator", "internal_private"]
+        },
+        "notes": { "type": "string", "minLength": 1 },
+        "exclusion_reason": { "$ref": "#/$defs/pathOrNull" }
+      }
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summa.local/schemas/canonical-write-spool-record.v1.schema.json",
+  "title": "canonical-write-spool-record.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "spool_record_id",
+    "created_at",
+    "originating_tool",
+    "originating_command",
+    "originating_run_id",
+    "topic_cycle_id",
+    "stage_name",
+    "workspace_id",
+    "subject_id",
+    "canonical_db",
+    "operation_kind",
+    "operation_input",
+    "replay_recipe",
+    "validation_status",
+    "failure_kind",
+    "failure_message",
+    "retryable",
+    "replay_status",
+    "replayed_at",
+    "replay_result_refs",
+    "privacy_classification",
+    "raw_payload_policy",
+    "spool_path",
+    "spool_record_checksum"
+  ],
+  "properties": {
+    "schema_version": { "const": "canonical-write-spool-record.v1" },
+    "spool_record_id": { "type": "string", "pattern": "^canonical-write-spool:" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "originating_tool": { "type": "string", "minLength": 1 },
+    "originating_command": { "type": ["string", "null"] },
+    "originating_run_id": { "type": ["string", "null"] },
+    "topic_cycle_id": { "type": ["string", "null"] },
+    "stage_name": { "type": ["string", "null"] },
+    "workspace_id": { "type": ["string", "null"] },
+    "subject_id": { "type": ["string", "null"] },
+    "canonical_db": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "expected_schema_version"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "expected_schema_version": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "operation_kind": {
+      "type": "string",
+      "enum": [
+        "candidate_batch_ingest",
+        "execution_artifact_ingest",
+        "review_decision_apply",
+        "cycle_evidence_write"
+      ]
+    },
+    "operation_input": {
+      "type": "object",
+      "required": ["artifact_refs"],
+      "properties": {
+        "artifact_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["artifact_type", "artifact_path", "artifact_hash"],
+            "properties": {
+              "artifact_type": { "type": "string", "minLength": 1 },
+              "artifact_path": { "type": "string", "minLength": 1 },
+              "artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "replay_recipe": { "type": "object" },
+    "validation_status": { "const": "validated" },
+    "failure_kind": {
+      "type": "string",
+      "enum": [
+        "db_missing",
+        "db_locked",
+        "db_invalid",
+        "schema_mismatch",
+        "write_error",
+        "transaction_rollback",
+        "permission_denied",
+        "unknown"
+      ]
+    },
+    "failure_message": { "type": "string", "minLength": 1 },
+    "retryable": { "type": "boolean" },
+    "replay_status": {
+      "type": "string",
+      "enum": ["pending", "replayed", "failed", "superseded", "skipped"]
+    },
+    "replayed_at": { "type": ["string", "null"], "format": "date-time" },
+    "replay_result_refs": { "type": ["object", "null"] },
+    "privacy_classification": { "const": "local_operator_private" },
+    "raw_payload_policy": { "const": "artifact_references_only" },
+    "spool_path": { "type": ["string", "null"] },
+    "spool_record_checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

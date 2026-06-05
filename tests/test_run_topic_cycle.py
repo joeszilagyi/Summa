@@ -6,11 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Run_Topic_Cycle.sh"
-CANDIDATE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+CANDIDATE_BATCH = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+)
 EXECUTION_RUN = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "execution_run"
 
 
@@ -56,7 +57,14 @@ def write_workspace(tmp_path: Path, *, subject_id: str = "fixture_subject") -> P
                 "aliases": ["Fixture Subject"],
                 "disambiguation_terms": ["fixture"],
                 "excluded_senses": ["non-fixture"],
-                "enabled_facets": ["sources", "timeline", "people", "places", "works", "open_questions"],
+                "enabled_facets": [
+                    "sources",
+                    "timeline",
+                    "people",
+                    "places",
+                    "works",
+                    "open_questions",
+                ],
                 "query_families": ["general_research"],
             },
             indent=2,
@@ -129,13 +137,16 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert manifest["status"] == "dry_run"
     assert manifest["canonical_db"]["mutated"] is False  # type: ignore[index]
     assert table_count(db_path, "work") == before_work
+    assert table_count(db_path, "cycle_event") == 0
     stages = stages_by_name(manifest)
     assert stages["run_gather"]["status"] == "passed"
     assert stages["ingest_candidate_batch"]["status"] == "dry_run"
     assert stages["execute_source_adapter"]["status"] == "skipped"
 
 
-def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(tmp_path: Path) -> None:
+def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
+    tmp_path: Path,
+) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
@@ -166,16 +177,38 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert proc.returncode == 0, proc.stdout + proc.stderr
     manifest = load_manifest(run_dir)
     assert manifest["status"] == "completed"
+    assert isinstance(manifest["cycle_event_id"], str)
+    assert manifest["cycle_event_id"].startswith("cycle:")
     assert manifest["canonical_db"]["mutated"] is True  # type: ignore[index]
     assert table_count(db_path, "work") >= 1
     assert table_count(db_path, "source_claim") >= 1
     assert table_count(db_path, "capture_event") >= 1
     assert table_count(db_path, "extraction_record") >= 1
+    assert table_count(db_path, "cycle_event") == 1
+    assert table_count(db_path, "cycle_stage_event") >= len(manifest["stages"])  # type: ignore[arg-type]
+    assert table_count(db_path, "cycle_artifact_ref") >= 4
+    assert table_count(db_path, "cycle_candidate_considered") >= 1
+    assert table_count(db_path, "cycle_candidate_excluded") >= 1
+    assert table_count(db_path, "cycle_operator_override") >= 2
+    conn = sqlite3.connect(db_path)
+    try:
+        artifact_types = {
+            row[0]
+            for row in conn.execute(
+                "SELECT artifact_type FROM cycle_artifact_ref ORDER BY artifact_type"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    assert {"topic_cycle_manifest", "candidate_batch", "feedback_plan"} <= artifact_types
     stages = stages_by_name(manifest)
     assert stages["ingest_candidate_batch"]["status"] == "passed"
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
+    assert manifest["selection_explanations"]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    assert manifest["selection_explanations"][0]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
 
 
 def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
@@ -233,6 +266,46 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["cycle_depth"] == 2
     assert manifest["prior_state"]["context_hash"]  # type: ignore[index]
     assert manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+
+
+def test_topic_cycle_degraded_spool_records_pending_canonical_write(
+    tmp_path: Path,
+) -> None:
+    workspace = write_workspace(tmp_path)
+    missing_db = tmp_path / "missing.sqlite"
+    run_dir = tmp_path / "cycle-spooled"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(missing_db),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-spooled",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--mode",
+            "local",
+            "--candidate-batch-fixture",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    manifest = load_manifest(run_dir)
+    assert manifest["status"] == "degraded"
+    stages = stages_by_name(manifest)
+    assert stages["validate_canonical_store"]["status"] == "degraded"
+    assert stages["ingest_candidate_batch"]["status"] == "spooled"
+    assert manifest["canonical_db"]["mutated"] is False  # type: ignore[index]
+    assert manifest["spool_records"]
+    assert manifest["spool_records"][0]["operation_kind"] == "candidate_batch_ingest"  # type: ignore[index]
+    assert Path(manifest["spool_records"][0]["path"]).is_file()  # type: ignore[index]
 
 
 def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_path: Path) -> None:
@@ -267,6 +340,8 @@ def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_pat
     assert manifest["status"] == "failed"
     assert manifest["failure_stage"] == "ingest_candidate_batch"
     assert table_count(db_path, "work") == 0
+    assert table_count(db_path, "cycle_event") == 1
+    assert table_count(db_path, "cycle_tool_failure") >= 1
 
 
 def test_topic_cycle_refuses_completed_run_without_force(tmp_path: Path) -> None:

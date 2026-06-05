@@ -18,7 +18,11 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.source_db_tools import canonical_ingest, canonical_store  # noqa: E402
+from tools.source_db_tools import (  # noqa: E402
+    canonical_ingest,
+    canonical_store,
+    canonical_write_spool,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +51,15 @@ def parse_args() -> argparse.Namespace:
         help="Allow missing capture references to be skipped with warnings instead of failing.",
     )
     parser.add_argument(
+        "--degraded-spool",
+        action="store_true",
+        help="On canonical DB write failure, preserve the validated intended write as a spool record.",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        help="Directory for degraded canonical-write spool records. Required with --degraded-spool.",
+    )
+    parser.add_argument(
         "--format",
         choices=("json", "text"),
         default="json",
@@ -55,8 +68,73 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _spool_execution_artifacts(
+    *,
+    args: argparse.Namespace,
+    db_path: Path,
+    run_dir: Path,
+    paths: dict[str, Path],
+    input_hashes: dict[str, str],
+    failure: BaseException,
+    expected_schema_version: int | None,
+) -> dict[str, object]:
+    if not args.degraded_spool:
+        raise failure
+    if not args.spool_dir:
+        raise canonical_write_spool.CanonicalWriteSpoolError(
+            "--spool-dir is required with --degraded-spool"
+        ) from failure
+    artifact_refs = [
+        {
+            "artifact_type": key,
+            "artifact_path": str(paths[key]),
+            "artifact_hash": input_hashes[key],
+        }
+        for key in sorted(input_hashes)
+    ]
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="execution_artifact_ingest",
+        operation_input={"artifact_refs": artifact_refs},
+        replay_recipe={
+            "run_dir": str(run_dir),
+            "input_hashes": dict(input_hashes),
+            "strict": not args.no_strict,
+        },
+        failure=failure,
+        canonical_db_path=db_path,
+        spool_dir=Path(args.spool_dir),
+        originating_tool="tools/scripts/ingest_execution_artifacts.py",
+        originating_command="ingest_execution_artifacts.py",
+        originating_run_id=None,
+        stage_name="ingest_execution_artifacts",
+        expected_schema_version=expected_schema_version,
+    )
+    spool_path = canonical_write_spool.write_spool_record(Path(args.spool_dir), record)
+    return {
+        "schema_version": "canonical-ingest-report.v1",
+        "ingest_kind": "execution_artifacts",
+        "status": "spooled",
+        "spool_record_path": str(spool_path),
+        "spool_record_id": record["spool_record_id"],
+        "failure_kind": record["failure_kind"],
+        "failure_message": record["failure_message"],
+        "input_paths": {key: str(value) for key, value in paths.items()},
+        "input_hashes": dict(input_hashes),
+        "transaction_status": "spooled",
+        "warnings": [
+            {
+                "message": (
+                    "canonical write failed; validated intended write preserved "
+                    "as a pending spool record"
+                )
+            }
+        ],
+    }
+
+
 def main() -> int:
     args = parse_args()
+    report: dict[str, object]
     try:
         db_path = canonical_store.resolve_db_path(args.db)
         run_dir = canonical_store.resolve_db_path(args.run_dir)
@@ -67,7 +145,13 @@ def main() -> int:
             paths,
             input_hashes,
         ) = canonical_ingest.load_validated_execution_artifacts(run_dir)
-        canonical_store.check_canonical_store(db_path)
+    except canonical_ingest.CanonicalIngestError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    expected_schema_version: int | None = None
+    try:
+        check = canonical_store.check_canonical_store(db_path)
+        expected_schema_version = check.schema_version
         if args.dry_run:
             conn = canonical_store.connect_canonical_store(db_path)
             try:
@@ -101,14 +185,54 @@ def main() -> int:
                     )
             finally:
                 conn.close()
-    except (canonical_ingest.CanonicalIngestError, canonical_store.CanonicalStoreError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+    except (
+        canonical_ingest.CanonicalIngestError,
+        canonical_store.CanonicalStoreError,
+        canonical_write_spool.CanonicalWriteSpoolError,
+    ) as exc:
+        if not args.dry_run and args.degraded_spool:
+            try:
+                report = _spool_execution_artifacts(
+                    args=args,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                    paths=paths,
+                    input_hashes=input_hashes,
+                    failure=exc,
+                    expected_schema_version=expected_schema_version,
+                )
+            except Exception as spool_exc:
+                print(f"Error: {exc}; spool failed: {spool_exc}", file=sys.stderr)
+                return 1
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    except Exception as exc:
+        if not args.dry_run and args.degraded_spool:
+            try:
+                report = _spool_execution_artifacts(
+                    args=args,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                    paths=paths,
+                    input_hashes=input_hashes,
+                    failure=exc,
+                    expected_schema_version=expected_schema_version,
+                )
+            except Exception as spool_exc:
+                print(f"Error: {exc}; spool failed: {spool_exc}", file=sys.stderr)
+                return 1
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if args.format == "json":
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     else:
-        sys.stdout.write(canonical_ingest.render_report_text(report))
+        if report.get("status") == "spooled":
+            sys.stdout.write(f"status=spooled\nspool_record_path={report['spool_record_path']}\n")
+        else:
+            sys.stdout.write(canonical_ingest.render_report_text(report))
     return 0
 
 

@@ -14,7 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.source_db_tools import canonical_store, review_decision_apply  # noqa: E402
+from tools.source_db_tools import (  # noqa: E402
+    canonical_store,
+    canonical_write_spool,
+    review_decision_apply,
+)
 
 
 class ApplyReviewDecisionCliError(RuntimeError):
@@ -66,6 +70,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("json", "text"),
         default="json",
         help="Output format. JSON is intended for operators and tests.",
+    )
+    parser.add_argument(
+        "--degraded-spool",
+        action="store_true",
+        help="On canonical DB write failure, preserve the validated intended decision as a spool record.",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        help="Directory for degraded canonical-write spool records. Required with --degraded-spool.",
     )
     return parser.parse_args(argv)
 
@@ -119,9 +132,59 @@ def run(argv: list[str] | None = None) -> dict[str, Any]:
         conn.close()
 
 
+def spool_review_decision(args: argparse.Namespace, failure: BaseException) -> dict[str, Any]:
+    if not args.spool_dir:
+        raise ApplyReviewDecisionCliError(
+            "--spool-dir is required with --degraded-spool"
+        ) from failure
+    db_path = canonical_store.resolve_db_path(args.db)
+    target = review_decision_apply.parse_review_target(args.target)
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="review_decision_apply",
+        operation_input={
+            "artifact_refs": [],
+            "target_type": target.target_type,
+            "target_id": target.target_id,
+        },
+        replay_recipe={
+            "target": args.target,
+            "decision": args.decision,
+            "reviewer": args.reviewer,
+            "reason": args.reason,
+            "expected_state": args.expected_current_state,
+            "decided_at": args.decided_at,
+            "run_id": args.run_id,
+        },
+        failure=failure,
+        canonical_db_path=db_path,
+        spool_dir=Path(args.spool_dir),
+        originating_tool="tools/scripts/apply_review_decision.py",
+        originating_command="apply_review_decision.py",
+        originating_run_id=args.run_id,
+        stage_name="apply_review_decision",
+        expected_schema_version=None,
+        retryable=True,
+    )
+    spool_path = canonical_write_spool.write_spool_record(Path(args.spool_dir), record)
+    return {
+        "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+        "status": "spooled",
+        "target": args.target,
+        "decision_action": args.decision,
+        "dry_run": False,
+        "spool_record_path": str(spool_path),
+        "spool_record_id": record["spool_record_id"],
+        "failure_kind": record["failure_kind"],
+        "failure_message": record["failure_message"],
+        "warnings": [
+            "canonical write failed; validated intended review decision preserved as a pending spool record"
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
-        args = parse_args(argv)
         db_path = resolve_db_path(args.db)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
@@ -144,13 +207,45 @@ def main(argv: list[str] | None = None) -> int:
         canonical_store.CanonicalStoreError,
         sqlite3.Error,
     ) as exc:
-        payload = {
-            "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
-            "status": "failed",
-            "error": str(exc),
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
-        return 2
+        if args.degraded_spool and not args.dry_run:
+            try:
+                result = spool_review_decision(args, exc)
+            except Exception as spool_exc:
+                payload = {
+                    "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+                    "status": "failed",
+                    "error": f"{exc}; spool failed: {spool_exc}",
+                }
+                print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+                return 2
+        else:
+            payload = {
+                "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+                "status": "failed",
+                "error": str(exc),
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+            return 2
+    except Exception as exc:
+        if args.degraded_spool and not args.dry_run:
+            try:
+                result = spool_review_decision(args, exc)
+            except Exception as spool_exc:
+                payload = {
+                    "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+                    "status": "failed",
+                    "error": f"{exc}; spool failed: {spool_exc}",
+                }
+                print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+                return 2
+        else:
+            payload = {
+                "schema_version": review_decision_apply.RESULT_SCHEMA_VERSION,
+                "status": "failed",
+                "error": str(exc),
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+            return 2
 
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))

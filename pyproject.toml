@@ -35,6 +35,7 @@ summa-run-scheduled-topic-cycles = "tools.scripts.run_scheduled_topic_cycles:mai
 summa-select-scheduled-workspaces = "tools.scripts.select_scheduled_workspaces:main"
 summa-apply-review-decision = "tools.scripts.apply_review_decision:main"
 summa-evaluate-network-safety-gate = "tools.scripts.evaluate_network_safety_gate:main"
+summa-replay-canonical-write-spool = "tools.scripts.replay_canonical_write_spool:main"
 
 [dependency-groups]
 test = [
@@ -126,6 +127,7 @@ files = [
   "tools/scripts/ingest_execution_artifacts.py",
   "tools/scripts/ingest_gather_candidate_batch.py",
   "tools/scripts/operator_path_smoke.py",
+  "tools/scripts/replay_canonical_write_spool.py",
   "tools/scripts/run_scheduled_topic_cycles.py",
   "tools/scripts/run_topic_cycle.py",
   "tools/scripts/run_topic_gather.py",
@@ -133,6 +135,7 @@ files = [
   "tools/source_db_tools/canonical_ingest.py",
   "tools/source_db_tools/canonical_reconciliation.py",
   "tools/source_db_tools/canonical_store.py",
+  "tools/source_db_tools/canonical_write_spool.py",
   "tools/source_db_tools/init_canonical_store.py",
   "tools/source_db_tools/review_decision_apply.py",
   "tools/source_db_tools/source_query_plan.py",

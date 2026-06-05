@@ -9,7 +9,6 @@ from pathlib import Path
 
 from tools.source_db_tools import canonical_ingest, canonical_store
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER_PATH = REPO_ROOT / "tools" / "scripts" / "build_candidate_feedback_plan.py"
 DRIVER_PATH = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
@@ -362,7 +361,13 @@ def validate_plan(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_plan(tmp_path: Path, db_path: Path, manifest_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, dict[str, object]]:
+def build_plan(
+    tmp_path: Path,
+    db_path: Path,
+    manifest_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, dict[str, object]]:
     output_path = planner_output_path(tmp_path)
     result = run_planner(
         [
@@ -376,6 +381,7 @@ def build_plan(tmp_path: Path, db_path: Path, manifest_path: Path) -> tuple[subp
             str(output_path),
             "--generated-at",
             FIXED_CREATED_AT,
+            *(extra_args or []),
         ]
     )
     payload = validate_plan(output_path)
@@ -399,6 +405,14 @@ def test_candidate_feedback_planner_sparse_state_uses_bootstrap_selection(tmp_pa
     assert payload["next_action"]["use_prior_state"] is False
     assert payload["next_action"]["previous_run_ids_considered"] == []
     assert "bootstrap_no_prior_productivity" in payload["next_action"]["reason_codes"]
+    explanation = payload["selection_explanation"]
+    assert explanation["schema_version"] == "selection-explanation.v1"
+    assert explanation["selection_kind"] == "feedback_next_action"
+    assert explanation["selected_candidate"]["candidate_id"] in {
+        candidate["candidate_id"] for candidate in explanation["considered_candidates"]
+    }
+    assert explanation["selected_candidate"]["metadata"]["facet"] == "sources"
+    assert explanation["policy"]["policy_id"] == payload["scoring_policy"]["policy_id"]
 
 
 def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_path: Path) -> None:
@@ -419,6 +433,14 @@ def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_p
     assert lead_scores[0]["object_ref"] == "source_access:1"
     assert lead_scores[1]["object_ref"] != "source_access:1"
     assert lead_scores[0]["score"] > lead_scores[1]["score"]
+    explanation = payload["selection_explanation"]
+    selected = explanation["selected_candidate"]
+    assert selected["metadata"]["object_ref"] == payload["next_action"]["selected_object_ref"]
+    assert selected["selected"] is True
+    assert any(
+        candidate["candidate_id"] == selected["candidate_id"]
+        for candidate in explanation["considered_candidates"]
+    )
 
 
 def test_candidate_feedback_planner_deprioritizes_low_yield_locus_but_keeps_it_deferred(tmp_path: Path) -> None:
@@ -440,6 +462,56 @@ def test_candidate_feedback_planner_deprioritizes_low_yield_locus_but_keeps_it_d
         "score": low_lead["score"],
         "reason": "repeated_low_yield",
     } in payload["deferred"]
+    explanation = payload["selection_explanation"]
+    assert any(
+        candidate["candidate_id"] == "source_access:2"
+        and candidate["reason"] == "repeated_low_yield"
+        for candidate in explanation["excluded_candidates"]
+    )
+
+
+def test_candidate_feedback_planner_can_record_selection_explanation_to_ledger(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    result, _output_path, payload = build_plan(
+        tmp_path,
+        db_path,
+        manifest_path,
+        extra_args=["--record-selection-ledger"],
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        considered_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM cycle_candidate_considered"
+        ).fetchone()["count"]
+        excluded_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM cycle_candidate_excluded"
+        ).fetchone()["count"]
+        selected_rows = conn.execute(
+            """
+            SELECT candidate_ref_id
+            FROM cycle_candidate_considered
+            WHERE selected=1
+            ORDER BY candidate_ref_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    assert considered_count >= len(payload["selection_explanation"]["considered_candidates"])
+    assert excluded_count >= len(payload["selection_explanation"]["excluded_candidates"])
+    assert [row["candidate_ref_id"] for row in selected_rows] == [
+        payload["selection_explanation"]["selected_candidate"]["candidate_id"]
+    ]
 
 
 def test_candidate_feedback_planner_open_lead_yield_increases_sources_score(tmp_path: Path) -> None:

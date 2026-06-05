@@ -32,6 +32,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     "summa-select-scheduled-workspaces": "tools.scripts.select_scheduled_workspaces:main",
     "summa-apply-review-decision": "tools.scripts.apply_review_decision:main",
     "summa-evaluate-network-safety-gate": ("tools.scripts.evaluate_network_safety_gate:main"),
+    "summa-replay-canonical-write-spool": ("tools.scripts.replay_canonical_write_spool:main"),
 }
 
 RUNTIME_OPERATOR_CONSOLE_COMMANDS = {
@@ -44,6 +45,7 @@ RUNTIME_OPERATOR_CONSOLE_COMMANDS = {
     "select_scheduled_workspaces.py": "summa-select-scheduled-workspaces",
     "apply_review_decision.py": "summa-apply-review-decision",
     "evaluate_network_safety_gate.py": "summa-evaluate-network-safety-gate",
+    "replay_canonical_write_spool.py": "summa-replay-canonical-write-spool",
 }
 
 INDEX_WRAPPER_CONSOLE_COMMANDS = {
@@ -55,6 +57,7 @@ INDEX_WRAPPER_CONSOLE_COMMANDS = {
     "Index_Run_Scheduled_Topic_Cycles.sh": "summa-run-scheduled-topic-cycles",
     "Index_Run_Topic_Cycle.sh": "summa-run-topic-cycle",
     "Index_Select_Scheduled_Workspaces.sh": "summa-select-scheduled-workspaces",
+    "Index_Replay_Canonical_Write_Spool.sh": "summa-replay-canonical-write-spool",
     "Index_Workspace_Overview.sh": "summa-workspace-overview",
 }
 
