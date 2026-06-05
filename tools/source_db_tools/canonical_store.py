@@ -855,6 +855,27 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
+def _timestamp_merge_key(value: str) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _min_nonnull_iso(*values: str | None) -> str | None:
+    present = [str(value).strip() for value in values if value is not None and str(value).strip()]
+    if not present:
+        return None
+    return min(present, key=_timestamp_merge_key)
+
+
+def _max_nonnull_iso(*values: str | None) -> str | None:
+    present = [str(value).strip() for value in values if value is not None and str(value).strip()]
+    if not present:
+        return None
+    return max(present, key=_timestamp_merge_key)
+
+
 def _lookup_row(
     conn: sqlite3.Connection, table: str, pk_column: str, criteria: dict[str, Any]
 ) -> sqlite3.Row | None:
@@ -1140,10 +1161,10 @@ def upsert_work(
                 1 if int(accepted_for_citation) else 0,
             ),
             "provenance_event_ref": provenance_event_ref,
-            "first_seen_at": _first_present(existing["first_seen_at"], first_seen_value),
-            "last_seen_at": last_seen_value,
+            "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
+            "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
             "created_at": _first_present(existing["created_at"], created_at_value),
-            "record_last_updated": timestamp,
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult("work", int(existing["work_id"]), work_key, False)
@@ -1296,9 +1317,9 @@ def record_source_access(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
             "provenance_event_ref": provenance_event_ref,
-            "first_seen_at": _first_present(existing["first_seen_at"], first_seen_value),
-            "last_seen_at": last_seen_value,
-            "record_last_updated": timestamp,
+            "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
+            "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
+            "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
     return CanonicalWriteResult("source_access", int(existing["source_access_id"]), None, False)
