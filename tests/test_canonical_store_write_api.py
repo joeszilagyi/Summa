@@ -834,11 +834,13 @@ def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path
     assert counts["source_claim"] == 0
 
 
-def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path: Path) -> None:
+def test_source_access_without_work_or_lead_replays_by_locator_without_duplicate_rows(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        provenance = canonical_store.record_provenance_event(
+        first_provenance = canonical_store.record_provenance_event(
             conn,
             object_namespace="fixture_ingest",
             object_id="fixture-004",
@@ -849,7 +851,7 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
         )
         first = canonical_store.record_source_access(
             conn,
-            provenance_event_ref=provenance.event_key,
+            provenance_event_ref=first_provenance.event_key,
             original_locator="https://example.test/source-access-fallback",
             canonical_url="https://example.test/source-access-fallback",
             workspace_id="delta_subject",
@@ -858,25 +860,43 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
             last_seen_at=FIXED_TIMESTAMP,
             record_last_updated=FIXED_TIMESTAMP,
         )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004b",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-fallback-replay",
+        )
         second = canonical_store.record_source_access(
             conn,
-            provenance_event_ref=provenance.event_key,
+            provenance_event_ref=second_provenance.event_key,
             original_locator="https://example.test/source-access-fallback",
             canonical_url="https://example.test/source-access-fallback",
             workspace_id="delta_subject",
             citation_hint="Fixture fallback source access updated",
-            first_seen_at=FIXED_TIMESTAMP,
-            last_seen_at=FIXED_TIMESTAMP,
-            record_last_updated=FIXED_TIMESTAMP,
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
         )
         conn.commit()
         row = conn.execute(
             """
-            SELECT provenance_event_ref, citation_hint
+            SELECT provenance_event_ref, citation_hint, first_seen_at, last_seen_at
             FROM source_access
             WHERE source_access_id=?
             """,
             (first.row_id,),
+        ).fetchone()
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count
+            FROM source_access
+            WHERE original_locator=?
+              AND workspace_id=?
+            """,
+            ("https://example.test/source-access-fallback", "delta_subject"),
         ).fetchone()
     finally:
         conn.close()
@@ -884,8 +904,12 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
     assert first.created is True
     assert second.created is False
     assert second.row_id == first.row_id
-    assert row["provenance_event_ref"] == provenance.event_key
+    assert row_count is not None
+    assert int(row_count["row_count"]) == 1
+    assert row["provenance_event_ref"] == second_provenance.event_key
     assert row["citation_hint"] == "Fixture fallback source access updated"
+    assert row["first_seen_at"] == FIXED_TIMESTAMP
+    assert row["last_seen_at"] == NEWER_TIMESTAMP
 
 
 def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:

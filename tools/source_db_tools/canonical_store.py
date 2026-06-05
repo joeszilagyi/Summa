@@ -1284,7 +1284,6 @@ def record_source_access(
             "original_locator": locator,
             "canonical_url": _optional_nonblank(canonical_url, "canonical_url"),
             "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
-            "provenance_event_ref": provenance_event_ref,
         }
     existing = _lookup_row(conn, "source_access", "source_access_id", criteria)
     if existing is None:
