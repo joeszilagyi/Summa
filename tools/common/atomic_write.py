@@ -47,8 +47,11 @@ def atomic_write_text(path: Path, body: str, *, encoding: str = "utf-8") -> None
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
-        _fsync_directory(path.parent)
         temp_path = None
+        try:
+            _fsync_directory(path.parent)
+        except OSError:
+            pass
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
