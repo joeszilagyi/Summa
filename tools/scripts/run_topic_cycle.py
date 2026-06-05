@@ -327,6 +327,31 @@ def build_manifest(
     }
 
 
+def build_stage_plan(*, feedback_plan_mode: str | None, build_next_feedback_plan: bool) -> list[str]:
+    if feedback_plan_mode == "auto":
+        feedback_plan_pre = "build_feedback_plan_pre"
+    elif feedback_plan_mode:
+        feedback_plan_pre = "load_feedback_plan"
+    else:
+        feedback_plan_pre = "feedback_plan_pre"
+
+    feedback_plan_post = "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
+    return [
+        "resolve_subject_runtime",
+        "resolve_domain_pack",
+        "validate_canonical_store",
+        feedback_plan_pre,
+        "run_gather",
+        "ingest_candidate_batch",
+        "execute_source_adapter",
+        "ingest_execution_artifacts",
+        feedback_plan_post,
+        "build_publication",
+        "final_canonical_store_summary",
+        "graph_closure_audit",
+    ]
+
+
 def attach_feedback_selection_explanation(
     manifest: dict[str, Any],
     *,
@@ -1407,20 +1432,10 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         workspace=workspace,
         db_path=db_path,
     )
-    manifest["stage_plan"] = [
-        "resolve_subject_runtime",
-        "resolve_domain_pack",
-        "validate_canonical_store",
-        "feedback_plan_pre",
-        "run_gather",
-        "ingest_candidate_batch",
-        "execute_source_adapter",
-        "ingest_execution_artifacts",
-        "feedback_plan_post",
-        "build_publication",
-        "final_canonical_store_summary",
-        "graph_closure_audit",
-    ]
+    manifest["stage_plan"] = build_stage_plan(
+        feedback_plan_mode=args.feedback_plan,
+        build_next_feedback_plan=args.build_next_feedback_plan,
+    )
     manifest_path = run_dir / "topic-cycle-run.json"
     started = time.monotonic()
     try:
