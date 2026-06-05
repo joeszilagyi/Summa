@@ -220,7 +220,7 @@ def record_cycle_event_finish(
     error_count: int | None = None,
 ) -> None:
     now = now_rfc3339()
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE cycle_event
         SET status=?,
@@ -247,6 +247,10 @@ def record_cycle_event_finish(
             _require_nonblank(cycle_event_id, "cycle_event_id"),
         ),
     )
+    if cursor.rowcount != 1:
+        raise CycleEvidenceLedgerError(
+            f"cycle_event finish target not found: cycle_event_id={cycle_event_id}"
+        )
 
 
 def record_cycle_stage_start(
@@ -332,7 +336,7 @@ def record_cycle_stage_finish(
     error_summary: str | None = None,
 ) -> None:
     now = now_rfc3339()
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE cycle_stage_event
         SET status=?,
@@ -351,6 +355,10 @@ def record_cycle_stage_finish(
             _require_nonblank(stage_event_id, "stage_event_id"),
         ),
     )
+    if cursor.rowcount != 1:
+        raise CycleEvidenceLedgerError(
+            f"cycle_stage_event finish target not found: stage_event_id={stage_event_id}"
+        )
 
 
 def record_cycle_artifact_ref(

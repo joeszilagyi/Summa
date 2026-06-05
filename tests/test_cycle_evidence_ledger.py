@@ -216,6 +216,24 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
                 stage_name="",
                 stage_order=1,
             )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="cycle_event finish target not found",
+        ):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn,
+                cycle_event_id="cycle:missing",
+                status="failed",
+            )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="cycle_stage_event finish target not found",
+        ):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn,
+                stage_event_id="stage:missing",
+                status="failed",
+            )
     finally:
         conn.close()
 
