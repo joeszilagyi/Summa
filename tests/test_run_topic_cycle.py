@@ -203,6 +203,37 @@ def test_topic_cycle_rejects_resume_on_fresh_run_dir(tmp_path: Path) -> None:
     assert not (run_dir / "topic-cycle-run.json").exists()
 
 
+def test_topic_cycle_rejects_unknown_existing_manifest_status(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-unknown-status"
+    run_dir.mkdir()
+    (run_dir / "topic-cycle-run.json").write_text(
+        json.dumps({"schema_version": "topic-cycle-run.v1", "status": "mystery"}) + "\n",
+        encoding="utf-8",
+    )
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-unknown-status",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+        ]
+    )
+
+    assert proc.returncode != 0
+    assert "unknown status" in proc.stderr
+
+
 def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     tmp_path: Path,
 ) -> None:
