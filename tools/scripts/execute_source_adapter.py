@@ -1383,9 +1383,11 @@ def remote_fetch_one(
         except HTTPError as exc:
             status_code = int(exc.code)
             headers = exc.headers
-            if 300 <= status_code < 400 and headers.get("Location"):
+            normalized_headers = normalize_response_headers(headers)
+            location = normalized_headers.get("location")
+            if 300 <= status_code < 400 and location:
                 redirect_count += 1
-                redirected_url = urljoin(current_url, headers["Location"])
+                redirected_url = urljoin(current_url, str(location))
                 if redirect_count > MAX_REMOTE_REDIRECTS:
                     return {
                         "status": "failed",
