@@ -241,7 +241,10 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     )
 
     assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
-    assert result.applied_migration_ids == ("0003_source_access_provenance_event_ref",)
+    assert result.applied_migration_ids == (
+        "0003_source_access_provenance_event_ref",
+        "0004_source_access_lead_identity",
+    )
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -257,8 +260,47 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     assert "provenance_event_ref" in columns
     assert "ix_source_access_provenance_event_ref" in indexes
     assert version_row is not None
-    assert version_row.schema_version == 3
-    assert version_row.current_migration_id == "0003_source_access_provenance_event_ref"
+    assert version_row.schema_version == 4
+    assert version_row.current_migration_id == "0004_source_access_lead_identity"
+
+
+def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_indexes(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical-v3.sqlite"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        canonical_store.apply_migrations(
+            conn,
+            target_version=3,
+            applied_at=FIXED_TIMESTAMP,
+            applied_by="pytest",
+            migrations=canonical_store.MIGRATIONS[:3],
+        )
+    finally:
+        conn.close()
+
+    result = canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+
+    assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert result.applied_migration_ids == ("0004_source_access_lead_identity",)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        indexes = canonical_store.actual_indexes(conn)
+        version_row = canonical_store.get_schema_version(conn)
+    finally:
+        conn.close()
+
+    assert "ux_source_access_lead_identity_workspace" in indexes
+    assert "ux_source_access_lead_identity_global" in indexes
+    assert version_row is not None
+    assert version_row.schema_version == 4
+    assert version_row.current_migration_id == "0004_source_access_lead_identity"
 
 
 def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:

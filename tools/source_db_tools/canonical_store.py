@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 3
-CURRENT_MIGRATION_ID = "0003_source_access_provenance_event_ref"
+CURRENT_SCHEMA_VERSION = 4
+CURRENT_MIGRATION_ID = "0004_source_access_lead_identity"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -58,6 +58,8 @@ REQUIRED_INDEXES = {
     "ix_source_access_work",
     "ix_source_access_provenance_event_ref",
     "ix_source_access_workspace",
+    "ux_source_access_lead_identity_workspace",
+    "ux_source_access_lead_identity_global",
     "ix_source_claim_about",
     "ix_source_claim_review",
     "ix_source_relationship_refs",
@@ -211,9 +213,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=3,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0003_source_access_provenance_event_ref",
         sql_path=MIGRATIONS_DIR / "0003_source_access_provenance_event_ref.sql",
         notes="Add source_access provenance_event_ref for fallback lookup compatibility.",
+    ),
+    MigrationSpec(
+        version=4,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0004_source_access_lead_identity.sql",
+        notes="Make source_access lead identity workspace and locator aware.",
     ),
 )
 
@@ -1180,7 +1188,11 @@ def record_source_access(
     if work_id is not None:
         criteria = {"work_id": work_id, "original_locator": locator}
     elif source_lead_id is not None:
-        criteria = {"source_lead_id": _require_nonblank(source_lead_id, "source_lead_id")}
+        criteria = {
+            "source_lead_id": _require_nonblank(source_lead_id, "source_lead_id"),
+            "original_locator": locator,
+            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
+        }
     else:
         criteria = {
             "original_locator": locator,
