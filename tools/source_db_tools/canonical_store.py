@@ -67,6 +67,7 @@ REQUIRED_INDEXES = {
     "ix_source_relationship_review",
     "ix_topic_extension_topic",
     "ix_work_identifier_work",
+    "ux_work_identifier_scheme_value",
     "ix_work_metadata_work",
     "ix_work_review",
     "ix_work_subject_work",

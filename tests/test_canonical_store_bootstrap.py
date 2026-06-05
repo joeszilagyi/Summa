@@ -427,6 +427,78 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
     assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
 
 
+def test_work_identifier_scheme_value_is_database_unique_across_works(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO work (
+                  work_id, work_key_v1, work_type, title, review_state,
+                  created_at, record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "work:one", "article", "Work One", "needs_review", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+            conn.execute(
+                """
+                INSERT INTO work (
+                  work_id, work_key_v1, work_type, title, review_state,
+                  created_at, record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (2, "work:two", "article", "Work Two", "needs_review", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_identifier (
+                  work_id, scheme, value, raw_value, normalized_value,
+                  normalized_uri, validity_status, is_primary, review_state,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    "doi",
+                    "10.1234/example",
+                    "10.1234/example",
+                    "10.1234/example",
+                    None,
+                    "valid",
+                    1,
+                    "accepted",
+                    FIXED_TIMESTAMP,
+                ),
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    INSERT INTO work_identifier (
+                      work_id, scheme, value, raw_value, normalized_value,
+                      normalized_uri, validity_status, is_primary, review_state,
+                      record_last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        2,
+                        "doi",
+                        "10.1234/example",
+                        "10.1234/example",
+                        "10.1234/example",
+                        None,
+                        "valid",
+                        1,
+                        "accepted",
+                        FIXED_TIMESTAMP,
+                    ),
+                )
+    finally:
+        conn.close()
+
+
 def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:
     db_path = tmp_path / "broken_migration.sqlite"
     conn = canonical_store.connect_canonical_store(db_path)

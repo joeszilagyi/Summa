@@ -441,6 +441,8 @@ CREATE INDEX ix_authority_identifier_record
 
 CREATE INDEX ix_work_identifier_work
   ON work_identifier(work_id, is_primary);
+CREATE UNIQUE INDEX ux_work_identifier_scheme_value
+  ON work_identifier(scheme, value);
 
 CREATE INDEX ix_source_access_work
   ON source_access(work_id, canonical_url);
