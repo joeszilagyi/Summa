@@ -127,14 +127,18 @@ def parse_note_text(note_text: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def escape_like_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limit: int) -> list[dict[str, Any]]:
-    pattern = f'%\"subject_id\": \"{subject_id}\"%'
+    pattern = f'%\"subject_id\": \"{escape_like_literal(subject_id)}\"%'
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND note_text LIKE ? ESCAPE '\\'
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         LIMIT ?
         """,
