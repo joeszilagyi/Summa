@@ -357,7 +357,7 @@ def review_outcome_update_sql(
         assignments.append("reviewed_at=?")
         params.append(changed_at)
     if "accepted_for_citation" in columns:
-        assignments.append("accepted_for_citation=?")
+        assignments.append("accepted_for_citation=MAX(COALESCE(accepted_for_citation, 0), ?)")
         params.append(1 if new_state == "accepted" else 0)
     if "promotion_state" in columns:
         assignments.append("promotion_state=?")
