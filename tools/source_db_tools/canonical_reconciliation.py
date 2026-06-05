@@ -552,13 +552,20 @@ def find_existing_work_match(
             """
             SELECT work.work_id, work.work_key_v1, work.title, work.work_type,
                    access.original_locator, access.canonical_url
-            FROM work
-            INNER JOIN source_access AS access ON access.work_id = work.work_id
+            FROM source_access AS access
+            INNER JOIN work ON work.work_id = access.work_id
             WHERE (? IS NULL OR work.workspace_id=?)
               AND COALESCE(work.work_type, '') = ?
+              AND (access.canonical_url = ? OR access.original_locator = ?)
             ORDER BY work.work_id
             """,
-            (workspace_id, workspace_id, work_type or ""),
+            (
+                workspace_id,
+                workspace_id,
+                work_type or "",
+                source_identifier,
+                source_identifier,
+            ),
         ).fetchall()
         matches: list[sqlite3.Row] = []
         for row in rows:

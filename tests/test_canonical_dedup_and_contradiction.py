@@ -292,6 +292,85 @@ def test_rejected_work_identifier_does_not_exactly_match(tmp_path: Path) -> None
     assert len(existing_work_rows) == 1
 
 
+def test_existing_work_match_fallback_prefilters_by_source_locator(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    traces: list[str] = []
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="seed-work-fallback",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            matching_work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded-fallback-match",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Source Matched Work",
+                workspace_id="theta_subject",
+                confidence_score=1.0,
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            other_work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded-fallback-other",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Source Matched Work",
+                workspace_id="theta_subject",
+                confidence_score=1.0,
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                work_id=matching_work.row_id,
+                original_locator="https://example.test/matched",
+                canonical_url="https://example.test/matched",
+                workspace_id="theta_subject",
+                first_seen_at=FIXED_TIMESTAMP,
+                last_seen_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                work_id=other_work.row_id,
+                original_locator="https://example.test/other",
+                canonical_url="https://example.test/other",
+                workspace_id="theta_subject",
+                first_seen_at=FIXED_TIMESTAMP,
+                last_seen_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.set_trace_callback(traces.append)
+            work_match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={"canonical_url": "https://example.test/matched"},
+                work_type="article",
+                title="Source Matched Work",
+                workspace_id="theta_subject",
+            )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert work_match is not None
+    assert work_match.work_id == matching_work.row_id
+    assert any(
+        "access.canonical_url" in query and "access.original_locator" in query for query in traces
+    )
+
+
 def test_record_work_identifier_replay_without_review_state_preserves_established_state(
     tmp_path: Path,
 ) -> None:
