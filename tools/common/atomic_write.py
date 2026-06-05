@@ -22,7 +22,10 @@ def _fsync_directory(path: Path) -> None:
     except OSError:
         return
     try:
-        os.fsync(fd)
+        try:
+            os.fsync(fd)
+        except OSError:
+            return
     finally:
         os.close(fd)
 
