@@ -41,6 +41,17 @@ SUCCESS_EXTRACTION_STATUSES = frozenset({"completed", "ok", "recorded", "success
 FAILED_EXTRACTION_STATUSES = frozenset({"bad_utf8", "error", "failed", "hostile_replay", "invalid"})
 
 
+def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
+    status = str(raw_status or "").strip().casefold()
+    if status in SUCCESS_EXTRACTION_STATUSES:
+        return 1, 0, None
+    if status in FAILED_EXTRACTION_STATUSES:
+        return 0, 1, None
+    if not status:
+        return 0, 0, None
+    return 0, 0, status
+
+
 class CandidateFeedbackError(RuntimeError):
     """Raised when planner inputs are missing or malformed."""
 
@@ -350,7 +361,12 @@ def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
 
 
 def extraction_outcome_counts(
-    conn: sqlite3.Connection, *, source_locus_id: str | None, locators: list[str], subject_id: str
+    conn: sqlite3.Connection,
+    *,
+    source_locus_id: str | None,
+    locators: list[str],
+    subject_id: str,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     clauses: list[str] = []
     params: list[Any] = [subject_id]
@@ -409,12 +425,18 @@ def extraction_outcome_counts(
             run_ids.add(run_id)
     successful = 0
     failed = 0
+    unknown_statuses: set[str] = set()
     for row in extraction_rows:
-        status = str(row["extraction_status"] or "").casefold()
-        if status in FAILED_EXTRACTION_STATUSES:
-            failed += 1
-        else:
-            successful += 1
+        success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
+        successful += success
+        failed += failed_delta
+        if unknown_status is not None:
+            unknown_statuses.add(unknown_status)
+    if warnings is not None and unknown_statuses:
+        warnings.extend(
+            f"unknown extraction_status treated as neutral for source-access lead scoring: {status!r}"
+            for status in sorted(unknown_statuses)
+        )
     return {
         "successful_extractions": successful,
         "failed_extractions": failed,
@@ -432,6 +454,7 @@ def load_source_access_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     scope_sql, scope_params = lead_scope_sql(subject_id, work_ids)
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
@@ -468,6 +491,7 @@ def load_source_access_leads(
                 if isinstance(locator, str) and locator
             ],
             subject_id=subject_id,
+            warnings=warnings,
         )
         related_claims = 0
         related_works = 0
@@ -624,6 +648,7 @@ def load_entity_leads(
     subject_id: str,
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
@@ -650,11 +675,11 @@ def load_entity_leads(
             facet = "places"
         else:
             continue
-        extraction_status = str(row["extraction_status"] or "").casefold()
-        success = (
-            1 if extraction_status and extraction_status not in FAILED_EXTRACTION_STATUSES else 0
-        )
-        failed = 1 if extraction_status in FAILED_EXTRACTION_STATUSES else 0
+        success, failed, unknown_status = classify_extraction_status(row["extraction_status"])
+        if unknown_status is not None and warnings is not None:
+            warnings.append(
+                f"unknown extraction_status treated as neutral for detected entity lead scoring: {unknown_status!r}"
+            )
         score = (
             weights["open_lead"]
             + weights["entity_yield"]
@@ -1022,6 +1047,7 @@ def build_plan(
     generated_at: str,
 ) -> dict[str, Any]:
     subject = runtime["subject"]
+    warnings: list[str] = []
     work_ids = scope_work_ids(conn, subject["subject_id"])
     history = load_gather_history(conn, subject["subject_id"])
     history_by_event_key = provenance_map_by_key(history)
@@ -1031,6 +1057,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        warnings=warnings,
     )
     open_question_leads = load_open_question_leads(
         conn,
@@ -1044,6 +1071,7 @@ def build_plan(
         subject_id=subject["subject_id"],
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        warnings=warnings,
     )
     work_leads = load_work_leads(
         conn,
@@ -1132,7 +1160,7 @@ def build_plan(
         "next_action": next_action,
         "deferred": deferred,
         "selection_explanation": selection_explanation,
-        "warnings": [],
+        "warnings": list(dict.fromkeys(warnings)),
         "errors": [],
     }
 
