@@ -105,7 +105,13 @@ def write_text(path_value: str | None, body: str) -> None:
 def write_json(path_value: str | None, payload: dict[str, Any]) -> None:
     if path_value is None:
         return
-    body = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    body = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ) + "\n"
     _write_atomically(Path(path_value), body)
 
 
