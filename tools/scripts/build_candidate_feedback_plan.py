@@ -360,6 +360,26 @@ def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
     return str(row["run_id"])
 
 
+def run_ids_for_events(conn: sqlite3.Connection, event_keys: set[str]) -> dict[str, str]:
+    if not event_keys:
+        return {}
+    placeholders = ", ".join("?" for _ in sorted(event_keys))
+    rows = conn.execute(
+        f"""
+        SELECT provenance_event_key_v1, run_id
+        FROM provenance_event
+        WHERE provenance_event_key_v1 IN ({placeholders})
+        """,
+        tuple(sorted(event_keys)),
+    ).fetchall()
+    result: dict[str, str] = {}
+    for row in rows:
+        if row["run_id"] is None:
+            continue
+        result[str(row["provenance_event_key_v1"])] = str(row["run_id"])
+    return result
+
+
 def extraction_outcome_counts(
     conn: sqlite3.Connection,
     *,
@@ -391,12 +411,6 @@ def extraction_outcome_counts(
     )
     capture_rows = conn.execute(query, tuple(params)).fetchall()
     capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
-    run_ids = {
-        run_id_for_event(conn, str(row["provenance_event_ref"]))
-        for row in capture_rows
-        if row["provenance_event_ref"] is not None
-    }
-    run_ids.discard(None)
     if not capture_ids:
         return {
             "successful_extractions": 0,
@@ -417,12 +431,12 @@ def extraction_outcome_counts(
         tuple(capture_ids),
     ).fetchall()
     extraction_ids = [int(row["extraction_id"]) for row in extraction_rows]
-    for row in extraction_rows:
-        if row["provenance_event_ref"] is None:
-            continue
-        run_id = run_id_for_event(conn, str(row["provenance_event_ref"]))
-        if run_id is not None:
-            run_ids.add(run_id)
+    provenance_event_keys = {
+        str(row["provenance_event_ref"])
+        for row in capture_rows + extraction_rows
+        if row["provenance_event_ref"] is not None
+    }
+    run_ids = set(run_ids_for_events(conn, provenance_event_keys).values())
     successful = 0
     failed = 0
     unknown_statuses: set[str] = set()

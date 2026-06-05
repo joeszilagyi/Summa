@@ -24,6 +24,15 @@ validator = importlib.util.module_from_spec(validator_spec)
 assert validator_spec.loader is not None
 validator_spec.loader.exec_module(validator)
 
+planner_spec = importlib.util.spec_from_file_location(
+    "candidate_feedback_planner_for_selection_tests",
+    PLANNER_PATH,
+)
+assert planner_spec is not None
+planner = importlib.util.module_from_spec(planner_spec)
+assert planner_spec.loader is not None
+planner_spec.loader.exec_module(planner)
+
 
 def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -354,6 +363,80 @@ def seed_feedback_state(db_path: Path, *, subject_id: str) -> dict[str, str]:
         }
     finally:
         conn.close()
+
+
+def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    db_path = bootstrap_db(tmp_path)
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        capture_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="candidate-feedback-selection",
+            object_id="capture-prov",
+            event_type="capture_event",
+            tool_name="pytest.candidate_feedback_selection",
+            run_id="run-capture",
+            event_timestamp=FIXED_CREATED_AT,
+            provenance_event_key_v1="prov:capture",
+        )
+        extraction_prov = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="candidate-feedback-selection",
+            object_id="extraction-prov",
+            event_type="extraction_record",
+            tool_name="pytest.candidate_feedback_selection",
+            run_id="run-extraction",
+            event_timestamp=FIXED_CREATED_AT,
+            provenance_event_key_v1="prov:extraction",
+        )
+        capture = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=capture_prov.event_key,
+            original_locator="https://example.test/source-a",
+            captured_at=FIXED_CREATED_AT,
+            capture_method="fixture",
+            workspace_id="alpha_subject",
+        )
+        canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=extraction_prov.event_key,
+            capture_event_id=capture.row_id,
+            extraction_method="fixture",
+            extraction_status="completed",
+            extractor_name="pytest",
+            workspace_id="alpha_subject",
+            created_at=FIXED_CREATED_AT,
+            record_last_updated=FIXED_CREATED_AT,
+        )
+        metrics = planner.extraction_outcome_counts(
+            conn,
+            source_locus_id=None,
+            locators=["https://example.test/source-a"],
+            subject_id="alpha_subject",
+            warnings=[],
+        )
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        conn.close()
+
+    provenance_lookups = [
+        sql
+        for sql in executed_sql
+        if "FROM provenance_event" in sql and "provenance_event_key_v1 IN" in sql
+    ]
+    assert len(provenance_lookups) == 1
+    assert metrics["capture_count"] == 1
+    assert metrics["successful_extractions"] == 1
 
 
 def validate_plan(path: Path) -> dict[str, object]:
