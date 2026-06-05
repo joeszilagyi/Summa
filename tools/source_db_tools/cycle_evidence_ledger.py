@@ -124,7 +124,7 @@ def record_cycle_event_start(
         run_id=run_id_text, started_at=started, workspace_ref=workspace_ref
     )
     now = now_rfc3339()
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO cycle_event (
           cycle_event_id, run_id, workspace_id, workspace_ref, subject_key, domain_pack_id,
@@ -133,7 +133,7 @@ def record_cycle_event_start(
           final_feedback_plan_ref, row_count_delta_json, warning_count, error_count,
           metadata_json, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(cycle_event_id) DO UPDATE SET
+        ON CONFLICT(run_id) DO UPDATE SET
           workspace_id=excluded.workspace_id,
           workspace_ref=excluded.workspace_ref,
           subject_key=excluded.subject_key,
@@ -152,6 +152,7 @@ def record_cycle_event_start(
           error_count=excluded.error_count,
           metadata_json=excluded.metadata_json,
           record_last_updated=excluded.record_last_updated
+        RETURNING cycle_event_id
         """,
         (
             event_id,
@@ -176,7 +177,10 @@ def record_cycle_event_start(
             now,
         ),
     )
-    return event_id
+    row = cursor.fetchone()
+    if row is None:
+        raise CycleEvidenceLedgerError("record_cycle_event_start did not return cycle_event_id")
+    return str(row[0])
 
 
 def record_cycle_event_finish(
