@@ -224,6 +224,9 @@ def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tm
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
+    merge_count = 0
+    reconciliation_count = 0
+    entity = {"authority_record_id": None, "review_state": None}
     try:
         with conn:
             ingest_batch(conn, first_batch, batch_name="batch-a.json", db_path=db_path)
@@ -588,6 +591,70 @@ def test_exact_authority_identifier_match_records_merge_event_without_auto_accep
         for row in authority_rows
     )
     assert report["counts"]["deduped"]["authority"] == 1
+
+
+def test_rejected_authority_identifier_does_not_auto_merge(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    merge_count = 0
+    reconciliation_count = 0
+    entity = {"authority_record_id": None, "review_state": None}
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith.orcid",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.add_authority_identifier(
+                conn,
+                authority_record_id=authority_id,
+                scheme="orcid",
+                value="0000-0002-1825-0097",
+                is_primary=1,
+                confidence_score=0.0,
+                review_state="rejected",
+                verified_at=FIXED_TIMESTAMP,
+            )
+            report = ingest_batch(
+                conn,
+                build_batch(
+                    [
+                        entity_candidate(
+                            "cand:entity.2",
+                            label="Jane Smith",
+                            identifiers=[
+                                {"scheme": "orcid", "value": "0000-0002-1825-0097"}
+                            ],
+                        )
+                    ],
+                    run_id="gather-entity-identity-rejected",
+                ),
+                batch_name="entity-identity-rejected.json",
+                db_path=db_path,
+            )
+            merge_count = conn.execute(
+                "SELECT COUNT(*) FROM authority_merge_event"
+            ).fetchone()[0]
+            reconciliation_count = conn.execute(
+                "SELECT COUNT(*) FROM authority_reconciliation"
+            ).fetchone()[0]
+            entity = conn.execute(
+                "SELECT authority_record_id, review_state FROM extraction_detected_entity"
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert merge_count == 0
+    assert reconciliation_count == 1
+    assert entity["authority_record_id"] is None
+    assert entity["review_state"] == "proposed"
+    assert report["counts"]["reconciled"]["authority_reconciliation"] == 1
 
 
 def test_structured_taught_by_impossibility_creates_contradiction_and_review_history(tmp_path: Path) -> None:

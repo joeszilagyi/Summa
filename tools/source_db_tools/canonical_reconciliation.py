@@ -25,6 +25,8 @@ WORK_DUPLICATE_EVENT_TYPE = "work_duplicate_encountered"
 AUTHORITY_MATCH_EXACT_IDENTIFIER = 1.0
 AUTHORITY_MATCH_LABEL_AND_TYPE = 0.75
 AUTHORITY_MATCH_LABEL_AND_TYPE_AMBIGUOUS = 0.5
+AUTO_MERGE_REVIEW_STATES = ("accepted", "approved", "curated", "reviewed")
+AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD = 0.0
 WORK_MATCH_EXACT_IDENTIFIER = 1.0
 WORK_MATCH_TITLE_TYPE_AND_SOURCE = 0.95
 STRUCTURED_CONTRADICTION_CONFIDENCE = 1.0
@@ -615,6 +617,7 @@ def find_existing_authority_match(
     identifiers = candidate_identifiers(structured)
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         row = conn.execute(
             """
             SELECT authority_record.authority_record_id
@@ -622,9 +625,21 @@ def find_existing_authority_match(
             INNER JOIN authority_record
               ON authority_record.authority_record_id = authority_identifier.authority_record_id
             WHERE authority_identifier.scheme=? AND authority_identifier.value=?
+              AND authority_identifier.validity_status='valid'
+              AND authority_record.review_state IN ({})
+              AND authority_identifier.review_state IN ({})
+              AND COALESCE(authority_identifier.confidence_score, 0.0) >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
-            """,
-            (normalized["scheme"], normalized["value"]),
+            """.format(
+                review_state_placeholders, review_state_placeholders
+            ),
+            (
+                normalized["scheme"],
+                normalized["value"],
+                *AUTO_MERGE_REVIEW_STATES,
+                *AUTO_MERGE_REVIEW_STATES,
+                AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
+            ),
         ).fetchone()
         if row is not None:
             return [
