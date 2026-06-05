@@ -35,7 +35,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
-    DEFAULT_TEMPLATE_ID,
     TEMPLATE_PATH,
     WrapperContractError,
     load_template,
