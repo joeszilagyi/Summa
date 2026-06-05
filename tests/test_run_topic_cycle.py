@@ -279,6 +279,87 @@ def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> N
     assert "outer load failure" not in str(excinfo.value)
 
 
+def test_topic_cycle_final_status_recomputes_after_evidence_spool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+    run_dir = tmp_path / "cycle-final-status"
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+
+    monkeypatch.setattr(
+        module,
+        "resolve_runtime_stage",
+        lambda **kwargs: {
+            "subject": {"subject_id": "fixture_subject"},
+            "domain_pack": {"name": "general.v1"},
+        },
+    )
+    monkeypatch.setattr(module, "resolve_domain_pack_stage", lambda **kwargs: None)
+    monkeypatch.setattr(module, "validate_store_stage", lambda **kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "resolve_feedback_plan",
+        lambda **kwargs: {"path": str(tmp_path / "feedback-plan.json")},
+    )
+    monkeypatch.setattr(module, "gather_stage", lambda **kwargs: tmp_path / "candidate-batch.json")
+    monkeypatch.setattr(module, "candidate_ingest_stage", lambda **kwargs: None)
+    monkeypatch.setattr(module, "acquisition_stage", lambda **kwargs: tmp_path / "execution-run")
+    monkeypatch.setattr(module, "execution_ingest_stage", lambda **kwargs: None)
+    monkeypatch.setattr(module, "publication_stage", lambda **kwargs: None)
+    monkeypatch.setattr(module, "final_store_stage", lambda **kwargs: None)
+    monkeypatch.setattr(module, "graph_closure_stage", lambda **kwargs: None)
+
+    def fake_record_cycle_evidence_from_manifest(
+        *,
+        args: object,
+        manifest: dict[str, object],
+        manifest_path: Path,
+        db_path: Path,
+    ) -> None:
+        module.add_spool_record_to_manifest(
+            manifest,
+            spool_path=manifest_path,
+            record={
+                "spool_record_id": "spool:cycle-evidence",
+                "operation_kind": "cycle_evidence_write",
+                "failure_kind": "synthetic",
+                "replay_status": "spooled",
+            },
+        )
+
+    monkeypatch.setattr(
+        module, "record_cycle_evidence_from_manifest", fake_record_cycle_evidence_from_manifest
+    )
+
+    args = module.parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-final-status",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--mode",
+            "local",
+        ]
+    )
+
+    manifest, exit_code = module.run_topic_cycle(args)
+    persisted = load_manifest(run_dir)
+
+    assert exit_code == 0
+    assert manifest["status"] == "degraded"
+    assert persisted["status"] == "degraded"
+    assert persisted["spool_records"]
+    assert persisted["spool_records"][0]["operation_kind"] == "cycle_evidence_write"  # type: ignore[index]
+
+
 def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     tmp_path: Path,
 ) -> None:

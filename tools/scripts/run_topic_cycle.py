@@ -1499,13 +1499,20 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     finally:
         manifest["ended_at"] = utc_now()
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
-        write_json(manifest_path, manifest)
         record_cycle_evidence_from_manifest(
             args=args,
             manifest=manifest,
             manifest_path=manifest_path,
             db_path=db_path,
         )
+        if return_code == 0:
+            if args.mode == "dry-run":
+                manifest["status"] = "dry_run"
+            elif manifest.get("spool_records"):
+                manifest["status"] = "degraded"
+            else:
+                manifest["status"] = "completed"
+        write_json(manifest_path, manifest)
     return manifest, return_code
 
 
