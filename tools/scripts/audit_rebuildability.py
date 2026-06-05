@@ -331,6 +331,8 @@ def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[di
                     candidate = Path(raw_value)
                     if not candidate.is_absolute():
                         candidate = (artifact.path.parent / candidate).resolve()
+                    else:
+                        candidate = candidate.resolve()
                     if candidate.exists() or candidate in existing_paths:
                         continue
                     missing.append(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -20,6 +21,12 @@ CANDIDATE_BATCH = (
 )
 EXECUTION_RUN = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "execution_run"
 FIXED_TIMESTAMP = "2026-06-04T12:00:00Z"
+
+spec = importlib.util.spec_from_file_location("audit_rebuildability_for_tests", SCRIPT)
+assert spec is not None
+audit = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(audit)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -243,6 +250,61 @@ def test_compare_existing_reports_matching_meaningful_state(tmp_path: Path) -> N
     assert report["key_hash_comparison"]["status"] == "match"
     assert table_count(existing_db, "work") == before["work"]
     assert table_count(existing_db, "capture_event") == before["capture_event"]
+
+
+def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path, monkeypatch) -> None:
+    runs_dir = tmp_path / "runs"
+    cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    actual = data_dir / "candidate-batch.json"
+    actual.write_text("{\"schema_version\":\"demo\"}\n", encoding="utf-8")
+    alias = data_dir / ".." / "data" / "candidate-batch.json"
+    cycle_dir.mkdir(parents=True)
+    (cycle_dir / "topic-cycle-run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-001",
+                "status": "completed",
+                "stages": [
+                    {
+                        "name": "ingest_candidate_batch",
+                        "status": "passed",
+                        "artifacts": {"candidate_batch": str(alias)},
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = [
+        audit.Artifact(
+            artifact_type="topic_cycle_manifest",
+            path=cycle_dir / "topic-cycle-run.json",
+            hash=None,
+            schema_id="topic-cycle-run.v1",
+            run_id="cycle-001",
+            stage="cycle",
+            validation_status="valid",
+            replay_status="pending",
+        )
+    ]
+
+    original_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self == alias:
+            return False
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    missing = audit.find_missing_artifacts(artifacts, runs_dir)
+
+    assert missing == []
 
 
 def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> None:
