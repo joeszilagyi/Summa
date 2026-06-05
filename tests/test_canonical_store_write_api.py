@@ -322,6 +322,121 @@ def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None
     assert row["record_last_updated"] == NEWER_TIMESTAMP
 
 
+def test_source_relationship_is_deduplicated_by_logical_identity(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="relationship-first",
+            event_type="fixture_ingest",
+            run_id="run-first",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:relationship-run-first",
+        )
+        first = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            from_object_ref="work:1",
+            to_object_ref="entity:alpha",
+            predicate="mentions",
+            target_label="Alpha",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="relationship-second",
+            event_type="fixture_ingest",
+            run_id="run-second",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:relationship-run-second",
+        )
+        second = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            from_object_ref="work:1",
+            to_object_ref="entity:alpha",
+            predicate="mentions",
+            target_label="Alpha",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE from_object_ref=?",
+            ("work:1",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert count == 1
+
+
+def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-first",
+            event_type="fixture_ingest",
+            run_id="claim-run-first",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-run-first",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-second",
+            event_type="fixture_ingest",
+            run_id="claim-run-second",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-run-second",
+        )
+        second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE about_object_ref=?",
+            ("work:fixture-alpha",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert first.row_id == second.row_id
+    assert count == 1
+
+
 def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

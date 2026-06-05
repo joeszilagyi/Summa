@@ -1357,12 +1357,9 @@ def record_source_claim(
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_key = source_claim_key_v1 or stable_write_key(
         "claim",
-        provenance_event_ref,
-        about_object_ref,
-        claim_type,
+        _optional_nonblank(about_object_ref, "about_object_ref") or "about:unknown",
+        _optional_nonblank(claim_type, "claim_type") or "claim",
         claim_text_value,
-        capture_event_id,
-        extraction_id,
     )
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_SOURCE_CLAIM_REVIEW_STATE
@@ -1918,12 +1915,12 @@ def record_source_relationship(
         "source_relationship",
         "source_relationship_id",
         {
-            "provenance_event_ref": provenance_event_ref,
             "from_object_ref": from_ref,
             "to_object_ref": _optional_nonblank(to_object_ref, "to_object_ref"),
             "predicate": predicate_value,
             "target_label": _optional_nonblank(target_label, "target_label"),
             "evidence_note": _optional_nonblank(evidence_note, "evidence_note"),
+            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
         },
     )
     if existing is None:
