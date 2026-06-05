@@ -374,7 +374,7 @@ def record_work_identifier(
     confidence_score: float | int | None = None,
     review_state: str | None = None,
     record_last_updated: str | None = None,
-) -> canonical_store.CanonicalWriteResult:
+    ) -> canonical_store.CanonicalWriteResult:
     normalized = identifier_normalization.identifier_storage_values(scheme, value)
     timestamp = _normalize_timestamp(
         record_last_updated,
@@ -382,9 +382,10 @@ def record_work_identifier(
         default=canonical_store.now_rfc3339(),
     )
     score = _normalize_confidence_score(confidence_score)
-    review_state_value = _normalize_review_state(
-        review_state or canonical_store.DEFAULT_WORK_REVIEW_STATE,
-        field_name="review_state",
+    review_state_value = (
+        _normalize_review_state(review_state, field_name="review_state")
+        if review_state is not None
+        else None
     )
     conflicting = conn.execute(
         """
@@ -400,13 +401,18 @@ def record_work_identifier(
         )
     existing = conn.execute(
         """
-        SELECT work_identifier_id
+        SELECT work_identifier_id, review_state
         FROM work_identifier
         WHERE work_id=? AND scheme=? AND value=?
         """,
         (work_id, normalized["scheme"], normalized["value"]),
     ).fetchone()
     if existing is None:
+        review_state_value = (
+            review_state_value
+            if review_state_value is not None
+            else canonical_store.DEFAULT_WORK_REVIEW_STATE
+        )
         cursor = conn.execute(
             """
             INSERT INTO work_identifier (
@@ -436,6 +442,24 @@ def record_work_identifier(
             f"{normalized['scheme']}:{normalized['value']}",
             True,
         )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    preserve_established = False
+    merged_review_state = existing["review_state"]
+    if review_state_value is not None:
+        proposed_state_text = str(review_state_value).strip().lower()
+        preserve_established = (
+            existing_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+            and (
+                proposed_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+                or canonical_store._pending_review_state(review_state_value)
+            )
+        )
+        merged_review_state = existing["review_state"] if preserve_established else canonical_store._merged_review_state(
+            existing["review_state"],
+            review_state_value,
+        )
     conn.execute(
         """
         UPDATE work_identifier
@@ -451,7 +475,7 @@ def record_work_identifier(
             normalized["validity_status"],
             normalized["validation_warning"],
             score,
-            review_state_value,
+            merged_review_state,
             timestamp,
             int(existing["work_identifier_id"]),
         ),

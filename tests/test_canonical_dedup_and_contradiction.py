@@ -293,6 +293,66 @@ def test_rejected_work_identifier_does_not_exactly_match(tmp_path: Path) -> None
     assert len(existing_work_rows) == 1
 
 
+def test_record_work_identifier_replay_without_review_state_preserves_established_state(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="seed-work-identifier",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work_row = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded-identifier",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Seeded Work",
+                confidence_score=1.0,
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            baseline = canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/xyz-preserve",
+                confidence_score=0.95,
+                review_state="accepted",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            replay = canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/xyz-preserve",
+                confidence_score=0.10,
+            )
+            row = conn.execute(
+                """
+                SELECT review_state, confidence_score
+                FROM work_identifier
+                WHERE work_identifier_id=?
+                """,
+                (baseline.row_id,),
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.10
+
+
 def test_same_title_different_locator_does_not_collapse(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch_one = build_batch(
