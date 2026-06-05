@@ -22,6 +22,8 @@ RESTRICTED_EVIDENCE_BODY_RE = re.compile(r"(?i)\b(operator_excerpt_text|public_e
 
 PROFILES: dict[str, dict[str, bool]] = {
     "public_bundle": {
+        "scan_secret_markers": True,
+        "scan_private_path_markers": True,
         "scan_runtime_log_paths": True,
         "scan_prompt_output_markers": True,
         "scan_raw_payload_markers": True,
@@ -29,6 +31,8 @@ PROFILES: dict[str, dict[str, bool]] = {
         "scan_restricted_evidence_markers": True,
     },
     "support_bundle": {
+        "scan_secret_markers": False,
+        "scan_private_path_markers": False,
         "scan_runtime_log_paths": False,
         "scan_prompt_output_markers": False,
         "scan_raw_payload_markers": False,
@@ -117,7 +121,8 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
     if profile not in PROFILES:
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
     findings: list[dict[str, Any]] = []
-    if contains_secret_marker(body):
+    profile_config = PROFILES[profile]
+    if profile_config["scan_secret_markers"] and contains_secret_marker(body):
         findings.extend(
             _regex_findings(
                 body,
@@ -127,7 +132,7 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
                 message="secret-looking token remains in scanned output",
             )
         )
-    if contains_private_path(body):
+    if profile_config["scan_private_path_markers"] and contains_private_path(body):
         findings.extend(
             _regex_findings(
                 body,
