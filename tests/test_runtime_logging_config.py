@@ -45,8 +45,8 @@ def test_python_logger_uses_utc_z_timestamps(
     line = log_path.read_text(encoding="utf-8").strip()
     timestamp = line.split(" ", 1)[0]
     assert timestamp.endswith("Z")
-    logged_at = dt.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-    now_utc = dt.datetime.now(dt.timezone.utc)
+    logged_at = dt.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC)
+    now_utc = dt.datetime.now(dt.UTC)
     assert abs((now_utc - logged_at).total_seconds()) < 10
 
 

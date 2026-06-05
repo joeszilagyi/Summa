@@ -107,7 +107,7 @@ SOURCE_LOCUS_FIELDS = [
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def coerce_bool(value: Any, *, field_name: str) -> bool:

@@ -43,7 +43,7 @@ import subprocess
 import sys
 import unicodedata
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 EXTRACTOR_VERSION = "1.1"
@@ -64,7 +64,7 @@ _LANG_PATH_MAP: dict[str, str] = {}
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha256_file(path: Path) -> str:

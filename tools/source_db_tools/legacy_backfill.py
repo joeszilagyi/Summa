@@ -37,7 +37,7 @@ URL_RE = re.compile(r"https?://[^\s\]\)>\"]+")
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

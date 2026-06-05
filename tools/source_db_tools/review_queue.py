@@ -93,7 +93,7 @@ TYPE_ALIASES: dict[str, list[str]] = {
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def review_key(*parts: Any) -> str:
