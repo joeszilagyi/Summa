@@ -336,6 +336,38 @@
       "notes": "Evaluates network-safety gate requests without fetching sources."
     },
     {
+      "id": "console.summa-replay-canonical-write-spool",
+      "kind": "console_script",
+      "category": "canonical_store_tool",
+      "status": "live",
+      "path": "tools/scripts/replay_canonical_write_spool.py",
+      "command": "summa-replay-canonical-write-spool",
+      "package_command": "summa-replay-canonical-write-spool",
+      "wrapper_path": "tools/scripts/Index_Replay_Canonical_Write_Spool.sh",
+      "docs_path": "docs/scripts/index_replay_canonical_write_spool.md",
+      "test_refs": ["tests/test_canonical_write_spool.py", "tests/test_packaging_metadata.py"],
+      "network_behavior": "none",
+      "mutates_canonical_store": "true",
+      "public_private_risk": "local_operator",
+      "notes": "Replays validated canonical-write spool records through canonical write APIs."
+    },
+    {
+      "id": "validator.canonical-write-spool",
+      "kind": "validator",
+      "category": "validator",
+      "status": "validator_only",
+      "path": "tools/scripts/validate_canonical_write_spool.py",
+      "command": null,
+      "package_command": null,
+      "wrapper_path": null,
+      "docs_path": "docs/scripts/index_replay_canonical_write_spool.md",
+      "test_refs": ["tests/test_canonical_write_spool.py"],
+      "network_behavior": "none",
+      "mutates_canonical_store": "false",
+      "public_private_risk": "local_operator",
+      "notes": "Validates canonical-write spool records without replaying them."
+    },
+    {
       "id": "wrapper.index-build-release-readiness-bundle",
       "kind": "shell_wrapper",
       "category": "release_readiness_tool",

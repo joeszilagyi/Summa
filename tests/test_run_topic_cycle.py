@@ -269,6 +269,45 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
 
 
+def test_topic_cycle_degraded_spool_records_pending_canonical_write(
+    tmp_path: Path,
+) -> None:
+    workspace = write_workspace(tmp_path)
+    missing_db = tmp_path / "missing.sqlite"
+    run_dir = tmp_path / "cycle-spooled"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(missing_db),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-spooled",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--mode",
+            "local",
+            "--candidate-batch-fixture",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    manifest = load_manifest(run_dir)
+    assert manifest["status"] == "degraded"
+    stages = stages_by_name(manifest)
+    assert stages["validate_canonical_store"]["status"] == "degraded"
+    assert stages["ingest_candidate_batch"]["status"] == "spooled"
+    assert manifest["canonical_db"]["mutated"] is False  # type: ignore[index]
+    assert manifest["spool_records"]
+    assert manifest["spool_records"][0]["operation_kind"] == "candidate_batch_ingest"  # type: ignore[index]
+    assert Path(manifest["spool_records"][0]["path"]).is_file()  # type: ignore[index]
+
+
 def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"

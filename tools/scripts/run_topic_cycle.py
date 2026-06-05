@@ -22,6 +22,7 @@ from tools.scripts import resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
     canonical_ingest,
     canonical_store,
+    canonical_write_spool,
     cycle_evidence_ledger,
 )
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
@@ -202,6 +203,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reserved for later remote acquisition. F26 records this as disabled and refuses remote fetch.",
     )
     parser.add_argument(
+        "--degraded-spool",
+        action="store_true",
+        help="Preserve validated canonical-write intents as spool records if the DB is unavailable.",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        help="Directory for degraded canonical-write spool records. Defaults to <run-dir>/spool.",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Allow replacing an existing completed cycle manifest."
     )
     parser.add_argument(
@@ -268,6 +278,7 @@ def build_manifest(
         "failure_stage": None,
         "error_summary": None,
         "warnings": [],
+        "spool_records": [],
         "started_at": started_at,
         "ended_at": None,
         "no_network": True,
@@ -452,7 +463,27 @@ def resolve_domain_pack_stage(
         fail_stage(stage, str(exc))
 
 
-def validate_store_stage(*, manifest: dict[str, Any], db_path: Path) -> None:
+def spool_dir_for(args: argparse.Namespace, run_dir: Path) -> Path:
+    return resolve_path(args.spool_dir) if args.spool_dir else run_dir / "spool"
+
+
+def add_spool_record_to_manifest(
+    manifest: dict[str, Any], *, spool_path: Path, record: dict[str, Any]
+) -> None:
+    manifest.setdefault("spool_records", []).append(
+        {
+            "spool_record_id": record["spool_record_id"],
+            "operation_kind": record["operation_kind"],
+            "path": str(spool_path),
+            "failure_kind": record["failure_kind"],
+            "replay_status": record["replay_status"],
+        }
+    )
+
+
+def validate_store_stage(
+    *, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path
+) -> None:
     stage = StageRecord(name="validate_canonical_store")
     stage.started_at = utc_now()
     stage.inputs = {"db": str(db_path)}
@@ -468,6 +499,16 @@ def validate_store_stage(*, manifest: dict[str, Any], db_path: Path) -> None:
         finish_stage(stage)
         add_stage(manifest, stage)
     except Exception as exc:
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+            fail_stage(stage, str(exc))
+        if args.degraded_spool:
+            stage.validation = {"status": "degraded", "error": str(exc)}
+            manifest.setdefault("warnings", []).append(
+                f"canonical store validation degraded; canonical writes will spool: {exc}"
+            )
+            finish_stage(stage, status="degraded")
+            add_stage(manifest, stage)
+            return
         fail_stage(stage, str(exc))
 
 
@@ -745,6 +786,60 @@ def candidate_ingest_stage(
         add_stage(manifest, stage)
         return report
     except Exception as exc:
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+            fail_stage(stage, str(exc))
+        if args.degraded_spool:
+            record = canonical_write_spool.build_spool_record(
+                operation_kind="candidate_batch_ingest",
+                operation_input={
+                    "artifact_refs": [
+                        {
+                            "artifact_type": "gather_candidate_batch",
+                            "artifact_path": str(ingest_batch_path),
+                            "artifact_hash": hash_file(ingest_batch_path),
+                        }
+                    ]
+                },
+                replay_recipe={
+                    "batch_path": str(ingest_batch_path),
+                    "batch_hash": hash_file(ingest_batch_path),
+                    "strict": True,
+                },
+                failure=exc,
+                canonical_db_path=db_path,
+                spool_dir=spool_dir_for(args, run_dir),
+                originating_tool="tools/scripts/run_topic_cycle.py",
+                originating_command="run_topic_cycle.py",
+                originating_run_id=str(manifest["run_id"]),
+                topic_cycle_id=str(manifest["cycle_event_id"]),
+                stage_name="ingest_candidate_batch",
+                workspace_id=manifest["workspace"].get("workspace_id"),
+                subject_id=manifest.get("subject", {}).get("subject_id")
+                if isinstance(manifest.get("subject"), dict)
+                else None,
+                expected_schema_version=None,
+            )
+            spool_path = canonical_write_spool.write_spool_record(
+                spool_dir_for(args, run_dir), record
+            )
+            stage.artifacts = {
+                "spool_record": str(spool_path),
+                "spool_record_sha256": hash_file(spool_path),
+                "mutated": False,
+            }
+            stage.error_message = str(exc)
+            finish_stage(stage, status="spooled")
+            add_stage(manifest, stage)
+            add_spool_record_to_manifest(manifest, spool_path=spool_path, record=record)
+            manifest.setdefault("warnings", []).append(
+                f"candidate batch ingest spooled after canonical write failure: {exc}"
+            )
+            return {
+                "schema_version": canonical_ingest.INGEST_REPORT_SCHEMA_VERSION,
+                "ingest_kind": "candidate_batch",
+                "status": "spooled",
+                "spool_record_path": str(spool_path),
+            }
         fail_stage(stage, str(exc))
 
 
@@ -878,6 +973,66 @@ def execution_ingest_stage(
         add_stage(manifest, stage)
         return report
     except Exception as exc:
+        if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(exc):
+            fail_stage(stage, str(exc))
+        if args.degraded_spool:
+            try:
+                _execution_record, _capture_events, _extraction_records, paths, input_hashes = (
+                    canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+                )
+            except Exception:
+                fail_stage(stage, str(exc))
+            artifact_refs = [
+                {
+                    "artifact_type": key,
+                    "artifact_path": str(paths[key]),
+                    "artifact_hash": input_hashes[key],
+                }
+                for key in sorted(input_hashes)
+            ]
+            record = canonical_write_spool.build_spool_record(
+                operation_kind="execution_artifact_ingest",
+                operation_input={"artifact_refs": artifact_refs},
+                replay_recipe={
+                    "run_dir": str(execution_run_dir),
+                    "input_hashes": dict(input_hashes),
+                    "strict": True,
+                },
+                failure=exc,
+                canonical_db_path=db_path,
+                spool_dir=spool_dir_for(args, run_dir),
+                originating_tool="tools/scripts/run_topic_cycle.py",
+                originating_command="run_topic_cycle.py",
+                originating_run_id=str(manifest["run_id"]),
+                topic_cycle_id=str(manifest["cycle_event_id"]),
+                stage_name="ingest_execution_artifacts",
+                workspace_id=manifest["workspace"].get("workspace_id"),
+                subject_id=manifest.get("subject", {}).get("subject_id")
+                if isinstance(manifest.get("subject"), dict)
+                else None,
+                expected_schema_version=None,
+            )
+            spool_path = canonical_write_spool.write_spool_record(
+                spool_dir_for(args, run_dir), record
+            )
+            stage.artifacts = {
+                "spool_record": str(spool_path),
+                "spool_record_sha256": hash_file(spool_path),
+                "mutated": False,
+            }
+            stage.error_message = str(exc)
+            finish_stage(stage, status="spooled")
+            add_stage(manifest, stage)
+            add_spool_record_to_manifest(manifest, spool_path=spool_path, record=record)
+            manifest.setdefault("warnings", []).append(
+                f"execution artifact ingest spooled after canonical write failure: {exc}"
+            )
+            return {
+                "schema_version": canonical_ingest.INGEST_REPORT_SCHEMA_VERSION,
+                "ingest_kind": "execution_artifacts",
+                "status": "spooled",
+                "spool_record_path": str(spool_path),
+            }
         fail_stage(stage, str(exc))
 
 
@@ -887,7 +1042,7 @@ def publication_stage(*, manifest: dict[str, Any]) -> None:
     add_stage(manifest, stage)
 
 
-def final_store_stage(*, manifest: dict[str, Any], db_path: Path) -> None:
+def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path) -> None:
     stage = StageRecord(name="final_canonical_store_summary")
     stage.started_at = utc_now()
     try:
@@ -900,6 +1055,14 @@ def final_store_stage(*, manifest: dict[str, Any], db_path: Path) -> None:
         finish_stage(stage)
         add_stage(manifest, stage)
     except Exception as exc:
+        if args.degraded_spool and manifest.get("spool_records"):
+            stage.error_message = str(exc)
+            manifest.setdefault("warnings", []).append(
+                f"final canonical store summary skipped after degraded spool: {exc}"
+            )
+            finish_stage(stage, status="degraded")
+            add_stage(manifest, stage)
+            return
         fail_stage(stage, str(exc))
 
 
@@ -922,6 +1085,7 @@ def render_text(manifest: dict[str, Any]) -> str:
 
 def record_cycle_evidence_from_manifest(
     *,
+    args: argparse.Namespace,
     manifest: dict[str, Any],
     manifest_path: Path,
     db_path: Path,
@@ -933,6 +1097,52 @@ def record_cycle_evidence_from_manifest(
         ledger["status"] = "skipped"
         return
     if not db_path.is_file():
+        if args.degraded_spool:
+            try:
+                record = canonical_write_spool.build_spool_record(
+                    operation_kind="cycle_evidence_write",
+                    operation_input={
+                        "artifact_refs": [
+                            {
+                                "artifact_type": "topic_cycle_manifest",
+                                "artifact_path": str(manifest_path),
+                                "artifact_hash": hash_file(manifest_path),
+                            }
+                        ]
+                    },
+                    replay_recipe={
+                        "manifest_path": str(manifest_path),
+                        "manifest_hash": hash_file(manifest_path),
+                    },
+                    failure=f"canonical DB path is not a file: {db_path}",
+                    canonical_db_path=db_path,
+                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    originating_tool="tools/scripts/run_topic_cycle.py",
+                    originating_command="run_topic_cycle.py",
+                    originating_run_id=str(manifest["run_id"]),
+                    topic_cycle_id=str(manifest["cycle_event_id"]),
+                    stage_name="cycle_evidence_write",
+                    workspace_id=manifest["workspace"].get("workspace_id"),
+                    subject_id=manifest.get("subject", {}).get("subject_id")
+                    if isinstance(manifest.get("subject"), dict)
+                    else None,
+                    expected_schema_version=None,
+                )
+                spool_path = canonical_write_spool.write_spool_record(
+                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                )
+                ledger["status"] = "spooled"
+                ledger["spool_record_path"] = str(spool_path)
+                add_spool_record_to_manifest(manifest, spool_path=spool_path, record=record)
+                manifest.setdefault("warnings", []).append(
+                    "cycle evidence ledger write was spooled: DB missing"
+                )
+                write_json(manifest_path, manifest)
+                return
+            except Exception as spool_exc:
+                manifest.setdefault("warnings", []).append(
+                    f"cycle evidence ledger spool failed: {spool_exc}"
+                )
         ledger["status"] = "failed"
         ledger["error"] = f"canonical DB path is not a file: {db_path}"
         manifest.setdefault("warnings", []).append(
@@ -955,6 +1165,53 @@ def record_cycle_evidence_from_manifest(
         finally:
             conn.close()
     except Exception as exc:
+        if args.degraded_spool:
+            try:
+                record = canonical_write_spool.build_spool_record(
+                    operation_kind="cycle_evidence_write",
+                    operation_input={
+                        "artifact_refs": [
+                            {
+                                "artifact_type": "topic_cycle_manifest",
+                                "artifact_path": str(manifest_path),
+                                "artifact_hash": hash_file(manifest_path),
+                            }
+                        ]
+                    },
+                    replay_recipe={
+                        "manifest_path": str(manifest_path),
+                        "manifest_hash": hash_file(manifest_path),
+                    },
+                    failure=exc,
+                    canonical_db_path=db_path,
+                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    originating_tool="tools/scripts/run_topic_cycle.py",
+                    originating_command="run_topic_cycle.py",
+                    originating_run_id=str(manifest["run_id"]),
+                    topic_cycle_id=str(manifest["cycle_event_id"]),
+                    stage_name="cycle_evidence_write",
+                    workspace_id=manifest["workspace"].get("workspace_id"),
+                    subject_id=manifest.get("subject", {}).get("subject_id")
+                    if isinstance(manifest.get("subject"), dict)
+                    else None,
+                    expected_schema_version=None,
+                )
+                spool_path = canonical_write_spool.write_spool_record(
+                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                )
+                ledger["status"] = "spooled"
+                ledger["error"] = str(exc)
+                ledger["spool_record_path"] = str(spool_path)
+                add_spool_record_to_manifest(manifest, spool_path=spool_path, record=record)
+                manifest.setdefault("warnings", []).append(
+                    f"cycle evidence ledger write was spooled: {exc}"
+                )
+                write_json(manifest_path, manifest)
+                return
+            except Exception as spool_exc:
+                manifest.setdefault("warnings", []).append(
+                    f"cycle evidence ledger spool failed: {spool_exc}"
+                )
         ledger["status"] = "failed"
         ledger["error"] = str(exc)
         manifest.setdefault("warnings", []).append(f"cycle evidence ledger was not recorded: {exc}")
@@ -1007,7 +1264,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     try:
         runtime = resolve_runtime_stage(args=args, manifest=manifest, workspace=workspace)
         resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
-        validate_store_stage(manifest=manifest, db_path=db_path)
+        validate_store_stage(args=args, manifest=manifest, db_path=db_path)
         feedback_plan = resolve_feedback_plan(
             args=args,
             manifest=manifest,
@@ -1051,8 +1308,13 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             stage.skipped_reason = "not requested"
             add_stage(manifest, stage)
         publication_stage(manifest=manifest)
-        final_store_stage(manifest=manifest, db_path=db_path)
-        manifest["status"] = "dry_run" if args.mode == "dry-run" else "completed"
+        final_store_stage(args=args, manifest=manifest, db_path=db_path)
+        if args.mode == "dry-run":
+            manifest["status"] = "dry_run"
+        elif manifest.get("spool_records"):
+            manifest["status"] = "degraded"
+        else:
+            manifest["status"] = "completed"
         return_code = 0
     except TopicCycleError as exc:
         manifest["status"] = "failed"
@@ -1067,6 +1329,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
         write_json(manifest_path, manifest)
         record_cycle_evidence_from_manifest(
+            args=args,
             manifest=manifest,
             manifest_path=manifest_path,
             db_path=db_path,
