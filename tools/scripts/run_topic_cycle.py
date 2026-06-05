@@ -428,6 +428,10 @@ def add_stage(manifest: dict[str, Any], stage: StageRecord) -> None:
 
 def validate_existing_run_dir(run_dir: Path, *, force: bool, resume: bool) -> None:
     manifest_path = run_dir / "topic-cycle-run.json"
+    if resume:
+        raise TopicCycleError(
+            "--resume is reserved; use a new run id or --force for this F26 runner"
+        )
     if not manifest_path.exists():
         return
     payload = read_json(manifest_path, label="existing topic-cycle manifest")
@@ -439,10 +443,6 @@ def validate_existing_run_dir(run_dir: Path, *, force: bool, resume: bool) -> No
     if status in {"failed", "partial"} and not resume and not force:
         raise TopicCycleError(
             f"topic cycle run already exists with status {status}; use --resume, --force, or a new run id"
-        )
-    if resume:
-        raise TopicCycleError(
-            "--resume is reserved; use a new run id or --force for this F26 runner"
         )
 
 
