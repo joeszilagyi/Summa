@@ -33,7 +33,7 @@ AUTHORITY_NAMESPACE = uuid.UUID("8b3022f5-6267-4545-8f41-3d337657d4f5")
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def label_norm(value: str) -> str:

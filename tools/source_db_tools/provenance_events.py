@@ -39,7 +39,7 @@ EVENT_TYPES = {
 
 def now_iso() -> str:
     """Return the current UTC timestamp used by provenance rows."""
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def stable_key(*parts: Any) -> str:

@@ -7,7 +7,7 @@ import argparse
 import json
 import tempfile
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -176,7 +176,7 @@ def plan_backup_manifest(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "policy_id": policy["policy_id"],
         "policy_path": repo_relative_path(policy_path, repo_root),
-        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo_root": str(repo_root.resolve()),
         "backup_root": policy["backup_root"],
         "requested_store_keys": requested,
