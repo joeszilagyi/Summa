@@ -19,6 +19,7 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "validators"):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
+from tools.source_db_tools import canonical_graph_closure  # noqa: E402
 from tools.validators import validate_release_readiness  # noqa: E402
 
 SCRIPT_PATH = "tools/scripts/build_release_readiness_bundle.py"
@@ -26,6 +27,7 @@ MANIFEST_SCHEMA_VERSION = "release-readiness-bundle.v1"
 MANIFEST_NAME = "release-readiness-bundle-manifest.json"
 FINAL_REPORT_NAME = "release-readiness-report.json"
 FINAL_TEXT_REPORT_NAME = "release-readiness-report.txt"
+GRAPH_CLOSURE_REPORT_NAME = "graph-closure-report.json"
 
 REQUIRED_REPORTS: dict[str, str] = {
     "doctor": validate_release_readiness.DOCTOR_REPORT_NAME,
@@ -98,6 +100,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Prebuilt local-search projection validator report JSON.",
     )
     parser.add_argument("--leak-scan-report", help="Prebuilt leak scan report JSON.")
+    parser.add_argument(
+        "--graph-closure-report",
+        help="Optional prebuilt graph-closure report JSON to stage in the bundle.",
+    )
+    parser.add_argument(
+        "--graph-closure-db",
+        help="Optional canonical DB path used to generate graph-closure-report.json.",
+    )
+    parser.add_argument(
+        "--graph-closure-strict",
+        action="store_true",
+        help="Treat true graph-closure orphan errors as blocking release-readiness findings.",
+    )
 
     parser.add_argument(
         "--repo-root", default=str(REPO_ROOT), help="Repo root for local doctor run mode."
@@ -340,6 +355,63 @@ def stage_reports(args: argparse.Namespace, *, output_dir: Path) -> list[StagedR
     return staged
 
 
+def stage_graph_closure_report(
+    args: argparse.Namespace, *, output_dir: Path
+) -> dict[str, Any] | None:
+    if args.graph_closure_report and args.graph_closure_db:
+        raise ReleaseReadinessBundleError(
+            "use only one of --graph-closure-report or --graph-closure-db"
+        )
+    if not args.graph_closure_report and not args.graph_closure_db:
+        return None
+    destination = output_dir / GRAPH_CLOSURE_REPORT_NAME
+    if args.graph_closure_report:
+        source = resolve_path(args.graph_closure_report)
+        payload = load_json_object(source, label="graph closure report")
+        shutil.copyfile(source, destination)
+        source_kind = "collected"
+        command = None
+    else:
+        source = resolve_path(args.graph_closure_db)
+        payload = canonical_graph_closure.audit_canonical_graph_closure(
+            source,
+            generated_at=args.generated_at,
+            strict=bool(args.graph_closure_strict),
+            report_path=destination,
+        )
+        source_kind = "generated"
+        command = [
+            sys.executable,
+            str(REPO_ROOT / "tools" / "scripts" / "audit_canonical_graph_closure.py"),
+            "--db",
+            str(source),
+            "--report-json",
+            str(destination),
+        ]
+        if args.graph_closure_strict:
+            command.append("--strict")
+    if payload.get("schema_version") != canonical_graph_closure.REPORT_SCHEMA_VERSION:
+        raise ReleaseReadinessBundleError(
+            "graph closure report must use schema_version "
+            f"{canonical_graph_closure.REPORT_SCHEMA_VERSION}"
+        )
+    raw_summary = payload.get("summary")
+    summary: dict[str, Any] = raw_summary if isinstance(raw_summary, dict) else {}
+    return {
+        "key": "graph_closure",
+        "filename": GRAPH_CLOSURE_REPORT_NAME,
+        "source_kind": source_kind,
+        "source_path": str(source),
+        "staged_path": str(destination),
+        "sha256": sha256_file(destination),
+        "status": payload.get("status"),
+        "strict": bool(args.graph_closure_strict),
+        "command": command,
+        "orphan_error_count": int(summary.get("true_orphan_error_count", 0)),
+        "unresolved_tracked_count": int(summary.get("unresolved_tracked_count", 0)),
+    }
+
+
 def render_release_text(report: dict[str, Any]) -> str:
     return validate_release_readiness.render_text(report)
 
@@ -362,6 +434,7 @@ def manifest_payload(
     output_dir: Path,
     staged_reports: list[StagedReport],
     final_report: dict[str, Any] | None,
+    optional_reports: list[dict[str, Any]],
     warnings: list[str],
     errors: list[str],
 ) -> dict[str, Any]:
@@ -387,6 +460,7 @@ def manifest_payload(
             }
             for item in staged_reports
         ],
+        "optional_reports": optional_reports,
         "final_release_readiness": None
         if final_report is None
         else {
@@ -408,10 +482,70 @@ def build_release_readiness_bundle(args: argparse.Namespace) -> tuple[dict[str, 
     warnings: list[str] = []
     errors: list[str] = []
     final_report: dict[str, Any] | None = None
+    optional_reports: list[dict[str, Any]] = []
 
     try:
         staged_reports = stage_reports(args, output_dir=output_dir)
         final_report = validate_release_readiness.aggregate_release_readiness(output_dir)
+        graph_report = stage_graph_closure_report(args, output_dir=output_dir)
+        if graph_report is not None:
+            optional_reports.append(graph_report)
+            status = graph_report.get("status")
+            if graph_report.get("orphan_error_count", 0) and args.graph_closure_strict:
+                final_report["status"] = "block"
+                final_report["checks"].append(
+                    {
+                        "check_key": "graph_closure",
+                        "source": GRAPH_CLOSURE_REPORT_NAME,
+                        "status": "block",
+                        "message": "graph closure reported true orphan errors",
+                    }
+                )
+                final_report["findings"].append(
+                    {
+                        "severity": "block",
+                        "source": GRAPH_CLOSURE_REPORT_NAME,
+                        "code": "GRAPH_CLOSURE_TRUE_ORPHANS",
+                        "message": "graph closure reported true orphan errors",
+                    }
+                )
+                final_report["summary"]["block_count"] += 1
+                final_report["summary"]["check_count"] += 1
+                final_report["summary"]["finding_count"] += 1
+            elif status in {"pass_with_unresolved", "warning"}:
+                final_report["status"] = (
+                    "warn" if final_report["status"] == "pass" else final_report["status"]
+                )
+                final_report["checks"].append(
+                    {
+                        "check_key": "graph_closure",
+                        "source": GRAPH_CLOSURE_REPORT_NAME,
+                        "status": "warn",
+                        "message": f"graph closure completed with status {status}",
+                    }
+                )
+                final_report["findings"].append(
+                    {
+                        "severity": "warn",
+                        "source": GRAPH_CLOSURE_REPORT_NAME,
+                        "code": "GRAPH_CLOSURE_UNRESOLVED_TRACKED",
+                        "message": f"graph closure completed with status {status}",
+                    }
+                )
+                final_report["summary"]["warn_count"] += 1
+                final_report["summary"]["check_count"] += 1
+                final_report["summary"]["finding_count"] += 1
+            else:
+                final_report["checks"].append(
+                    {
+                        "check_key": "graph_closure",
+                        "source": GRAPH_CLOSURE_REPORT_NAME,
+                        "status": "pass",
+                        "message": f"graph closure completed with status {status}",
+                    }
+                )
+                final_report["summary"]["pass_count"] += 1
+                final_report["summary"]["check_count"] += 1
         final_report["scenario"] = args.run_id
         final_report["target"] = str(output_dir)
         final_report["output_artifacts"] = {
@@ -427,6 +561,7 @@ def build_release_readiness_bundle(args: argparse.Namespace) -> tuple[dict[str, 
             output_dir=output_dir,
             staged_reports=staged_reports,
             final_report=final_report,
+            optional_reports=optional_reports,
             warnings=warnings,
             errors=errors,
         )
@@ -440,6 +575,7 @@ def build_release_readiness_bundle(args: argparse.Namespace) -> tuple[dict[str, 
         output_dir=output_dir,
         staged_reports=staged_reports,
         final_report=final_report,
+        optional_reports=optional_reports,
         warnings=warnings,
         errors=errors,
     )

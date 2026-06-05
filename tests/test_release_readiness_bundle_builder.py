@@ -157,6 +157,64 @@ def test_final_validator_failure_propagates_in_strict_mode(tmp_path: Path) -> No
     assert manifest["final_release_readiness"]["status"] == "block"
 
 
+def test_graph_closure_strict_report_blocks_release_readiness(tmp_path: Path) -> None:
+    output_dir = tmp_path / "bundle"
+    graph_report = tmp_path / "graph-closure-report.json"
+    graph_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "canonical-graph-closure-report.v1",
+                "status": "fail",
+                "summary": {
+                    "true_orphan_error_count": 1,
+                    "unresolved_tracked_count": 0,
+                    "repairable_count": 0,
+                    "quarantined_count": 0,
+                    "issue_count": 1,
+                    "audited_row_count": 1,
+                    "intentionally_exempt_count": 0,
+                },
+                "issues": [
+                    {
+                        "table": "source_claim",
+                        "primary_key": "1",
+                        "status": "true_orphan_error",
+                        "severity": "fail",
+                        "code": "SOURCE_CLAIM_TRUE_ORPHAN",
+                        "message": "orphan",
+                        "attachment_policy": "test",
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = run_builder(
+        [
+            "--mode",
+            "collect",
+            "--output-dir",
+            str(output_dir),
+            "--graph-closure-report",
+            str(graph_report),
+            "--graph-closure-strict",
+            *report_args(fixture_inputs("pass")),
+        ]
+    )
+
+    assert proc.returncode == 1
+    assert (output_dir / "graph-closure-report.json").is_file()
+    final_report = load_json(output_dir / "release-readiness-report.json")
+    manifest = load_json(output_dir / "release-readiness-bundle-manifest.json")
+    assert final_report["status"] == "block"
+    assert any(check["check_key"] == "graph_closure" for check in final_report["checks"])
+    assert manifest["optional_reports"][0]["key"] == "graph_closure"
+
+
 def test_report_only_records_failure_but_exits_zero(tmp_path: Path) -> None:
     output_dir = tmp_path / "bundle"
 

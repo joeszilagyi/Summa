@@ -33,6 +33,9 @@ EXPECTED_CONSOLE_SCRIPTS = {
     "summa-apply-review-decision": "tools.scripts.apply_review_decision:main",
     "summa-evaluate-network-safety-gate": ("tools.scripts.evaluate_network_safety_gate:main"),
     "summa-replay-canonical-write-spool": ("tools.scripts.replay_canonical_write_spool:main"),
+    "summa-audit-canonical-graph-closure": ("tools.scripts.audit_canonical_graph_closure:main"),
+    "summa-export-redacted-diagnostics": ("tools.scripts.export_redacted_diagnostics:main"),
+    "summa-audit-rebuildability": ("tools.scripts.audit_rebuildability:main"),
 }
 
 RUNTIME_OPERATOR_CONSOLE_COMMANDS = {
@@ -46,6 +49,9 @@ RUNTIME_OPERATOR_CONSOLE_COMMANDS = {
     "apply_review_decision.py": "summa-apply-review-decision",
     "evaluate_network_safety_gate.py": "summa-evaluate-network-safety-gate",
     "replay_canonical_write_spool.py": "summa-replay-canonical-write-spool",
+    "audit_canonical_graph_closure.py": "summa-audit-canonical-graph-closure",
+    "export_redacted_diagnostics.py": "summa-export-redacted-diagnostics",
+    "audit_rebuildability.py": "summa-audit-rebuildability",
 }
 
 INDEX_WRAPPER_CONSOLE_COMMANDS = {
@@ -58,6 +64,8 @@ INDEX_WRAPPER_CONSOLE_COMMANDS = {
     "Index_Run_Topic_Cycle.sh": "summa-run-topic-cycle",
     "Index_Select_Scheduled_Workspaces.sh": "summa-select-scheduled-workspaces",
     "Index_Replay_Canonical_Write_Spool.sh": "summa-replay-canonical-write-spool",
+    "Index_Export_Redacted_Diagnostics.sh": "summa-export-redacted-diagnostics",
+    "Index_Audit_Rebuildability.sh": "summa-audit-rebuildability",
     "Index_Workspace_Overview.sh": "summa-workspace-overview",
 }
 

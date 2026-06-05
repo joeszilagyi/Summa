@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "canonical-rebuildability-report.v1.schema.json",
+  "title": "canonical-rebuildability-report.v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "audit_mode",
+    "runs_root",
+    "artifacts_discovered",
+    "artifacts_validated",
+    "artifacts_missing",
+    "replay_plan",
+    "replay_results",
+    "missing_replay_support",
+    "warnings",
+    "errors",
+    "final_status"
+  ],
+  "properties": {
+    "schema_version": { "const": "canonical-rebuildability-report.v1" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "audit_mode": {
+      "type": "string",
+      "enum": ["validate_only", "rebuild_temp", "compare_existing"]
+    },
+    "runs_root": { "type": "string", "minLength": 1 },
+    "scope": { "type": "object" },
+    "canonical_db_compared": { "type": ["string", "null"] },
+    "temp_rebuild_db": { "type": ["string", "null"] },
+    "artifacts_discovered": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "artifact_counts": { "type": "object" },
+    "artifacts_validated": { "type": "integer", "minimum": 0 },
+    "artifacts_missing": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "artifacts_stale_or_duplicate": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "replay_plan": { "type": "object" },
+    "replay_results": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "canonical_init_result": { "type": ["object", "null"] },
+    "canonical_validation_result": { "type": ["object", "null"] },
+    "graph_closure_result": { "type": ["object", "null"] },
+    "row_count_comparison": { "type": ["object", "null"] },
+    "key_hash_comparison": { "type": ["object", "null"] },
+    "unresolved_differences": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "missing_replay_support": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": ["string", "null"] }
+    },
+    "final_status": {
+      "type": "string",
+      "enum": [
+        "rebuildable",
+        "rebuildable_with_warnings",
+        "not_rebuildable",
+        "validation_only",
+        "incomplete_support"
+      ]
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "path",
+        "hash",
+        "schema_id",
+        "originating_run_id",
+        "stage",
+        "validation_status",
+        "replay_status",
+        "failure_reason"
+      ],
+      "properties": {
+        "artifact_type": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "hash": { "type": ["string", "null"] },
+        "schema_id": { "type": ["string", "null"] },
+        "originating_run_id": { "type": ["string", "null"] },
+        "stage": { "type": ["string", "null"] },
+        "validation_status": {
+          "type": "string",
+          "enum": ["valid", "invalid"]
+        },
+        "replay_status": { "type": "string", "minLength": 1 },
+        "failure_reason": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

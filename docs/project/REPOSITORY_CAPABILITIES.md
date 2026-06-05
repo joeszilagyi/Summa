@@ -36,6 +36,9 @@ The installable package exposes these current `summa-*` commands:
 - `summa-apply-review-decision`
 - `summa-evaluate-network-safety-gate`
 - `summa-replay-canonical-write-spool`
+- `summa-audit-canonical-graph-closure`
+- `summa-export-redacted-diagnostics`
+- `summa-audit-rebuildability`
 
 The capability index maps each command back to its Python target, wrapper when
 one exists, docs path, tests, network posture, canonical-store mutation posture,

@@ -19,7 +19,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPORT_SCHEMA_VERSION = "local-doctor-report.v1"
 FINDING_CLASSES = {"advisory_only", "operator_action_required", "auto_remediable_candidate"}
 SECRET_RE = re.compile(r"(?i)(token|secret|password|api[_-]?key)=([^\\s]+)")
@@ -35,15 +34,19 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     resolve_workspaces,
 )
-from tools.source_db_tools import canonical_store, loop_health  # noqa: E402
+from tools.source_db_tools import (  # noqa: E402
+    canonical_graph_closure,
+    canonical_store,
+    loop_health,
+)
 
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import validate_topic_workspace_registry  # noqa: E402
-import validate_migration_ledger  # noqa: E402
 import validate_crown_jewel_store_policy  # noqa: E402
+import validate_migration_ledger  # noqa: E402
+import validate_topic_workspace_registry  # noqa: E402
 
 
 def redact(value: Any) -> Any:
@@ -160,8 +163,12 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
             "topic_label": workspace.get("topic_label"),
             "lifecycle_state": workspace.get("lifecycle_state"),
             "schedule_posture": workspace.get("schedule_posture"),
-            "workspace_root_status": "ok" if isinstance(root, Path) and root.is_dir() else "missing",
-            "default_subject_manifest_status": "ok" if isinstance(manifest, Path) and manifest.is_file() else "missing",
+            "workspace_root_status": "ok"
+            if isinstance(root, Path) and root.is_dir()
+            else "missing",
+            "default_subject_manifest_status": "ok"
+            if isinstance(manifest, Path) and manifest.is_file()
+            else "missing",
             "saturation": workspace_saturation_summary(workspace),
         }
         workspaces.append(entry)
@@ -174,7 +181,10 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
                     workspace_id=entry["workspace_id"],
                 )
             )
-        if workspace.get("schedule_posture") == "scheduled" and entry["default_subject_manifest_status"] != "ok":
+        if (
+            workspace.get("schedule_posture") == "scheduled"
+            and entry["default_subject_manifest_status"] != "ok"
+        ):
             findings.append(
                 finding(
                     "SCHEDULED_WORKSPACE_MANIFEST_MISSING",
@@ -188,7 +198,9 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
 
 def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
     scheduler_policy = workspace.get("scheduler_policy")
-    saturation = scheduler_policy.get("saturation_state") if isinstance(scheduler_policy, dict) else None
+    saturation = (
+        scheduler_policy.get("saturation_state") if isinstance(scheduler_policy, dict) else None
+    )
     if not isinstance(saturation, dict):
         return {
             "state": "not_evaluated",
@@ -198,7 +210,9 @@ def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
         }
     state = str(saturation.get("state") or "not_evaluated")
     action = str(saturation.get("scheduler_action") or "run")
-    reasons = saturation.get("reason_codes") if isinstance(saturation.get("reason_codes"), list) else []
+    reasons = (
+        saturation.get("reason_codes") if isinstance(saturation.get("reason_codes"), list) else []
+    )
     if state in {"saturated", "cooldown"}:
         interpretation = f"Workspace is {state}; scheduler action is {action}."
     else:
@@ -365,7 +379,9 @@ def inspect_loop_health(
                 "advisory_only",
                 "loop health indicates review is not keeping pace with ingestion",
                 pending_review_count=summary.get("review_backlog", {}).get("pending_review_count"),
-                resolution_coverage=summary.get("ingestion_resolution", {}).get("resolution_coverage"),
+                resolution_coverage=summary.get("ingestion_resolution", {}).get(
+                    "resolution_coverage"
+                ),
             )
         )
     elif status == "contradiction_spike":
@@ -374,7 +390,9 @@ def inspect_loop_health(
                 "LOOP_HEALTH_CONTRADICTION_SPIKE",
                 "advisory_only",
                 "loop health indicates a high contradiction rate in recent ingest cycles",
-                contradiction_rate=summary.get("contradictions", {}).get("contradictions_per_new_source_claim"),
+                contradiction_rate=summary.get("contradictions", {}).get(
+                    "contradictions_per_new_source_claim"
+                ),
             )
         )
     elif status == "stalled":
@@ -398,6 +416,91 @@ def inspect_loop_health(
     return summary, findings
 
 
+def inspect_graph_closure(
+    repo_root: Path,
+    *,
+    canonical_db: str | Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if canonical_db is not None:
+        configured_path = Path(canonical_db).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = (repo_root / configured_path).resolve()
+    else:
+        configured_path = repo_root / "canonical.sqlite"
+    findings: list[dict[str, Any]] = []
+    if not configured_path.exists():
+        return {
+            "schema_version": canonical_graph_closure.REPORT_SCHEMA_VERSION,
+            "status": "unavailable",
+            "severity": "info",
+            "db_path": str(configured_path),
+            "unavailable_reason": "canonical_store_absent",
+            "orphan_error_count": 0,
+            "unresolved_tracked_count": 0,
+            "repairable_count": 0,
+            "quarantined_count": 0,
+            "read_only": True,
+            "repair_performed": False,
+        }, []
+    try:
+        report = canonical_graph_closure.audit_canonical_graph_closure(
+            configured_path,
+            generated_at="local-doctor-runtime",
+            strict=False,
+        )
+    except canonical_graph_closure.GraphClosureError as exc:
+        return {
+            "schema_version": canonical_graph_closure.REPORT_SCHEMA_VERSION,
+            "status": "unavailable",
+            "severity": "warning",
+            "db_path": str(configured_path),
+            "unavailable_reason": str(exc),
+            "orphan_error_count": 0,
+            "unresolved_tracked_count": 0,
+            "repairable_count": 0,
+            "quarantined_count": 0,
+            "read_only": True,
+            "repair_performed": False,
+        }, []
+    summary = report.get("summary", {})
+    compact = {
+        "schema_version": report.get("schema_version"),
+        "status": report.get("status"),
+        "severity": report.get("severity"),
+        "db_path": report.get("db_path"),
+        "orphan_error_count": summary.get("true_orphan_error_count", 0),
+        "unresolved_tracked_count": summary.get("unresolved_tracked_count", 0),
+        "repairable_count": summary.get("repairable_count", 0),
+        "quarantined_count": summary.get("quarantined_count", 0),
+        "issue_count": summary.get("issue_count", 0),
+        "read_only": report.get("read_only"),
+        "repair_performed": report.get("repair_performed"),
+        "top_issues": report.get("issues", [])[:5],
+    }
+    if report.get("status") == "fail":
+        findings.append(
+            finding(
+                "GRAPH_CLOSURE_TRUE_ORPHANS",
+                "operator_action_required",
+                "canonical graph closure found true orphan rows",
+                orphan_error_count=compact["orphan_error_count"],
+                top_issues=compact["top_issues"],
+            )
+        )
+    elif report.get("status") in {"pass_with_unresolved", "warning"}:
+        findings.append(
+            finding(
+                "GRAPH_CLOSURE_UNRESOLVED_TRACKED",
+                "advisory_only",
+                "canonical graph closure found unresolved tracked rows",
+                unresolved_tracked_count=compact["unresolved_tracked_count"],
+                repairable_count=compact["repairable_count"],
+                quarantined_count=compact["quarantined_count"],
+            )
+        )
+    return compact, findings
+
+
 def inspect_locks(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     lock_root = repo_root / "runtime" / "locks"
     locks = []
@@ -407,7 +510,9 @@ def inspect_locks(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str,
     now = time.time()
     for path in sorted(lock_root.glob("*.lock")):
         metadata = workspace_lock.read_metadata(path)
-        reason = workspace_lock.stale_reason(path, stale_after_seconds=DEFAULT_STALE_LOCK_SECONDS, now=now)
+        reason = workspace_lock.stale_reason(
+            path, stale_after_seconds=DEFAULT_STALE_LOCK_SECONDS, now=now
+        )
         entry = {
             "path": str(path),
             "workspace_id": metadata.get("workspace_id") if metadata else None,
@@ -444,9 +549,17 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
     findings = []
     if not policy_path.exists():
         posture["status"] = "fail"
-        findings.append(finding("CROWN_JEWEL_POLICY_MISSING", "operator_action_required", "crown-jewel backup policy missing"))
+        findings.append(
+            finding(
+                "CROWN_JEWEL_POLICY_MISSING",
+                "operator_action_required",
+                "crown-jewel backup policy missing",
+            )
+        )
         return posture, findings
-    result, exit_code = validate_crown_jewel_store_policy.validate_crown_jewel_store_policy(policy_path)
+    result, exit_code = validate_crown_jewel_store_policy.validate_crown_jewel_store_policy(
+        policy_path
+    )
     if exit_code != validate_crown_jewel_store_policy.EXIT_PASS:
         posture["status"] = "fail"
         findings.append(
@@ -462,7 +575,9 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
 
     backup_root = repo_root / policy.get("backup_root", "runtime/backups/crown_jewels")
     posture["backup_root"] = str(backup_root)
-    candidates = [path for path in backup_root.rglob("*") if path.is_file()] if backup_root.exists() else []
+    candidates = (
+        [path for path in backup_root.rglob("*") if path.is_file()] if backup_root.exists() else []
+    )
     if not candidates:
         posture["status"] = "warn"
         findings.append(
@@ -513,7 +628,9 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
         )
         return posture, findings
 
-    ledger_paths = sorted(path for path in ledger_root.glob("*.migration-ledger.jsonl") if path.is_file())
+    ledger_paths = sorted(
+        path for path in ledger_root.glob("*.migration-ledger.jsonl") if path.is_file()
+    )
     posture["ledger_count"] = len(ledger_paths)
     if not ledger_paths:
         posture["status"] = "warn"
@@ -567,10 +684,14 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
     return posture, findings
 
 
-def inspect_scheduler(repo_root: Path, registry_path: Path, registry_status: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def inspect_scheduler(
+    repo_root: Path, registry_path: Path, registry_status: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     scheduler = {
         "selector_path": str(repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py"),
-        "selector_status": "present" if (repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py").exists() else "missing",
+        "selector_status": "present"
+        if (repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py").exists()
+        else "missing",
         "registry_status": registry_status,
         "selected_count": None,
         "skipped_count": None,
@@ -579,11 +700,23 @@ def inspect_scheduler(repo_root: Path, registry_path: Path, registry_status: str
     findings = []
     if scheduler["selector_status"] != "present":
         scheduler["status"] = "fail"
-        findings.append(finding("SCHEDULER_SELECTOR_MISSING", "operator_action_required", "scheduler selector is missing"))
+        findings.append(
+            finding(
+                "SCHEDULER_SELECTOR_MISSING",
+                "operator_action_required",
+                "scheduler selector is missing",
+            )
+        )
         return scheduler, findings
     if registry_status != "pass":
         scheduler["status"] = "warn"
-        findings.append(finding("SCHEDULER_REGISTRY_NOT_READY", "operator_action_required", "scheduler cannot be evaluated until the registry passes validation"))
+        findings.append(
+            finding(
+                "SCHEDULER_REGISTRY_NOT_READY",
+                "operator_action_required",
+                "scheduler cannot be evaluated until the registry passes validation",
+            )
+        )
         return scheduler, findings
     proc = subprocess.run(
         [
@@ -601,26 +734,58 @@ def inspect_scheduler(repo_root: Path, registry_path: Path, registry_status: str
     )
     if proc.returncode != 0:
         scheduler["status"] = "fail"
-        findings.append(finding("SCHEDULER_SELECTOR_FAILED", "operator_action_required", "scheduler selector failed", stderr=proc.stderr))
+        findings.append(
+            finding(
+                "SCHEDULER_SELECTOR_FAILED",
+                "operator_action_required",
+                "scheduler selector failed",
+                stderr=proc.stderr,
+            )
+        )
         return scheduler, findings
     payload = json.loads(proc.stdout)
     scheduler["selected_count"] = payload.get("selected_count")
     scheduler["skipped_count"] = payload.get("skipped_count")
     scheduler["status"] = "pass" if payload.get("selected_count", 0) else "warn"
     if not payload.get("selected_count", 0):
-        findings.append(finding("NO_SCHEDULED_WORKSPACES_READY", "advisory_only", "scheduler selector found no runnable scheduled workspaces"))
+        findings.append(
+            finding(
+                "NO_SCHEDULED_WORKSPACES_READY",
+                "advisory_only",
+                "scheduler selector found no runnable scheduled workspaces",
+            )
+        )
     return scheduler, findings
 
 
 def inspect_public_gates(repo_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     required_paths = {
-        "public_presentation_schema": repo_root / "config" / "public_knowledge_tree_presentation.schema.json",
-        "public_presentation_validator": repo_root / "tools" / "validators" / "validate_public_knowledge_tree_presentation.py",
-        "static_output_validator": repo_root / "tools" / "validators" / "validate_static_knowledge_tree_output.py",
-        "public_sharing_bundle_builder": repo_root / "tools" / "scripts" / "build_public_sharing_bundle.py",
-        "public_safekeeping_schema": repo_root / "config" / "public_safekeeping_manifest.schema.json",
-        "public_safekeeping_validator": repo_root / "tools" / "validators" / "validate_public_safekeeping_manifest.py",
-        "public_safekeeping_builder": repo_root / "tools" / "scripts" / "build_public_safekeeping_manifest.py",
+        "public_presentation_schema": repo_root
+        / "config"
+        / "public_knowledge_tree_presentation.schema.json",
+        "public_presentation_validator": repo_root
+        / "tools"
+        / "validators"
+        / "validate_public_knowledge_tree_presentation.py",
+        "static_output_validator": repo_root
+        / "tools"
+        / "validators"
+        / "validate_static_knowledge_tree_output.py",
+        "public_sharing_bundle_builder": repo_root
+        / "tools"
+        / "scripts"
+        / "build_public_sharing_bundle.py",
+        "public_safekeeping_schema": repo_root
+        / "config"
+        / "public_safekeeping_manifest.schema.json",
+        "public_safekeeping_validator": repo_root
+        / "tools"
+        / "validators"
+        / "validate_public_safekeeping_manifest.py",
+        "public_safekeeping_builder": repo_root
+        / "tools"
+        / "scripts"
+        / "build_public_safekeeping_manifest.py",
     }
     missing = [name for name, path in required_paths.items() if not path.exists()]
     status = "pass" if not missing else "fail"
@@ -636,13 +801,23 @@ def inspect_public_gates(repo_root: Path) -> tuple[dict[str, Any], list[dict[str
         )
     return {
         "status": status,
-        "surfaces": {name: "present" if path.exists() else "missing" for name, path in required_paths.items()},
+        "surfaces": {
+            name: "present" if path.exists() else "missing" for name, path in required_paths.items()
+        },
     }, findings
 
 
 def summarize(checks: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
-    fail_count = sum(1 for value in checks.values() if value == "fail" or (isinstance(value, dict) and value.get("status") == "fail"))
-    warn_count = sum(1 for value in checks.values() if value == "warn" or (isinstance(value, dict) and value.get("status") == "warn"))
+    fail_count = sum(
+        1
+        for value in checks.values()
+        if value == "fail" or (isinstance(value, dict) and value.get("status") == "fail")
+    )
+    warn_count = sum(
+        1
+        for value in checks.values()
+        if value == "warn" or (isinstance(value, dict) and value.get("status") == "warn")
+    )
     action_count = sum(1 for entry in findings if entry["class"] == "operator_action_required")
     return {
         "status": "fail" if fail_count else ("warn" if warn_count or action_count else "pass"),
@@ -663,7 +838,15 @@ def build_report(
     if status == "dirty":
         findings.append(finding("REPO_DIRTY", "advisory_only", "working tree has local changes"))
     elif status != "clean":
-        findings.append(finding("REPO_STATUS_UNKNOWN", "advisory_only", "repo hygiene could not be fully inspected", status=status, detail=status_detail))
+        findings.append(
+            finding(
+                "REPO_STATUS_UNKNOWN",
+                "advisory_only",
+                "repo hygiene could not be fully inspected",
+                status=status,
+                detail=status_detail,
+            )
+        )
 
     validators = [
         "tools/validators/validate_knowledge_tree_export.py",
@@ -679,12 +862,21 @@ def build_report(
     ]
     missing_validators = [path for path in validators if not command_available(repo_root, path)]
     if missing_validators:
-        findings.append(finding("VALIDATOR_MISSING", "operator_action_required", "one or more expected validators are missing", paths=missing_validators))
+        findings.append(
+            finding(
+                "VALIDATOR_MISSING",
+                "operator_action_required",
+                "one or more expected validators are missing",
+                paths=missing_validators,
+            )
+        )
 
     registry_path = discover_registry_path(registry, cwd=repo_root)
     registry_status, registry_findings = validate_registry(registry_path)
     findings.extend(registry_findings)
-    workspaces, workspace_findings = inspect_workspaces(registry_path) if registry_status == "pass" else ([], [])
+    workspaces, workspace_findings = (
+        inspect_workspaces(registry_path) if registry_status == "pass" else ([], [])
+    )
     findings.extend(workspace_findings)
     databases, database_findings = inspect_databases(repo_root)
     findings.extend(database_findings)
@@ -698,6 +890,11 @@ def build_report(
         canonical_db=canonical_db,
     )
     findings.extend(loop_health_findings)
+    graph_closure_summary, graph_closure_findings = inspect_graph_closure(
+        repo_root,
+        canonical_db=canonical_db,
+    )
+    findings.extend(graph_closure_findings)
     locks, lock_findings = inspect_locks(repo_root)
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
@@ -713,7 +910,9 @@ def build_report(
         "repo_hygiene": status,
         "validator_availability": "missing" if missing_validators else "available",
         "topic_workspace_registry": registry_status,
-        "workspaces": "pass" if workspaces and not workspace_findings else ("warn" if not workspaces else "fail"),
+        "workspaces": "pass"
+        if workspaces and not workspace_findings
+        else ("warn" if not workspaces else "fail"),
         "scheduler_eligibility": scheduler["status"],
         "crown_jewel_backup_posture": backup_posture["status"],
         "migration_ledger_posture": migration_posture["status"],
@@ -745,6 +944,12 @@ def build_report(
             },
             default="pass",
         ),
+        "graph_closure": status_from_findings(
+            graph_closure_findings,
+            fail_codes={"GRAPH_CLOSURE_TRUE_ORPHANS"},
+            warn_codes={"GRAPH_CLOSURE_UNRESOLVED_TRACKED"},
+            default=str(graph_closure_summary.get("status") or "unavailable"),
+        ),
         "workspace_locks": status_from_findings(
             lock_findings,
             fail_codes=set(),
@@ -768,6 +973,7 @@ def build_report(
             "databases": databases,
             "canonical_store": canonical_store_summary,
             "loop_health": loop_health_summary,
+            "graph_closure": graph_closure_summary,
             "locks": locks,
             "backup_posture": backup_posture,
             "migration_posture": migration_posture,
@@ -799,7 +1005,9 @@ def render_text(report: dict[str, Any]) -> str:
     if isinstance(canonical_store_summary, dict):
         lines.append(f"canonical_store.status={canonical_store_summary.get('status')}")
         lines.append(f"canonical_store.total_rows={canonical_store_summary.get('total_rows')}")
-        lines.append(f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}")
+        lines.append(
+            f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}"
+        )
     loop_health_summary = report.get("loop_health", {})
     if isinstance(loop_health_summary, dict):
         lines.append(f"loop_health.status={loop_health_summary.get('health_status')}")
@@ -810,6 +1018,16 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(
             "loop_health.resolution_coverage="
             f"{loop_health_summary.get('ingestion_resolution', {}).get('resolution_coverage')}"
+        )
+    graph_closure_summary = report.get("graph_closure", {})
+    if isinstance(graph_closure_summary, dict):
+        lines.append(f"graph_closure.status={graph_closure_summary.get('status')}")
+        lines.append(
+            f"graph_closure.orphan_error_count={graph_closure_summary.get('orphan_error_count')}"
+        )
+        lines.append(
+            "graph_closure.unresolved_tracked_count="
+            f"{graph_closure_summary.get('unresolved_tracked_count')}"
         )
     for index, entry in enumerate(report["findings"][:20]):
         lines.append(f"finding[{index}].code={entry['code']}")

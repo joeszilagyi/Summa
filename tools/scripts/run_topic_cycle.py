@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.scripts import resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
+    canonical_graph_closure,
     canonical_ingest,
     canonical_store,
     canonical_write_spool,
@@ -212,6 +213,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory for degraded canonical-write spool records. Defaults to <run-dir>/spool.",
     )
     parser.add_argument(
+        "--graph-closure",
+        dest="graph_closure",
+        action="store_true",
+        default=True,
+        help="Run read-only canonical graph-closure audit before cycle close. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-graph-closure",
+        dest="graph_closure",
+        action="store_false",
+        help="Disable the graph-closure audit and record the disabled reason in the manifest.",
+    )
+    parser.add_argument(
+        "--graph-closure-strict",
+        action="store_true",
+        help="Fail the cycle when graph closure reports true orphan errors.",
+    )
+    parser.add_argument(
+        "--graph-closure-report",
+        help="Optional graph-closure report path. Defaults to <run-dir>/graph-closure-report.json.",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Allow replacing an existing completed cycle manifest."
     )
     parser.add_argument(
@@ -279,6 +302,18 @@ def build_manifest(
         "error_summary": None,
         "warnings": [],
         "spool_records": [],
+        "graph_closure": {
+            "enabled": bool(args.graph_closure),
+            "strict": bool(args.graph_closure_strict),
+            "status": "pending" if args.graph_closure else "disabled",
+            "report_path": None,
+            "report_sha256": None,
+            "orphan_error_count": 0,
+            "unresolved_tracked_count": 0,
+            "repairable_count": 0,
+            "quarantined_count": 0,
+            "disabled_reason": None if args.graph_closure else "disabled_by_operator_flag",
+        },
         "started_at": started_at,
         "ended_at": None,
         "no_network": True,
@@ -1072,6 +1107,117 @@ def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_
         fail_stage(stage, str(exc))
 
 
+def graph_closure_report_path(args: argparse.Namespace, run_dir: Path) -> Path:
+    if args.graph_closure_report:
+        return resolve_path(args.graph_closure_report)
+    return run_dir / "graph-closure-report.json"
+
+
+def graph_closure_stage(
+    *,
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    db_path: Path,
+    run_dir: Path,
+) -> None:
+    stage = StageRecord(name="graph_closure_audit", required=False)
+    stage.started_at = utc_now()
+    stage.inputs = {
+        "db": str(db_path),
+        "strict": bool(args.graph_closure_strict),
+    }
+    graph = manifest.setdefault("graph_closure", {})
+    if not args.graph_closure:
+        stage.skipped_reason = "disabled_by_operator_flag"
+        stage.validation = {"status": "disabled", "strict": bool(args.graph_closure_strict)}
+        graph.update(
+            {
+                "enabled": False,
+                "strict": bool(args.graph_closure_strict),
+                "status": "disabled",
+                "disabled_reason": "disabled_by_operator_flag",
+            }
+        )
+        finish_stage(stage, status="skipped")
+        add_stage(manifest, stage)
+        return
+
+    report_path = graph_closure_report_path(args, run_dir)
+    try:
+        report = canonical_graph_closure.audit_canonical_graph_closure(
+            db_path,
+            generated_at=manifest["started_at"],
+            strict=bool(args.graph_closure_strict),
+            report_path=report_path,
+        )
+    except Exception as exc:
+        if args.degraded_spool and manifest.get("spool_records"):
+            stage.validation = {
+                "status": "unavailable",
+                "strict": bool(args.graph_closure_strict),
+                "error": str(exc),
+            }
+            graph.update(
+                {
+                    "enabled": True,
+                    "strict": bool(args.graph_closure_strict),
+                    "status": "unavailable",
+                    "disabled_reason": "canonical_store_unavailable_after_degraded_spool",
+                }
+            )
+            manifest.setdefault("warnings", []).append(
+                f"graph closure unavailable after degraded spool: {exc}"
+            )
+            finish_stage(stage, status="degraded")
+            add_stage(manifest, stage)
+            return
+        fail_stage(stage, str(exc))
+
+    summary = report.get("summary", {})
+    graph.update(
+        {
+            "enabled": True,
+            "strict": bool(args.graph_closure_strict),
+            "status": report.get("status"),
+            "report_path": str(report_path),
+            "report_sha256": hash_file(report_path),
+            "orphan_error_count": int(summary.get("true_orphan_error_count", 0)),
+            "unresolved_tracked_count": int(summary.get("unresolved_tracked_count", 0)),
+            "repairable_count": int(summary.get("repairable_count", 0)),
+            "quarantined_count": int(summary.get("quarantined_count", 0)),
+            "disabled_reason": None,
+        }
+    )
+    stage.artifacts = {
+        "graph_closure_report": str(report_path),
+        "graph_closure_report_sha256": hash_file(report_path),
+    }
+    stage.validation = {
+        "status": report.get("status"),
+        "strict": bool(args.graph_closure_strict),
+        "summary": summary,
+    }
+    if report.get("status") == "fail":
+        message = "graph closure found true orphan errors"
+        if args.graph_closure_strict:
+            stage.status = "failed"
+            stage.error_message = message
+            stage.ended_at = utc_now()
+            add_stage(manifest, stage)
+            raise TopicCycleError(f"{stage.name}: {message}")
+        stage.error_message = message
+        manifest.setdefault("warnings", []).append(message)
+        finish_stage(stage, status="warning")
+    elif report.get("status") in {"pass_with_unresolved", "warning"}:
+        manifest.setdefault("warnings", []).append(
+            f"graph closure completed with status {report.get('status')}"
+        )
+        finish_stage(stage, status="warning")
+    else:
+        finish_stage(stage)
+    add_stage(manifest, stage)
+
+
 def render_text(manifest: dict[str, Any]) -> str:
     lines = [
         f"schema_version={manifest['schema_version']}",
@@ -1264,6 +1410,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "feedback_plan_post",
         "build_publication",
         "final_canonical_store_summary",
+        "graph_closure_audit",
     ]
     manifest_path = run_dir / "topic-cycle-run.json"
     started = time.monotonic()
@@ -1315,6 +1462,12 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             add_stage(manifest, stage)
         publication_stage(manifest=manifest)
         final_store_stage(args=args, manifest=manifest, db_path=db_path)
+        graph_closure_stage(
+            args=args,
+            manifest=manifest,
+            db_path=db_path,
+            run_dir=run_dir,
+        )
         if args.mode == "dry-run":
             manifest["status"] = "dry_run"
         elif manifest.get("spool_records"):

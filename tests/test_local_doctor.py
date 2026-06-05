@@ -9,16 +9,18 @@ from pathlib import Path
 
 from tools.source_db_tools import canonical_ingest, canonical_store
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "local_doctor.py"
-FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXTURE_BATCH = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+)
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 
 sys.path.insert(0, str(REPO_ROOT / "tools" / "scripts"))
-import local_doctor
+import local_doctor  # noqa: E402
+
 sys.path.insert(0, str(REPO_ROOT / "tools" / "common"))
-import migration_ledger
+import migration_ledger  # noqa: E402
 
 
 def test_local_doctor_report_is_read_only_and_redacted() -> None:
@@ -39,6 +41,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
         "db_integrity_smoke",
         "canonical_store_population",
         "loop_health",
+        "graph_closure",
         "workspace_locks",
         "public_private_sharing_gate",
     }
@@ -48,6 +51,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
     assert isinstance(report["databases"], list)
     assert isinstance(report["canonical_store"], dict)
     assert isinstance(report["loop_health"], dict)
+    assert isinstance(report["graph_closure"], dict)
     assert isinstance(report["locks"], list)
     assert set(report["backup_posture"]).issuperset({"policy_status", "status"})
     assert set(report["migration_posture"]).issuperset({"ledger_count", "status"})
@@ -211,8 +215,20 @@ def test_local_doctor_reports_latest_migration_posture(tmp_path: Path) -> None:
             tool_version="2026.06.02",
             input_version="knowledge-tree-build-manifest.v1",
             output_version="knowledge-tree-build-manifest.v2",
-            input_artifact_refs=[{"role": "schema_contract", "path": "config/knowledge_tree_build_manifest.schema.json", "version": "knowledge-tree-build-manifest.v1"}],
-            output_artifact_refs=[{"role": "schema_contract", "path": "config/knowledge_tree_build_manifest.schema.json", "version": "knowledge-tree-build-manifest.v2"}],
+            input_artifact_refs=[
+                {
+                    "role": "schema_contract",
+                    "path": "config/knowledge_tree_build_manifest.schema.json",
+                    "version": "knowledge-tree-build-manifest.v1",
+                }
+            ],
+            output_artifact_refs=[
+                {
+                    "role": "schema_contract",
+                    "path": "config/knowledge_tree_build_manifest.schema.json",
+                    "version": "knowledge-tree-build-manifest.v2",
+                }
+            ],
             occurred_at="2026-06-02T15:00:00Z",
             event_id="mle:build-manifest.001",
             note="Promote publish-root hash coverage.",
@@ -243,6 +259,7 @@ def test_local_doctor_text_summary_cli(tmp_path: Path) -> None:
     assert "check.public_private_sharing_gate=" in proc.stdout
     assert "canonical_store.status=" in proc.stdout
     assert "loop_health.status=" in proc.stdout
+    assert "graph_closure.status=" in proc.stdout
 
 
 def test_local_doctor_cli_writes_report_without_fixing(tmp_path: Path) -> None:
@@ -270,6 +287,8 @@ def test_local_doctor_reports_initialized_empty_canonical_store(tmp_path: Path) 
     assert report["canonical_store"]["total_rows"] == 0
     assert report["canonical_store"]["family_counts"]["entity"] == 0
     assert report["checks"]["canonical_store_population"] == "warn"
+    assert report["graph_closure"]["status"] == "no_rows"
+    assert report["checks"]["graph_closure"] == "no_rows"
 
 
 def test_local_doctor_reports_populated_canonical_store_and_last_ingest(tmp_path: Path) -> None:
@@ -282,3 +301,4 @@ def test_local_doctor_reports_populated_canonical_store_and_last_ingest(tmp_path
     assert report["canonical_store"]["last_ingest_event_type"] == "gather_candidate_batch_ingest"
     assert report["canonical_store"]["last_ingest_at"] is not None
     assert report["checks"]["canonical_store_population"] == "pass"
+    assert report["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}

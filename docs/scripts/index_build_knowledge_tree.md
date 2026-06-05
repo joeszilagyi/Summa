@@ -10,6 +10,7 @@ Purpose:
 - write `knowledge_tree_export.json`
 - write `public_presentation.json`
 - render the static publication output
+- run graph-closure preflight over the canonical store
 - run the final public leak scan over the rendered site bundle
 
 Current wrapper behavior:
@@ -30,6 +31,8 @@ Important safety rules:
 - generated files are written only under the caller-selected `--output-dir`
 - the publication builder validates export and presentation artifacts before
   rendering and fails closed on invalid inputs
+- graph-closure preflight is read-only; strict preflight fails on true orphan
+  canonical rows
 - the final public output is leak-scanned before the build returns success
 
 Key inputs:
@@ -45,6 +48,8 @@ Key inputs:
   - `--export-id`
   - `--display-name`
   - `--workspace-id`
+  - `--graph-closure-strict`
+  - `--no-graph-closure-preflight`
   - `--format json|text`
 
 Key outputs:
@@ -55,6 +60,7 @@ Key outputs:
 - `<output-dir>/search/local_search_results.json`
 - `<output-dir>/search/local_search.sqlite`
 - `<output-dir>/static/`
+- `<output-dir>/graph-closure-report.json`
 - `<output-dir>/leak-scan-report.json`
 
 Current failure behavior:

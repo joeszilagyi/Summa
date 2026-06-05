@@ -84,6 +84,37 @@ def table_count(db_path: Path, table_name: str) -> int:
         conn.close()
 
 
+def insert_orphan_source_claim(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """
+            INSERT INTO source_claim (
+              source_claim_key_v1,
+              claim_text,
+              public_summary,
+              claim_type,
+              review_state,
+              created_at,
+              record_last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "claim:topic-cycle:orphan",
+                "orphan claim",
+                "orphan claim",
+                "factual",
+                "accepted",
+                "2026-06-03T12:00:00Z",
+                "2026-06-03T12:00:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def load_manifest(run_dir: Path) -> dict[str, object]:
     return json.loads((run_dir / "topic-cycle-run.json").read_text(encoding="utf-8"))
 
@@ -180,6 +211,8 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert isinstance(manifest["cycle_event_id"], str)
     assert manifest["cycle_event_id"].startswith("cycle:")
     assert manifest["canonical_db"]["mutated"] is True  # type: ignore[index]
+    assert manifest["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}  # type: ignore[index]
+    assert Path(manifest["graph_closure"]["report_path"]).is_file()  # type: ignore[index]
     assert table_count(db_path, "work") >= 1
     assert table_count(db_path, "source_claim") >= 1
     assert table_count(db_path, "capture_event") >= 1
@@ -205,6 +238,7 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_candidate_batch"]["status"] == "passed"
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
+    assert stages["graph_closure_audit"]["status"] in {"passed", "warning"}
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
     assert manifest["selection_explanations"]
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
@@ -306,6 +340,41 @@ def test_topic_cycle_degraded_spool_records_pending_canonical_write(
     assert manifest["spool_records"]
     assert manifest["spool_records"][0]["operation_kind"] == "candidate_batch_ingest"  # type: ignore[index]
     assert Path(manifest["spool_records"][0]["path"]).is_file()  # type: ignore[index]
+    assert manifest["graph_closure"]["status"] == "unavailable"  # type: ignore[index]
+
+
+def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    insert_orphan_source_claim(db_path)
+    run_dir = tmp_path / "cycle-closure-fail"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-closure-fail",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+            "--graph-closure-strict",
+        ]
+    )
+
+    assert proc.returncode == 1
+    manifest = load_manifest(run_dir)
+    assert manifest["status"] == "failed"
+    assert manifest["failure_stage"] == "graph_closure_audit"
+    assert manifest["graph_closure"]["status"] == "fail"  # type: ignore[index]
+    report_path = Path(manifest["graph_closure"]["report_path"])  # type: ignore[index]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["summary"]["true_orphan_error_count"] >= 1
 
 
 def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_path: Path) -> None:
