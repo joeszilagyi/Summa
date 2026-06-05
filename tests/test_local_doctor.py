@@ -90,7 +90,7 @@ def bootstrap_db(tmp_path: Path, *, populated: bool = False) -> Path:
 def test_local_doctor_redacts_sensitive_values() -> None:
     value = local_doctor.redact(
         {
-            "path": "/home/example/private/file.txt",
+            "path": "/home/example/private/some/path.txt",
             "secret": "token=abc123",
         }
     )

@@ -57,7 +57,7 @@ def redact(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     text = SECRET_RE.sub(r"\1=[redacted]", value)
-    text = re.sub(r"/(?:home|Users|tmp)/[^\\s]+", "[redacted-path]", text)
+    text = re.sub(r"/(?:home|Users|tmp)/\S+", "[redacted-path]", text)
     return text
 
 
