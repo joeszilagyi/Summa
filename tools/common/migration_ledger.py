@@ -176,16 +176,25 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:
-    events = []
-    with ledger_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
+    events: list[dict[str, Any]] = []
+    raw_text = ledger_path.read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
+    has_trailing_newline = raw_text.endswith("\n")
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
             payload = json.loads(line)
-            if not isinstance(payload, dict):
-                raise MigrationLedgerError("migration-ledger lines must be JSON objects")
-            events.append(payload)
+        except json.JSONDecodeError as exc:
+            if line_number == len(lines) and not has_trailing_newline:
+                break
+            raise MigrationLedgerError(
+                f"migration-ledger {ledger_path} contains invalid JSON on line {line_number}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise MigrationLedgerError("migration-ledger lines must be JSON objects")
+        events.append(payload)
     return events
 
 
