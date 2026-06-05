@@ -40,8 +40,15 @@ def stable_id(kind: str, *parts: object) -> str:
     return f"{prefix}:{digest}"
 
 
-def build_cycle_event_id(*, run_id: str, started_at: str, workspace_ref: str | None = None) -> str:
-    return stable_id("cycle", run_id, started_at, workspace_ref)
+def build_cycle_event_id(
+    *,
+    run_id: str,
+    started_at: str | None = None,
+    workspace_ref: str | None = None,
+) -> str:
+    del started_at
+    del workspace_ref
+    return stable_id("cycle", run_id)
 
 
 def json_dumps(value: object) -> str:
