@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import sqlite3
 import sys
 import uuid
@@ -28,6 +29,7 @@ DEFAULT_PENDING_STATES = {"", "unreviewed", "machine_extracted", "proposed", "ne
 ACCEPTED_STATES = {"accepted", "approved", "curated", "reviewed"}
 TRANSITION_STATES = {"accepted", "rejected", "demoted", "ambiguous"}
 PUBLICATION_BLOCKING_STATES = {"blocked", "draft", "local_only", "private_working"}
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -273,6 +275,10 @@ def list_review_items(
 def fetch_review_object(conn: sqlite3.Connection, object_ref: str) -> dict[str, Any]:
     target_type, object_pk = parse_object_ref(object_ref)
     target = TARGETS[target_type]
+    if not SQL_IDENTIFIER_RE.fullmatch(target.table):
+        raise ValueError(f"invalid review target table: {target.table}")
+    if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
+        raise ValueError(f"invalid review target primary key column: {target.pk_column}")
     if not table_exists(conn, target.table):
         raise ValueError(f"review target table does not exist: {target.table}")
     row = conn.execute(
@@ -372,6 +378,12 @@ def change_review_state(
 ) -> dict[str, Any]:
     target_type, object_pk = parse_object_ref(object_ref)
     target = TARGETS[target_type]
+    if not SQL_IDENTIFIER_RE.fullmatch(target.table):
+        raise ValueError(f"invalid review target table: {target.table}")
+    if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
+        raise ValueError(f"invalid review target primary key column: {target.pk_column}")
+    if not SQL_IDENTIFIER_RE.fullmatch(target.state_column):
+        raise ValueError(f"invalid review target state column: {target.state_column}")
     if not table_exists(conn, target.table):
         raise ValueError(f"review target table does not exist: {target.table}")
     if new_state not in TRANSITION_STATES:

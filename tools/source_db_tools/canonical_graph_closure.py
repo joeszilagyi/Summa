@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -36,6 +37,7 @@ RESOLVED_STATES = {
     "rejected",
     "reviewed",
 }
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 OBJECT_REF_TABLES: dict[str, tuple[str, tuple[str, ...]]] = {
     "authority_record": ("authority_record", ("authority_record_id", "authority_key_v1")),
@@ -134,7 +136,11 @@ def object_ref_exists(conn: sqlite3.Connection, object_ref: str | None) -> bool:
     if namespace not in OBJECT_REF_TABLES or not raw_id.strip():
         return False
     table, columns = OBJECT_REF_TABLES[namespace]
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise GraphClosureError(f"invalid SQL identifier: {table}")
     for column in columns:
+        if not SQL_IDENTIFIER_RE.fullmatch(column):
+            raise GraphClosureError(f"invalid SQL identifier: {column}")
         row = conn.execute(
             f"SELECT 1 FROM {table} WHERE CAST({column} AS TEXT)=? LIMIT 1",
             (raw_id.strip(),),
@@ -525,6 +531,12 @@ def audit_simple_fk_table(
     target_namespace: str,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise GraphClosureError(f"invalid SQL identifier: {table}")
+    if not SQL_IDENTIFIER_RE.fullmatch(pk_column):
+        raise GraphClosureError(f"invalid SQL identifier: {pk_column}")
+    if not SQL_IDENTIFIER_RE.fullmatch(fk_column):
+        raise GraphClosureError(f"invalid SQL identifier: {fk_column}")
     for row in conn.execute(f"SELECT * FROM {table} ORDER BY {pk_column}"):
         if object_ref_exists(conn, f"{target_namespace}:{row[fk_column]}"):
             continue

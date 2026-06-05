@@ -65,6 +65,7 @@ ALLOWED_QUERY_FAMILIES = {
 }
 
 ALLOWED_REVIEW_STATES = {"accepted", "needs_review", "demoted", "deprecated", "rejected"}
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SOURCE_LOCUS_FIELDS = [
     "locus_id",
@@ -140,12 +141,22 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise RuntimeError(f"invalid SQL identifier: {table}")
     if not table_exists(conn, table):
         return set()
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column_name: str, column_definition: str) -> None:
+    if not SQL_IDENTIFIER_RE.fullmatch(table):
+        raise RuntimeError(f"invalid SQL identifier: {table}")
+    if not SQL_IDENTIFIER_RE.fullmatch(column_name):
+        raise RuntimeError(f"invalid SQL identifier: {column_name}")
+    if not column_definition.startswith(f"{column_name} "):
+        raise RuntimeError(f"invalid column definition: {column_definition}")
+    if any(token in column_definition for token in (";", "--", "/*", "*/")):
+        raise RuntimeError(f"invalid column definition: {column_definition}")
     if table_exists(conn, table) and column_name not in table_columns(conn, table):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_definition}")
 
