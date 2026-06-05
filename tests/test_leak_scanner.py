@@ -46,6 +46,21 @@ def test_clean_public_bundle_fixture_passes(tmp_path: Path) -> None:
     assert report["findings"] == []
 
 
+def test_support_bundle_profile_disables_secret_and_private_path_scans(tmp_path: Path) -> None:
+    root = tmp_path / "support-bundle"
+    root.mkdir()
+    (root / "notes.txt").write_text(
+        "authorization: bearer token-123\n/private/path/should-not-flag\n",
+        encoding="utf-8",
+    )
+
+    report = scanner.scan_directory(root, profile="support_bundle")
+
+    assert report["status"] == "pass"
+    assert report["findings"] == []
+    assert report["counts"]["findings"] == 0
+
+
 def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Path) -> None:
     root = stage_fixture(tmp_path, "public_bundle_allowlisted")
     allowlist = root / "allowlist.json"
