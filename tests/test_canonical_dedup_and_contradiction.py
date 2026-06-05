@@ -403,6 +403,84 @@ def test_claim_without_batch_scoped_key_is_stable_across_batches(tmp_path: Path)
     assert len(rows) == 1
 
 
+def test_work_fallback_without_explicit_identity_is_stable_across_batches(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            {
+                "candidate_id": "cand:implicit-work.1",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps({"work_type": "article"}, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+        run_id="gather-implicit-work-a",
+    )
+    second_batch = build_batch(
+        [
+            {
+                "candidate_id": "cand:implicit-work.2",
+                "candidate_type": "work",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps({"work_type": "article"}, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+        run_id="gather-implicit-work-b",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="implicit-work-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="implicit-work-b.json", db_path=db_path)
+        rows = conn.execute("SELECT work_key_v1 FROM work ORDER BY work_id").fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert len(set(row["work_key_v1"] for row in rows)) == 1
+
+
+def test_claim_key_fallback_does_not_use_candidate_id() -> None:
+    candidate_alpha = {
+        "candidate_id": "cand:claim-empty-text-1",
+        "candidate_type": "open_question",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": "alpha",
+    }
+    candidate_beta = {
+        "candidate_id": "cand:claim-empty-text-2",
+        "candidate_type": "open_question",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": "alpha",
+    }
+    first_key = canonical_ingest._claim_key_for_candidate(
+        candidate_alpha,
+        workspace_id=None,
+        claim_text="",
+        claim_type="candidate_open_question",
+        about_object_ref="about:unknown",
+    )
+    second_key = canonical_ingest._claim_key_for_candidate(
+        candidate_beta,
+        workspace_id=None,
+        claim_text="",
+        claim_type="candidate_open_question",
+        about_object_ref="about:unknown",
+    )
+
+    assert first_key == second_key
+
+
 def test_authority_label_match_creates_reviewable_reconciliation_candidate(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
