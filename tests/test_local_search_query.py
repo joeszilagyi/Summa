@@ -19,6 +19,12 @@ validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)
 
+query_spec = importlib.util.spec_from_file_location("query_local_search_for_tests", QUERY_TOOL)
+assert query_spec is not None
+query_tool = importlib.util.module_from_spec(query_spec)
+assert query_spec.loader is not None
+query_spec.loader.exec_module(query_tool)
+
 
 def create_search_db(tmp_path: Path) -> Path:
     db = tmp_path / "search.sqlite"
@@ -237,6 +243,36 @@ def test_query_cli_paginates_and_scopes_results(tmp_path: Path) -> None:
     assert "returned=1" in result.stdout
     assert "truncated=false" in result.stdout
     assert "result[2].object_id=work:2" in result.stdout
+
+
+def test_load_matching_rows_pushes_pagination_into_sqlite(tmp_path: Path) -> None:
+    index_db = build_ranked_index(
+        tmp_path,
+        [
+            (1, "alpha ranking sample", "secondary", 0.55),
+            (2, "alpha ranking sample", "primary", 0.55),
+            (3, "alpha ranking sample", "trusted", 0.10),
+        ],
+    )
+
+    conn = query_tool.connect_read_only(index_db)
+    traces: list[str] = []
+    try:
+        conn.set_trace_callback(traces.append)
+        rows, total = query_tool.load_matching_rows(
+            conn,
+            fts_query='"alpha"',
+            scope="all",
+            limit=1,
+            offset=1,
+        )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert total == 3
+    assert [int(row["object_pk"]) for row in rows] == [1]
+    assert any("ORDER BY" in statement and "LIMIT 1 OFFSET 1" in statement for statement in traces)
 
 
 def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
