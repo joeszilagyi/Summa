@@ -244,6 +244,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     assert result.applied_migration_ids == (
         "0003_source_access_provenance_event_ref",
         "0004_source_access_lead_identity",
+        "0005_extraction_detected_entity_workspace",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -260,8 +261,8 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     assert "provenance_event_ref" in columns
     assert "ix_source_access_provenance_event_ref" in indexes
     assert version_row is not None
-    assert version_row.schema_version == 4
-    assert version_row.current_migration_id == "0004_source_access_lead_identity"
+    assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
 
 
 def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_indexes(
@@ -287,7 +288,10 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
     )
 
     assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
-    assert result.applied_migration_ids == ("0004_source_access_lead_identity",)
+    assert result.applied_migration_ids == (
+        "0004_source_access_lead_identity",
+        "0005_extraction_detected_entity_workspace",
+    )
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -299,8 +303,128 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
     assert "ux_source_access_lead_identity_workspace" in indexes
     assert "ux_source_access_lead_identity_global" in indexes
     assert version_row is not None
-    assert version_row.schema_version == 4
-    assert version_row.current_migration_id == "0004_source_access_lead_identity"
+    assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
+
+
+def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scope(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical-v4.sqlite"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        canonical_store.apply_migrations(
+            conn,
+            target_version=4,
+            applied_at=FIXED_TIMESTAMP,
+            applied_by="pytest",
+            migrations=canonical_store.MIGRATIONS[:4],
+        )
+        conn.execute(
+            """
+            INSERT INTO provenance_event (
+              provenance_event_key_v1,
+              object_namespace,
+              object_id,
+              event_type,
+              event_timestamp,
+              record_last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "prov:fixture-detected-entity",
+                "fixture",
+                "fixture-detected-entity",
+                "fixture_ingest",
+                FIXED_TIMESTAMP,
+                FIXED_TIMESTAMP,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO capture_event (
+              capture_event_id,
+              original_locator,
+              captured_at,
+              capture_method,
+              review_state,
+              workspace_id,
+              provenance_event_ref,
+              record_last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "https://example.test/capture",
+                FIXED_TIMESTAMP,
+                "pytest",
+                "needs_review",
+                "fixture_subject",
+                "prov:fixture-detected-entity",
+                FIXED_TIMESTAMP,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO extraction_detected_entity (
+              detected_entity_id,
+              capture_event_id,
+              entity_label,
+              entity_type,
+              review_state,
+              confidence_score,
+              provenance_event_ref,
+              record_last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                1,
+                "Fixture Entity",
+                "person",
+                "proposed",
+                0.91,
+                "prov:fixture-detected-entity",
+                FIXED_TIMESTAMP,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+
+    assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert result.applied_migration_ids == ("0005_extraction_detected_entity_workspace",)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(extraction_detected_entity)").fetchall()
+        }
+        indexes = canonical_store.actual_indexes(conn)
+        row = conn.execute(
+            """
+            SELECT workspace_id
+            FROM extraction_detected_entity
+            WHERE detected_entity_id=1
+            """
+        ).fetchone()
+        version_row = canonical_store.get_schema_version(conn)
+    finally:
+        conn.close()
+
+    assert "workspace_id" in columns
+    assert "ix_detected_entity_workspace" in indexes
+    assert row["workspace_id"] == "fixture_subject"
+    assert version_row is not None
+    assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+    assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
 
 
 def test_migration_runner_rolls_back_on_bad_migration(tmp_path: Path) -> None:

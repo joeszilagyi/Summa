@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 4
-CURRENT_MIGRATION_ID = "0004_source_access_lead_identity"
+CURRENT_SCHEMA_VERSION = 5
+CURRENT_MIGRATION_ID = "0005_extraction_detected_entity_workspace"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -51,6 +51,7 @@ REQUIRED_INDEXES = {
     "ix_cycle_tool_failure_cycle",
     "ix_detected_entity_authority",
     "ix_detected_entity_extraction",
+    "ix_detected_entity_workspace",
     "ix_extraction_record_capture",
     "ix_provenance_event_object",
     "ix_provenance_event_run",
@@ -219,9 +220,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=4,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0004_source_access_lead_identity",
         sql_path=MIGRATIONS_DIR / "0004_source_access_lead_identity.sql",
         notes="Make source_access lead identity workspace and locator aware.",
+    ),
+    MigrationSpec(
+        version=5,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0005_extraction_detected_entity_workspace.sql",
+        notes="Add extraction_detected_entity workspace scope for standalone candidate ingests.",
     ),
 )
 
@@ -1785,6 +1792,7 @@ def record_extraction_detected_entity(
     authority_record_id: int | None = None,
     review_state: str | None = None,
     confidence_score: float | int | None = None,
+    workspace_id: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
     _require_provenance_event(conn, provenance_event_ref)
@@ -1825,9 +1833,10 @@ def record_extraction_detected_entity(
               authority_record_id,
               review_state,
               confidence_score,
+              workspace_id,
               provenance_event_ref,
               record_last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 extraction_id,
@@ -1840,6 +1849,7 @@ def record_extraction_detected_entity(
                 authority_record_id,
                 review_state_value,
                 score,
+                _optional_nonblank(workspace_id, "workspace_id"),
                 provenance_event_ref,
                 timestamp,
             ),
@@ -1859,6 +1869,9 @@ def record_extraction_detected_entity(
             ),
             "review_state": _merged_review_state(existing["review_state"], review_state_value),
             "confidence_score": _first_present(score, existing["confidence_score"]),
+            "workspace_id": _first_present(
+                _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
+            ),
             "provenance_event_ref": provenance_event_ref,
             "record_last_updated": timestamp,
         },
@@ -2440,7 +2453,7 @@ def load_gather_prior_state(
           ON extraction.extraction_id = entity.extraction_id
         LEFT JOIN capture_event capture
           ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(extraction.workspace_id, capture.workspace_id) = ?
+        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id) = ?
           AND entity.review_state NOT IN ({excluded_placeholders})
           AND (
             entity.review_state IN ({established_placeholders})
@@ -2460,7 +2473,7 @@ def load_gather_prior_state(
           ON extraction.extraction_id = entity.extraction_id
         LEFT JOIN capture_event capture
           ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(extraction.workspace_id, capture.workspace_id) = ?
+        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id) = ?
           AND entity.review_state NOT IN ({excluded_placeholders})
           AND (
             entity.review_state IN ({established_placeholders})

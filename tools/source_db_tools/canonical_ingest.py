@@ -623,6 +623,7 @@ def ingest_candidate_batch(
                     normalized_label=structured.get("normalized_label") if structured else None,
                     entity_type=structured.get("entity_type") if structured else candidate_type,
                     confidence_score=structured.get("confidence_score") if structured else None,
+                    workspace_id=workspace_id,
                     record_last_updated=created_at,
                 )
                 _bump(
@@ -858,6 +859,7 @@ def ingest_execution_artifacts(
                     normalized_label=entity.get("normalized_label"),
                     entity_type=entity.get("entity_type"),
                     confidence_score=entity.get("confidence_score"),
+                    workspace_id=record.get("workspace_id"),
                     record_last_updated=created_at,
                 )
                 _bump(
