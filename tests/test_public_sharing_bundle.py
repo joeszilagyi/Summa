@@ -74,6 +74,37 @@ def test_public_sharing_bundle_builder_emits_manifest_and_no_upload(tmp_path: Pa
     assert (output_dir / "metadata" / "presentation-summary.json").is_file()
 
 
+def test_public_sharing_bundle_builder_rejects_unrecognized_output_on_overwrite(tmp_path: Path) -> None:
+    build_manifest = build_site(tmp_path)
+    output_dir = tmp_path / "sharing-bundle"
+    output_dir.mkdir()
+    (output_dir / "notes.txt").write_text("do-not-overwrite", encoding="utf-8")
+
+    try:
+        sharing_builder.build_bundle(build_manifest, output_dir, overwrite=True, generated_at="2026-06-02T20:01:30Z")
+    except sharing_builder.PublicSharingBundleError as exc:
+        assert "not a recognized public sharing bundle" in str(exc)
+    else:
+        raise AssertionError("expected unrecognized output rejection")
+
+
+def test_public_sharing_bundle_builder_overwrites_valid_output_directory(tmp_path: Path) -> None:
+    build_manifest = build_site(tmp_path)
+    output_dir = tmp_path / "sharing-bundle"
+    first_report = sharing_builder.build_bundle(build_manifest, output_dir, generated_at="2026-06-02T20:01:00Z")
+
+    second_report = sharing_builder.build_bundle(
+        build_manifest,
+        output_dir,
+        overwrite=True,
+        generated_at="2026-06-02T20:01:31Z",
+    )
+
+    assert second_report["status"] == "pass"
+    assert second_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
+    assert first_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
+
+
 def test_public_sharing_bundle_builder_blocks_known_leak_fixtures(tmp_path: Path) -> None:
     build_manifest = build_site(
         tmp_path,

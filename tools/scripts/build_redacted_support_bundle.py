@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,17 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def redacted_text(value: str) -> str:
     return local_doctor.redact(value)
+
+
+def _is_recognized_support_bundle_root(path: Path) -> bool:
+    manifest_path = path / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("schema_version") == MANIFEST_SCHEMA_VERSION
 
 
 def load_or_build_doctor_report(repo_root: Path, doctor_report: Path | None, registry: str | None) -> dict[str, Any]:
@@ -157,10 +169,13 @@ def build_bundle(repo_root: Path, output_dir: Path, *, doctor_report: Path | Non
         raise SupportBundleError(f"output directory already exists: {output_dir}")
     if output_dir.exists() and not output_dir.is_dir():
         raise SupportBundleError(f"output path is not a directory: {output_dir}")
+    if output_dir.exists() and not _is_recognized_support_bundle_root(output_dir):
+        raise SupportBundleError(f"output directory exists but is not a recognized support bundle: {output_dir}")
 
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
     temp_root = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=parent))
+    backup_root: Path | None = None
     try:
         included = [
             {"family": "doctor_report", "path": "doctor-report.json", "description": "Redacted local doctor JSON report."},
@@ -194,8 +209,11 @@ def build_bundle(repo_root: Path, output_dir: Path, *, doctor_report: Path | Non
             raise SupportBundleError("support bundle leak scan failed: " + "; ".join(f"{item['code']} {item['path']}" for item in leak_findings[:5]))
 
         if output_dir.exists():
-            shutil.rmtree(output_dir)
+            backup_root = output_dir.parent / f".{output_dir.name}.backup.{uuid.uuid4().hex[:8]}"
+            output_dir.replace(backup_root)
         temp_root.replace(output_dir)
+        if backup_root is not None and backup_root.exists():
+            shutil.rmtree(backup_root, ignore_errors=True)
         return {
             "schema_version": "redacted-support-bundle-report.v1",
             "status": "pass",
@@ -205,8 +223,11 @@ def build_bundle(repo_root: Path, output_dir: Path, *, doctor_report: Path | Non
             "leak_scan_status": "pass",
         }
     except Exception:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        if backup_root is not None and backup_root.exists() and not output_dir.exists():
+            backup_root.replace(output_dir)
         raise
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def render_text(report: dict[str, Any]) -> str:
