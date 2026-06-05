@@ -1474,6 +1474,18 @@ def record_source_claim(
         existing["review_state"],
         review_state_value,
     )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+        preserve_established_envelope = True
+
+    claim_text_update_value = (
+        existing["claim_text"] if preserve_established_envelope else claim_text_value
+    )
     claim_confidence_value = (
         existing["confidence_score"] if preserve_established_envelope else _first_present(score, existing["confidence_score"])
     )
@@ -1517,7 +1529,7 @@ def record_source_claim(
                 _optional_nonblank(about_object_ref, "about_object_ref"),
                 existing["about_object_ref"],
             ),
-            "claim_text": claim_text_value,
+            "claim_text": claim_text_update_value,
             "public_summary": _first_present(
                 _optional_nonblank(public_summary, "public_summary"),
                 existing["public_summary"],

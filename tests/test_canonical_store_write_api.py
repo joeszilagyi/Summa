@@ -455,7 +455,7 @@ def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path
             record_last_updated=FIXED_TIMESTAMP,
         )
         row = conn.execute(
-            "SELECT review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
+            "SELECT claim_text, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
             (baseline.row_id,),
         ).fetchone()
     finally:
@@ -464,6 +464,77 @@ def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path
     assert row["review_state"] == "accepted"
     assert row["confidence_score"] == 0.95
     assert row["provenance_event_ref"] == accepted_prov.event_key
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert row["claim_text"] == "Baseline claim with high confidence."
+
+
+def test_source_claim_acceptance_replay_preserves_claim_text_and_provenance(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority",
+        )
+        baseline = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=accepted_provenance.event_key,
+            source_claim_key_v1="claim:fixture-authority-replay",
+            about_object_ref="work:fixture-authority",
+            claim_text="Claim text should be preserved.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        proposed_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-authority-replay-proposed",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-authority-replay-2",
+        )
+        canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=proposed_provenance.event_key,
+            source_claim_key_v1="claim:fixture-authority-replay",
+            about_object_ref="work:fixture-authority",
+            claim_text="Mutated claim text should not overwrite.",
+            claim_type="fixture_claim",
+            review_state="accepted",
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+            workspace_id="authoritative_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        row = conn.execute(
+            "SELECT claim_text, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker FROM source_claim WHERE source_claim_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["claim_text"] == "Claim text should be preserved."
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
     assert row["authority_level"] == "high"
     assert row["publication_state"] == "published"
     assert row["public_blocker"] == "trusted"
