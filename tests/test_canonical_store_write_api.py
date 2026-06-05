@@ -8,6 +8,8 @@ from tools.source_db_tools import canonical_store
 
 
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
+OLDER_TIMESTAMP = "2026-06-02T09:08:07Z"
+NEWER_TIMESTAMP = "2026-06-04T10:09:08Z"
 
 
 def bootstrap_db(tmp_path: Path) -> Path:
@@ -255,6 +257,71 @@ def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) 
     assert int(row["accepted_for_citation"]) == 1
 
 
+def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        newer = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-002-newer",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-upsert-seen-newer",
+        )
+        first = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-seen-replay",
+            provenance_event_ref=newer.event_key,
+            work_type="article",
+            title="Fixture Seen Replay",
+            workspace_id="epsilon_subject",
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        older = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-002-older",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=OLDER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-upsert-seen-older",
+        )
+        second = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-seen-replay",
+            provenance_event_ref=older.event_key,
+            work_type="article",
+            title="Fixture Seen Replay",
+            workspace_id="epsilon_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            created_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT first_seen_at, last_seen_at, record_last_updated
+            FROM work
+            WHERE work_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert row["first_seen_at"] == OLDER_TIMESTAMP
+    assert row["last_seen_at"] == NEWER_TIMESTAMP
+    assert row["record_last_updated"] == NEWER_TIMESTAMP
+
+
 def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -350,6 +417,86 @@ def test_source_access_without_work_or_lead_uses_provenance_lookup_path(tmp_path
     assert second.row_id == first.row_id
     assert row["provenance_event_ref"] == provenance.event_key
     assert row["citation_hint"] == "Fixture fallback source access updated"
+
+
+def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        newer = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004-newer",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-seen-newer",
+        )
+        work = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:fixture-source-access-seen",
+            provenance_event_ref=newer.event_key,
+            work_type="article",
+            title="Fixture Source Access Seen",
+            workspace_id="zeta_subject",
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        first = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=newer.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead:fixture-source-access-seen",
+            original_locator="https://example.test/source-access-seen",
+            canonical_url="https://example.test/source-access-seen",
+            citation_hint="Fixture source access seen",
+            workspace_id="zeta_subject",
+            first_seen_at=NEWER_TIMESTAMP,
+            last_seen_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        older = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004-older",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=OLDER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-seen-older",
+        )
+        second = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=older.event_key,
+            work_id=work.row_id,
+            source_lead_id="lead:fixture-source-access-seen",
+            original_locator="https://example.test/source-access-seen",
+            canonical_url="https://example.test/source-access-seen",
+            citation_hint="Fixture source access replayed",
+            workspace_id="zeta_subject",
+            first_seen_at=OLDER_TIMESTAMP,
+            last_seen_at=OLDER_TIMESTAMP,
+            record_last_updated=OLDER_TIMESTAMP,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT first_seen_at, last_seen_at, record_last_updated, citation_hint
+            FROM source_access
+            WHERE source_access_id=?
+            """,
+            (first.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is False
+    assert row["first_seen_at"] == OLDER_TIMESTAMP
+    assert row["last_seen_at"] == NEWER_TIMESTAMP
+    assert row["record_last_updated"] == NEWER_TIMESTAMP
+    assert row["citation_hint"] == "Fixture source access replayed"
 
 
 def test_source_access_lead_identity_includes_workspace_and_locator(tmp_path: Path) -> None:
