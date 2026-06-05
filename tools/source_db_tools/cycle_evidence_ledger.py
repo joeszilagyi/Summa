@@ -200,7 +200,7 @@ def record_cycle_event_start(
             f"run_id={run_id_text}",
             existing_row,
             expected,
-            ignore=frozenset({"record_last_updated"}),
+            ignore=frozenset({"record_last_updated", "status"}),
         )
         return str(existing_row["cycle_event_id"])
     return str(row[0])
