@@ -126,6 +126,8 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
             errors.append({"code": "INVALID_ALLOWLIST", "message": "allowlist.hosts must be an array of non-blank strings"})
         if not isinstance(prefixes, list) or any(not isinstance(item, str) or not item.strip() for item in prefixes):
             errors.append({"code": "INVALID_ALLOWLIST", "message": "allowlist.url_prefixes must be an array of non-blank strings"})
+        elif not prefixes:
+            errors.append({"code": "INVALID_ALLOWLIST", "message": "allowlist.url_prefixes must contain at least one prefix"})
         elif not are_http_prefixes(prefixes):
             errors.append({"code": "INVALID_ALLOWLIST", "message": "allowlist.url_prefixes must be absolute http or https URL prefixes"})
 

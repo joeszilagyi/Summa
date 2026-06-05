@@ -32,7 +32,7 @@ def base_request() -> dict[str, object]:
         "dry_run": True,
         "allowlist": {
             "hosts": ["archives.example.gov"],
-            "url_prefixes": [],
+            "url_prefixes": ["https://archives.example.gov/"],
         },
         "rate_limits": {
             "max_requests_per_minute": 5,
@@ -88,6 +88,23 @@ def test_network_safety_gate_refuses_missing_allowlist() -> None:
 
     assert payload["decision"] == "refuse"
     assert any(error["code"] == "ALLOWLIST_REQUIRED" for error in payload["errors"])
+
+
+def test_network_safety_gate_refuses_empty_url_prefix_list() -> None:
+    request = base_request()
+    request["allowlist"] = {
+        "hosts": ["archives.example.gov"],
+        "url_prefixes": [],
+    }
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "refuse"
+    assert any(
+        error["code"] == "INVALID_ALLOWLIST"
+        and "at least one prefix" in error["message"]
+        for error in payload["errors"]
+    )
 
 
 def test_network_safety_gate_refuses_exceeded_budget() -> None:
