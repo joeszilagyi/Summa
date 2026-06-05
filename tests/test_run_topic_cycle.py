@@ -413,6 +413,34 @@ def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_pat
     assert table_count(db_path, "cycle_tool_failure") >= 1
 
 
+def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-subject-fail"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-subject-fail",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == 1
+    manifest = load_manifest(run_dir)
+    assert manifest["status"] == "failed"
+    assert manifest["failure_stage"] == "resolve_subject_runtime"
+
+
 def test_topic_cycle_refuses_completed_run_without_force(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
