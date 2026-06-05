@@ -153,6 +153,56 @@ def test_topic_cycle_python_and_wrapper_help() -> None:
     assert "--workspace" in wrapper_proc.stdout
 
 
+def test_stage_plan_matches_feedback_plan_mode() -> None:
+    module = load_run_topic_cycle_module()
+
+    assert module.build_stage_plan(feedback_plan_mode=None, build_next_feedback_plan=False) == [
+        "resolve_subject_runtime",
+        "resolve_domain_pack",
+        "validate_canonical_store",
+        "feedback_plan_pre",
+        "run_gather",
+        "ingest_candidate_batch",
+        "execute_source_adapter",
+        "ingest_execution_artifacts",
+        "feedback_plan_post",
+        "build_publication",
+        "final_canonical_store_summary",
+        "graph_closure_audit",
+    ]
+    assert module.build_stage_plan(feedback_plan_mode="auto", build_next_feedback_plan=True) == [
+        "resolve_subject_runtime",
+        "resolve_domain_pack",
+        "validate_canonical_store",
+        "build_feedback_plan_pre",
+        "run_gather",
+        "ingest_candidate_batch",
+        "execute_source_adapter",
+        "ingest_execution_artifacts",
+        "build_feedback_plan_post",
+        "build_publication",
+        "final_canonical_store_summary",
+        "graph_closure_audit",
+    ]
+    assert module.build_stage_plan(
+        feedback_plan_mode="fixtures/feedback-plan.json",
+        build_next_feedback_plan=False,
+    ) == [
+        "resolve_subject_runtime",
+        "resolve_domain_pack",
+        "validate_canonical_store",
+        "load_feedback_plan",
+        "run_gather",
+        "ingest_candidate_batch",
+        "execute_source_adapter",
+        "ingest_execution_artifacts",
+        "feedback_plan_post",
+        "build_publication",
+        "final_canonical_store_summary",
+        "graph_closure_audit",
+    ]
+
+
 def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
