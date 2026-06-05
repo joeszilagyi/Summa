@@ -180,6 +180,42 @@ def build_scope_clause(scope: str) -> tuple[str, list[str]]:
     return f" AND sp.object_type IN ({placeholders})", object_types
 
 
+def sql_score_expression() -> str:
+    return (
+        "(bm25(search_projection_fts) * 0.95"
+        " + CASE lower(COALESCE(sp.authority_level, ''))"
+        "     WHEN 'primary' THEN -0.35"
+        "     WHEN 'trusted' THEN -0.20"
+        "     WHEN 'approved' THEN -0.15"
+        "     WHEN 'secondary' THEN -0.10"
+        "     ELSE 0.0"
+        "   END"
+        " + CASE lower(COALESCE(sp.review_state, ''))"
+        "     WHEN 'approved' THEN -0.10"
+        "     WHEN 'curated' THEN -0.05"
+        "     WHEN 'reviewed' THEN -0.03"
+        "     ELSE 0.0"
+        "   END"
+        " + CASE lower(COALESCE(sp.review_state, ''))"
+        "     WHEN 'rejected' THEN 2.0"
+        "     WHEN 'deprecated' THEN 2.0"
+        "     WHEN 'demoted' THEN 2.0"
+        "     ELSE 0.0"
+        "   END"
+        " - ("
+        "     CASE"
+        "       WHEN sp.confidence_score IS NULL THEN 0.0"
+        "       WHEN CAST(sp.confidence_score AS REAL) != CAST(sp.confidence_score AS REAL) THEN 0.0"
+        "       WHEN CAST(sp.confidence_score AS REAL) < 0 THEN 0.0"
+        "       WHEN CAST(sp.confidence_score AS REAL) > 1.0 THEN 1.0"
+        "       ELSE CAST(sp.confidence_score AS REAL)"
+        "     END"
+        "     * 0.75"
+        "   )"
+        ")"
+    )
+
+
 def load_matching_rows(
     conn: sqlite3.Connection,
     *,
@@ -198,6 +234,7 @@ def load_matching_rows(
         """,
         [fts_query, *scope_params],
     ).fetchone()
+    score_expression = sql_score_expression()
     rows = conn.execute(
         f"""
         SELECT
@@ -206,19 +243,13 @@ def load_matching_rows(
         FROM search_projection_fts
         JOIN search_projection AS sp USING (projection_id)
         WHERE search_projection_fts MATCH ?{scope_clause}
+        ORDER BY {score_expression} ASC, sp.object_type ASC, sp.object_pk ASC
+        LIMIT ? OFFSET ?
         """,
-        [fts_query, *scope_params],
+        [fts_query, *scope_params, limit, offset],
     ).fetchall()
-    rows = sorted(
-        rows,
-        key=lambda row: (
-            composite_score(row, float(row["score"])),
-            str(row["object_type"]),
-            int(row["object_pk"]),
-        ),
-    )
     total = 0 if total_row is None else int(total_row[0])
-    return rows[offset : offset + limit], total
+    return rows, total
 
 
 def field_matches_terms(text: str, terms: list[str]) -> bool:
