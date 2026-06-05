@@ -14,11 +14,13 @@ SHARING_BUILDER_PATH = REPO_ROOT / "tools" / "scripts" / "build_public_sharing_b
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "static_knowledge_tree_builder" / "valid_full" / "inputs"
 
 static_builder_spec = importlib.util.spec_from_file_location("static_knowledge_tree_builder_for_public_bundle_tests", STATIC_BUILDER_PATH)
+assert static_builder_spec is not None
 static_builder = importlib.util.module_from_spec(static_builder_spec)
 assert static_builder_spec.loader is not None
 static_builder_spec.loader.exec_module(static_builder)
 
 sharing_builder_spec = importlib.util.spec_from_file_location("public_sharing_bundle_builder_for_tests", SHARING_BUILDER_PATH)
+assert sharing_builder_spec is not None
 sharing_builder = importlib.util.module_from_spec(sharing_builder_spec)
 assert sharing_builder_spec.loader is not None
 sharing_builder_spec.loader.exec_module(sharing_builder)

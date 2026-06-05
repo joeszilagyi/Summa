@@ -12,6 +12,7 @@ SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "evaluate_network_safety_gate.py
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "network_safety_gate.py"
 
 common_spec = importlib.util.spec_from_file_location("network_safety_gate_common_for_tests", COMMON_PATH)
+assert common_spec is not None
 gate = importlib.util.module_from_spec(common_spec)
 assert common_spec.loader is not None
 common_spec.loader.exec_module(gate)

@@ -14,6 +14,7 @@ QUERY_TOOL = REPO_ROOT / "tools" / "scripts" / "query_local_search.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_local_search_results.py"
 
 spec = importlib.util.spec_from_file_location("local_search_results_validator_for_tests", VALIDATOR_PATH)
+assert spec is not None
 validator = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(validator)

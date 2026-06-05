@@ -16,8 +16,8 @@ SOURCE_DB_DIR = REPO_ROOT / "tools" / "source_db_tools"
 def load_module(module_name: str, relative_path: str):
     path = REPO_ROOT / relative_path
     spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
     assert spec is not None
+    module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module

@@ -13,12 +13,14 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "llm_prompt_fix
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "llm_source_text_wrapper.py"
 
 validator_spec = importlib.util.spec_from_file_location("llm_prompt_fixture_validator_for_tests", VALIDATOR_PATH)
+assert validator_spec is not None
 validator = importlib.util.module_from_spec(validator_spec)
 assert validator_spec.loader is not None
 sys.modules[validator_spec.name] = validator
 validator_spec.loader.exec_module(validator)
 
 common_spec = importlib.util.spec_from_file_location("llm_source_text_wrapper_common_for_tests", COMMON_PATH)
+assert common_spec is not None
 wrapper = importlib.util.module_from_spec(common_spec)
 assert common_spec.loader is not None
 sys.modules[common_spec.name] = wrapper

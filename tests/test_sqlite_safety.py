@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "source_db_tools" / "sqlite_safety.py"
 
 spec = importlib.util.spec_from_file_location("sqlite_safety_for_tests", SCRIPT_PATH)
+assert spec is not None
 sqlite_safety = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(sqlite_safety)
