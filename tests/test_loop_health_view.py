@@ -233,6 +233,22 @@ def test_populated_store_reports_per_cycle_yield_trend(tmp_path: Path) -> None:
     assert [cycle["cycle_id"] for cycle in summary["per_cycle_metrics"]] == ["run-1", "run-2"]  # type: ignore[index]
 
 
+def test_yield_trend_uses_the_full_lookback_window(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            add_cycle(conn, run_id="run-1", cycle_depth=1, timestamp="2026-06-04T10:00:00Z", reviewable_claims=1)
+            add_cycle(conn, run_id="run-2", cycle_depth=2, timestamp="2026-06-04T11:00:00Z", reviewable_claims=5)
+            add_cycle(conn, run_id="run-3", cycle_depth=3, timestamp="2026-06-04T12:00:00Z", reviewable_claims=2)
+    finally:
+        conn.close()
+
+    summary = summarize(db_path)
+
+    assert summary["aggregate_metrics"]["yield_trend"] == "rising"  # type: ignore[index]
+
+
 def test_review_backlog_size_and_age_are_reported(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = connect(db_path)
