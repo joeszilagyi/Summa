@@ -338,11 +338,14 @@ def _resolution_count(
 def _yield_trend(per_cycle: list[dict[str, Any]]) -> str:
     if len(per_cycle) < MIN_CYCLES_FOR_TREND:
         return "insufficient_data"
-    first = int(per_cycle[0]["new_reviewable_count"])
-    last = int(per_cycle[-1]["new_reviewable_count"])
-    if last > first:
+    deltas = [
+        int(per_cycle[index]["new_reviewable_count"]) - int(per_cycle[index - 1]["new_reviewable_count"])
+        for index in range(1, len(per_cycle))
+    ]
+    average_delta = sum(deltas) / len(deltas)
+    if average_delta > 0:
         return "rising"
-    if last < first:
+    if average_delta < 0:
         return "declining"
     return "flat"
 
