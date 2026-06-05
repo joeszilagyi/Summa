@@ -406,3 +406,24 @@ def test_evaluator_is_read_only(tmp_path: Path) -> None:
     before = db_path.read_bytes()
     evaluate(db_path, subject_id="readonly_subject", policy_path=policy)
     assert db_path.read_bytes() == before
+
+
+def test_load_recent_gather_events_escapes_like_wildcards(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    subject_id = "subject_%_literal"
+    other_subject_id = "subjectXliteral"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            add_cycle(conn, subject_id=subject_id, run_id="run-1", cycle_depth=1, event_index=1)
+            add_cycle(conn, subject_id=other_subject_id, run_id="run-2", cycle_depth=1, event_index=2)
+        traces: list[str] = []
+        conn.set_trace_callback(traces.append)
+        events = topic_saturation.load_recent_gather_events(conn, subject_id=subject_id, limit=10)
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert [event["event_key"] for event in events] == [f"prov:saturation:{subject_id}:run-1"]
+    assert any("ESCAPE '\\'" in statement for statement in traces)
+    assert any("subject\\_\\%\\_literal" in statement for statement in traces)
