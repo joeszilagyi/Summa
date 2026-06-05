@@ -26,10 +26,10 @@ CONFIDENCE_DIMENSIONS = {
 }
 
 CONFIDENCE_BANDS: tuple[tuple[float, float, str], ...] = (
-    (MIN_CONFIDENCE_SCORE, 0.24, "very_low"),
-    (0.25, 0.49, "low"),
-    (0.50, 0.74, "medium"),
-    (0.75, 0.89, "high"),
+    (MIN_CONFIDENCE_SCORE, 0.25, "very_low"),
+    (0.25, 0.50, "low"),
+    (0.50, 0.75, "medium"),
+    (0.75, 0.90, "high"),
     (0.90, MAX_CONFIDENCE_SCORE, "very_high"),
 )
 CONFIDENCE_SCORE_KEYS = {"confidence_score", "equivalence_confidence"}
@@ -64,8 +64,11 @@ def band_for_score(value: Any) -> str | None:
     score = parse_score(value)
     if score is None or not MIN_CONFIDENCE_SCORE <= score <= MAX_CONFIDENCE_SCORE:
         return None
-    for low, high, label in CONFIDENCE_BANDS:
-        if low <= score <= high:
+    for index, (low, high, label) in enumerate(CONFIDENCE_BANDS):
+        if index == len(CONFIDENCE_BANDS) - 1:
+            if low <= score <= high:
+                return label
+        elif low <= score < high:
             return label
     return None
 
