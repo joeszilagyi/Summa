@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tools.source_db_tools import canonical_store, canonical_write_spool
+from tools.scripts import replay_canonical_write_spool as replay_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE_BATCH = (
@@ -237,6 +238,41 @@ def test_replay_candidate_batch_and_idempotence(tmp_path: Path) -> None:
     assert second.returncode == 0, second.stdout + second.stderr
     second_report = json.loads(second.stdout)
     assert second_report["records_skipped"] == 1
+
+
+def test_replay_reports_sqlite_connect_failure_as_structured_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    spool_dir = tmp_path / "spool"
+    spool_dir.mkdir()
+    args = type(
+        "Args",
+        (),
+        {
+            "db": str(db_path),
+            "spool_path": str(spool_dir),
+            "output": None,
+            "dry_run": False,
+            "strict": False,
+            "limit": None,
+            "format": "json",
+            "replay_run_id": "pytest-replay",
+            "started_at": FIXED_TIMESTAMP,
+        },
+    )()
+
+    def fail_connect(_db_path: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(canonical_store, "connect_canonical_store", fail_connect)
+
+    report, exit_code = replay_script.replay(args)
+
+    assert exit_code == 1
+    assert report["status"] == "failed"
+    assert any("unable to open database file" in warning for warning in report["warnings"])
+    assert report["ended_at"] is not None
 
 
 def test_replay_dry_run_does_not_mutate_db_or_spool(tmp_path: Path) -> None:
