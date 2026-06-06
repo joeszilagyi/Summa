@@ -31,3 +31,18 @@ def test_coverage_threshold_is_no_longer_placeholder_low() -> None:
 
     assert "fail_under = 70" in pyproject
     assert "fail_under = 60" not in pyproject
+
+
+def test_static_hygiene_targets_include_runtime_spine() -> None:
+    body = WORKFLOW.read_text(encoding="utf-8")
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    for expected in (
+        "tools/collateral/pdf_extract.py",
+        "tools/common/runtime_ledger.py",
+        "tools/common/workspace_lock.py",
+        "tools/scripts/local_doctor.py",
+        "tools/source_db_tools/sqlite_safety.py",
+    ):
+        assert expected in body
+        assert expected in pyproject
