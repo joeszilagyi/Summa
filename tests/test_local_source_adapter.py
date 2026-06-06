@@ -54,15 +54,21 @@ def test_local_directory_adapter_plans_candidates_and_handoff_records(tmp_path: 
     assert payload["blocker_count"] == 0
     assert payload["handoff_record_count"] == 3
     assert payload["handoff_validation"]["ok"] is True
-    assert {entry["relative_path"] for entry in payload["candidates"]} == {
-        "nested/report.pdf",
+    assert [entry["relative_path"] for entry in payload["candidates"]] == [
         "nested/data.json",
+        "nested/report.pdf",
         "top/notes.pdf",
-    }
+    ]
     assert any(entry["reason"] == "excluded" for entry in payload["skipped_entries"])
 
     records = [json.loads(line) for line in handoff_jsonl.read_text(encoding="utf-8").splitlines()]
     assert records == payload["handoff_records"]
+    assert [record["sequence"] for record in records] == [1, 2, 3]
+    assert [record["relative_path"] for record in records] == [
+        "nested/data.json",
+        "nested/report.pdf",
+        "top/notes.pdf",
+    ]
     first_record = records[0]
     assert first_record["schema_version"] == "source-adapter-handoff.v1"
     assert first_record["record_family"] == "capture"
