@@ -6,8 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.scripts import plan_local_git_repo_adapter
+ 
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_local_git_repo_adapter.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_git_repo"
 
@@ -123,6 +129,45 @@ def write_adapter(path: Path, *, local_path: str = "repo", ref: str = "main", re
         encoding="utf-8",
     )
     return adapter_path
+
+
+def test_git_environment_isolation_removes_polluting_runtime_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "PYTHONPATH",
+        "NO_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "HOME",
+        "TMPDIR",
+        "TZ",
+    ]:
+        monkeypatch.setenv(key, "/tmp/polluted-env")
+
+    env = plan_local_git_repo_adapter.git_environment(Path("/tmp/repo-root"))
+
+    for key in [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "PYTHONPATH",
+        "NO_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "HOME",
+        "TZ",
+    ]:
+        assert key not in env
+    assert env["TMPDIR"] == str(Path("/tmp/repo-root") / ".tmp")
+    assert env["GIT_OPTIONAL_LOCKS"] == "0"
 
 
 def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path) -> None:

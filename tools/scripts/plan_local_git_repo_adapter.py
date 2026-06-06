@@ -65,9 +65,32 @@ def load_adapter(adapter_path: Path) -> dict[str, Any]:
     return payload
 
 
-def git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def git_environment(repo_path: Path) -> dict[str, str]:
+    """Return a subprocess environment stable against external process pollution."""
     env = os.environ.copy()
+    for key in (
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "PYTHONPATH",
+        "NO_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "HOME",
+        "TZ",
+    ):
+        env.pop(key, None)
+    for key in ("TMPDIR",):
+        env[key] = str(repo_path / ".tmp")
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    return env
+
+
+def git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = git_environment(repo_path)
     return subprocess.run(
         ["git", "-C", str(repo_path), *args],
         text=True,
