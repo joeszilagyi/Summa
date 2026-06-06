@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import runtime_ledger  # noqa: E402
+from tools.common.workspace_lock import (  # noqa: E402
+    acquire_workspace_lock,
+    DEFAULT_LOCK_ROOT,
+    WorkspaceLockError,
+)
 from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     read_runtime_ledger,
     summarize_run_outcomes,
@@ -25,6 +31,23 @@ from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
 PLANNED_RUN_SCHEMA_VERSION = "planned-run.v1"
+EXIT_SUCCESS = 0
+EXIT_USAGE_ERROR = 2
+EXIT_VALIDATION_FAILED = 3
+EXIT_SAFETY_DENIAL = 4
+EXIT_TRANSIENT_ACQUISITION_FAILED = 5
+EXIT_INTEGRITY_FAILURE = 6
+EXIT_PARTIAL_OUTPUT = 7
+EXIT_INTERNAL_CRASH = 8
+
+
+
+def _next_workspace_token() -> str:
+    return uuid.uuid4().hex
+
+
+def _format_run_id(*, run_id: str, workspace_id: str, attempt_number: int | str, token: str) -> str:
+    return f"{run_id}.{workspace_id}.{attempt_number}.{token}"
 
 
 class ScheduledCycleError(RuntimeError):
@@ -45,6 +68,42 @@ def normalize_timestamp(value: str | None) -> str:
     if parsed.tzinfo is None:
         raise ScheduledCycleError(f"timestamp must include timezone: {value}")
     return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _format_failure_result(
+    *,
+    result: dict[str, Any],
+    reason: str,
+    reason_code: str,
+    stage: str,
+    recoverability: str,
+    affected_record_id: str | None = None,
+) -> None:
+    result["failure_reason"] = reason
+    result["failure_reason_code"] = reason_code
+    result["error_code"] = reason_code
+    result["stage"] = stage
+    result["recoverability"] = recoverability
+    if affected_record_id is not None:
+        result["affected_record_id"] = affected_record_id
+
+
+def _set_failure(
+    result: dict[str, Any],
+    *,
+    reason_code: str,
+    reason: str,
+    stage: str,
+    recoverability: str,
+) -> None:
+    _format_failure_result(
+        result=result,
+        reason=reason,
+        reason_code=reason_code,
+        stage=stage,
+        recoverability=recoverability,
+        affected_record_id=result.get("planned_run_id", result.get("workspace_id")),
+    )
 
 
 def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
@@ -108,6 +167,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory for per-workspace runtime-ledger JSONL files.",
     )
     parser.add_argument("--format", choices=("json", "text"), default="json")
+    parser.add_argument(
+        "--workspace-lock-root",
+        type=Path,
+        default=DEFAULT_LOCK_ROOT,
+        help="Directory containing advisory workspace lock files.",
+    )
     return parser.parse_args(argv)
 
 
@@ -235,7 +300,13 @@ def run_scheduled_cycles(
         if args.cycle_runner
         else REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
     )
-    exit_code = 0
+    exit_code = EXIT_SUCCESS
+
+    def _update_global_exit_code(code: int) -> None:
+        nonlocal exit_code
+        if code > exit_code:
+            exit_code = code
+
     for record in records:
         workspace_id = str(record.get("workspace_id") or "")
         result: dict[str, Any] = {
@@ -251,6 +322,11 @@ def run_scheduled_cycles(
             "runtime_consumed_seconds": 0.0,
             "outcome": "skipped",
             "failure_reason": None,
+            "failure_reason_code": None,
+            "error_code": None,
+            "stage": None,
+            "recoverability": None,
+            "affected_record_id": None,
             "saturation": record.get("saturation")
             if isinstance(record.get("saturation"), dict)
             else None,
@@ -264,8 +340,12 @@ def run_scheduled_cycles(
         result["runtime_budget_seconds"] = run_budget.get("max_runtime_seconds")
         if not planned_record_selected(record):
             result["outcome"] = "deferred"
-            result["failure_reason"] = (
-                record.get("skipped_reason") or "planned-run decision was not selected"
+            _set_failure(
+                result=result,
+                reason_code="selection_not_selected",
+                reason=record.get("skipped_reason") or "planned-run decision was not selected",
+                stage="selection_filter",
+                recoverability="non_retryable",
             )
             manifest["deferred_workspace_count"] += 1
             manifest["workspace_results"].append(result)
@@ -274,12 +354,16 @@ def run_scheduled_cycles(
         subject_manifest = record.get("resolved_default_subject_manifest")
         if not isinstance(workspace_root, str) or not isinstance(subject_manifest, str):
             result["outcome"] = "failed"
-            result["failure_reason"] = (
-                "planned-run record is missing resolved workspace or subject manifest"
+            _set_failure(
+                result=result,
+                reason_code="selection_record_invalid",
+                reason="planned-run record is missing resolved workspace or subject manifest",
+                stage="input_validation",
+                recoverability="non_retryable",
             )
             manifest["failed_workspace_count"] += 1
             manifest["workspace_results"].append(result)
-            exit_code = 1
+            _update_global_exit_code(EXIT_VALIDATION_FAILED)
             continue
         saturation = result.get("saturation")
         if (
@@ -288,9 +372,15 @@ def run_scheduled_cycles(
             and not result["saturation_override"]
         ):
             result["outcome"] = "deferred"
-            result["failure_reason"] = (
-                "saturation policy deferred workspace: "
-                f"{saturation.get('state')} ({', '.join(saturation.get('reason_codes', []))})"
+            _set_failure(
+                result=result,
+                reason_code="selection_saturated",
+                reason=(
+                    "saturation policy deferred workspace: "
+                    f"{saturation.get('state')} ({', '.join(saturation.get('reason_codes', []))})"
+                ),
+                stage="saturation_check",
+                recoverability="retryable",
             )
             manifest["deferred_workspace_count"] += 1
             manifest["workspace_results"].append(result)
@@ -302,12 +392,20 @@ def run_scheduled_cycles(
         attempt_refusal = max_attempts_exceeded(record, prior_attempts=prior_attempts)
         if attempt_refusal is not None:
             result["outcome"] = "deferred"
-            result["failure_reason"] = attempt_refusal
+            _set_failure(
+                result=result,
+                reason_code="selection_run_budget_exceeded",
+                reason=attempt_refusal,
+                stage="attempt_budget_check",
+                recoverability="retryable",
+            )
             manifest["deferred_workspace_count"] += 1
             manifest["workspace_results"].append(result)
             continue
         runtime_budget = get_runtime_budget_seconds(record)
-        child_run_id = f"{run_id}.{workspace_id}.{result['attempt_number']}"
+        child_run_id = _format_run_id(
+            run_id=run_id, workspace_id=workspace_id, attempt_number=result["attempt_number"], token=_next_workspace_token()
+        )
         child_run_dir = run_dir / workspace_id / child_run_id
         child_started_at = utc_now()
         command = [
@@ -340,27 +438,64 @@ def run_scheduled_cycles(
             )
         if args.build_next_feedback_plan:
             command.append("--build-next-feedback-plan")
-        append_ledger_event(
-            ledger_path=ledger_path,
-            workspace_id=workspace_id,
-            run_id=child_run_id,
-            event_type="command_start",
-            occurred_at=child_started_at,
-        )
-        manifest["attempted_workspace_count"] += 1
-        start = monotonic()
-        proc = cycle_invoker(command)
+        try:
+            with acquire_workspace_lock(
+                workspace_id=workspace_id,
+                command=f"scheduled-topic-cycle:{child_run_id}",
+                lock_root=resolve_path(args.workspace_lock_root),
+                wait=False,
+            ):
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=child_run_id,
+                    event_type="command_start",
+                    occurred_at=child_started_at,
+                )
+                manifest["attempted_workspace_count"] += 1
+                start = monotonic()
+                proc = cycle_invoker(command)
+        except WorkspaceLockError as exc:
+            result["outcome"] = "deferred"
+            _set_failure(
+                result=result,
+                reason_code="workspace_lock_unavailable",
+                reason=str(exc),
+                stage="workspace_lock",
+                recoverability="retryable",
+            )
+            manifest["deferred_workspace_count"] += 1
+            _update_global_exit_code(EXIT_TRANSIENT_ACQUISITION_FAILURE)
+            manifest["workspace_results"].append(result)
+            continue
+        except Exception as exc:
+            result["outcome"] = "failed"
+            _set_failure(
+                result=result,
+                reason_code="internal_scheduler_error",
+                reason=str(exc),
+                stage="scheduler_execution",
+                recoverability="non_retryable",
+            )
+            manifest["failed_workspace_count"] += 1
+            _update_global_exit_code(EXIT_INTERNAL_CRASH)
+            manifest["workspace_results"].append(result)
+            continue
         elapsed = round(monotonic() - start, 6)
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
         result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
         child_manifest_path = child_run_dir / "topic-cycle-run.json"
+        child_status = None
         if child_manifest_path.is_file():
             try:
                 child_manifest = json.loads(child_manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 child_manifest = None
             if isinstance(child_manifest, dict):
+                raw_child_status = child_manifest.get("status")
+                if isinstance(raw_child_status, str):
+                    child_status = raw_child_status
                 cycle_event_id = child_manifest.get("cycle_event_id")
                 if isinstance(cycle_event_id, str) and cycle_event_id:
                     result["cycle_event_id"] = cycle_event_id
@@ -369,11 +504,17 @@ def run_scheduled_cycles(
         ]
         if runtime_budget is not None and elapsed > runtime_budget:
             result["outcome"] = "failed"
-            result["failure_reason"] = (
-                f"cycle runtime {elapsed} exceeded run_budget.max_runtime_seconds {runtime_budget}"
+            _set_failure(
+                result=result,
+                reason_code="runtime_budget_exceeded",
+                reason=(
+                    f"cycle runtime {elapsed} exceeded run_budget.max_runtime_seconds {runtime_budget}"
+                ),
+                stage="runtime_budget_check",
+                recoverability="retryable",
             )
             manifest["failed_workspace_count"] += 1
-            exit_code = 1
+            _update_global_exit_code(EXIT_INTEGRITY_FAILURE)
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -386,6 +527,7 @@ def run_scheduled_cycles(
         elif proc.returncode == 0:
             result["outcome"] = "completed"
             manifest["completed_workspace_count"] += 1
+            _update_global_exit_code(EXIT_SUCCESS)
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -397,9 +539,16 @@ def run_scheduled_cycles(
             )
         else:
             result["outcome"] = "failed"
-            result["failure_reason"] = (proc.stderr or proc.stdout).strip() or "topic cycle failed"
+            is_partial = child_status == "partial"
+            _set_failure(
+                result=result,
+                reason_code="topic_cycle_partial_output" if is_partial else "topic_cycle_failed",
+                reason=(proc.stderr or proc.stdout).strip() or "topic cycle failed",
+                stage="child_cycle_exec",
+                recoverability="retryable" if is_partial else "non_retryable",
+            )
             manifest["failed_workspace_count"] += 1
-            exit_code = 1
+            _update_global_exit_code(EXIT_PARTIAL_OUTPUT if is_partial else EXIT_INTEGRITY_FAILURE)
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -438,12 +587,21 @@ def render_text(payload: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    try:
+        args = parse_args(argv)
+    except SystemExit as exc:
+        return EXIT_USAGE_ERROR if exc.code != 0 else EXIT_SUCCESS
     try:
         payload, exit_code = run_scheduled_cycles(args)
     except (ScheduledCycleError, runtime_ledger.RuntimeLedgerError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        return EXIT_VALIDATION_FAILED
+    except WorkspaceLockError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return EXIT_TRANSIENT_ACQUISITION_FAILURE
+    except Exception as exc:  # pragma: no cover - defensive for unexpected runtime regressions.
+        print(f"Error: {exc}", file=sys.stderr)
+        return EXIT_INTERNAL_CRASH
     if args.format == "text":
         sys.stdout.write(render_text(payload))
     else:

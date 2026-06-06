@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -182,9 +183,8 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
     assert payload["attempted_workspace_count"] == 1
     assert payload["completed_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "completed"
-    assert (
-        payload["workspace_results"][0]["cycle_event_id"]
-        == "cycle:scheduled-run.scheduled_subject.1"
+    assert payload["workspace_results"][0]["cycle_event_id"].startswith(
+        "cycle:scheduled-run.scheduled_subject.1."
     )
     ledger = ledger_root / "scheduled_subject.runtime-ledger.jsonl"
     lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
@@ -416,7 +416,7 @@ def test_scheduled_runner_records_cycle_failure_through_runtime_ledger(tmp_path:
         ]
     )
 
-    assert proc.returncode == 1
+    assert proc.returncode == scheduled_runner.EXIT_INTEGRITY_FAILURE
     payload = json.loads(proc.stdout)
     assert payload["failed_workspace_count"] == 1
     ledger = ledger_root / "failing_subject.runtime-ledger.jsonl"
@@ -463,7 +463,7 @@ def test_scheduled_runner_enforces_max_runtime_seconds_with_injected_clock(tmp_p
         monotonic=lambda: next(clock_values),
     )
 
-    assert exit_code == 1
+    assert exit_code == scheduled_runner.EXIT_INTEGRITY_FAILURE
     assert payload["failed_workspace_count"] == 1
     result = payload["workspace_results"][0]
     assert result["outcome"] == "failed"
@@ -485,3 +485,291 @@ def test_scheduled_runner_has_no_direct_canonical_family_inserts() -> None:
         "INSERT INTO source_relationship",
     ):
         assert needle not in body
+
+
+def test_scheduled_runner_stable_failure_reason_contract_fields(tmp_path: Path) -> None:
+    selection = write_selection(
+        tmp_path,
+        [
+            {
+                "schema_version": "planned-run.v1",
+                "planner_run_id": "planner-test",
+                "planned_run_id": "planner-test:bad_subject",
+                "planned_at": "2026-06-03T12:00:00Z",
+                "registry_path": str(tmp_path / "registry.json"),
+                "workspace_id": "bad_subject",
+                "decision": "selected",
+                "cadence_reason": "schedule_posture:scheduled",
+                "skipped_reason": None,
+                "skipped_reasons": [],
+                "run_budget": {"max_attempts": 2},
+                "retry_policy": None,
+                "failure_state": None,
+                "workspace_root": str(tmp_path / "workspaces" / "bad_subject"),
+                "resolved_workspace_root": str(tmp_path / "workspaces" / "bad_subject"),
+                "default_subject_manifest": str(tmp_path / "bad_manifest.json"),
+            }
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--run-id",
+            "scheduled-run",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    payload = json.loads(proc.stdout)
+    result = payload["workspace_results"][0]
+    assert result["failure_reason_code"] == "selection_record_invalid"
+    assert result["error_code"] == "selection_record_invalid"
+    assert result["stage"] == "input_validation"
+    assert result["recoverability"] == "non_retryable"
+    assert result["affected_record_id"] == "planner-test:bad_subject"
+
+
+def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path, monkeypatch) -> None:
+    workspace, manifest = write_workspace(tmp_path, "duplicate_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="duplicate_subject", workspace=workspace, manifest=manifest, max_attempts=3
+            ),
+            planned_record(
+                workspace_id="duplicate_subject", workspace=workspace, manifest=manifest, max_attempts=3
+            ),
+        ],
+    )
+    runner = write_fake_cycle_runner(tmp_path, exit_code=0)
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    invocations: list[str] = []
+    monkeypatch.setattr(
+        scheduled_runner,
+        "_next_workspace_token",
+        lambda: "same-token" if len(invocations) == 0 else f"same-token-{len(invocations)}",
+    )
+    monkeypatch.setattr(
+        scheduled_runner,
+        "terminal_attempt_count",
+        lambda *args, **kwargs: 0,
+    )
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        run_id = command[command.index("--run-id") + 1]
+        invocations.append(run_id)
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": "completed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--cycle-runner",
+            str(runner),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_SUCCESS
+    assert len(invocations) == 2
+    assert (
+        payload["workspace_results"][0]["cycle_run_id"]
+        != payload["workspace_results"][1]["cycle_run_id"]
+    )
+    assert payload["workspace_results"][0]["cycle_run_id"].endswith("same-token")
+    assert payload["workspace_results"][1]["cycle_run_id"].endswith("same-token-1")
+
+
+def test_scheduled_runner_does_not_double_run_locked_workspace(tmp_path: Path, monkeypatch) -> None:
+    workspace, manifest = write_workspace(tmp_path, "locked_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="locked_subject", workspace=workspace, manifest=manifest, max_attempts=3
+            ),
+            planned_record(
+                workspace_id="locked_subject", workspace=workspace, manifest=manifest, max_attempts=3
+            ),
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+@contextlib.contextmanager
+def fake_lock(*_args, **_kwargs):
+    call_count = fake_lock.__dict__.setdefault("calls", 0)
+    if call_count:
+        raise scheduled_runner.WorkspaceLockError("workspace lock is already held")
+    fake_lock.__dict__["calls"] = call_count + 1
+    yield Path("/tmp/scheduled-topic-lock.test")
+
+    lock = fake_lock
+    invocations: list[list[str]] = []
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        invocations.append(command)
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": command[command.index("--run-id") + 1],
+                    "cycle_event_id": "cycle-ok",
+                    "status": "completed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    monkeypatch.setattr(scheduled_runner, "terminal_attempt_count", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(scheduled_runner, "acquire_workspace_lock", fake_lock)
+    monkeypatch.setattr(scheduled_runner, "_next_workspace_token", lambda: "token-a")
+
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_TRANSIENT_ACQUISITION_FAILURE
+    assert payload["attempted_workspace_count"] == 1
+    assert payload["deferred_workspace_count"] == 1
+    assert payload["workspace_results"][0]["outcome"] == "completed"
+    assert payload["workspace_results"][1]["outcome"] == "deferred"
+    assert payload["workspace_results"][1]["failure_reason_code"] == "workspace_lock_unavailable"
+    assert len(invocations) == 1
+
+
+def test_scheduled_runner_stdout_stderr_contract_validation_and_help(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "subject")
+    selection = write_selection(tmp_path, [planned_record(workspace_id="subject", workspace=workspace, manifest=manifest)])
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    runner = write_fake_cycle_runner(tmp_path)
+    missing_run_file = tmp_path / "missing.json"
+
+    help_proc = run_scheduled(["--help"])
+    assert help_proc.returncode == 0
+    assert "planned-run" in help_proc.stdout
+    assert help_proc.stderr == ""
+
+    usage_proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+        ]
+    )
+    assert usage_proc.returncode == scheduled_runner.EXIT_USAGE_ERROR
+    assert usage_proc.stdout == ""
+    assert "usage:" in usage_proc.stderr.lower()
+
+    validation_proc = run_scheduled(
+        [
+            "--selection",
+            str(missing_run_file),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+        ]
+    )
+    assert validation_proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert validation_proc.stdout == ""
+    assert "Traceback" not in validation_proc.stderr
+
+
+def test_scheduled_runner_partial_child_output_exit_code(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "partial_subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="partial_subject", workspace=workspace, manifest=manifest)],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = command[command.index("--run-id") + 1]
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": "partial",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 5, "", "partial failure")
+
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_PARTIAL_OUTPUT
+    result = payload["workspace_results"][0]
+    assert result["outcome"] == "failed"
+    assert result["failure_reason_code"] == "topic_cycle_partial_output"
+    assert result["error_code"] == "topic_cycle_partial_output"
+    assert result["stage"] == "child_cycle_exec"
+    assert result["recoverability"] == "retryable"
