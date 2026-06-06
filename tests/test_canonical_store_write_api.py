@@ -1217,6 +1217,129 @@ def test_write_api_preserves_record_last_updated_monotonicity_on_replay(tmp_path
     assert relationship_row["record_last_updated"] == NEWER_TIMESTAMP
 
 
+def test_write_api_preserves_immutable_capture_and_extraction_fields_on_replay(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture_ingest",
+                object_id="immutable-row",
+                event_type="fixture_ingest",
+                tool_name="pytest",
+                tool_version="1.0",
+                run_id="immutable-run",
+                event_timestamp=NEWER_TIMESTAMP,
+                note_text="immutable row fixture",
+                provenance_event_key_v1="prov:immutable-row",
+            )
+            capture_first = canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                original_locator="https://example.test/immutable",
+                captured_at=NEWER_TIMESTAMP,
+                capture_method="fixture_capture",
+                content_hash="c" * 64,
+                byte_count=128,
+                mime_type="text/plain",
+                workspace_id="immutable_subject",
+                record_last_updated=NEWER_TIMESTAMP,
+            )
+            extraction_first = canonical_store.record_extraction_record(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                capture_event_id=capture_first.row_id,
+                extraction_method="fixture_extract",
+                extraction_status="completed",
+                extractor_name="pytest",
+                extractor_version="1.0",
+                input_hash="d" * 64,
+                output_hash="e" * 64,
+                byte_count_in=128,
+                byte_count_out=64,
+                encoding_handling="utf8",
+                truncation_status="not_truncated",
+                workspace_id="immutable_subject",
+                created_at=NEWER_TIMESTAMP,
+                record_last_updated=NEWER_TIMESTAMP,
+            )
+            capture_second = canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                original_locator="https://example.test/immutable",
+                captured_at=NEWER_TIMESTAMP,
+                capture_method="fixture_capture",
+                content_hash="c" * 64,
+                byte_count=999,
+                mime_type="application/pdf",
+                workspace_id="immutable_subject",
+                record_last_updated=OLDER_TIMESTAMP,
+            )
+            extraction_second = canonical_store.record_extraction_record(
+                conn,
+                provenance_event_ref=provenance_event.event_key,
+                capture_event_id=capture_first.row_id,
+                extraction_method="fixture_extract",
+                extraction_status="completed",
+                extractor_name="pytest",
+                extractor_version="2.0",
+                input_hash="d" * 64,
+                output_hash="e" * 64,
+                byte_count_in=256,
+                byte_count_out=128,
+                encoding_handling="latin1",
+                truncation_status="truncated",
+                workspace_id="immutable_subject",
+                created_at=NEWER_TIMESTAMP,
+                record_last_updated=OLDER_TIMESTAMP,
+            )
+            capture_row = conn.execute(
+                """
+                SELECT original_locator, captured_at, capture_method, content_hash, byte_count,
+                       mime_type, provenance_event_ref, record_last_updated
+                FROM capture_event
+                WHERE capture_event_id=?
+                """,
+                (capture_first.row_id,),
+            ).fetchone()
+            extraction_row = conn.execute(
+                """
+                SELECT capture_event_id, extraction_method, input_hash, output_hash,
+                       byte_count_in, byte_count_out, created_at, record_last_updated
+                FROM extraction_record
+                WHERE extraction_id=?
+                """,
+                (extraction_first.row_id,),
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert capture_first.created is True
+    assert capture_second.created is False
+    assert extraction_first.created is True
+    assert extraction_second.created is False
+    assert capture_second.row_id == capture_first.row_id
+    assert extraction_second.row_id == extraction_first.row_id
+    assert capture_row["original_locator"] == "https://example.test/immutable"
+    assert capture_row["captured_at"] == NEWER_TIMESTAMP
+    assert capture_row["capture_method"] == "fixture_capture"
+    assert capture_row["content_hash"] == "c" * 64
+    assert capture_row["byte_count"] == 128
+    assert capture_row["provenance_event_ref"] == provenance_event.event_key
+    assert capture_row["record_last_updated"] == NEWER_TIMESTAMP
+    assert extraction_row["capture_event_id"] == capture_first.row_id
+    assert extraction_row["extraction_method"] == "fixture_extract"
+    assert extraction_row["input_hash"] == "d" * 64
+    assert extraction_row["output_hash"] == "e" * 64
+    assert extraction_row["byte_count_in"] == 128
+    assert extraction_row["byte_count_out"] == 64
+    assert extraction_row["created_at"] == NEWER_TIMESTAMP
+    assert extraction_row["record_last_updated"] == NEWER_TIMESTAMP
+
+
 def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

@@ -1727,7 +1727,8 @@ def record_capture_event(
             "content_hash": _first_present(
                 _optional_nonblank(content_hash, "content_hash"), existing["content_hash"]
             ),
-            "byte_count": _first_present(byte_count, existing["byte_count"]),
+            # Preserve the original captured size once the capture row exists.
+            "byte_count": existing["byte_count"],
             "mime_type": _first_present(
                 _optional_nonblank(mime_type, "mime_type"), existing["mime_type"]
             ),
@@ -1893,8 +1894,9 @@ def record_extraction_record(
             "output_hash": _first_present(
                 _optional_nonblank(output_hash, "output_hash"), existing["output_hash"]
             ),
-            "byte_count_in": _first_present(byte_count_in, existing["byte_count_in"]),
-            "byte_count_out": _first_present(byte_count_out, existing["byte_count_out"]),
+            # Preserve the original extraction sizes once the extraction row exists.
+            "byte_count_in": existing["byte_count_in"],
+            "byte_count_out": existing["byte_count_out"],
             "encoding_handling": _first_present(
                 _optional_nonblank(encoding_handling, "encoding_handling"),
                 existing["encoding_handling"],
