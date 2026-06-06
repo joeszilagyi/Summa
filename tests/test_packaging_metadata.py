@@ -1,6 +1,8 @@
 import importlib
+import os
 import subprocess
 import sys
+import venv
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -96,6 +98,37 @@ def load_project_metadata() -> dict[str, str]:
         key, value = line.split(":", 1)
         payload[key.strip()] = value.strip()
     return payload
+
+
+def venv_bin_dir(root: Path) -> Path:
+    return root / ("Scripts" if os.name == "nt" else "bin")
+
+
+def venv_python(root: Path) -> Path:
+    return venv_bin_dir(root) / ("python.exe" if os.name == "nt" else "python")
+
+
+def create_isolated_install_venv(tmp_path: Path) -> Path:
+    root = tmp_path / "isolated-install"
+    venv.EnvBuilder(with_pip=True, clear=True, system_site_packages=False).create(root)
+    install = subprocess.run(
+        [
+            str(venv_python(root)),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-deps",
+            "--editable",
+            str(REPO_ROOT),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert install.returncode == 0, install.stdout + install.stderr
+    return root
 
 
 def test_pyproject_declares_python_floor_and_stdlib_runtime() -> None:
@@ -259,6 +292,25 @@ def test_console_entry_point_targets_emit_help() -> None:
                 ),
             ],
             cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        output = proc.stdout + proc.stderr
+        assert proc.returncode == 0, f"{command} --help failed:\n{output}"
+        assert "usage:" in output.lower(), f"{command} --help did not emit usage text:\n{output}"
+
+
+def test_console_entry_points_run_as_installed_commands(tmp_path: Path) -> None:
+    venv_root = create_isolated_install_venv(tmp_path)
+    bin_dir = venv_bin_dir(venv_root)
+    for command in EXPECTED_CONSOLE_SCRIPTS:
+        installed_command = bin_dir / command
+        assert installed_command.exists(), f"installed console command missing: {installed_command}"
+        proc = subprocess.run(
+            [str(installed_command), "--help"],
+            cwd=REPO_ROOT,
+            env={**os.environ, "PATH": str(bin_dir)},
             text=True,
             capture_output=True,
             check=False,
