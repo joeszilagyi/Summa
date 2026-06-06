@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from tools.source_db_tools import source_locus_seed
+from tools.source_db_tools import source_locus_seed, source_query_plan
 
 
 FIXED_TIMESTAMP = "2026-06-05T10:00:00Z"
@@ -138,3 +138,63 @@ def test_upsert_source_locus_replay_overwrites_curation_with_flag(
         assert row["record_last_updated"] == UPDATED_TIMESTAMP
     finally:
         conn.close()
+
+
+def test_deprecated_source_locus_is_inspectable_and_reversible(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "source.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    source_locus_seed.ensure_schema(conn)
+    try:
+        source_locus_seed.upsert_source_locus(
+            conn,
+            locus_record(),
+            updated_at=FIXED_TIMESTAMP,
+        )
+        source_locus_seed.upsert_source_locus(
+            conn,
+            locus_record(
+                review_state="deprecated",
+                is_deprecated=True,
+                deprecation_reason="temporary outage",
+                notes="deprecated for maintenance",
+            ),
+            updated_at=UPDATED_TIMESTAMP,
+            overwrite_curation=True,
+        )
+
+        default_loci = source_query_plan.load_source_loci(conn, "test_topic")
+        deprecated_loci = source_query_plan.load_source_loci(
+            conn, "test_topic", include_deprecated=True
+        )
+        deprecated_plan = source_query_plan.plan_from_locus(
+            deprecated_loci[0],
+            generated_at=UPDATED_TIMESTAMP,
+            generated_by="pytest",
+        )
+
+        source_locus_seed.upsert_source_locus(
+            conn,
+            locus_record(),
+            updated_at=UPDATED_TIMESTAMP,
+            overwrite_curation=True,
+        )
+
+        restored_loci = source_query_plan.load_source_loci(conn, "test_topic")
+        restored_plan = source_query_plan.plan_from_locus(
+            restored_loci[0],
+            generated_at=UPDATED_TIMESTAMP,
+            generated_by="pytest",
+        )
+    finally:
+        conn.close()
+
+    assert default_loci == []
+    assert len(deprecated_loci) == 1
+    assert deprecated_loci[0]["deprecation_reason"] == "temporary outage"
+    assert deprecated_plan["plan_status"] == "deprecated"
+    assert deprecated_plan["review_state"] == "deprecated"
+    assert len(restored_loci) == 1
+    assert restored_loci[0]["is_deprecated"] is False
+    assert restored_loci[0]["deprecation_reason"] is None
+    assert restored_plan["plan_status"] == "accepted"
