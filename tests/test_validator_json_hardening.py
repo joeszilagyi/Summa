@@ -68,3 +68,26 @@ def test_validator_clis_reject_duplicate_json_keys(script_name: str, tmp_path: P
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined
     assert "duplicate JSON object key" in combined
+
+
+@pytest.mark.parametrize("script_name", FILE_BASED_VALIDATORS)
+@pytest.mark.parametrize("json_constant", ["NaN", "Infinity", "-Infinity"])
+def test_validator_clis_reject_nonstandard_json_constants(
+    script_name: str, json_constant: str, tmp_path: Path
+) -> None:
+    target = target_path_for(script_name, tmp_path)
+    target.write_text(
+        (
+            "{\"schema_version\": \"fixture.v1\", "
+            f"\"constant\": {json_constant}, "
+            "\"marker\": \"fixture\"}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    proc = run_validator(script_name, target)
+
+    combined = (proc.stdout + proc.stderr).lower()
+    assert proc.returncode != 0, combined
+    assert "json" in combined
+    assert "constant" in combined or "syntax" in combined
