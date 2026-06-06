@@ -70,6 +70,23 @@ def test_operator_path_smoke_wrapper_help() -> None:
     assert "--workspace" in proc.stdout
 
 
+def test_operator_path_smoke_load_module_registers_dataclass_modules(tmp_path: Path) -> None:
+    module_path = tmp_path / "dynamic_module.py"
+    module_path.write_text(
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Payload:\n"
+        "    value: int\n",
+        encoding="utf-8",
+    )
+
+    module_name = "operator_path_smoke_dynamic_module_for_tests"
+    module = operator_path_smoke.load_module(module_path, module_name)
+
+    assert sys.modules[module_name] is module
+    assert module.Payload(5).value == 5
+
+
 def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(tmp_path: Path) -> None:
     workspace = tmp_path / "smoke-workspace"
     before = git_status()
