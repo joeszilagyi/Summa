@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import re
@@ -196,6 +197,46 @@ def test_run_topic_gather_dry_run_is_deterministic(tmp_path: Path) -> None:
 
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
+
+
+def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "json-summary-hashes"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    candidate_batch_path = batch_path_for(workspace_root, run_id)
+    rendered_prompt_path = prompt_path_for(workspace_root, run_id)
+    candidate_batch = candidate_batch_path.read_bytes()
+    rendered_prompt = rendered_prompt_path.read_text(encoding="utf-8")
+    candidate_hash = hashlib.sha256(candidate_batch).hexdigest()
+    prompt_hash = hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
+
+    batch_payload = json.loads(candidate_batch_path.read_text(encoding="utf-8"))
+    assert payload["candidate_batch_sha256"] == candidate_hash
+    assert payload["rendered_prompt_sha256"] == prompt_hash
+    assert payload["rendered_prompt_sha256"] == batch_payload["prompt"]["rendered_prompt_hash"]
 
 
 def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path: Path) -> None:

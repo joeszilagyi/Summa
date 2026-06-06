@@ -226,6 +226,14 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def read_text_file(path: Path, *, label: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -927,6 +935,8 @@ def render_summary_json(
     batch: dict[str, Any],
     rendered_prompt: str,
     live_result: dict[str, Any] | None,
+    rendered_prompt_sha256: str,
+    candidate_batch_sha256: str,
 ) -> str:
     payload = {
         "run_id": batch["run_id"],
@@ -938,9 +948,11 @@ def render_summary_json(
         "facet": batch["facet"]["name"],
         "phase": batch["phase"],
         "prompt_bundle_id": batch["prompt_bundle"]["bundle_id"],
+        "rendered_prompt_sha256": rendered_prompt_sha256,
         "rendered_prompt_path": str(rendered_prompt_path),
         "rendered_prompt": rendered_prompt,
         "candidate_batch_path": str(batch_path),
+        "candidate_batch_sha256": candidate_batch_sha256,
         "prior_state": batch.get("prior_state"),
         "feedback_plan": batch.get("feedback_plan"),
         "raw_engine_output_path": live_result["raw_engine_output_path"]
@@ -1067,12 +1079,16 @@ def main() -> int:
             raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
 
         if args.format == "json":
+            candidate_batch_sha256 = hash_file(batch_path)
+            rendered_prompt_sha256 = sha256_text(rendered_prompt)
             sys.stdout.write(
                 render_summary_json(
                     batch_path=batch_path,
                     rendered_prompt_path=rendered_prompt_path,
                     batch=batch,
                     rendered_prompt=rendered_prompt,
+                    rendered_prompt_sha256=rendered_prompt_sha256,
+                    candidate_batch_sha256=candidate_batch_sha256,
                     live_result=live_result,
                 )
             )

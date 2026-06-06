@@ -621,6 +621,76 @@ def test_topic_cycle_degraded_spool_records_pending_canonical_write(
     assert manifest["graph_closure"]["status"] == "disabled"  # type: ignore[index]
 
 
+def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path) -> None:
+    module = load_run_topic_cycle_module()
+
+    run_dir = tmp_path / "run-dir"
+    run_dir.mkdir()
+    batch_path = tmp_path / "gather-candidate-batch.json"
+    prompt_path = tmp_path / "rendered-prompt.txt"
+    batch_path.write_text("{}", encoding="utf-8")
+    prompt_path.write_text("prompt", encoding="utf-8")
+
+    fake_payload = {
+        "candidate_batch_path": str(batch_path),
+        "rendered_prompt_path": str(prompt_path),
+        "candidate_batch_sha256": "candidate-hash",
+        "rendered_prompt_sha256": "prompt-hash",
+    }
+
+    def fake_run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=json.dumps(fake_payload),
+            stderr="",
+        )
+
+    def deny_rehash(path: Path) -> str:
+        raise AssertionError(f"unexpected hash_file call: {path}")
+
+    monkeypatch.setattr(module, "run_command", fake_run_command)
+    monkeypatch.setattr(
+        module,
+        "validate_gather_candidate_batch",
+        lambda path: ({"valid": True}, module.EXIT_GATHER_PASS),
+    )
+    monkeypatch.setattr(module, "hash_file", deny_rehash)
+
+    args = SimpleNamespace(
+        mode="dry-run",
+        facet="sources",
+        phase="01a",
+        use_prior_state=False,
+        cycle_depth=1,
+        previous_run_id=[],
+        dry_run=True,
+        candidate_batch_fixture=None,
+    )
+    manifest = {
+        "run_id": "cycle-827",
+        "started_at": "2026-06-03T12:00:00Z",
+        "stages": [],
+        "prior_state": {},
+    }
+    runtime = {"subject_manifest_path": str(prompt_path)}
+
+    result = module.gather_stage(
+        args=args,
+        manifest=manifest,
+        workspace=tmp_path,
+        db_path=tmp_path / "canonical.sqlite",
+        run_dir=run_dir,
+        runtime=runtime,
+        feedback_plan=None,
+    )
+
+    assert result == batch_path
+    stages = stages_by_name(manifest)
+    assert stages["run_gather"]["artifacts"]["candidate_batch_sha256"] == "candidate-hash"  # type: ignore[index]
+    assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
+
+
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"

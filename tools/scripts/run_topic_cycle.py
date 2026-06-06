@@ -762,6 +762,12 @@ def gather_stage(
         payload = json.loads(proc.stdout)
         batch_path = resolve_path(payload["candidate_batch_path"], base=REPO_ROOT)
         prompt_path = resolve_path(payload["rendered_prompt_path"], base=REPO_ROOT)
+        candidate_batch_sha256 = payload.get("candidate_batch_sha256")
+        rendered_prompt_sha256 = payload.get("rendered_prompt_sha256")
+        if not isinstance(candidate_batch_sha256, str):
+            candidate_batch_sha256 = hash_file(batch_path)
+        if not isinstance(rendered_prompt_sha256, str):
+            rendered_prompt_sha256 = hash_file(prompt_path)
         report, exit_code = validate_gather_candidate_batch(batch_path)
         stage.validation = {
             "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
@@ -771,9 +777,9 @@ def gather_stage(
             fail_stage(stage, "gather candidate batch failed validation")
         stage.artifacts = {
             "candidate_batch": str(batch_path),
-            "candidate_batch_sha256": hash_file(batch_path),
+            "candidate_batch_sha256": candidate_batch_sha256,
             "rendered_prompt": str(prompt_path),
-            "rendered_prompt_sha256": hash_file(prompt_path),
+            "rendered_prompt_sha256": rendered_prompt_sha256,
         }
         if payload.get("prior_state"):
             manifest["prior_state"] = {
