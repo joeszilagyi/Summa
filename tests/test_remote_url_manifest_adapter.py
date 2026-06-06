@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -61,6 +62,15 @@ def test_remote_url_manifest_plans_entries_without_network_access(tmp_path: Path
     assert first_record["network_access_attempted"] is False
     assert first_record["source_specific"] == {
         "manifest_url": "https://archives.example.gov/subject/alpha/manifest.jsonl"
+    }
+    assert first_record["source_identity"] == {
+        "manifest_url": "https://archives.example.gov/subject/alpha/manifest.jsonl",
+        "manifest_snapshot": {
+            "path": str(manifest_jsonl),
+            "sha256": hashlib.sha256(manifest_jsonl.read_bytes()).hexdigest(),
+        },
+        "manifest_line": 1,
+        "entry_url": "https://archives.example.gov/subject/alpha/entry-001",
     }
 
 

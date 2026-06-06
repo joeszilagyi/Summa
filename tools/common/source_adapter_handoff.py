@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,10 @@ def _is_http_url(value: Any) -> bool:
         return False
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _is_timestamp(value: Any) -> bool:
@@ -168,16 +173,23 @@ def validate_source_adapter_handoff_record(
     if network_access_attempted is not None and not isinstance(network_access_attempted, bool):
         errors.append("network_access_attempted must be a boolean when present")
 
+    source_identity = record.get("source_identity")
+    if source_identity is not None and not isinstance(source_identity, dict):
+        errors.append("source_identity must be an object when present")
+
     if variant in {"local_source", "structured_data"}:
         if remote_state is not None:
             errors.append(f"remote_state is not allowed for {variant} handoff records")
         if network_access_attempted is not None:
             errors.append(f"network_access_attempted is not allowed for {variant} handoff records")
+        if source_identity is not None:
+            errors.append(f"source_identity is not allowed for {variant} handoff records")
     elif variant == "remote_url_manifest":
         if remote_state != "configured_remote":
             errors.append("remote_state must equal configured_remote")
         if network_access_attempted is not False:
             errors.append("network_access_attempted must be false")
+        validate_remote_url_manifest_identity(record, source_identity, errors)
     elif variant == "local_git_repo":
         if remote_state != "local_checkout":
             errors.append("remote_state must equal local_checkout")
@@ -185,6 +197,8 @@ def validate_source_adapter_handoff_record(
             errors.append("network_access_attempted must be false")
         if record.get("sequence") != 1:
             errors.append("sequence must equal 1 for per_snapshot git handoff records")
+        if source_identity is not None:
+            errors.append("source_identity is not allowed for local_git_repo handoff records")
 
     if adapter_input_family == "local_git_repo" and variant != "local_git_repo":
         errors.append("source_specific fields do not match local_git_repo handoff shape")
@@ -192,6 +206,75 @@ def validate_source_adapter_handoff_record(
         errors.append("source_specific fields do not match remote_url_manifest handoff shape")
 
     return errors
+
+
+def validate_remote_url_manifest_identity(
+    record: dict[str, Any],
+    source_identity: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    if source_identity is None:
+        errors.append("source_identity is required for remote_url_manifest handoff records")
+        return
+
+    allowed_fields = {"manifest_url", "manifest_snapshot", "manifest_line", "entry_url"}
+    unknown_fields = sorted(set(source_identity) - allowed_fields)
+    if unknown_fields:
+        errors.append(f"source_identity contains unknown field: {unknown_fields[0]}")
+
+    manifest_url = source_identity.get("manifest_url")
+    if not _is_http_url(manifest_url):
+        errors.append("source_identity.manifest_url must be an absolute http or https URL")
+
+    entry_url = source_identity.get("entry_url")
+    if not _is_http_url(entry_url):
+        errors.append("source_identity.entry_url must be an absolute http or https URL")
+
+    manifest_line = source_identity.get("manifest_line")
+    if not isinstance(manifest_line, int) or isinstance(manifest_line, bool) or manifest_line < 1:
+        errors.append("source_identity.manifest_line must be an integer >= 1")
+
+    manifest_snapshot = source_identity.get("manifest_snapshot")
+    if not isinstance(manifest_snapshot, dict):
+        errors.append("source_identity.manifest_snapshot must be an object")
+    else:
+        snapshot_allowed = {"path", "sha256"}
+        snapshot_unknown = sorted(set(manifest_snapshot) - snapshot_allowed)
+        if snapshot_unknown:
+            errors.append(f"source_identity.manifest_snapshot contains unknown field: {snapshot_unknown[0]}")
+        snapshot_path = manifest_snapshot.get("path")
+        if not _is_nonblank_string(snapshot_path):
+            errors.append("source_identity.manifest_snapshot.path must be a non-blank string")
+        snapshot_sha256 = manifest_snapshot.get("sha256")
+        if not _is_nonblank_string(snapshot_sha256) or len(snapshot_sha256) != 64:
+            errors.append("source_identity.manifest_snapshot.sha256 must be a 64-character hex digest")
+
+    original_locator = record.get("preserved", {}).get("original_locator")
+    if not isinstance(original_locator, dict):
+        return
+
+    expected_locator_fields = {
+        "manifest_url": original_locator.get("manifest_url"),
+        "entry_url": original_locator.get("entry_url"),
+        "manifest_input_path": original_locator.get("manifest_input_path"),
+        "line_number": original_locator.get("line_number"),
+    }
+    for field, value in expected_locator_fields.items():
+        if field == "line_number":
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                errors.append("preserved.original_locator.line_number must be an integer >= 1")
+        elif not _is_nonblank_string(value):
+            errors.append(f"preserved.original_locator.{field} must be a non-blank string")
+
+    if _is_http_url(manifest_url) and original_locator.get("manifest_url") != manifest_url:
+        errors.append("source_identity.manifest_url must match preserved.original_locator.manifest_url")
+    if _is_http_url(entry_url) and original_locator.get("entry_url") != entry_url:
+        errors.append("source_identity.entry_url must match preserved.original_locator.entry_url")
+    snapshot_path = manifest_snapshot.get("path") if isinstance(manifest_snapshot, dict) else None
+    if _is_nonblank_string(snapshot_path) and original_locator.get("manifest_input_path") != snapshot_path:
+        errors.append("source_identity.manifest_snapshot.path must match preserved.original_locator.manifest_input_path")
+    if isinstance(manifest_line, int) and not isinstance(manifest_line, bool) and original_locator.get("line_number") != manifest_line:
+        errors.append("source_identity.manifest_line must match preserved.original_locator.line_number")
 
 
 def validate_preserved_fields(preserved: dict[str, Any], errors: list[str]) -> None:
@@ -495,6 +578,16 @@ def build_remote_url_manifest_handoff_record(
         for field in handoff.get("preserve_fields", [])
         if field in preserved_candidates
     }
+    manifest_snapshot_hash = _sha256_file(manifest_input_path)
+    source_identity = {
+        "manifest_url": locator.get("manifest_url"),
+        "manifest_snapshot": {
+            "path": str(manifest_input_path),
+            "sha256": manifest_snapshot_hash,
+        },
+        "manifest_line": line_number,
+        "entry_url": entry.get("url"),
+    }
     source_specific_candidates = {
         "manifest_url": locator.get("manifest_url"),
     }
@@ -516,6 +609,7 @@ def build_remote_url_manifest_handoff_record(
         "network_access_attempted": False,
         "resolved_source_path": str(manifest_input_path),
         "relative_path": f"line:{line_number}",
+        "source_identity": source_identity,
         "preserved": preserved,
         "source_specific": source_specific,
     }

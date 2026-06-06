@@ -84,6 +84,15 @@
       "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/remote_url_manifest/manifest.jsonl",
       "schema_version": "source-adapter-handoff.v1",
       "sequence": 1,
+      "source_identity": {
+        "entry_url": "https://example.org/hostile-a",
+        "manifest_line": 1,
+        "manifest_snapshot": {
+          "path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/remote_url_manifest/manifest.jsonl",
+          "sha256": "989e11845d660a4877f761fc66c3cb22229762f7c3178a130bc428db1fca952e"
+        },
+        "manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"
+      },
       "source_specific": {
         "manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"
       },
@@ -146,6 +155,15 @@
       "resolved_source_path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/remote_url_manifest/manifest.jsonl",
       "schema_version": "source-adapter-handoff.v1",
       "sequence": 2,
+      "source_identity": {
+        "entry_url": "https://example.org/hostile-b",
+        "manifest_line": 2,
+        "manifest_snapshot": {
+          "path": "<repo-root>/tests/fixtures/source_adapter_runtime/hostile_replay/remote_url_manifest/manifest.jsonl",
+          "sha256": "989e11845d660a4877f761fc66c3cb22229762f7c3178a130bc428db1fca952e"
+        },
+        "manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"
+      },
       "source_specific": {
         "manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"
       },

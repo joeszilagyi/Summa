@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from tools.common.source_adapter_handoff import validate_source_adapter_handoff_record  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -257,6 +260,41 @@ def test_handoff_validator_accepts_current_outputs_from_all_planners(tmp_path: P
         assert report["status"] == "pass"
         assert report["counts"]["accepted"] >= 1
         assert report["counts"]["rejected"] == 0
+
+
+def test_remote_url_manifest_handoff_requires_explicit_source_identity_fields(tmp_path: Path) -> None:
+    remote_adapter = json.loads((FIXTURE_ROOT / "remote_url_manifest" / "source_adapter.json").read_text(encoding="utf-8"))
+    handoff_path = tmp_path / "remote_handoff.jsonl"
+    proc = run_command(
+        [
+            str(REMOTE_URL_MANIFEST_PLANNER),
+            "--adapter",
+            str(FIXTURE_ROOT / "remote_url_manifest" / "source_adapter.json"),
+            "--manifest-jsonl",
+            str(FIXTURE_ROOT / "remote_url_manifest" / "manifest.jsonl"),
+            "--handoff-jsonl",
+            str(handoff_path),
+            "--format",
+            "json",
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    handoff = [json.loads(line) for line in handoff_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    valid_record = handoff[0]
+    assert validate_source_adapter_handoff_record(valid_record, remote_adapter) == []
+
+    missing_identity = copy.deepcopy(valid_record)
+    missing_identity.pop("source_identity")
+    assert "source_identity is required for remote_url_manifest handoff records" in validate_source_adapter_handoff_record(
+        missing_identity,
+        remote_adapter,
+    )
+
+    missing_locator_field = copy.deepcopy(valid_record)
+    missing_locator_field["preserved"]["original_locator"].pop("manifest_input_path")
+    errors = validate_source_adapter_handoff_record(missing_locator_field, remote_adapter)
+    assert "preserved.original_locator.manifest_input_path must be a non-blank string" in errors
 
 
 def test_handoff_validator_rejects_family_specific_state_mismatch(tmp_path: Path) -> None:

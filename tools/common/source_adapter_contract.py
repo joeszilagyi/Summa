@@ -82,7 +82,7 @@ HANDOFF_TOP_LEVEL_REQUIRED_KEYS = {
     "preserved",
     "source_specific",
 }
-HANDOFF_TOP_LEVEL_OPTIONAL_KEYS = {"remote_state", "network_access_attempted"}
+HANDOFF_TOP_LEVEL_OPTIONAL_KEYS = {"remote_state", "network_access_attempted", "source_identity"}
 HANDOFF_ALLOWED_TOP_LEVEL_KEYS = HANDOFF_TOP_LEVEL_REQUIRED_KEYS | HANDOFF_TOP_LEVEL_OPTIONAL_KEYS
 HANDOFF_REMOTE_STATES = {"configured_remote", "local_checkout"}
 HANDOFF_RECORD_VARIANTS = {
