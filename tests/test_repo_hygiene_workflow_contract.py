@@ -24,3 +24,10 @@ def test_repo_hygiene_workflow_measures_the_full_tools_tree() -> None:
     assert "--cov=tools" in body
     assert "--cov=tools/validators" not in body
     assert "--cov=tools/common" not in body
+
+
+def test_coverage_threshold_is_no_longer_placeholder_low() -> None:
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "fail_under = 70" in pyproject
+    assert "fail_under = 60" not in pyproject
