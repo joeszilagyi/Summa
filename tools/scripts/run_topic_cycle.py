@@ -1018,9 +1018,13 @@ def execution_ingest_stage(
     stage.started_at = utc_now()
     stage.inputs = {"execution_run_dir": str(execution_run_dir)}
     try:
+        loaded_paths = None
+        loaded_hashes = None
         execution_record, capture_events, extraction_records, paths, input_hashes = (
             canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
         )
+        loaded_paths = paths
+        loaded_hashes = input_hashes
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             if args.mode == "dry-run":
@@ -1076,26 +1080,22 @@ def execution_ingest_stage(
         ):
             fail_stage(stage, str(exc))
         if args.degraded_spool:
-            try:
-                _execution_record, _capture_events, _extraction_records, paths, input_hashes = (
-                    canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
-                )
-            except Exception as retry_exc:
-                fail_stage(stage, str(retry_exc))
+            if loaded_paths is None or loaded_hashes is None:
+                fail_stage(stage, str(exc))
             artifact_refs = [
                 {
                     "artifact_type": key,
-                    "artifact_path": str(paths[key]),
-                    "artifact_hash": input_hashes[key],
+                    "artifact_path": str(loaded_paths[key]),
+                    "artifact_hash": loaded_hashes[key],
                 }
-                for key in sorted(input_hashes)
+                for key in sorted(loaded_paths)
             ]
             record = canonical_write_spool.build_spool_record(
                 operation_kind="execution_artifact_ingest",
                 operation_input={"artifact_refs": artifact_refs},
                 replay_recipe={
                     "run_dir": str(execution_run_dir),
-                    "input_hashes": dict(input_hashes),
+                    "input_hashes": dict(loaded_hashes),
                     "strict": True,
                 },
                 failure=exc,

@@ -804,6 +804,85 @@ def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Pa
     assert spool_payload["replay_recipe"]["batch_hash"] == "batch-hash"
 
 
+def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(tmp_path: Path, monkeypatch) -> None:
+    module = load_run_topic_cycle_module()
+
+    run_dir = tmp_path / "execution-ingest-run"
+    execution_run_dir = tmp_path / "execution-run"
+    execution_run_dir.mkdir()
+    db_path = tmp_path / "canonical.sqlite"
+    execution_records = {
+        "execution_record": {"schema_version": "source-execution-record.v1"},
+        "capture_events": [{"schema_version": "source-capture-event.v1"}],
+        "extraction_records": [{"schema_version": "source-extraction-record.v1"}],
+        "paths": {
+            "execution_record": tmp_path / "execution-record.json",
+            "capture_events": tmp_path / "capture-events.jsonl",
+            "extraction_records": tmp_path / "extraction-records.jsonl",
+        },
+    }
+    for path in execution_records["paths"].values():
+        path.write_text("{}", encoding="utf-8")
+
+    def fake_load_execution_artifacts(_: Path):
+        fake_load_execution_artifacts.calls += 1
+        return (
+            execution_records["execution_record"],
+            execution_records["capture_events"],
+            execution_records["extraction_records"],
+            execution_records["paths"],
+            {
+                "execution_record": "record-hash",
+                "capture_events": "capture-hash",
+                "extraction_records": "extraction-hash",
+            },
+        )
+
+    fake_load_execution_artifacts.calls = 0
+
+    def fake_ingest(*args, **kwargs):
+        raise RuntimeError("forced execution ingest failure")
+
+    def fake_connect(_: Path):
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def close(self) -> None:
+                return None
+
+        return FakeConn()
+
+    monkeypatch.setattr(module.canonical_ingest, "load_validated_execution_artifacts", fake_load_execution_artifacts)
+    monkeypatch.setattr(module.canonical_ingest, "ingest_execution_artifacts", fake_ingest)
+    monkeypatch.setattr(module.canonical_store, "connect_canonical_store", fake_connect)
+
+    args = SimpleNamespace(mode="live", degraded_spool=True, spool_dir=None)
+    manifest = {
+        "run_id": "cycle-831",
+        "stages": [],
+        "workspace": {"workspace_id": "fixture_workspace"},
+        "cycle_event_id": "cycle:fixture",
+        "canonical_db": {"mutated": False},
+        "subject": {"subject_id": "fixture_subject"},
+    }
+
+    result = module.execution_ingest_stage(
+        args=args,
+        manifest=manifest,
+        db_path=db_path,
+        execution_run_dir=execution_run_dir,
+        run_dir=run_dir,
+    )
+
+    assert fake_load_execution_artifacts.calls == 1
+    assert result["status"] == "spooled"
+
+
+
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
