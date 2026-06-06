@@ -10,14 +10,31 @@ jobs:
   hygiene:
     name: Static Hygiene
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
     env:
       PYTHON_STATIC_TARGETS: >-
         tools/common/search_leak_policy.py
+        tools/common/atomic_write.py
+        tools/common/publication_builder.py
+        tools/common/runtime_ledger.py
+        tools/common/runtime_logging.py
+        tools/common/workspace_lock.py
         tools/common/standards_profiles.py
+        tools/collateral/pdf_extract.py
         tools/scripts/apply_review_decision.py
+        tools/scripts/bootstrap_topic_workspace.py
         tools/scripts/audit_canonical_graph_closure.py
         tools/scripts/audit_rebuildability.py
         tools/scripts/build_candidate_feedback_plan.py
+        tools/scripts/build_local_search_projection.py
+        tools/scripts/build_publication_artifacts.py
+        tools/scripts/build_static_knowledge_tree.py
         tools/scripts/build_release_readiness_bundle.py
         tools/scripts/evaluate_network_safety_gate.py
         tools/scripts/execute_source_adapter.py
@@ -25,20 +42,32 @@ jobs:
         tools/scripts/export_redacted_diagnostics.py
         tools/scripts/ingest_execution_artifacts.py
         tools/scripts/ingest_gather_candidate_batch.py
+        tools/scripts/local_doctor.py
         tools/scripts/operator_path_smoke.py
+        tools/scripts/query_local_search.py
         tools/scripts/replay_canonical_write_spool.py
+        tools/scripts/topic_backup_drill.py
         tools/scripts/run_scheduled_topic_cycles.py
         tools/scripts/run_topic_cycle.py
         tools/scripts/run_topic_gather.py
         tools/scripts/select_scheduled_workspaces.py
+        tools/source_db_tools/authority_reconciliation.py
+        tools/source_db_tools/confidence_model.py
+        tools/source_db_tools/cycle_evidence_ledger.py
         tools/source_db_tools/canonical_graph_closure.py
         tools/source_db_tools/canonical_ingest.py
         tools/source_db_tools/canonical_reconciliation.py
         tools/source_db_tools/canonical_store.py
         tools/source_db_tools/canonical_write_spool.py
+        tools/source_db_tools/identifier_normalization.py
         tools/source_db_tools/init_canonical_store.py
+        tools/source_db_tools/loop_health.py
+        tools/source_db_tools/provenance_events.py
         tools/source_db_tools/review_decision_apply.py
+        tools/source_db_tools/review_queue.py
+        tools/source_db_tools/schema_profile_validation.py
         tools/source_db_tools/source_query_plan.py
+        tools/source_db_tools/sqlite_safety.py
         tests/test_llm_runner_status.py
         tests/test_mypy_runtime_gate.py
         tests/test_packaging_metadata.py
@@ -48,7 +77,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install hygiene tools
         run: python -m pip install pytest "ruff>=0.8" "mypy>=1.13"
       - name: Git whitespace check
@@ -81,16 +110,23 @@ jobs:
         run: python -m mypy
 
   validators:
-    name: Validator Smoke
+    name: Pytest Suite Smoke
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install test runner
         run: python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"
       - name: Run schema and validator regression smoke with coverage
-        run: python -m pytest -q --cov=tools/validators --cov=tools/common --cov-report=term-missing --cov-report=xml
+        run: python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml
