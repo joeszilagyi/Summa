@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -109,6 +110,17 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     assert checks["bootstrap_workspace_apply"]["status"] == "passed"
     assert checks["build_workspace_overview"]["status"] == "passed"
     assert checks["run_topic_cycle"]["status"] == "passed"
+    assert checks["bootstrap_workspace_apply"]["artifact_path"] == str(
+        workspace / "topic-workspace" / ".indexer" / "subject_manifest.json"
+    )
+    assert checks["run_topic_cycle"]["artifact_path"] == str(
+        workspace / "topic-cycle" / "fixture-smoke" / "topic-cycle-run.json"
+    )
+    assert checks["canonical_family_counts"]["artifact_path"] == str(workspace / "canonical.sqlite")
+    assert checks["run_local_doctor"]["artifact_path"] == str(workspace / "doctor-report.json")
+    assert checks["build_operator_dashboard"]["artifact_path"] == str(
+        workspace / "operator-dashboard.html"
+    )
 
     expected_paths = [
         workspace / "topic_workspaces.local.json",
@@ -120,9 +132,73 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     for path in expected_paths:
         assert path.exists(), path
 
+    subject_manifest = json.loads(
+        (workspace / "topic-workspace" / ".indexer" / "subject_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert subject_manifest["schema_version"] == "subject-manifest.v1"
+    assert subject_manifest["subject_id"]
+
+    topic_cycle_path = workspace / "topic-cycle" / "fixture-smoke" / "topic-cycle-run.json"
+    topic_cycle = json.loads(topic_cycle_path.read_text(encoding="utf-8"))
+    assert topic_cycle["schema_version"] == "topic-cycle-run.v1"
+    assert topic_cycle["status"] == "completed"
+    assert topic_cycle["canonical_db"]["mutated"] is True
+    assert topic_cycle["canonical_db"]["final_summary"]["status"] == "populated"
+    assert topic_cycle["canonical_db"]["final_summary"]["total_rows"] > 0
+    assert topic_cycle["canonical_db"]["final_summary"]["family_counts"]
+    stage_statuses = {stage["name"]: stage["status"] for stage in topic_cycle["stages"]}
+    assert stage_statuses["ingest_candidate_batch"] == "passed"
+    assert stage_statuses["ingest_execution_artifacts"] == "passed"
+
+    conn = sqlite3.connect(workspace / "canonical.sqlite")
+    try:
+        db_counts = {
+            "work": int(conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]),
+            "source_claim": int(conn.execute("SELECT COUNT(*) FROM source_claim").fetchone()[0]),
+            "source_access": int(conn.execute("SELECT COUNT(*) FROM source_access").fetchone()[0]),
+            "source_relationship": int(
+                conn.execute("SELECT COUNT(*) FROM source_relationship").fetchone()[0]
+            ),
+            "capture_event": int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0]),
+            "extraction_record": int(
+                conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]
+            ),
+            "provenance_event": int(conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0]),
+            "cycle_event": int(conn.execute("SELECT COUNT(*) FROM cycle_event").fetchone()[0]),
+            "cycle_stage_event": int(
+                conn.execute("SELECT COUNT(*) FROM cycle_stage_event").fetchone()[0]
+            ),
+        }
+    finally:
+        conn.close()
+
+    assert all(count > 0 for count in db_counts.values())
+    assert db_counts == {
+        "work": 1,
+        "source_claim": 3,
+        "source_access": 2,
+        "source_relationship": 1,
+        "capture_event": 1,
+        "extraction_record": 1,
+        "provenance_event": 2,
+        "cycle_event": 1,
+        "cycle_stage_event": 12,
+    }
+
+    final_family_counts = topic_cycle["canonical_db"]["final_summary"]["family_counts"]
+
     doctor_report = json.loads((workspace / "doctor-report.json").read_text(encoding="utf-8"))
     assert doctor_report["canonical_store"]["status"] == "populated"
     assert doctor_report["canonical_store"]["total_rows"] > 0
+    assert doctor_report["canonical_store"]["family_counts"] == final_family_counts
+    for table_name, count in db_counts.items():
+        assert doctor_report["canonical_store"]["table_counts"][table_name] == count
+
+    dashboard_body = (workspace / "operator-dashboard.html").read_text(encoding="utf-8")
+    assert "Summa Operator Health" in dashboard_body
+    assert "canonical store" in dashboard_body.lower()
 
 
 def test_operator_path_smoke_wrapper_handles_workspace_paths_with_spaces(tmp_path: Path) -> None:
