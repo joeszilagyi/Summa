@@ -63,11 +63,16 @@ def assert_matches_golden(scenario_dir: Path) -> None:
     expected_dir = scenario_dir / "expected"
     actual_dir = scenario_dir / "actual"
 
-    expected_json = json.loads((expected_dir / "report.json").read_text(encoding="utf-8"))
+    expected_json_path = expected_dir / "report.json"
+    expected_text_path = expected_dir / "report.txt"
+    assert expected_json_path.is_file(), f"missing golden report.json for {scenario_dir.name}"
+    assert expected_text_path.is_file(), f"missing golden report.txt for {scenario_dir.name}"
+
+    expected_json = json.loads(expected_json_path.read_text(encoding="utf-8"))
     actual_json = json.loads((actual_dir / "report.json").read_text(encoding="utf-8"))
     assert actual_json == expected_json
 
-    expected_text = (expected_dir / "report.txt").read_text(encoding="utf-8")
+    expected_text = expected_text_path.read_text(encoding="utf-8")
     actual_text = (actual_dir / "report.txt").read_text(encoding="utf-8")
     assert actual_text == expected_text
 
@@ -102,6 +107,44 @@ def test_source_adapter_validator_fixtures_match_golden(tmp_path: Path) -> None:
         assert_matches_golden(scenario_dir)
         assert proc.stdout == (scenario_dir / "actual" / "report.txt").read_text(encoding="utf-8")
         assert input_hash_after == input_hash_before
+
+
+def test_source_adapter_validator_does_not_recreate_missing_expected_reports(tmp_path: Path) -> None:
+    expected_report = json.loads(
+        (FIXTURE_ROOT / "valid_local_directory" / "expected" / "report.json").read_text(encoding="utf-8")
+    )
+    expected_status = EXIT_PASS if expected_report["status"] == "pass" else EXIT_VALIDATION_FAILED
+
+    scenario_dir = tmp_path / "valid_local_directory"
+    shutil.copytree(FIXTURE_ROOT / "valid_local_directory", scenario_dir)
+    expected_json = scenario_dir / "expected" / "report.json"
+    expected_text = scenario_dir / "expected" / "report.txt"
+    expected_json.unlink()
+    expected_text.unlink()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "inputs/source_adapter.json",
+            "--scenario",
+            "valid_local_directory",
+            "--target-id",
+            "inputs/source_adapter.json",
+            "--report-json",
+            "actual/report.json",
+            "--report-text",
+            "actual/report.txt",
+        ],
+        cwd=scenario_dir,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == expected_status, proc.stdout + proc.stderr
+    assert not expected_json.exists()
+    assert not expected_text.exists()
 
 
 def test_source_intake_status_view_round_trips_valid_and_invalid_adapters(tmp_path: Path) -> None:

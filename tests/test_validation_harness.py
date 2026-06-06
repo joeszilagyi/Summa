@@ -80,11 +80,16 @@ def assert_matches_golden(scenario_dir: Path) -> None:
     expected_dir = scenario_dir / "expected"
     actual_dir = scenario_dir / "actual"
 
-    expected_json = json.loads((expected_dir / "report.json").read_text(encoding="utf-8"))
+    expected_json_path = expected_dir / "report.json"
+    expected_text_path = expected_dir / "report.txt"
+    assert expected_json_path.is_file(), f"missing golden report.json for {scenario_dir.name}"
+    assert expected_text_path.is_file(), f"missing golden report.txt for {scenario_dir.name}"
+
+    expected_json = json.loads(expected_json_path.read_text(encoding="utf-8"))
     actual_json = json.loads((actual_dir / "report.json").read_text(encoding="utf-8"))
     assert actual_json == expected_json
 
-    expected_text = (expected_dir / "report.txt").read_text(encoding="utf-8")
+    expected_text = expected_text_path.read_text(encoding="utf-8")
     actual_text = (actual_dir / "report.txt").read_text(encoding="utf-8")
     assert actual_text == expected_text
     assert actual_text == render_text_from_json(actual_json)
