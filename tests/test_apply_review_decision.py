@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -193,6 +195,7 @@ def test_cli_help_exits_zero() -> None:
     result = subprocess.run(
         [sys.executable, str(APPLY_SCRIPT), "--help"],
         check=False,
+        timeout=10,
         text=True,
         capture_output=True,
     )
@@ -205,6 +208,7 @@ def test_shell_wrapper_help_exits_zero() -> None:
     result = subprocess.run(
         [str(APPLY_WRAPPER), "--help"],
         check=False,
+        timeout=10,
         text=True,
         capture_output=True,
         env=env,
@@ -251,6 +255,7 @@ def test_cli_reject_claim_applies_decision_and_outputs_json(tmp_path: Path) -> N
             FIXED_TIMESTAMP,
         ],
         check=False,
+        timeout=10,
         text=True,
         capture_output=True,
     )
@@ -304,6 +309,78 @@ def test_run_spools_on_write_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result["status"] == "spooled"
     assert spool_dir.exists()
     assert Path(result["spool_record_path"]).is_file()
+
+
+def test_cli_waiting_on_db_lock_can_be_killed_without_mutating_state(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            prov = provenance(conn, "kill-lock")
+            claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=prov.event_key,
+                source_claim_key_v1="claim:apply-review:kill-lock",
+                about_object_ref="authority:kill-lock",
+                claim_text="CLI lock test claim.",
+                claim_type="fixture",
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        history_before = review_history_count(conn, namespace="source_claim", target_id=claim.row_id)
+        lock_conn = sqlite3.connect(db_path, timeout=30)
+        try:
+            lock_conn.execute("BEGIN EXCLUSIVE")
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(APPLY_SCRIPT),
+                    "--db",
+                    str(db_path),
+                    "--target",
+                    f"source_claim:{claim.row_id}",
+                    "--decision",
+                    "reject_claim",
+                    "--reviewer",
+                    "operator",
+                    "--reason",
+                    "lock boundary",
+                    "--decided-at",
+                    FIXED_TIMESTAMP,
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            time.sleep(0.25)
+            assert proc.poll() is None
+            proc.terminate()
+            stdout, stderr = proc.communicate(timeout=10)
+            assert stdout == ""
+            assert proc.returncode is not None
+            assert "database is locked" not in stderr.lower()
+        finally:
+            lock_conn.rollback()
+            lock_conn.close()
+
+        conn_after = connect(db_path)
+        try:
+            claim_row = conn_after.execute(
+                "SELECT review_state FROM source_claim WHERE source_claim_id=?",
+                (claim.row_id,),
+            ).fetchone()
+            history_after = review_history_count(
+                conn_after, namespace="source_claim", target_id=claim.row_id
+            )
+        finally:
+            conn_after.close()
+
+        assert claim_row["review_state"] == "needs_review"
+        assert history_after == history_before
+    finally:
+        conn.close()
 
 
 def test_accept_authority_merge_repoints_safe_references_and_preserves_rows(tmp_path: Path) -> None:

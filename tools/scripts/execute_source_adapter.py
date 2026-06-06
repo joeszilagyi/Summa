@@ -1254,7 +1254,7 @@ def extract_remote_urls(records: list[dict[str, Any]]) -> list[str]:
         raise SourceAcquisitionError(
             "remote_url_manifest handoffs must include preserved.original_locator.entry_url"
         )
-    return sorted(dict.fromkeys(urls))
+    return list(dict.fromkeys(urls))
 
 
 def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1268,17 +1268,26 @@ def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]
 def ensure_gate_request_matches_handoff(
     gate_report: dict[str, Any], *, expected_urls: list[str]
 ) -> None:
-    planned_urls = sorted(
-        {
-            str(action.get("url"))
-            for action in gate_report.get("planned_actions", [])
-            if isinstance(action, dict) and isinstance(action.get("url"), str)
-        }
-    )
-    missing = [url for url in expected_urls if url not in planned_urls]
+    planned_urls = [
+        str(action.get("url"))
+        for action in gate_report.get("planned_actions", [])
+        if isinstance(action, dict) and isinstance(action.get("url"), str)
+    ]
+    expected_unique = list(dict.fromkeys(expected_urls))
+    planned_unique = list(dict.fromkeys(planned_urls))
+    missing = [url for url in expected_unique if url not in planned_unique]
     if missing:
         raise SourceAcquisitionError(
             f"network safety gate request is missing planned actions for: {missing[0]}"
+        )
+    extra = [url for url in planned_unique if url not in expected_unique]
+    if extra:
+        raise SourceAcquisitionError(
+            f"network safety gate request includes unexpected planned actions for: {extra[0]}"
+        )
+    if planned_unique != expected_unique:
+        raise SourceAcquisitionError(
+            "network safety gate request planned action order does not match handoff order"
         )
 
 
