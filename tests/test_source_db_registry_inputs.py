@@ -32,6 +32,7 @@ identifier_normalization = load_module("identifier_normalization_for_tests", "to
 legacy_backfill = load_module("legacy_backfill_for_tests", "tools/source_db_tools/legacy_backfill.py")
 authority_reconciliation = load_module("authority_reconciliation_for_tests", "tools/source_db_tools/authority_reconciliation.py")
 schema_profile_validation = load_module("schema_profile_validation_for_tests", "tools/source_db_tools/schema_profile_validation.py")
+export_bibliography = load_module("export_bibliography_for_tests", "tools/source_db_tools/export_bibliography.py")
 
 
 def create_schema_profile_db(tmp_path: Path) -> Path:
@@ -69,6 +70,14 @@ def create_schema_profile_db(tmp_path: Path) -> Path:
     finally:
         conn.close()
     return db
+
+
+def load_schema_profile_records(db: Path) -> list[dict[str, object]]:
+    conn = export_bibliography.connect(db)
+    try:
+        return export_bibliography.load_records(conn)
+    finally:
+        conn.close()
 
 
 def test_source_db_registries_load() -> None:
@@ -158,6 +167,35 @@ def test_validate_schema_profile_cli_uses_restored_helpers_and_registries(tmp_pa
     assert payload["schema_version"] == "schema-profile-validation-report.v1"
     assert payload["profile"] == "canonical_minimal"
     assert payload["ok"] is True
+
+
+@pytest.mark.parametrize("profile_name", schema_profile_validation.profile_names())
+def test_schema_profile_validation_accepts_runtime_profiles(profile_name: str, tmp_path: Path) -> None:
+    db = create_schema_profile_db(tmp_path)
+    records = load_schema_profile_records(db)
+
+    report = schema_profile_validation.validate_records(records, profile_name)
+    profiles_payload = schema_profile_validation.load_profiles()
+
+    assert report["schema_version"] == "schema-profile-validation-report.v1"
+    assert report["profile_schema_version"] == profiles_payload["schema_version"]
+    assert report["profile"] == profile_name
+    assert report["ok"] is True
+    assert report["profile_declaration"] == profiles_payload["profiles"][profile_name]
+
+
+@pytest.mark.parametrize("profile_name", schema_profile_validation.profile_names())
+def test_schema_profile_validation_rejects_invalid_runtime_fixture(
+    profile_name: str, tmp_path: Path
+) -> None:
+    db = create_schema_profile_db(tmp_path)
+    records = load_schema_profile_records(db)
+    records[0]["work"]["work_type"] = "not-a-real-work-type"
+
+    report = schema_profile_validation.validate_records(records, profile_name)
+
+    assert report["ok"] is False
+    assert any(issue["code"] == "UNKNOWN_SOURCE_TYPE" for issue in report["errors"])
 
 
 def test_source_db_helper_documentation_paths_exist() -> None:

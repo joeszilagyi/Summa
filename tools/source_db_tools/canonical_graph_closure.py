@@ -255,6 +255,16 @@ def audit_work(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def audit_source_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM source_access ORDER BY source_access_id"):
+        if row["work_id"] is not None and not object_ref_exists(conn, f"work:{row['work_id']}"):
+            issues.append(
+                orphan_issue(
+                    "source_access",
+                    row["source_access_id"],
+                    "source_access.work_id does not resolve",
+                    policy="source_access_must_link_to_work",
+                )
+            )
+            continue
         linked_work = row["work_id"] is not None
         tracked_locus = any(
             _text(row[key]) is not None
@@ -278,6 +288,16 @@ def audit_capture_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         invalid = _invalid_provenance_issue(conn, row, "capture_event", "capture_event_id")
         if invalid is not None:
             issues.append(invalid)
+            continue
+        if row["work_id"] is not None and not object_ref_exists(conn, f"work:{row['work_id']}"):
+            issues.append(
+                orphan_issue(
+                    "capture_event",
+                    row["capture_event_id"],
+                    "capture_event.work_id does not resolve",
+                    policy="capture_event_must_link_to_work",
+                )
+            )
             continue
         if row["work_id"] is not None or _provenance_exists(conn, row["provenance_event_ref"]):
             continue

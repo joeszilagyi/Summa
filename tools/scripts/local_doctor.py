@@ -59,6 +59,8 @@ def redact(value: Any) -> Any:
         return value
     text = strip_terminal_escapes(value)
     text = SECRET_RE.sub(r"\1=[redacted]", text)
+    text = re.sub(r"(?i)\bbegin secret\b", "[redacted]", text)
+    text = re.sub(r"(?i)\bignore previous instructions\b", "[redacted]", text)
     text = re.sub(r"/(?:home|Users|tmp)/\S+", "[redacted-path]", text)
     return text
 

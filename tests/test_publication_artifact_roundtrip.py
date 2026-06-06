@@ -227,3 +227,27 @@ def test_index_build_knowledge_tree_wrapper_help_and_dry_run() -> None:
     assert "Index_Build_Knowledge_Tree.sh" in help_result.stdout
     assert dry_run_result.returncode == 0, dry_run_result.stdout + dry_run_result.stderr
     assert "build_publication_artifacts.py" in dry_run_result.stdout
+
+
+def test_index_build_knowledge_tree_docs_example_executes_in_dry_run(tmp_path: Path) -> None:
+    db_path = create_populated_canonical_store(tmp_path)
+    output_dir = tmp_path / "site-build"
+
+    proc = run_wrapper(
+        "--dry-run",
+        "--",
+        "--db",
+        str(db_path),
+        "--output-dir",
+        str(output_dir),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+        "--build-id",
+        "build-20260603T090000Z",
+        "--built-at",
+        FIXED_TIMESTAMP,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "DRY-RUN:" in proc.stdout
+    assert "build_publication_artifacts.py" in proc.stdout

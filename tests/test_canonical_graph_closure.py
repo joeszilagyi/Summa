@@ -124,6 +124,46 @@ def insert_unresolved_tracked_claim(path: Path) -> None:
         conn.close()
 
 
+def insert_missing_work_references(path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="graph-closure-missing-work",
+                event_type="fixture_ingest",
+                tool_name="pytest.graph_closure",
+                run_id="graph-closure",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:missing-work",
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                work_id=999,
+                original_locator="https://example.invalid/missing-work",
+                review_state="needs_review",
+                publication_state="private_working",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                work_id=999,
+                original_locator="https://example.invalid/capture-missing-work",
+                captured_at=FIXED_TIMESTAMP,
+                capture_method="fixture_capture",
+                review_state="needs_review",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+    finally:
+        conn.close()
+
+
 def test_cli_help_exits_zero() -> None:
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],
@@ -201,6 +241,22 @@ def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> N
     assert report["summary"]["true_orphan_error_count"] == 0
     assert report["summary"]["unresolved_tracked_count"] >= 1
     assert any(issue["status"] == "unresolved_tracked" for issue in report["issues"])
+
+
+def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    insert_missing_work_references(db_path)
+
+    report = canonical_graph_closure.audit_canonical_graph_closure(
+        db_path,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "SOURCE_ACCESS_TRUE_ORPHAN" in codes
+    assert "CAPTURE_EVENT_TRUE_ORPHAN" in codes
+    assert report["status"] == "fail"
 
 
 def test_graph_closure_report_is_deterministic_and_read_only(tmp_path: Path) -> None:

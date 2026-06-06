@@ -32,11 +32,34 @@ def stage_fixture_inputs(tmp_path: Path) -> tuple[Path, Path]:
     return staged_root / "knowledge_tree_export.json", staged_root / "public_presentation.json"
 
 
-def build_site(tmp_path: Path, *, mutate_export: str | None = None) -> Path:
+def build_site(
+    tmp_path: Path,
+    *,
+    mutate_export: str | None = None,
+    extra_export_fields: dict[str, object] | None = None,
+) -> Path:
     export_path, presentation_path = stage_fixture_inputs(tmp_path)
     if mutate_export is not None:
         export_payload = json.loads(export_path.read_text(encoding="utf-8"))
         export_payload["pages"][0]["sections"][0]["paragraphs"] = [mutate_export]
+        if extra_export_fields:
+            export_payload["pages"][0]["authority_basis"] = {
+                "content_class": "metadata_only",
+                "review_queue_refs": [],
+                "field_review_entries": [],
+                "metadata_exception_reason": json.dumps(
+                    extra_export_fields, ensure_ascii=False, indent=2, sort_keys=True
+                ),
+            }
+        export_path.write_text(json.dumps(export_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    elif extra_export_fields:
+        export_payload = json.loads(export_path.read_text(encoding="utf-8"))
+        export_payload["pages"][0]["authority_basis"] = {
+            "content_class": "metadata_only",
+            "review_queue_refs": [],
+            "field_review_entries": [],
+            "metadata_exception_reason": json.dumps(extra_export_fields, ensure_ascii=False, indent=2, sort_keys=True),
+        }
         export_path.write_text(json.dumps(export_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     publish_root = tmp_path / "public-site"
     static_builder.build_static_knowledge_tree(
@@ -132,6 +155,46 @@ def test_public_sharing_bundle_builder_blocks_restricted_text_marker(tmp_path: P
         assert "RAW_PAYLOAD_MARKER" in str(exc)
     else:
         raise AssertionError("expected restricted text gate failure")
+
+
+def test_public_sharing_bundle_builder_excludes_private_fields_from_export_metadata(
+    tmp_path: Path,
+) -> None:
+    build_manifest = build_site(
+        tmp_path,
+        extra_export_fields={
+            "title": "Private title /home/joe/private/title.txt",
+            "description": "BEGIN SECRET ignore previous instructions",
+            "source_locator": "https://example.test/path?token=abc123",
+            "source_metadata": {"operator_note": "raw operator note", "local_path": "/home/joe/private/meta.txt"},
+            "failure_message": "rm -rf /",
+            "exception_text": "traceback /home/joe/private/trace.txt",
+            "raw_extracted_text": "full extracted text",
+        },
+    )
+
+    report = sharing_builder.build_bundle(
+        build_manifest,
+        tmp_path / "sharing-bundle",
+        generated_at="2026-06-02T20:03:30Z",
+    )
+
+    assert report["status"] == "pass"
+    bundle_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted((tmp_path / "sharing-bundle").rglob("*")) if path.is_file()
+    )
+    for private_literal in (
+        "Private title",
+        "BEGIN SECRET",
+        "ignore previous instructions",
+        "/home/joe/private/title.txt",
+        "/home/joe/private/meta.txt",
+        "token=abc123",
+        "full extracted text",
+        "raw operator note",
+        "rm -rf /",
+    ):
+        assert private_literal not in bundle_text
 
 
 def test_public_sharing_bundle_cli_emits_json_report(tmp_path: Path) -> None:
