@@ -41,6 +41,14 @@ class WrappedSourceBlock:
     end_offset: int
 
 
+def _ensure_source_text_is_contained(source_text: str, *, template: WrapperTemplate) -> None:
+    for delimiter_name, delimiter in (("begin", template.begin_delimiter), ("end", template.end_delimiter)):
+        if delimiter in source_text:
+            raise WrapperContractError(
+                f"source_text must not contain the {delimiter_name} wrapper delimiter: {delimiter}"
+            )
+
+
 def _require_nonblank_string(payload: dict[str, object], field: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -133,6 +141,7 @@ def render_wrapped_block(
     template: WrapperTemplate | None = None,
 ) -> str:
     active_template = load_template() if template is None else template
+    _ensure_source_text_is_contained(source_text, template=active_template)
     normalized_flags = ", ".join(item.strip() for item in hazard_flags if item.strip())
     return (
         f"{active_template.begin_delimiter}\n"

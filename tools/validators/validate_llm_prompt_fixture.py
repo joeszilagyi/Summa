@@ -237,6 +237,19 @@ def validate_prompt_fixture(target: Path) -> tuple[dict[str, Any], int]:
             if expected["source_text"] in outside_text:
                 add_error(errors, code="UNWRAPPED_SOURCE_TEXT", message=f"source_blocks[{index}] source_text appears outside the wrapper")
 
+    for index, expected in enumerate(normalized_source_blocks):
+        source_text = expected["source_text"]
+        for delimiter_name, delimiter in (("begin", template.begin_delimiter), ("end", template.end_delimiter)):
+            if delimiter in source_text:
+                add_error(
+                    errors,
+                    code="SOURCE_TEXT_DELIMITER_CONFLICT",
+                    message=(
+                        f"source_blocks[{index}].source_text contains the {delimiter_name} wrapper delimiter "
+                        f"and cannot be safely contained"
+                    ),
+                )
+
     if errors:
         counts["rejected"] = 1
         return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
