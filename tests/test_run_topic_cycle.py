@@ -584,6 +584,40 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
 
 
+def test_topic_cycle_dry_run_records_execution_ingest_report_by_reference(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-exec-dry-run"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-exec-dry-run",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+            "--execution-run-fixture",
+            str(EXECUTION_RUN),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    manifest = load_manifest(run_dir)
+    stages = stages_by_name(manifest)
+    assert stages["execute_source_adapter"]["status"] == "skipped"
+    artifacts = stages["ingest_execution_artifacts"]["artifacts"]
+    assert artifacts["mutated"] is False  # type: ignore[index]
+    assert Path(artifacts["ingest_report"]).is_file()  # type: ignore[index]
+    assert isinstance(artifacts["ingest_report_sha256"], str)  # type: ignore[index]
+
+
 def test_topic_cycle_degraded_spool_records_pending_canonical_write(
     tmp_path: Path,
 ) -> None:

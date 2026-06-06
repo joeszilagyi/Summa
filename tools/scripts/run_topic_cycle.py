@@ -1049,7 +1049,13 @@ def execution_ingest_stage(
         finally:
             conn.close()
         if args.mode == "dry-run":
-            stage.artifacts = {"ingest_report": report, "mutated": False}
+            report_path = run_dir / "execution-ingest" / "canonical-ingest-report.json"
+            write_json(report_path, report)
+            stage.artifacts = {
+                "ingest_report": str(report_path),
+                "ingest_report_sha256": hash_file(report_path),
+                "mutated": False,
+            }
             finish_stage(stage, status="dry_run")
         else:
             report_path = run_dir / "execution-ingest" / "canonical-ingest-report.json"
