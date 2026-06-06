@@ -131,18 +131,29 @@ def enumerate_file(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any
 def build_plan(adapter_path: Path, adapter_payload: dict[str, Any]) -> dict[str, Any]:
     locator = adapter_payload["locator"]
     input_family = adapter_payload["input_family"]
+    configured_root = Path(locator["local_path"]).expanduser()
+    if not configured_root.is_absolute():
+        configured_root = (adapter_path.parent / configured_root)
     resolved_root = resolve_path(locator["local_path"], base_dir=adapter_path.parent)
     include_globs = list(locator.get("include_globs", []))
     exclude_globs = list(locator.get("exclude_globs", []))
 
-    if input_family == "local_directory":
-        candidates, skipped, blockers = enumerate_directory(
+    blockers: list[str] = []
+    if configured_root.is_symlink():
+        blockers.append(f"local directory root is a symlink: {configured_root}")
+
+    if configured_root.is_symlink():
+        candidates, skipped, enumerate_blockers = [], [], []
+    elif input_family == "local_directory":
+        candidates, skipped, enumerate_blockers = enumerate_directory(
             resolved_root,
             include_globs=include_globs,
             exclude_globs=exclude_globs,
         )
     else:
-        candidates, skipped, blockers = enumerate_file(resolved_root)
+        candidates, skipped, enumerate_blockers = enumerate_file(resolved_root)
+
+    blockers.extend(enumerate_blockers)
 
     unsupported_fields = sorted(set(adapter_payload["normalized_handoff"].get("source_specific_fields", [])) - LOCAL_SOURCE_SPECIFIC_FIELDS)
     if unsupported_fields:

@@ -179,6 +179,24 @@ def test_structured_data_directory_plans_csv_json_jsonl_and_xml_without_payload_
         assert secret not in combined_output
 
 
+def test_structured_data_directory_rejects_symlink_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    data_path = source_root / "records.json"
+    data_path.write_text("[{\"id\": 1}]\n", encoding="utf-8")
+    symlink_root = tmp_path / "symlink-root"
+    symlink_root.symlink_to(source_root, target_is_directory=True)
+    adapter_path = write_adapter(tmp_path, input_family="local_directory", local_path=str(symlink_root))
+
+    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["blocker_count"] == 1
+    assert payload["blockers"][0].startswith("local directory root is a symlink")
+    assert payload["source_count"] == 0
+
+
 def test_structured_data_csv_preserves_quoted_newlines_and_commas(tmp_path: Path) -> None:
     data_path = tmp_path / "quoted.csv"
     data_path.write_text(

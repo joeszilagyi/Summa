@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
 PLANNED_RUN_SCHEMA_VERSION = "planned-run.v1"
+WORKSPACE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 EXIT_SUCCESS = 0
 EXIT_USAGE_ERROR = 2
 EXIT_VALIDATION_FAILED = 3
@@ -56,6 +58,12 @@ class ScheduledCycleError(RuntimeError):
 
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def offset_timestamp(timestamp: str, *, seconds: int) -> str:
+    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    shifted = parsed + timedelta(seconds=seconds)
+    return shifted.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def normalize_timestamp(value: str | None) -> str:
@@ -111,6 +119,75 @@ def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
     if path.is_absolute():
         return path.resolve()
     return ((base or Path.cwd()) / path).resolve()
+
+
+def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required_fields = (
+        "schema_version",
+        "planner_run_id",
+        "planned_run_id",
+        "planned_at",
+        "registry_path",
+        "workspace_id",
+        "decision",
+        "cadence_reason",
+        "skipped_reason",
+        "skipped_reasons",
+        "run_budget",
+        "retry_policy",
+        "failure_state",
+        "workspace_root",
+        "resolved_workspace_root",
+        "default_subject_manifest",
+        "resolved_default_subject_manifest",
+    )
+    for field in required_fields:
+        if field not in record:
+            errors.append(f"planned-run record is missing required field: {field}")
+
+    if record.get("schema_version") != PLANNED_RUN_SCHEMA_VERSION:
+        errors.append("planned-run record has wrong schema_version")
+    if not isinstance(record.get("planner_run_id"), str) or not record["planner_run_id"].strip():
+        errors.append("planned-run record planner_run_id must be a non-blank string")
+    if not isinstance(record.get("planned_run_id"), str) or not record["planned_run_id"].strip():
+        errors.append("planned-run record planned_run_id must be a non-blank string")
+    if not isinstance(record.get("planned_at"), str) or not record["planned_at"].strip():
+        errors.append("planned-run record planned_at must be a non-blank string")
+    if not isinstance(record.get("registry_path"), str) or not record["registry_path"].strip():
+        errors.append("planned-run record registry_path must be a non-blank string")
+    workspace_id = record.get("workspace_id")
+    if not isinstance(workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
+        errors.append("planned-run record workspace_id must match the workspace identifier pattern")
+    if record.get("decision") not in {"selected", "skipped"}:
+        errors.append("planned-run record decision must be selected or skipped")
+    if not isinstance(record.get("cadence_reason"), str) or not record["cadence_reason"].strip():
+        errors.append("planned-run record cadence_reason must be a non-blank string")
+    if record.get("skipped_reason") is not None and not isinstance(record.get("skipped_reason"), str):
+        errors.append("planned-run record skipped_reason must be null or a string")
+    if not isinstance(record.get("skipped_reasons"), list):
+        errors.append("planned-run record skipped_reasons must be an array")
+    run_budget = record.get("run_budget")
+    if not isinstance(run_budget, dict):
+        errors.append("planned-run record run_budget must be an object")
+    else:
+        max_attempts = run_budget.get("max_attempts")
+        if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1:
+            errors.append("planned-run record run_budget.max_attempts must be an integer >= 1")
+        max_runtime = run_budget.get("max_runtime_seconds")
+        if max_runtime is not None and (
+            not isinstance(max_runtime, int) or isinstance(max_runtime, bool) or max_runtime < 1
+        ):
+            errors.append("planned-run record run_budget.max_runtime_seconds must be null or an integer >= 1")
+    if record.get("retry_policy") is not None and not isinstance(record.get("retry_policy"), dict):
+        errors.append("planned-run record retry_policy must be null or an object")
+    if record.get("failure_state") is not None and not isinstance(record.get("failure_state"), dict):
+        errors.append("planned-run record failure_state must be null or an object")
+    for field in ("workspace_root", "resolved_workspace_root", "default_subject_manifest", "resolved_default_subject_manifest"):
+        if not isinstance(record.get(field), str) or not record[field].strip():
+            errors.append(f"planned-run record {field} must be a non-blank string")
+
+    return errors
 
 
 def hash_file(path: Path) -> str:
@@ -200,8 +277,9 @@ def load_selection_records(selection_path: Path) -> list[dict[str, Any]]:
                 raise ScheduledCycleError(f"selection JSONL line {line_number} must be an object")
             records.append(value)
     for record in records:
-        if record.get("schema_version") != PLANNED_RUN_SCHEMA_VERSION:
-            raise ScheduledCycleError("planned-run record has wrong schema_version")
+        errors = validate_planned_run_record(record)
+        if errors:
+            raise ScheduledCycleError(errors[0])
     return records
 
 
@@ -253,8 +331,33 @@ def get_runtime_budget_seconds(record: dict[str, Any]) -> int | None:
     return max_runtime if isinstance(max_runtime, int) else None
 
 
-def default_cycle_invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True, check=False)
+def default_cycle_invoker(
+    command: list[str],
+    *,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def invoke_cycle(
+    cycle_invoker: Callable[..., subprocess.CompletedProcess[str]],
+    command: list[str],
+    *,
+    timeout_seconds: float | None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return cycle_invoker(command, timeout=timeout_seconds)
+    except TypeError as exc:
+        if "timeout" not in str(exc):
+            raise
+    return cycle_invoker(command)
 
 
 def run_scheduled_cycles(
@@ -307,6 +410,7 @@ def run_scheduled_cycles(
         if code > exit_code:
             exit_code = code
 
+    attempted_index = 0
     for record in records:
         workspace_id = str(record.get("workspace_id") or "")
         result: dict[str, Any] = {
@@ -407,7 +511,8 @@ def run_scheduled_cycles(
             run_id=run_id, workspace_id=workspace_id, attempt_number=result["attempt_number"], token=_next_workspace_token()
         )
         child_run_dir = run_dir / workspace_id / child_run_id
-        child_started_at = utc_now()
+        child_started_at = offset_timestamp(started_at, seconds=10 + attempted_index * 20)
+        child_ended_at = offset_timestamp(started_at, seconds=20 + attempted_index * 20)
         command = [
             sys.executable,
             str(runner),
@@ -454,7 +559,41 @@ def run_scheduled_cycles(
                 )
                 manifest["attempted_workspace_count"] += 1
                 start = monotonic()
-                proc = cycle_invoker(command)
+                timeout_seconds = float(runtime_budget) if runtime_budget is not None else None
+                try:
+                    proc = invoke_cycle(cycle_invoker, command, timeout_seconds=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    elapsed = round(monotonic() - start, 6)
+                    result["runtime_consumed_seconds"] = elapsed
+                    result["cycle_run_id"] = child_run_id
+                    result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
+                    result["outcome"] = "failed"
+                    _set_failure(
+                        result=result,
+                        reason_code="runtime_budget_timeout",
+                        reason=(
+                            f"cycle exceeded run_budget.max_runtime_seconds {runtime_budget} before completion"
+                        ),
+                        stage="child_cycle_exec",
+                        recoverability="retryable",
+                    )
+                    manifest["failed_workspace_count"] += 1
+                    _update_global_exit_code(EXIT_INTEGRITY_FAILURE)
+                    append_ledger_event(
+                        ledger_path=ledger_path,
+                        workspace_id=workspace_id,
+                        run_id=child_run_id,
+                        event_type="command_failure",
+                        occurred_at=child_ended_at,
+                        artifact_refs=[
+                            {"artifact_type": "topic_cycle_manifest", "path": str(child_run_dir / "topic-cycle-run.json")}
+                        ],
+                        failure={"message": result["failure_reason"]},
+                    )
+                    result["scheduler_failure_state_record"] = str(ledger_path)
+                    manifest["workspace_results"].append(result)
+                    attempted_index += 1
+                    continue
         except WorkspaceLockError as exc:
             result["outcome"] = "deferred"
             _set_failure(
@@ -520,7 +659,7 @@ def run_scheduled_cycles(
                 workspace_id=workspace_id,
                 run_id=child_run_id,
                 event_type="command_failure",
-                occurred_at=utc_now(),
+                occurred_at=child_ended_at,
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
@@ -533,7 +672,7 @@ def run_scheduled_cycles(
                 workspace_id=workspace_id,
                 run_id=child_run_id,
                 event_type="command_end",
-                occurred_at=utc_now(),
+                occurred_at=child_ended_at,
                 status="success",
                 artifact_refs=artifact_refs,
             )
@@ -554,12 +693,13 @@ def run_scheduled_cycles(
                 workspace_id=workspace_id,
                 run_id=child_run_id,
                 event_type="command_failure",
-                occurred_at=utc_now(),
+                occurred_at=child_ended_at,
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
         result["scheduler_failure_state_record"] = str(ledger_path)
         manifest["workspace_results"].append(result)
+        attempted_index += 1
     manifest["ended_at"] = utc_now()
     if manifest["failed_workspace_count"]:
         manifest["status"] = "failed"

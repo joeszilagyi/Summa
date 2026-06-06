@@ -122,6 +122,8 @@ def enumerate_sources(
         label = "local file root" if input_family == "local_file" else "local directory root"
         return sources, skipped, [f"{label} not found: {root}"]
     if input_family == "local_file":
+        if root.is_symlink():
+            return sources, skipped, [f"local file root is a symlink: {root}"]
         if not root.is_file():
             return sources, skipped, [f"local file root is not a file: {root}"]
         structured_format = infer_structured_format(root, format_hint=format_hint)
@@ -136,11 +138,16 @@ def enumerate_sources(
             }
         ], skipped, blockers
 
+    if root.is_symlink():
+        return sources, skipped, [f"local directory root is a symlink: {root}"]
     if not root.is_dir():
         return sources, skipped, [f"local directory root is not a directory: {root}"]
 
     for path in sorted(root.rglob("*")):
         relative_path = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            skipped.append({"path": str(path), "relative_path": relative_path, "reason": "symlink_not_allowed"})
+            continue
         if path.is_dir():
             skipped.append({"path": str(path), "relative_path": relative_path, "reason": "not_a_file"})
             continue
@@ -335,19 +342,30 @@ def parse_structured_records(
 def build_plan(adapter_path: Path, adapter_payload: dict[str, Any]) -> dict[str, Any]:
     locator = adapter_payload["locator"]
     input_family = adapter_payload["input_family"]
+    configured_root = Path(locator["local_path"]).expanduser()
+    if not configured_root.is_absolute():
+        configured_root = adapter_path.parent / configured_root
     resolved_root = resolve_path(locator["local_path"], base_dir=adapter_path.parent)
     include_globs = list(locator.get("include_globs", []))
     exclude_globs = list(locator.get("exclude_globs", []))
     format_hint = locator.get("format_hint") if isinstance(locator.get("format_hint"), str) else None
     record_path = locator.get("record_path") if isinstance(locator.get("record_path"), str) and locator.get("record_path").strip() else None
 
-    sources, skipped_entries, blockers = enumerate_sources(
-        resolved_root,
-        input_family=input_family,
-        include_globs=include_globs,
-        exclude_globs=exclude_globs,
-        format_hint=format_hint,
-    )
+    blockers: list[str] = []
+    if configured_root.is_symlink():
+        blockers.append(f"local directory root is a symlink: {configured_root}")
+
+    if configured_root.is_symlink():
+        sources, skipped_entries, enumerate_blockers = [], [], []
+    else:
+        sources, skipped_entries, enumerate_blockers = enumerate_sources(
+            resolved_root,
+            input_family=input_family,
+            include_globs=include_globs,
+            exclude_globs=exclude_globs,
+            format_hint=format_hint,
+        )
+    blockers.extend(enumerate_blockers)
 
     unsupported_fields = sorted(
         set(adapter_payload["normalized_handoff"].get("source_specific_fields", [])) - STRUCTURED_DATA_SOURCE_SPECIFIC_FIELDS
@@ -401,7 +419,7 @@ def build_plan(adapter_path: Path, adapter_payload: dict[str, Any]) -> dict[str,
             )
             sequence += 1
 
-    if not handoff_records:
+    if not handoff_records and not blockers:
         blockers.append("no structured records were parsed successfully")
 
     validation_errors = [

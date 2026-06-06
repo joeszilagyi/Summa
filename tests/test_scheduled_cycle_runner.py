@@ -219,10 +219,6 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
     timestamps = iter(
         [
             "2026-06-03T12:00:00Z",
-            "2026-06-03T12:00:10Z",
-            "2026-06-03T12:00:20Z",
-            "2026-06-03T12:00:30Z",
-            "2026-06-03T12:00:40Z",
             "2026-06-03T12:00:50Z",
         ]
     )
@@ -279,6 +275,38 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
         "2026-06-03T12:00:30Z",
         "2026-06-03T12:00:40Z",
     ]
+
+
+def test_scheduled_runner_rejects_workspace_id_path_traversal(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "safe_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="../escape",
+                workspace=workspace,
+                manifest=manifest,
+            )
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "workspace_id must match the workspace identifier pattern" in proc.stderr
 
 
 def test_normalize_timestamp_preserves_utc_and_rejects_invalid_values() -> None:
@@ -559,13 +587,8 @@ def test_scheduled_runner_stable_failure_reason_contract_fields(tmp_path: Path) 
     )
 
     assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
-    payload = json.loads(proc.stdout)
-    result = payload["workspace_results"][0]
-    assert result["failure_reason_code"] == "selection_record_invalid"
-    assert result["error_code"] == "selection_record_invalid"
-    assert result["stage"] == "input_validation"
-    assert result["recoverability"] == "non_retryable"
-    assert result["affected_record_id"] == "planner-test:bad_subject"
+    assert proc.stdout == ""
+    assert "planned-run record is missing required field: resolved_default_subject_manifest" in proc.stderr
 
 
 def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path, monkeypatch) -> None:
