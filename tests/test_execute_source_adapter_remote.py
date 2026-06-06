@@ -95,6 +95,16 @@ def write_json(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def canonical_json_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
+    return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
+        "utf-8"
+    )
+
+
 def make_handoff(tmp_path: Path, urls: list[str]) -> Path:
     manifest = tmp_path / "remote-manifest.jsonl"
     manifest.write_text(
@@ -497,6 +507,11 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert execution["remote_live_fetch_enabled"] is True
         assert execution["urls_attempted"] == 1
         assert execution["urls_succeeded"] == 1
+        assert (output / "execution-record.json").read_bytes() == canonical_json_bytes(execution)
+        assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
+        assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        assert (output / "manifest.json").read_bytes() == canonical_json_bytes(manifest)
         assert captures[0]["http_status_code"] == 200
         assert captures[0]["network_access_attempted"] is True
         assert captures[0]["content_hash"] == hashlib.sha256(b"remote fixture text\n").hexdigest()
