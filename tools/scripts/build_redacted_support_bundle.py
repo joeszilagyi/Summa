@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import local_doctor  # noqa: E402
+from tools.common.atomic_write import stable_json_text  # noqa: E402
 from tools.common.leak_scanner import scan_directory  # noqa: E402
 
 
@@ -45,7 +46,7 @@ def parse_args() -> argparse.Namespace:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(stable_json_text(payload), encoding="utf-8")
 
 
 def redacted_text(value: str) -> str:
@@ -205,6 +206,12 @@ def build_bundle(repo_root: Path, output_dir: Path, *, doctor_report: Path | Non
         leak_findings = scan_bundle_for_leaks(temp_root)
         manifest = manifest_payload(included, excluded, leak_findings)
         write_json(temp_root / "manifest.json", manifest)
+        final_manifest_findings = scan_bundle_for_leaks(temp_root)
+        if final_manifest_findings:
+            raise SupportBundleError(
+                "support bundle leak scan failed: "
+                + "; ".join(f"{item['code']} {item['path']}" for item in final_manifest_findings[:5])
+            )
         if leak_findings:
             raise SupportBundleError("support bundle leak scan failed: " + "; ".join(f"{item['code']} {item['path']}" for item in leak_findings[:5]))
 
@@ -249,7 +256,7 @@ def main() -> int:
         return 1
 
     if args.format == "json":
-        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(stable_json_text(report))
     else:
         sys.stdout.write(render_text(report))
     return 0

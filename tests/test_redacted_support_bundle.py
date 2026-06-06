@@ -90,3 +90,19 @@ def test_redacted_support_bundle_redacts_private_fields_from_doctor_report(tmp_p
     assert "BEGIN SECRET" not in bundle_text
     assert "/home/joe/private/doctor.txt" not in bundle_text
     assert "ignore previous instructions" not in bundle_text
+
+
+def test_redacted_support_bundle_scans_manifest_after_writing_it(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "support-bundle"
+    scan_calls: list[bool] = []
+
+    def fake_scan(bundle_root: Path) -> list[dict[str, str]]:
+        scan_calls.append((bundle_root / "manifest.json").exists())
+        return []
+
+    monkeypatch.setattr(support_builder, "scan_bundle_for_leaks", fake_scan)
+
+    report = support_builder.build_bundle(REPO_ROOT, output_dir)
+
+    assert report["status"] == "pass"
+    assert scan_calls == [False, True]
