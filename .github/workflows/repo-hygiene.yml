@@ -110,7 +110,7 @@ jobs:
         run: python -m mypy
 
   validators:
-    name: Validator Smoke
+    name: Pytest Suite Smoke
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -46,3 +46,10 @@ def test_static_hygiene_targets_include_runtime_spine() -> None:
     ):
         assert expected in body
         assert expected in pyproject
+
+
+def test_validators_job_name_matches_broader_pytest_smoke() -> None:
+    body = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "name: Pytest Suite Smoke" in body
+    assert "name: Validator Smoke" not in body
