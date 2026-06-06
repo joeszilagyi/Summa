@@ -122,6 +122,32 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     assert doctor_report["canonical_store"]["total_rows"] > 0
 
 
+def test_operator_path_smoke_wrapper_handles_workspace_paths_with_spaces(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace with spaces"
+
+    proc = run_wrapper(
+        [
+            "--dry-run",
+            "--json",
+            "--workspace",
+            str(workspace),
+            "--run-id",
+            "fixture-smoke-spaces",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "passed"
+    assert payload["dry_run"] is True
+    assert workspace.exists()
+    assert workspace.is_dir()
+    checks = {check["name"] for check in payload["checks"]}
+    assert "bootstrap_workspace_apply" in checks
+
+
 def test_operator_path_smoke_json_failure_for_invalid_workspace_path(tmp_path: Path) -> None:
     invalid_workspace = tmp_path / "not-a-directory"
     invalid_workspace.write_text("fixture", encoding="utf-8")
