@@ -39,6 +39,27 @@ def load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def test_direct_file_import_registers_modules_before_exec(tmp_path: Path) -> None:
+    module_path = tmp_path / "dataclass_module.py"
+    module_path.write_text(
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Payload:\n"
+        "    value: int\n",
+        encoding="utf-8",
+    )
+
+    spec = importlib.util.spec_from_file_location("dataclass_module_for_tests", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert sys.modules[spec.name] is module
+    assert module.Payload(7).value == 7
+
+
 def run_audit(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
