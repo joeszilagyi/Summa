@@ -55,7 +55,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib --timeout=300"
 markers = [
   "unit: a fast, in-process test",
   "integration: a higher-cost integration-style test",
