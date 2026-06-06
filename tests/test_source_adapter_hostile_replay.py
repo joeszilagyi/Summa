@@ -51,6 +51,42 @@ def write_snapshot_pair(snapshot_dir: Path, *, plan: dict[str, Any], handoff: li
     return expected_plan, expected_handoff
 
 
+def assert_case_invariants(case_name: str, plan: dict[str, Any], handoff: list[dict[str, Any]]) -> None:
+    if case_name == "local_source":
+        assert plan["candidate_count"] == len(handoff)
+        assert plan["handoff_record_count"] == len(handoff)
+        assert all(record["record_family"] == "capture" for record in handoff)
+        assert all(record["source_specific"] == {"relative_path": record["relative_path"], "source_filename": record["source_specific"]["source_filename"]} for record in handoff)
+        assert all(
+            record["preserved"]["source_metadata"]["hazard_flags"] == ["prompt_injection_text", "oversized_payloads"]
+            for record in handoff
+        )
+    elif case_name == "structured_data":
+        assert plan["parsed_record_count"] == len(handoff)
+        assert plan["handoff_record_count"] == len(handoff)
+        assert all(record["record_family"] == "source_lead" for record in handoff)
+        assert all(
+            {"relative_path", "source_filename", "structured_format", "record_locator", "record_kind"}.issuperset(
+                record["source_specific"].keys()
+            )
+            for record in handoff
+        )
+    elif case_name == "remote_url_manifest":
+        assert plan["network_access_attempted"] is False
+        assert len(handoff) == 2
+        assert all(record["record_family"] == "source_lead" for record in handoff)
+        assert all(record["source_specific"] == {"manifest_url": "https://archives.example.gov/subject/hostile/manifest.jsonl"} for record in handoff)
+    elif case_name == "local_git_repo":
+        assert plan["candidate_count"] == 2
+        assert len(handoff) == 1
+        assert plan["handoff_record_count"] == 1
+        assert all(record["record_family"] == "source_lead" for record in handoff)
+        assert all(record["remote_state"] == "local_checkout" for record in handoff)
+        assert all(record["preserved"]["refetchability_status"] == "local_replayable" for record in handoff)
+    else:
+        raise AssertionError(f"unexpected hostile replay case: {case_name}")
+
+
 def run_script(script: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(script), *args],
@@ -199,6 +235,7 @@ def test_hostile_replay_snapshots_are_deterministic_and_hazard_safe(tmp_path: Pa
             record["preserved"]["source_metadata"]["hazard_flags"] == hazard_flags
             for record in first_handoff
         ), case["name"]
+        assert_case_invariants(case["name"], first_plan, first_handoff)
 
         combined_output = first_output + second_output
         for forbidden in case["must_not_contain"]:
