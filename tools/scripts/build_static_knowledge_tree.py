@@ -28,6 +28,7 @@ for candidate in (
         sys.path.insert(0, candidate_text)
 
 from tools.common.atomic_write import atomic_write_json, atomic_write_text  # noqa: E402
+from tools.common.operator_text import format_operator_text_value  # noqa: E402
 from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
     EXIT_PASS as EXIT_BUILD_MANIFEST_PASS,
     hash_file,
@@ -688,12 +689,12 @@ def build_static_knowledge_tree(
 
 def render_text(payload: dict[str, Any]) -> str:
     lines = [
-        f"status={payload['status']}",
-        f"build_id={payload['build_id']}",
-        f"publish_root={payload['publish_root']}",
-        f"manifest_path={payload['manifest_path']}",
-        f"page_count={payload['page_count']}",
-        f"asset_count={payload['asset_count']}",
+        f"status={format_operator_text_value(payload['status'])}",
+        f"build_id={format_operator_text_value(payload['build_id'])}",
+        f"publish_root={format_operator_text_value(payload['publish_root'])}",
+        f"manifest_path={format_operator_text_value(payload['manifest_path'])}",
+        f"page_count={format_operator_text_value(payload['page_count'])}",
+        f"asset_count={format_operator_text_value(payload['asset_count'])}",
     ]
     return "\n".join(lines) + "\n"
 

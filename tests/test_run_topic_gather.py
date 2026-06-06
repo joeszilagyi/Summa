@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
@@ -268,6 +270,67 @@ def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path
     prompt_text = prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8")
     hostile_text = HOSTILE_SOURCE_FIXTURE.read_text(encoding="utf-8")
     assert_text_only_inside_wrapped_blocks(prompt_text, hostile_text)
+
+
+def test_run_topic_gather_reads_mixed_unicode_source_text(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "café-😀.txt"
+    source_text = "prefix\u200f e\u0301 😀\x00 suffix"
+    source_path.write_text(source_text, encoding="utf-8")
+
+    read_back = driver.read_text_file(source_path, label="source text file")
+
+    assert read_back == source_text
+
+
+def test_run_topic_gather_rejects_invalid_utf8_source_text_file(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "invalid-utf8.txt"
+    source_path.write_bytes(b"valid-prefix\xffinvalid-suffix")
+
+    with pytest.raises(driver.GatherDriverError, match="must be valid UTF-8 text"):
+        driver.read_text_file(source_path, label="source text file")
+
+
+def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    large_source_path = workspace_root / "large-source.txt"
+    source_chunk = "Large input line with emoji 😀 and combining e\u0301.\n"
+    large_source_path.write_text(source_chunk * 25000, encoding="utf-8")
+    run_id = "large-source"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--source-text-file",
+            str(large_source_path),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    batch_path = batch_path_for(workspace_root, run_id)
+    prompt_path = prompt_path_for(workspace_root, run_id)
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_PASS, report
+
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert payload["source_text_wrapping"]["source_block_count"] == 1
+    assert prompt_path.stat().st_size > large_source_path.stat().st_size
 
 
 def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> None:

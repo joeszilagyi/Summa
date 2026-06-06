@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import workspace_lock  # noqa: E402
+from tools.common.operator_text import format_operator_text_value, strip_terminal_escapes  # noqa: E402
 from tools.common.topic_workspace_registry import (  # noqa: E402
     TopicWorkspaceRegistryError,
     discover_registry_path,
@@ -56,7 +57,8 @@ def redact(value: Any) -> Any:
         return [redact(item) for item in value]
     if not isinstance(value, str):
         return value
-    text = SECRET_RE.sub(r"\1=[redacted]", value)
+    text = strip_terminal_escapes(value)
+    text = SECRET_RE.sub(r"\1=[redacted]", text)
     text = re.sub(r"/(?:home|Users|tmp)/\S+", "[redacted-path]", text)
     return text
 
@@ -994,45 +996,60 @@ def build_report(
 
 def render_text(report: dict[str, Any]) -> str:
     lines = [
-        f"schema_version={report['schema_version']}",
-        f"status={report['summary']['status']}",
-        f"finding_count={report['summary']['finding_count']}",
-        f"operator_action_required_count={report['summary']['operator_action_required_count']}",
+        f"schema_version={format_operator_text_value(report['schema_version'])}",
+        f"status={format_operator_text_value(report['summary']['status'])}",
+        f"finding_count={format_operator_text_value(report['summary']['finding_count'])}",
+        "operator_action_required_count="
+        f"{format_operator_text_value(report['summary']['operator_action_required_count'])}",
     ]
     for name, status in report["checks"].items():
-        lines.append(f"check.{name}={status}")
+        lines.append(f"check.{name}={format_operator_text_value(status)}")
     canonical_store_summary = report.get("canonical_store", {})
     if isinstance(canonical_store_summary, dict):
-        lines.append(f"canonical_store.status={canonical_store_summary.get('status')}")
-        lines.append(f"canonical_store.total_rows={canonical_store_summary.get('total_rows')}")
         lines.append(
-            f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}"
+            "canonical_store.status="
+            f"{format_operator_text_value(canonical_store_summary.get('status'))}"
+        )
+        lines.append(
+            "canonical_store.total_rows="
+            f"{format_operator_text_value(canonical_store_summary.get('total_rows'))}"
+        )
+        lines.append(
+            "canonical_store.last_ingest_at="
+            f"{format_operator_text_value(canonical_store_summary.get('last_ingest_at'))}"
         )
     loop_health_summary = report.get("loop_health", {})
     if isinstance(loop_health_summary, dict):
-        lines.append(f"loop_health.status={loop_health_summary.get('health_status')}")
+        lines.append(
+            "loop_health.status="
+            f"{format_operator_text_value(loop_health_summary.get('health_status'))}"
+        )
         lines.append(
             "loop_health.pending_review_count="
-            f"{loop_health_summary.get('review_backlog', {}).get('pending_review_count')}"
+            f"{format_operator_text_value(loop_health_summary.get('review_backlog', {}).get('pending_review_count'))}"
         )
         lines.append(
             "loop_health.resolution_coverage="
-            f"{loop_health_summary.get('ingestion_resolution', {}).get('resolution_coverage')}"
+            f"{format_operator_text_value(loop_health_summary.get('ingestion_resolution', {}).get('resolution_coverage'))}"
         )
     graph_closure_summary = report.get("graph_closure", {})
     if isinstance(graph_closure_summary, dict):
-        lines.append(f"graph_closure.status={graph_closure_summary.get('status')}")
         lines.append(
-            f"graph_closure.orphan_error_count={graph_closure_summary.get('orphan_error_count')}"
+            "graph_closure.status="
+            f"{format_operator_text_value(graph_closure_summary.get('status'))}"
+        )
+        lines.append(
+            "graph_closure.orphan_error_count="
+            f"{format_operator_text_value(graph_closure_summary.get('orphan_error_count'))}"
         )
         lines.append(
             "graph_closure.unresolved_tracked_count="
-            f"{graph_closure_summary.get('unresolved_tracked_count')}"
+            f"{format_operator_text_value(graph_closure_summary.get('unresolved_tracked_count'))}"
         )
     for index, entry in enumerate(report["findings"][:20]):
-        lines.append(f"finding[{index}].code={entry['code']}")
-        lines.append(f"finding[{index}].class={entry['class']}")
-        lines.append(f"finding[{index}].message={entry['message']}")
+        lines.append(f"finding[{index}].code={format_operator_text_value(entry['code'])}")
+        lines.append(f"finding[{index}].class={format_operator_text_value(entry['class'])}")
+        lines.append(f"finding[{index}].message={format_operator_text_value(entry['message'])}")
     return "\n".join(lines) + "\n"
 
 

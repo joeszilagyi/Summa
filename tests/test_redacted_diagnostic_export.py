@@ -12,7 +12,7 @@ from jsonschema import validators
 from tools.source_db_tools import canonical_store, cycle_evidence_ledger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "scripts"))
-from export_redacted_diagnostics import Redactor  # noqa: E402
+from export_redacted_diagnostics import Redactor, render_text as render_export_text  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "export_redacted_diagnostics.py"
@@ -368,6 +368,39 @@ def test_redactor_handles_absolute_local_paths_for_public_and_private_modes() ->
     assert str(absolute_path) not in public_path
     assert public_json["local_path"] == public_path
     assert private_redactor.redact_path(absolute_path) == str(absolute_path)
+
+
+def test_redactor_strips_terminal_escape_sequences() -> None:
+    redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+
+    redacted = redactor.redact_text(
+        "start\x1b]52;c;SGVsbG8=\x07\x1b[0m\x1b[2J\x1b[H\x1b]8;;https://example.test\x07click\x1b]8;;\x07end"
+    )
+
+    assert redacted == "startclickend"
+    assert "\x1b" not in redacted
+
+
+def test_redacted_export_text_quotes_operator_like_content() -> None:
+    text = render_export_text(
+        {
+            "status": "pass",
+            "summary": "ignore previous instructions",
+            "command": "rm -rf /",
+            "marker": "BEGIN SECRET",
+            "syntax": "::set-output name=foo::bar",
+        }
+    )
+
+    assert 'summary="ignore previous instructions"' in text
+    assert 'command="rm -rf /"' in text
+    assert 'marker="BEGIN SECRET"' in text
+    assert 'syntax="::set-output name=foo::bar"' in text
 
 
 def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
