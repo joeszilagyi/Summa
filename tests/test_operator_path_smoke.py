@@ -11,30 +11,36 @@ PY_TOOL = REPO_ROOT / "tools" / "scripts" / "operator_path_smoke.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Operator_Path_Smoke.sh"
 
 
-def run_python(args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_python(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    if cwd is None:
+        cwd = REPO_ROOT
     return subprocess.run(
         [sys.executable, str(PY_TOOL), *args],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
 
 
-def run_wrapper(args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_wrapper(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    if cwd is None:
+        cwd = REPO_ROOT
     return subprocess.run(
         ["bash", str(WRAPPER), *args],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
 
 
-def git_status() -> str:
+def git_status(cwd: Path | None = None) -> str:
+    if cwd is None:
+        cwd = REPO_ROOT
     proc = subprocess.run(
         ["git", "status", "--short"],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         text=True,
         capture_output=True,
         check=True,
@@ -138,6 +144,39 @@ def test_operator_path_smoke_json_failure_for_invalid_workspace_path(tmp_path: P
     assert payload["summary"] == {"passed": 0, "failed": 1, "skipped": 0}
     assert payload["checks"][0]["name"] == "smoke_setup"
     assert "workspace path is not a directory" in payload["checks"][0]["error_message"]
+
+
+def test_operator_path_smoke_keeps_repo_root_intact_when_workspace_is_tmp(tmp_path: Path) -> None:
+    workspace = tmp_path / "smoke-workspace"
+    root_drift_path = REPO_ROOT / "._operator-path-smoke-root-drift.txt"
+    root_drift_path.write_text("root probe\n", encoding="utf-8")
+    try:
+        before = git_status()
+        proc = run_wrapper(
+            [
+                "--dry-run",
+                "--json",
+                "--workspace",
+                str(workspace),
+                "--run-id",
+                "fixture-smoke",
+                "--timestamp",
+                "2026-06-03T12:00:00Z",
+            ],
+            cwd=tmp_path,
+        )
+        after = git_status()
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout
+        assert before == after
+
+        payload = json.loads(proc.stdout)
+        assert payload["schema_version"] == "operator-path-smoke.v1"
+        assert payload["status"] == "passed"
+        assert payload["summary"]["failed"] == 0
+    finally:
+        root_drift_path.unlink(missing_ok=True)
 
 
 def test_operator_path_smoke_wrapper_points_to_existing_python_target() -> None:
