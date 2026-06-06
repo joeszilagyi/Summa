@@ -459,6 +459,72 @@ def test_reference_artifacts_reject_older_schema_versions(tmp_path: Path) -> Non
     assert any("schema_version" in (item.get("failure_reason") or "") for item in invalid)
 
 
+def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    report_path = tmp_path / "report.json"
+    rebuilt_db = tmp_path / "rebuilt.sqlite"
+
+    proc = run_audit(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "rebuild_temp",
+            "--temp-rebuild-db",
+            str(rebuilt_db),
+            "--keep-temp-db",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    report = load_json(report_path)
+    artifact_by_type = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
+    assert artifact_by_type["gather_candidate_batch"]["originating_run_id"] == "fixture-gather-ingest"
+    assert artifact_by_type["source_acquisition_execution"]["originating_run_id"] == "fixture-exec"
+    assert report["canonical_validation_result"]["status"] == "pass"
+    assert report["graph_closure_result"]["status"] in {"pass", "pass_with_unresolved"}
+    assert {item["status"] for item in report["replay_results"]} == {"replayed"}
+
+    conn = canonical_store.connect_existing_read_only(rebuilt_db)
+    try:
+        source_claim = conn.execute(
+            "SELECT provenance_event_ref, claim_text FROM source_claim ORDER BY source_claim_id LIMIT 1"
+        ).fetchone()
+        capture_event = conn.execute(
+            "SELECT provenance_event_ref, original_locator FROM capture_event ORDER BY capture_event_id LIMIT 1"
+        ).fetchone()
+        extraction_record = conn.execute(
+            "SELECT capture_event_id, provenance_event_ref, extraction_status FROM extraction_record ORDER BY extraction_id LIMIT 1"
+        ).fetchone()
+        source_claim_prov = conn.execute(
+            "SELECT run_id, tool_name, note_text FROM provenance_event WHERE provenance_event_key_v1=?",
+            (source_claim["provenance_event_ref"],),
+        ).fetchone()
+        capture_prov = conn.execute(
+            "SELECT run_id, tool_name, note_text FROM provenance_event WHERE provenance_event_key_v1=?",
+            (capture_event["provenance_event_ref"],),
+        ).fetchone()
+        extraction_prov = conn.execute(
+            "SELECT run_id, tool_name, note_text FROM provenance_event WHERE provenance_event_key_v1=?",
+            (extraction_record["provenance_event_ref"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "gather-candidate-batch.json" in source_claim_prov["note_text"]
+    assert source_claim_prov["run_id"] == "fixture-gather-ingest"
+    assert "capture-events.jsonl" in capture_prov["note_text"]
+    assert "extraction-records.jsonl" in capture_prov["note_text"]
+    assert capture_prov["run_id"] == "fixture-exec"
+    assert extraction_record["capture_event_id"] is not None
+    assert extraction_prov["run_id"] == "fixture-exec"
+    assert extraction_prov["tool_name"] == "canonical-ingest.v1"
+
+
 def test_missing_replay_support_is_incomplete_support_not_false_success(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     review_dir = runs_dir / "review"
