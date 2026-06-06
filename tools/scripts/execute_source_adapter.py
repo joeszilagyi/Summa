@@ -228,6 +228,20 @@ def determine_variant(records: list[dict[str, Any]], *, adapter_payload: dict[st
     return variant
 
 
+def validate_handoff_sequence(records: list[dict[str, Any]]) -> None:
+    if not records:
+        raise SourceAcquisitionError("handoff artifact does not contain any records")
+
+    sequences = [record.get("sequence") for record in records]
+    if any(not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1 for sequence in sequences):
+        raise SourceAcquisitionError("handoff artifact sequence values must be positive integers")
+    if len(set(sequences)) != len(sequences):
+        raise SourceAcquisitionError("handoff artifact must not repeat sequence values")
+    expected_sequences = list(range(1, len(records) + 1))
+    if sorted(sequences) != expected_sequences:
+        raise SourceAcquisitionError("handoff artifact sequence values must be contiguous starting at 1")
+
+
 def determine_executor_mode(requested_mode: str, *, variant: str) -> str:
     inferred_mode = "remote" if variant in REMOTE_VARIANTS else "local"
     if requested_mode == "auto":
@@ -1941,6 +1955,7 @@ def main() -> int:
         records, handoff_hash = load_validated_handoff_records(
             handoff_path, adapter_path=adapter_path
         )
+        validate_handoff_sequence(records)
         variant = determine_variant(records, adapter_payload=adapter_payload)
         executor_mode = determine_executor_mode(args.mode, variant=variant)
         planned_actions = planned_actions_for_records(records, variant=variant)
