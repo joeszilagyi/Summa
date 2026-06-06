@@ -318,3 +318,34 @@ def test_console_entry_points_run_as_installed_commands(tmp_path: Path) -> None:
         output = proc.stdout + proc.stderr
         assert proc.returncode == 0, f"{command} --help failed:\n{output}"
         assert "usage:" in output.lower(), f"{command} --help did not emit usage text:\n{output}"
+
+
+def test_isolated_install_does_not_depend_on_test_only_packages(tmp_path: Path) -> None:
+    venv_root = create_isolated_install_venv(tmp_path)
+    venv_python_path = venv_python(venv_root)
+    probe = subprocess.run(
+        [
+            str(venv_python_path),
+            "-c",
+            (
+                "import importlib.util, sys\n"
+                "raise SystemExit(0 if importlib.util.find_spec('jsonschema') is None else 1)\n"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
+    help_probe = subprocess.run(
+        [str(venv_bin_dir(venv_root) / "summa-local-doctor"), "--help"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PATH": str(venv_bin_dir(venv_root))},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert help_probe.returncode == 0, help_probe.stdout + help_probe.stderr
+    assert "usage:" in (help_probe.stdout + help_probe.stderr).lower()
