@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sqlite3
@@ -86,6 +87,19 @@ def table_count(db_path: Path, table_name: str) -> int:
         return int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
     finally:
         conn.close()
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def tree_sha256(root: Path) -> str:
+    parts: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(root).as_posix()
+            parts.append(f"{rel}:{file_sha256(path)}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def insert_orphan_source_claim(db_path: Path) -> None:
@@ -208,6 +222,8 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
     before_work = table_count(db_path, "work")
+    before_db_hash = file_sha256(db_path)
+    before_workspace_hash = tree_sha256(workspace / ".indexer")
     run_dir = tmp_path / "cycle-dry-run"
 
     proc = run_cycle(
@@ -232,6 +248,8 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert manifest["status"] == "dry_run"
     assert manifest["canonical_db"]["mutated"] is False  # type: ignore[index]
     assert table_count(db_path, "work") == before_work
+    assert file_sha256(db_path) == before_db_hash
+    assert tree_sha256(workspace / ".indexer") == before_workspace_hash
     assert table_count(db_path, "cycle_event") == 0
     stages = stages_by_name(manifest)
     assert stages["run_gather"]["status"] == "passed"
@@ -240,6 +258,13 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert stages["ingest_candidate_batch"]["artifacts"]["mutated"] is False  # type: ignore[index]
     assert Path(stages["ingest_candidate_batch"]["artifacts"]["ingest_report"]).is_file()  # type: ignore[index]
     assert isinstance(stages["ingest_candidate_batch"]["artifacts"]["ingest_report_sha256"], str)  # type: ignore[index]
+    gather_run_dir = workspace / "runs" / "gather" / "cycle-dry-run.gather"
+    assert sorted(path.relative_to(gather_run_dir).as_posix() for path in gather_run_dir.rglob("*") if path.is_file()) == [
+        "gather-candidate-batch.json",
+        "rendered-prompt.txt",
+    ]
+    assert not (run_dir / "spool").exists()
+    assert not any(path.suffix == ".lock" for path in workspace.rglob("*"))
 
 
 def test_topic_cycle_rejects_resume_on_fresh_run_dir(tmp_path: Path) -> None:
