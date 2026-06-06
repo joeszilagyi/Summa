@@ -299,6 +299,26 @@ def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
     assert payload["policy"]["private_paths_exposed"] is False
 
 
+def test_query_cli_treats_sql_injection_like_input_as_plain_text(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "work; DROP TABLE search_projection; --",
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["query"]["normalized_query"] == "work; DROP TABLE search_projection; --"
+    assert payload["query"]["terms"] == ["work", "drop", "table", "search", "projection"]
+    assert payload["counts"]["returned"] == 0
+    assert payload["counts"]["total_estimate"] == 0
+
+
 def test_results_validator_rejects_secret_and_private_note_findings(tmp_path: Path) -> None:
     index_db = build_local_index(tmp_path)
     results_json = tmp_path / "results.json"
