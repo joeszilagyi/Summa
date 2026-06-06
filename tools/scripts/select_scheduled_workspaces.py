@@ -499,7 +499,10 @@ def saturation_ineligibility_reasons(
 
 def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    needs_leading_newline = path.exists() and path.stat().st_size > 0 and not path.read_bytes().endswith(b"\n")
     with path.open("a", encoding="utf-8") as handle:
+        if needs_leading_newline:
+            handle.write("\n")
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         handle.flush()

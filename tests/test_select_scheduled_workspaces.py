@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
 
@@ -216,6 +218,90 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert inactive["skipped_reason"] == "lifecycle_state is 'paused'; scheduler only selects active workspaces"
 
     assert read_jsonl(planned_runs) == records
+
+
+@pytest.mark.parametrize(
+    ("initial_text", "expected_first_line"),
+    [
+        (
+            json.dumps(
+                {
+                    "schema_version": "planned-run.v1",
+                    "workspace_id": "seed_workspace",
+                    "decision": "selected",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "schema_version": "planned-run.v1",
+                    "workspace_id": "seed_workspace",
+                    "decision": "selected",
+                },
+                sort_keys=True,
+            ),
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": "planned-run.v1",
+                    "workspace_id": "truncated_workspace",
+                    "decision": "selected",
+                },
+                sort_keys=True,
+            )[:-1],
+            None,
+        ),
+    ],
+)
+def test_selector_appends_planned_runs_without_merging_existing_terminal_line(
+    tmp_path: Path,
+    initial_text: str,
+    expected_first_line: str | None,
+) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+    planned_runs = tmp_path / "planned-runs.jsonl"
+    planned_runs.write_text(initial_text, encoding="utf-8")
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-fixture",
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--planned-runs-jsonl",
+            str(planned_runs),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = planned_runs.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    if expected_first_line is not None:
+        assert lines[0] == expected_first_line
+    else:
+        assert "truncated_workspace" in lines[0]
+    appended = json.loads(lines[1])
+    assert appended["workspace_id"] == "selected_workspace"
+    assert appended["decision"] == "selected"
+    assert appended["planned_run_id"] == "planner-fixture:selected_workspace"
 
 
 def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path) -> None:
