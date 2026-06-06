@@ -243,6 +243,156 @@ def test_local_projection_includes_superseded_and_local_only_fields(tmp_path: Pa
     assert fts_matches(index_db, "Superseded") == ["work:2"]
 
 
+def test_projection_is_deterministic_when_rows_are_inserted_in_different_orders(tmp_path: Path) -> None:
+    def create_db(db_path: Path, *, work_rows: list[tuple[object, ...]], claim_rows: list[tuple[object, ...]], access_rows: list[tuple[object, ...]]) -> None:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE work (
+                  work_id INTEGER PRIMARY KEY,
+                  work_type TEXT,
+                  title TEXT,
+                  review_state TEXT,
+                  publication_state TEXT,
+                  authority_level TEXT,
+                  public_blocker TEXT,
+                  workspace_id TEXT
+                );
+                CREATE TABLE source_claim (
+                  source_claim_id INTEGER PRIMARY KEY,
+                  claim_text TEXT NOT NULL,
+                  public_summary TEXT,
+                  claim_type TEXT,
+                  review_state TEXT,
+                  publication_state TEXT,
+                  authority_level TEXT,
+                  public_blocker TEXT,
+                  workspace_id TEXT
+                );
+                CREATE TABLE source_access (
+                  source_access_id INTEGER PRIMARY KEY,
+                  original_locator TEXT,
+                  canonical_url TEXT,
+                  access_class TEXT,
+                  review_state TEXT,
+                  publication_state TEXT,
+                  authority_level TEXT,
+                  public_blocker TEXT,
+                  workspace_id TEXT
+                );
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO work (
+                  work_id, work_type, title, review_state, publication_state,
+                  authority_level, public_blocker, workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                work_rows,
+            )
+            conn.executemany(
+                """
+                INSERT INTO source_claim (
+                  source_claim_id, claim_text, public_summary, claim_type, review_state,
+                  publication_state, authority_level, public_blocker, workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                claim_rows,
+            )
+            conn.executemany(
+                """
+                INSERT INTO source_access (
+                  source_access_id, original_locator, canonical_url, access_class, review_state,
+                  publication_state, authority_level, public_blocker, workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                access_rows,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    base_rows = {
+        "work": [
+            (1, "book", "Public Work", "reviewed", "public_release_allowed", "primary", None, "alpha_subject"),
+            (2, "book", "Superseded Work", "reviewed", "public_release_allowed", "primary", None, "alpha_subject"),
+            (4, "book", "Replacement Work", "reviewed", "public_release_allowed", "primary", None, "alpha_subject"),
+            (9, "book", "Pending Work", "needs_review", "public_release_allowed", "primary", None, "alpha_subject"),
+        ],
+        "claim": [
+            (1, "localclaimmarker internal review text", "Public claim summary", "factual", "reviewed", "public_preview", "primary", None, "alpha_subject"),
+            (2, "blockedlocalclaimmarker internal only", "Blocked claim summary", "factual", "reviewed", "public_preview", "primary", "authority_gap", "alpha_subject"),
+        ],
+        "access": [
+            (1, "/Users/joe/cacheprivatemarker/source.pdf", "https://example.org/source.pdf", "web_capture", "reviewed", "public_release_allowed", "primary", None, "alpha_subject"),
+        ],
+    }
+    db_a = tmp_path / "search-a.sqlite"
+    db_b = tmp_path / "search-b.sqlite"
+    create_db(db_a, work_rows=base_rows["work"], claim_rows=base_rows["claim"], access_rows=base_rows["access"])
+    create_db(
+        db_b,
+        work_rows=list(reversed(base_rows["work"])),
+        claim_rows=list(reversed(base_rows["claim"])),
+        access_rows=list(reversed(base_rows["access"])),
+    )
+
+    ledger_a = tmp_path / "ledger-a.json"
+    ledger_b = tmp_path / "ledger-b.json"
+    ledger_payload = json.loads(create_correction_ledger(tmp_path).read_text(encoding="utf-8"))
+    ledger_a.write_text(json.dumps(ledger_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    ledger_b.write_text(json.dumps(ledger_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    output_a = tmp_path / "projection-a.json"
+    output_b = tmp_path / "projection-b.json"
+    index_a = tmp_path / "projection-a.sqlite"
+    index_b = tmp_path / "projection-b.sqlite"
+
+    first = run_builder(
+        "--db",
+        str(db_a),
+        "--profile",
+        "public_preview",
+        "--correction-ledger",
+        str(ledger_a),
+        "--index-db",
+        str(index_a),
+        "--output-json",
+        str(output_a),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    second = run_builder(
+        "--db",
+        str(db_b),
+        "--profile",
+        "public_preview",
+        "--correction-ledger",
+        str(ledger_b),
+        "--index-db",
+        str(index_b),
+        "--output-json",
+        str(output_b),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert second.returncode == 0, second.stdout + second.stderr
+    payload_a = json.loads(output_a.read_text(encoding="utf-8"))
+    payload_b = json.loads(output_b.read_text(encoding="utf-8"))
+    assert payload_a["records"] == payload_b["records"]
+    assert payload_a["counts"] == payload_b["counts"]
+    assert [record["object_ref"] for record in payload_a["records"]] == [
+        "claim:1",
+        "source_access:1",
+        "work:1",
+        "work:4",
+    ]
+
+
 def test_public_projection_builder_blocks_secret_like_leaks(tmp_path: Path) -> None:
     db = tmp_path / "search.sqlite"
     conn = sqlite3.connect(db)

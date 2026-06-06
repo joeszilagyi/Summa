@@ -45,6 +45,7 @@ VALIDATOR_NAME = "gather_candidate_batch"
 CONTRACT_VERSION = "1"
 SCHEMA_PATH = REPO_ROOT / "config" / "gather_candidate_batch.schema.json"
 SCHEMA_VERSION = "gather-candidate-batch.v1"
+SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_VERSION, "gather-candidate-batch.v0"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 STAMP_RUN_TS_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{6}Z$")
 
@@ -904,11 +905,11 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                                 )
 
     schema_version = payload.get("schema_version")
-    if schema_version != SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         add_error(
             errors,
             code="INVALID_SCHEMA_VERSION",
-            message=f"schema_version must equal {SCHEMA_VERSION}",
+            message=f"schema_version must be one of {sorted(SUPPORTED_SCHEMA_VERSIONS)!r}",
             path="$.schema_version",
         )
 
@@ -945,6 +946,11 @@ def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
         counts["rejected"] = 1
         return {"counts": counts, "errors": errors, "warnings": warnings}, schema_exit
 
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        schema = json.loads(json.dumps(schema))
+        schema_version_schema = schema.get("properties", {}).get("schema_version", {})
+        if isinstance(schema_version_schema, dict) and schema_version_schema.get("const") == SCHEMA_VERSION:
+            schema_version_schema["const"] = payload.get("schema_version")
     validate_against_schema(payload, schema, root_schema=schema, path="$", errors=errors)
     if not errors:
         validate_invariants(payload, target, errors)

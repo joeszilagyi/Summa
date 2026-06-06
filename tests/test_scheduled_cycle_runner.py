@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.common import scheduler_failure_reconciliation
 from tools.scripts import run_scheduled_topic_cycles as scheduled_runner
 
@@ -277,6 +279,14 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
         "2026-06-03T12:00:30Z",
         "2026-06-03T12:00:40Z",
     ]
+
+
+def test_normalize_timestamp_preserves_utc_and_rejects_invalid_values() -> None:
+    assert scheduled_runner.normalize_timestamp("2026-06-03T12:00:00Z") == "2026-06-03T12:00:00Z"
+    assert scheduled_runner.normalize_timestamp("2026-06-03T12:00:00-07:00") == "2026-06-03T19:00:00Z"
+
+    with pytest.raises(scheduled_runner.ScheduledCycleError, match="RFC3339"):
+        scheduled_runner.normalize_timestamp("not-a-timestamp")
 
 
 def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:

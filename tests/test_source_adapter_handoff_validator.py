@@ -35,6 +35,16 @@ def git(worktree: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def assert_report_contract(report: dict[str, object]) -> None:
+    assert report["contract_version"] == "1"
+    assert report["validator"] == "source_adapter_handoff"
+    assert report["status"] in {"pass", "fail"}
+    assert set(report["counts"]) == {"inspected", "accepted", "rejected", "deferred"}
+    assert set(report["output_artifacts"]) == {"report_json", "report_text"}
+    assert report["errors"] is not None
+    assert report["warnings"] == []
+
+
 def init_local_git_repo_fixture(tmp_path: Path) -> tuple[Path, Path]:
     source_dir = FIXTURE_ROOT / "local_git_repo"
     scenario_dir = tmp_path / "local_git_repo"
@@ -243,6 +253,7 @@ def test_handoff_validator_accepts_current_outputs_from_all_planners(tmp_path: P
         )
         assert proc.returncode == 0, handoff_path.name + proc.stdout + proc.stderr
         report = json.loads((tmp_path / f"{handoff_path.stem}.report.json").read_text(encoding="utf-8"))
+        assert_report_contract(report)
         assert report["status"] == "pass"
         assert report["counts"]["accepted"] >= 1
         assert report["counts"]["rejected"] == 0
@@ -388,6 +399,9 @@ def test_handoff_validator_reports_jsonl_line_numbers_for_parse_failures(tmp_pat
 
     assert proc.returncode == 1
     report = json.loads(report_json.read_text(encoding="utf-8"))
+    assert_report_contract(report)
     assert report["status"] == "fail"
+    assert report["counts"] == {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     assert report["errors"][0]["line"] == 2
     assert "invalid JSON syntax" in report["errors"][0]["message"]
+    assert "Traceback" not in proc.stdout
