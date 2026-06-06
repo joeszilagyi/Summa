@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import re
 import tomllib
 from pathlib import Path
@@ -83,3 +84,10 @@ def test_mypy_runtime_gate_keeps_strictness_and_no_broad_ignores() -> None:
     for key, value in mypy_config.items():
         if key.startswith("mypy-") and isinstance(value, dict):
             assert value.get("ignore_errors") is not True, key
+
+
+def test_runtime_spine_targets_import_without_runtime_dependency_failures() -> None:
+    for path in sorted(RUNTIME_SPINE_MYPY_FILES):
+        module_name = path.removesuffix(".py").replace("/", ".")
+        module = importlib.import_module(module_name)
+        assert module.__file__ is not None, module_name

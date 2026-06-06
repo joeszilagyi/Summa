@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -442,6 +443,44 @@ def test_export_rejects_unrecognized_output_dir_with_overwrite(tmp_path: Path) -
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "not a recognized redacted diagnostics bundle" in proc.stderr
+
+
+def test_export_rejects_output_under_home_directory(tmp_path: Path) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    output_dir = home_dir
+    env = os.environ.copy()
+    env["HOME"] = str(home_dir)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--db",
+            str(db_path),
+            "--workspace",
+            str(workspace),
+            "--output-dir",
+            str(output_dir),
+            "--path-redaction",
+            "hmac",
+            "--url-redaction",
+            "domain_only",
+            "--redaction-key",
+            "fixed-test-redaction-key",
+            "--format",
+            "json",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "refusing to write output to home directory" in proc.stderr
 
 
 def test_export_overwrites_valid_diagnostic_bundle(tmp_path: Path) -> None:

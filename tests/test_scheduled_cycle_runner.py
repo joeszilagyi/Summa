@@ -251,12 +251,31 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
 
     assert exit_code == 0
     assert payload["started_at"] == "2026-06-03T12:00:00Z"
+    assert payload["ended_at"] == "2026-06-03T12:00:50Z"
     assert [command[command.index("--timestamp") + 1] for command in captured_commands] == [
         "2026-06-03T12:00:10Z",
         "2026-06-03T12:00:30Z",
     ]
     assert captured_commands[0][captured_commands[0].index("--timestamp") + 1] != payload[
         "started_at"
+    ]
+    first_ledger_lines = [
+        json.loads(line)
+        for line in (ledger_root / "first_subject.runtime-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    second_ledger_lines = [
+        json.loads(line)
+        for line in (ledger_root / "second_subject.runtime-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["event_type"] for line in first_ledger_lines] == ["command_start", "command_end"]
+    assert [line["event_type"] for line in second_ledger_lines] == ["command_start", "command_end"]
+    assert [line["occurred_at"] for line in first_ledger_lines] == [
+        "2026-06-03T12:00:10Z",
+        "2026-06-03T12:00:20Z",
+    ]
+    assert [line["occurred_at"] for line in second_ledger_lines] == [
+        "2026-06-03T12:00:30Z",
+        "2026-06-03T12:00:40Z",
     ]
 
 
