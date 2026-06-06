@@ -505,7 +505,7 @@ def projection_record(
     object_pk = int(row[target.pk_column])
     object_ref = f"{target.object_type}:{object_pk}"
     review_state = first_nonblank(row, target.review_state_column) or ""
-    if not is_searchable_review_state(review_state):
+    if is_public_profile(profile) and not is_searchable_review_state(review_state):
         return None, "review_state_not_searchable"
 
     publication_state = normalize_publication_state(row["publication_state"] if "publication_state" in columns else None)

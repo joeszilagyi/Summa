@@ -228,7 +228,7 @@ def test_local_projection_includes_superseded_and_local_only_fields(tmp_path: Pa
 
     payload = json.loads(output_json.read_text(encoding="utf-8"))
     refs = {record["object_ref"] for record in payload["records"]}
-    assert refs == {"claim:1", "claim:2", "source_access:1", "work:1", "work:2", "work:4"}
+    assert refs == {"claim:1", "claim:2", "source_access:1", "work:1", "work:2", "work:4", "work:9"}
     superseded = next(record for record in payload["records"] if record["object_ref"] == "work:2")
     assert superseded["lineage_state"] == "superseded"
     claim_record = next(record for record in payload["records"] if record["object_ref"] == "claim:1")
@@ -241,6 +241,79 @@ def test_local_projection_includes_superseded_and_local_only_fields(tmp_path: Pa
     assert fts_matches(index_db, "cacheprivatemarker") == ["source_access:1"]
     assert fts_matches(index_db, "localclaimmarker") == ["claim:1"]
     assert fts_matches(index_db, "Superseded") == ["work:2"]
+
+
+def test_local_projection_keeps_rejected_and_deprecated_records_discoverable(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            INSERT INTO work (
+              work_id, work_type, title, review_state, publication_state,
+              authority_level, public_blocker, workspace_id
+            ) VALUES
+              (3, 'book', 'Rejected Local Work', 'rejected', 'public_release_allowed', 'primary', NULL, 'alpha_subject');
+            INSERT INTO source_claim (
+              source_claim_id, claim_text, public_summary, claim_type, review_state,
+              publication_state, authority_level, public_blocker, workspace_id
+            ) VALUES
+              (3, 'deprecated local claim text', 'Deprecated claim summary', 'factual', 'deprecated', 'public_preview', 'primary', NULL, 'alpha_subject');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ledger = create_correction_ledger(tmp_path)
+    local_output_json = tmp_path / "local_projection.json"
+    local_index_db = tmp_path / "local_projection.sqlite"
+    local_result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--correction-ledger",
+        str(ledger),
+        "--index-db",
+        str(local_index_db),
+        "--output-json",
+        str(local_output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert local_result.returncode == 0, local_result.stdout + local_result.stderr
+    local_payload = json.loads(local_output_json.read_text(encoding="utf-8"))
+    local_refs = {record["object_ref"] for record in local_payload["records"]}
+    assert {"claim:3", "work:3"} <= local_refs
+    assert fts_matches(local_index_db, "Rejected") == ["work:3"]
+    assert fts_matches(local_index_db, "deprecated") == ["claim:3"]
+
+    public_output_json = tmp_path / "public_projection.json"
+    public_index_db = tmp_path / "public_projection.sqlite"
+    public_result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "public_preview",
+        "--correction-ledger",
+        str(ledger),
+        "--index-db",
+        str(public_index_db),
+        "--output-json",
+        str(public_output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert public_result.returncode == 0, public_result.stdout + public_result.stderr
+    public_payload = json.loads(public_output_json.read_text(encoding="utf-8"))
+    public_refs = {record["object_ref"] for record in public_payload["records"]}
+    assert "claim:3" not in public_refs
+    assert "work:3" not in public_refs
+    assert {"object_ref": "claim:3", "reason": "review_state_not_searchable"} in public_payload["excluded_records"]
+    assert {"object_ref": "work:3", "reason": "review_state_not_searchable"} in public_payload["excluded_records"]
 
 
 def test_projection_is_deterministic_when_rows_are_inserted_in_different_orders(tmp_path: Path) -> None:
