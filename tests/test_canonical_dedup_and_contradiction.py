@@ -841,6 +841,75 @@ def test_rejected_authority_identifier_does_not_auto_merge(tmp_path: Path) -> No
     assert entity["review_state"] == "proposed"
 
 
+@pytest.mark.parametrize("authority_state", ["needs_review", "proposed", "recorded", "machine_extracted"])
+def test_weak_authority_provenance_stays_reviewable_on_exact_identifier_match(
+    tmp_path: Path,
+    authority_state: str,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id=f"authority:jane-smith:{authority_state}",
+                review_state=authority_state,
+                confidence_score=0.20,
+                created_at=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.add_authority_identifier(
+                conn,
+                authority_record_id=authority_id,
+                scheme="orcid",
+                value="0000-0002-1825-0097",
+                is_primary=1,
+                confidence_score=1.0,
+                review_state="accepted",
+                verified_at=FIXED_TIMESTAMP,
+            )
+            report = ingest_batch(
+                conn,
+                build_batch(
+                    [
+                        entity_candidate(
+                            f"cand:entity.weak.{authority_state}",
+                            label="Jane Smith",
+                            identifiers=[
+                                {"scheme": "orcid", "value": "0000-0002-1825-0097"}
+                            ],
+                        )
+                    ],
+                    run_id=f"gather-entity-weak-{authority_state}",
+                ),
+                batch_name=f"entity-weak-{authority_state}.json",
+                db_path=db_path,
+            )
+        authority_row = conn.execute(
+            """
+            SELECT review_state, merged_into_authority_record_id
+            FROM authority_record
+            WHERE authority_record_id=?
+            """,
+            (authority_id,),
+        ).fetchone()
+        entity_row = conn.execute(
+            "SELECT authority_record_id, review_state FROM extraction_detected_entity"
+        ).fetchone()
+        merge_count = conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert merge_count == 0
+    assert authority_row["review_state"] == authority_state
+    assert authority_row["merged_into_authority_record_id"] is None
+    assert entity_row["authority_record_id"] is None
+    assert entity_row["review_state"] == "proposed"
+    assert report["counts"]["reconciled"]["authority_reconciliation"] == 1
+
+
 def test_authority_reconciliation_replay_preserves_monotonic_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

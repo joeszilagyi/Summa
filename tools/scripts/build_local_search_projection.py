@@ -251,12 +251,15 @@ def read_schema_version(conn: sqlite3.Connection) -> int | None:
     return None if row is None else int(row[0])
 
 
-def database_fingerprint(db_path: Path) -> str:
-    digest = hashlib.sha256()
-    with db_path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+def database_fingerprint(payload: dict[str, Any]) -> str:
+    canonical_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+    return "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def has_projection_index_marker(conn: sqlite3.Connection) -> bool:
@@ -583,6 +586,16 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         conn.close()
 
+    logical_fingerprint_source = {
+        "candidate_records": candidate_records,
+        "excluded_records": excluded_records,
+        "profile": args.profile,
+        "projected_records": projected_records,
+        "schema_version": schema_version,
+        "source_database_name": db_path.name,
+        "source_ledger_applied": ledger_applied,
+    }
+
     private_paths_exposed = any(
         looks_like_private_path(field["text"])
         for record in projected_records
@@ -600,7 +613,7 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "generated_at": generated_at,
         "source": {
             "database_name": db_path.name,
-            "database_fingerprint": database_fingerprint(db_path),
+            "database_fingerprint": database_fingerprint(logical_fingerprint_source),
             "schema_version": schema_version,
             "correction_ledger_applied": ledger_applied,
         },

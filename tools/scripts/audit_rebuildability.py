@@ -48,6 +48,22 @@ REFERENCE_ONLY_TYPES = {
     "publication_artifact",
 }
 
+EXPECTED_REFERENCE_SCHEMAS: dict[str, set[str]] = {
+    "candidate_ingest_report": {"canonical-ingest-report.v1"},
+    "execution_ingest_report": {"canonical-ingest-report.v1"},
+    "topic_cycle_manifest": {"topic-cycle-run.v1"},
+    "scheduled_cycle_manifest": {"scheduled-topic-cycles-run.v1"},
+    "feedback_plan": {"candidate-feedback-plan.v1"},
+    "review_decision_apply_result": {"review-decision-apply-result.v1"},
+    "graph_closure_report": {"canonical-graph-closure-report.v1"},
+    "release_readiness_report": {"release-readiness-report.v1"},
+}
+
+PUBLICATION_REFERENCE_SCHEMAS = {
+    "knowledge_tree_export.json": {"knowledge-tree-export.v1"},
+    "public_presentation.json": {"public-presentation.v1"},
+}
+
 
 class RebuildabilityError(RuntimeError):
     """Raised when the rebuildability audit cannot proceed safely."""
@@ -214,15 +230,36 @@ def validate_spool_record(path: Path) -> Artifact:
         )
 
 
-def reference_artifact(path: Path, artifact_type: str, *, stage: str | None = None) -> Artifact:
+def reference_artifact(
+    path: Path,
+    artifact_type: str,
+    *,
+    stage: str | None = None,
+    expected_schema_versions: set[str] | None = None,
+) -> Artifact:
     payload = read_json(path)
-    validation_status = "valid" if payload is not None else "invalid"
-    reason = None if payload is not None else "artifact is not readable JSON"
+    schema_id = _schema(payload)
+    if payload is not None and expected_schema_versions is not None:
+        if schema_id is None:
+            validation_status = "invalid"
+            reason = "artifact schema_version is missing"
+        elif schema_id not in expected_schema_versions:
+            validation_status = "invalid"
+            reason = (
+                f"artifact schema_version {schema_id!r} is not supported; expected one of "
+                f"{sorted(expected_schema_versions)!r}"
+            )
+        else:
+            validation_status = "valid"
+            reason = None
+    else:
+        validation_status = "valid" if payload is not None else "invalid"
+        reason = None if payload is not None else "artifact is not readable JSON"
     return Artifact(
         artifact_type=artifact_type,
         path=path,
         hash=hash_file(path) if path.exists() and path.is_file() else None,
-        schema_id=_schema(payload),
+        schema_id=schema_id,
         run_id=_run_id(payload),
         stage=stage,
         validation_status=validation_status,
@@ -253,44 +290,97 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
             payload = read_json(path)
             if payload and payload.get("ingest_kind") == "candidate_batch":
                 artifacts.append(
-                    reference_artifact(path, "candidate_ingest_report", stage="candidate_ingest")
+                    reference_artifact(
+                        path,
+                        "candidate_ingest_report",
+                        stage="candidate_ingest",
+                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["candidate_ingest_report"],
+                    )
                 )
             elif payload and payload.get("ingest_kind") == "execution_artifacts":
                 artifacts.append(
-                    reference_artifact(path, "execution_ingest_report", stage="execution_ingest")
+                    reference_artifact(
+                        path,
+                        "execution_ingest_report",
+                        stage="execution_ingest",
+                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
+                    )
                 )
             else:
                 artifacts.append(reference_artifact(path, "candidate_ingest_report"))
             continue
         if name in {"execution-ingest-report.json", "execution-artifact-ingest-report.json"}:
             artifacts.append(
-                reference_artifact(path, "execution_ingest_report", stage="execution_ingest")
+                reference_artifact(
+                    path,
+                    "execution_ingest_report",
+                    stage="execution_ingest",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
+                )
             )
             continue
         if name in {"topic-cycle-run.json", "topic-cycle-manifest.json"}:
-            artifacts.append(reference_artifact(path, "topic_cycle_manifest", stage="topic_cycle"))
+            artifacts.append(
+                reference_artifact(
+                    path,
+                    "topic_cycle_manifest",
+                    stage="topic_cycle",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["topic_cycle_manifest"],
+                )
+            )
             continue
         if name == "scheduled-topic-cycles-run.json":
             artifacts.append(
-                reference_artifact(path, "scheduled_cycle_manifest", stage="scheduled_cycle")
+                reference_artifact(
+                    path,
+                    "scheduled_cycle_manifest",
+                    stage="scheduled_cycle",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["scheduled_cycle_manifest"],
+                )
             )
             continue
         if name in {"candidate-feedback-plan.json", "feedback-plan.json"}:
-            artifacts.append(reference_artifact(path, "feedback_plan", stage="feedback_plan"))
+            artifacts.append(
+                reference_artifact(
+                    path,
+                    "feedback_plan",
+                    stage="feedback_plan",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["feedback_plan"],
+                )
+            )
             continue
         if name in {"review-decision-apply-result.json", "review-decision-result.json"}:
             artifacts.append(
-                reference_artifact(path, "review_decision_apply_result", stage="review_apply")
+                reference_artifact(
+                    path,
+                    "review_decision_apply_result",
+                    stage="review_apply",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                        "review_decision_apply_result"
+                    ],
+                )
             )
             continue
         if name == "graph-closure-report.json":
             artifacts.append(
-                reference_artifact(path, "graph_closure_report", stage="graph_closure")
+                reference_artifact(
+                    path,
+                    "graph_closure_report",
+                    stage="graph_closure",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["graph_closure_report"],
+                )
             )
             continue
         if name == "release-readiness-report.json":
             artifacts.append(
-                reference_artifact(path, "release_readiness_report", stage="release_readiness")
+                reference_artifact(
+                    path,
+                    "release_readiness_report",
+                    stage="release_readiness",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                        "release_readiness_report"
+                    ],
+                )
             )
             continue
         if name in {
@@ -298,7 +388,15 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
             "public_presentation.json",
             "publication-artifacts-report.json",
         }:
-            artifacts.append(reference_artifact(path, "publication_artifact", stage="publication"))
+            expected = PUBLICATION_REFERENCE_SCHEMAS.get(name)
+            artifacts.append(
+                reference_artifact(
+                    path,
+                    "publication_artifact",
+                    stage="publication",
+                    expected_schema_versions=expected,
+                )
+            )
             continue
         if path.suffix == ".json":
             payload = read_json(path)
