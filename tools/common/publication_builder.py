@@ -167,12 +167,15 @@ def actual_tables(conn: sqlite3.Connection) -> set[str]:
     return {str(row["name"]) for row in rows}
 
 
-def database_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+def database_fingerprint(payload: dict[str, Any]) -> str:
+    canonical_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+    return "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
 def load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -662,9 +665,32 @@ def read_publication_snapshot(
     )
     validation_summary["status"] = "warning" if validation_summary["withheld_total"] else "passing"
 
+    fingerprint_source = {
+        "display_name": display_name_from_workspace_id(workspace_id, fallback="Knowledge Tree"),
+        "public_authorities": public_authorities,
+        "public_claims": public_claims,
+        "public_detected_entities": public_detected_entities,
+        "public_provenance_events": public_provenance_events,
+        "public_relationships": public_relationships,
+        "public_sources": public_sources,
+        "public_topics": public_topics,
+        "public_work_subjects": public_work_subjects,
+        "public_works": public_works,
+        "schema_version": schema_version,
+        "search_artifacts": {
+            "projection_records_digest": search_artifacts.projection_payload["source"].get(
+                "database_fingerprint"
+            ),
+            "results_counts": search_artifacts.results_payload["counts"],
+        },
+        "timeline_events": timeline_events,
+        "validation_summary": validation_summary,
+        "workspace_id": slugify_identifier(workspace_id, fallback="canonical_workspace"),
+    }
+
     return {
         "db_path": db_path,
-        "db_fingerprint": database_fingerprint(db_path),
+        "db_fingerprint": database_fingerprint(fingerprint_source),
         "schema_version": schema_version,
         "workspace_id": slugify_identifier(workspace_id, fallback="canonical_workspace"),
         "display_name": display_name_from_workspace_id(workspace_id, fallback="Knowledge Tree"),

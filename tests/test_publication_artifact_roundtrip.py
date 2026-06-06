@@ -161,6 +161,64 @@ def test_publication_strict_graph_closure_preflight_fails_on_orphan(tmp_path: Pa
     assert graph_report["status"] == "fail"
 
 
+def test_publication_and_search_artifacts_are_stable_across_vacuum(tmp_path: Path) -> None:
+    db_path = create_populated_canonical_store(tmp_path)
+    before_dir = tmp_path / "site-build-before"
+    after_dir = tmp_path / "site-build-after"
+
+    first = run_builder(
+        "--db",
+        str(db_path),
+        "--output-dir",
+        str(before_dir),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+        "--build-id",
+        "build-20260603T090000Z",
+        "--built-at",
+        FIXED_TIMESTAMP,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("VACUUM")
+        conn.commit()
+    finally:
+        conn.close()
+
+    second = run_builder(
+        "--db",
+        str(db_path),
+        "--output-dir",
+        str(after_dir),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+        "--build-id",
+        "build-20260603T090000Z",
+        "--built-at",
+        FIXED_TIMESTAMP,
+    )
+
+    assert second.returncode == 0, second.stdout + second.stderr
+
+    before_artifacts = sorted(
+        path.relative_to(before_dir).as_posix()
+        for path in before_dir.rglob("*")
+        if path.is_file() and path.relative_to(before_dir).as_posix() != "static/build-manifest.json"
+    )
+    after_artifacts = sorted(
+        path.relative_to(after_dir).as_posix()
+        for path in after_dir.rglob("*")
+        if path.is_file() and path.relative_to(after_dir).as_posix() != "static/build-manifest.json"
+    )
+    assert before_artifacts == after_artifacts
+    for relative_path in before_artifacts:
+        before_path = before_dir / relative_path
+        after_path = after_dir / relative_path
+        assert before_path.read_bytes() == after_path.read_bytes()
+
+
 def test_index_build_knowledge_tree_wrapper_help_and_dry_run() -> None:
     help_result = run_wrapper("--help")
     dry_run_result = run_wrapper("--dry-run", "--", "--help")
