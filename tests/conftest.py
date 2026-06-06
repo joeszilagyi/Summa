@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import socket
 
 
 KNOWN_MARKERS = {
@@ -55,3 +56,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         for marker in KNOWN_MARKERS.get("publication", ()):  # pragma: no branch
             if module_name == marker:
                 item.add_marker(pytest.mark.publication)
+
+
+@pytest.fixture(autouse=True)
+def block_network_access_for_non_network_tests(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("network_fixture") is not None:
+        return
+
+    def deny_network_access(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("network access attempted in non-network test")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network_access, raising=False)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_network_access, raising=False)
+    monkeypatch.setattr(socket, "create_connection", deny_network_access, raising=True)
