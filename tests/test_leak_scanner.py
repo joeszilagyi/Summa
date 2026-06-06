@@ -37,6 +37,36 @@ def test_public_bundle_leak_fixture_fails_with_machine_readable_findings(tmp_pat
     assert {"SECRET_MARKER", "PRIVATE_PATH", "PROMPT_OUTPUT_MARKER", "RAW_PAYLOAD_MARKER", "PRIVATE_NOTE_MARKER"} <= codes
 
 
+def test_public_bundle_scan_catches_adversarial_contexts(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "page.html").write_text(
+        "<!-- api-key=abc123 -->\n"
+        "<script>token=def456</script>\n"
+        "<div>prompt_bundle_id</div>\n",
+        encoding="utf-8",
+    )
+    (root / "notes.json").write_text(
+        '{\n'
+        '  "private_note": "BEGIN SECRET /home/joe/private/notes.txt",\n'
+        '  "excerpt": "full_text raw_payload"\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    (root / "summary.md").write_text(
+        "Authorization: Bearer leaked-token\n"
+        "Path: /Users/joe/private/summary.txt\n"
+        "prompt_output raw_text\n",
+        encoding="utf-8",
+    )
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    codes = {item["code"] for item in report["findings"]}
+    assert {"SECRET_MARKER", "PRIVATE_PATH", "PROMPT_OUTPUT_MARKER", "RAW_PAYLOAD_MARKER", "PRIVATE_NOTE_MARKER"} <= codes
+
+
 def test_clean_public_bundle_fixture_passes(tmp_path: Path) -> None:
     root = stage_fixture(tmp_path, "public_bundle_clean")
 

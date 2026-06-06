@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import permutations
 from pathlib import Path
 
 from tools.common.atomic_write import atomic_write_json
@@ -22,3 +23,19 @@ def test_atomic_write_json_canonicalizes_key_order(tmp_path: Path) -> None:
         '  "b": 2\n'
         '}\n'
     )
+
+
+def test_atomic_write_json_canonicalizes_nested_permutations(tmp_path: Path) -> None:
+    bodies: set[str] = set()
+    base_items = [
+        ("gamma", {"nested": {"b": 2, "a": 1}}),
+        ("alpha", ["one", "two"]),
+        ("beta", {"z": 3, "a": 1}),
+    ]
+    for index, item_order in enumerate(permutations(base_items)):
+        path = tmp_path / f"variant-{index}.json"
+        payload = dict(item_order)
+        atomic_write_json(path, payload)
+        bodies.add(path.read_text(encoding="utf-8"))
+
+    assert len(bodies) == 1

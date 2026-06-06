@@ -136,6 +136,16 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
         assert UNREVIEWED_SENTINEL not in body
     assert PRIVATE_SENTINEL not in export_path.read_text(encoding="utf-8")
     assert PRIVATE_SENTINEL not in presentation_path.read_text(encoding="utf-8")
+    search_projection_path = output_dir / "search" / "local_search_projection.json"
+    search_results_path = output_dir / "search" / "local_search_results.json"
+    assert search_projection_path.is_file()
+    assert search_results_path.is_file()
+    for body in (
+        search_projection_path.read_text(encoding="utf-8"),
+        search_results_path.read_text(encoding="utf-8"),
+    ):
+        assert PRIVATE_SENTINEL not in body
+        assert UNREVIEWED_SENTINEL not in body
 
 
 def test_publication_strict_graph_closure_preflight_fails_on_orphan(tmp_path: Path) -> None:
