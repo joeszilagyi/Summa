@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,25 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "http://example.invalid/outside")
             self.end_headers()
+        elif self.path == "/rate-limit":
+            body = b"too many requests\n"
+            self.send_response(429)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Retry-After", "120")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/slow":
+            time.sleep(0.5)
+            body = b"slow response\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
         else:
             self.send_response(500)
             self.end_headers()
@@ -183,6 +203,7 @@ def run_executor(
     allow_network: bool,
     dry_run: bool = False,
     max_response_bytes: int | None = None,
+    timeout_seconds: float = 2,
 ) -> subprocess.CompletedProcess[str]:
     args = [
         sys.executable,
@@ -200,7 +221,7 @@ def run_executor(
         "--created-at",
         "2026-06-03T12:34:56Z",
         "--timeout-seconds",
-        "2",
+        str(timeout_seconds),
     ]
     if dry_run:
         args.append("--dry-run")
@@ -728,6 +749,63 @@ def test_remote_http_failure_records_attempt_without_successful_extraction(tmp_p
         assert captures[0]["failure_reason"] == "http_status_404"
         assert extractions[0]["status"] == "failed"
         assert extractions[0]["failure_reason"] == "http_status_404"
+    finally:
+        server.shutdown()
+
+
+def test_remote_http_429_records_hostile_status_without_retry(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/rate-limit"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-429-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode != 0
+        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        captures = load_jsonl(output / "capture-events.jsonl")
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        assert execution["status"] == "failed"
+        assert execution["network_access_attempted"] is True
+        assert captures[0]["status"] == "failed"
+        assert captures[0]["failure_reason"] == "http_status_429"
+        assert captures[0]["http_status_code"] == 429
+        assert extractions[0]["status"] == "failed"
+        assert extractions[0]["failure_reason"] == "http_status_429"
+        assert FixtureHandler.request_paths == ["/rate-limit"]
+    finally:
+        server.shutdown()
+
+
+def test_remote_timeout_seconds_applies_to_stalled_response(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/slow"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-timeout-run"
+
+        proc = run_executor(
+            handoff=handoff,
+            output=output,
+            gate_request=gate_request,
+            allow_network=True,
+            timeout_seconds=0.1,
+        )
+
+        assert proc.returncode != 0
+        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        captures = load_jsonl(output / "capture-events.jsonl")
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        assert execution["status"] == "failed"
+        assert execution["network_access_attempted"] is True
+        assert captures[0]["status"] == "failed"
+        assert captures[0]["failure_reason"] == "network_error:TimeoutError"
+        assert extractions[0]["status"] == "failed"
+        assert extractions[0]["failure_reason"] == "network_error:TimeoutError"
+        assert FixtureHandler.request_paths == ["/slow"]
     finally:
         server.shutdown()
 
