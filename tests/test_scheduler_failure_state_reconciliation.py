@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "reconcile_scheduler_failure_state.py"
@@ -13,6 +15,7 @@ SELECTOR = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_scheduler_failure_state_reconciliation.py"
 TOPIC_VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_topic_workspace_registry.py"
 RUNTIME_LEDGER_PATH = REPO_ROOT / "tools" / "common" / "runtime_ledger.py"
+SCHEDULER_RECONCILIATION_PATH = REPO_ROOT / "tools" / "common" / "scheduler_failure_reconciliation.py"
 
 for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "validators", REPO_ROOT / "tools" / "common"):
     candidate_text = str(candidate)
@@ -25,6 +28,7 @@ def load_module(path: Path, name: str):
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -32,6 +36,10 @@ def load_module(path: Path, name: str):
 validator = load_module(VALIDATOR_PATH, "scheduler_reconciliation_validator_for_tests")
 topic_validator = load_module(TOPIC_VALIDATOR_PATH, "topic_workspace_registry_validator_for_tests")
 runtime_ledger = load_module(RUNTIME_LEDGER_PATH, "runtime_ledger_for_tests")
+scheduler_reconciliation = load_module(
+    SCHEDULER_RECONCILIATION_PATH,
+    "scheduler_failure_reconciliation_for_tests",
+)
 
 
 def run_reconciliation(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -335,6 +343,46 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
         "failure_state is blocked: attempt_count 3 reached run_budget.max_attempts 3; retryable failure count 3 exceeded retry_policy.max_retryable_failures 2",
         "attempt_count 3 reached run_budget.max_attempts 3",
     ]
+
+
+def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failures(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    append_ledger_events(
+        ledger_path,
+        [
+            build_failure_event(
+                workspace_id="workspace-a",
+                run_id="failure-run-1",
+                occurred_at="2026-06-01T02:05:00Z",
+                message="fixture timeout",
+            ),
+            build_success_event(
+                workspace_id="workspace-a",
+                run_id="success-run-2",
+                occurred_at="2026-06-01T03:05:00Z",
+            ),
+        ],
+    )
+    ledger_path.write_text(
+        ledger_path.read_text(encoding="utf-8")
+        + "{\"schema_version\": \"runtime-ledger.v1\", \"event_id\": \"broken\",\n"
+        + json.dumps(
+            build_success_event(
+                workspace_id="workspace-a",
+                run_id="success-run-3",
+                occurred_at="2026-06-01T04:05:00Z",
+            ),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        scheduler_reconciliation.SchedulerFailureReconciliationError,
+        match="could not read runtime ledger",
+    ):
+        scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
 
 
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
