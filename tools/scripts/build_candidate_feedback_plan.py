@@ -416,6 +416,7 @@ def extraction_outcome_counts(
         "SELECT capture_event_id, provenance_event_ref FROM capture_event "
         "WHERE workspace_id=? AND (" + " OR ".join(clauses) + ") ORDER BY capture_event_id"
     )
+    run_ids: set[str] = set()
     capture_rows = conn.execute(query, tuple(params)).fetchall()
     capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
     if not capture_ids:
