@@ -279,6 +279,8 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
     artifacts: list[Artifact] = []
     seen_execution_dirs: set[Path] = set()
     for path in sorted(runs_dir.rglob("*")):
+        if path.is_symlink():
+            continue
         if not path.is_file():
             continue
         name = path.name

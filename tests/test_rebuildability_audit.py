@@ -658,6 +658,36 @@ def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path)
     assert extraction_prov["tool_name"] == "tools/scripts/ingest_execution_artifacts.py"
 
 
+def test_rebuildability_audit_survives_hostile_run_directories(tmp_path: Path) -> None:
+    runs_dir = stage_hostile_runs_dir(tmp_path)
+    report_path = tmp_path / "report.json"
+
+    proc = run_audit(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "validate_only",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = load_json(report_path)
+    assert report["final_status"] == "validation_only"
+    assert report["artifacts_missing"]
+    assert any(item["validation_status"] == "invalid" for item in report["artifacts_discovered"])
+    assert any(
+        item["artifact_type"] == "review_decision_apply_result" and item["validation_status"] == "invalid"
+        for item in report["artifacts_discovered"]
+    )
+    outside_path = (tmp_path / "outside" / "escaped-gather-candidate-batch.json").resolve()
+    assert not any(item["path"] == str(outside_path) for item in report["artifacts_discovered"])
+
+
 def test_missing_replay_support_is_incomplete_support_not_false_success(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     review_dir = runs_dir / "review"
