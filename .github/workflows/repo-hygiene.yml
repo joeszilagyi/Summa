@@ -107,4 +107,4 @@ jobs:
       - name: Install test runner
         run: python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"
       - name: Run schema and validator regression smoke with coverage
-        run: python -m pytest -q --cov=tools/validators --cov=tools/common --cov-report=term-missing --cov-report=xml
+        run: python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml

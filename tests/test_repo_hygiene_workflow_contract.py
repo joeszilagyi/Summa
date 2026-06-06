@@ -16,3 +16,11 @@ def test_repo_hygiene_workflow_tests_all_declared_python_versions() -> None:
     assert '- "3.12"' in body
     assert '- "3.13"' in body
     assert 'python-version: ${{ matrix.python-version }}' in body
+
+
+def test_repo_hygiene_workflow_measures_the_full_tools_tree() -> None:
+    body = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "--cov=tools" in body
+    assert "--cov=tools/validators" not in body
+    assert "--cov=tools/common" not in body
