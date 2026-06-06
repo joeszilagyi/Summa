@@ -267,11 +267,11 @@ def test_local_doctor_text_summary_cli(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert "schema_version=local-doctor-report.v1" in proc.stdout
+    assert 'schema_version="local-doctor-report.v1"' in proc.stdout
     assert "check.public_private_sharing_gate=" in proc.stdout
-    assert "canonical_store.status=" in proc.stdout
-    assert "loop_health.status=" in proc.stdout
-    assert "graph_closure.status=" in proc.stdout
+    assert 'canonical_store.status="' in proc.stdout
+    assert 'loop_health.status="' in proc.stdout
+    assert 'graph_closure.status="' in proc.stdout
 
 
 def test_local_doctor_cli_writes_report_without_fixing(tmp_path: Path) -> None:

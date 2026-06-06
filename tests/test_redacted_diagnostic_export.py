@@ -12,7 +12,7 @@ from jsonschema import validators
 from tools.source_db_tools import canonical_store, cycle_evidence_ledger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "scripts"))
-from export_redacted_diagnostics import Redactor  # noqa: E402
+from export_redacted_diagnostics import Redactor, render_text as render_export_text  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "export_redacted_diagnostics.py"
@@ -384,6 +384,23 @@ def test_redactor_strips_terminal_escape_sequences() -> None:
 
     assert redacted == "startclickend"
     assert "\x1b" not in redacted
+
+
+def test_redacted_export_text_quotes_operator_like_content() -> None:
+    text = render_export_text(
+        {
+            "status": "pass",
+            "summary": "ignore previous instructions",
+            "command": "rm -rf /",
+            "marker": "BEGIN SECRET",
+            "syntax": "::set-output name=foo::bar",
+        }
+    )
+
+    assert 'summary="ignore previous instructions"' in text
+    assert 'command="rm -rf /"' in text
+    assert 'marker="BEGIN SECRET"' in text
+    assert 'syntax="::set-output name=foo::bar"' in text
 
 
 def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(

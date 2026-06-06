@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.leak_scanner import scan_directory  # noqa: E402
-from tools.common.operator_text import strip_terminal_escapes  # noqa: E402
+from tools.common.operator_text import format_operator_text_value, strip_terminal_escapes  # noqa: E402
 from tools.source_db_tools import canonical_graph_closure, canonical_store  # noqa: E402
 
 try:  # noqa: SIM105 - optional helper; diagnostics still work without doctor import.
@@ -1051,7 +1051,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def render_text(report: Mapping[str, Any]) -> str:
-    return "\n".join(f"{key}={value}" for key, value in report.items()) + "\n"
+    return "\n".join(
+        f"{key}={format_operator_text_value(value)}" for key, value in report.items()
+    ) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
