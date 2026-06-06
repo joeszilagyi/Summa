@@ -457,14 +457,25 @@ def test_missing_allow_network_denies_without_fetch(tmp_path: Path) -> None:
         handoff = make_handoff(tmp_path, [url])
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-denied-run"
+        expected_handoff_hash = hashlib.sha256(handoff.read_bytes()).hexdigest()
 
         proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=False)
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        denial_record = json.loads((output / "denial-record.json").read_text(encoding="utf-8"))
         assert execution["status"] == "denied"
+        assert execution["adapter_id"] == "runtime_remote_url_manifest"
+        assert execution["input_handoff_hash"] == expected_handoff_hash
+        assert execution["canonical_persistence_attempted"] is False
         assert execution["network_access_attempted"] is False
         assert execution["network_access_denied_reason"] == "explicit --allow-network is required for remote execution"
+        assert denial_record["status"] == "denied"
+        assert denial_record["adapter_id"] == "runtime_remote_url_manifest"
+        assert denial_record["input_handoff_hash"] == expected_handoff_hash
+        assert denial_record["canonical_persistence_attempted"] is False
+        assert denial_record["network_access_denied_reason"] == "explicit --allow-network is required for remote execution"
+        assert denial_record["considered_urls"] == [url]
         assert load_jsonl(output / "capture-events.jsonl") == []
         assert FixtureHandler.request_paths == []
     finally:
