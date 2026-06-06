@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -19,6 +20,18 @@ def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def snapshot_paths(paths: list[Path]) -> dict[Path, tuple[int, str | None, str | None]]:
+    snapshot: dict[Path, tuple[int, str | None, str | None]] = {}
+    for path in paths:
+        if path.is_symlink():
+            snapshot[path] = (path.stat().st_size, None, path.readlink().as_posix())
+        elif path.is_file():
+            snapshot[path] = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest(), None)
+        else:
+            snapshot[path] = (path.stat().st_size, None, None)
+    return snapshot
 
 
 def write_adapter(
@@ -111,14 +124,16 @@ def write_adapter(
 def test_structured_data_directory_plans_csv_json_jsonl_and_xml_without_payload_leakage(tmp_path: Path) -> None:
     adapter_path = write_adapter(tmp_path, input_family="local_directory", local_path=str(FIXTURE_ROOT))
     handoff_jsonl = tmp_path / "handoff.jsonl"
-    input_paths = sorted(path for path in FIXTURE_ROOT.rglob("*") if path.is_file())
+    input_paths = sorted(path for path in FIXTURE_ROOT.rglob("*"))
     input_paths.append(adapter_path)
-    mtimes_before = {path: path.stat().st_mtime_ns for path in input_paths}
+    tree_before = sorted(path.relative_to(FIXTURE_ROOT).as_posix() for path in input_paths if path != adapter_path)
+    snapshot_before = snapshot_paths(input_paths)
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert {path: path.stat().st_mtime_ns for path in input_paths} == mtimes_before
+    assert sorted(path.relative_to(FIXTURE_ROOT).as_posix() for path in input_paths if path != adapter_path) == tree_before
+    assert snapshot_paths(input_paths) == snapshot_before
 
     payload = json.loads(proc.stdout)
     assert payload["schema_version"] == "structured-data-source-adapter-plan.v1"

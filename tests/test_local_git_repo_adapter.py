@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -35,6 +36,18 @@ def git(worktree: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def snapshot_paths(paths: list[Path]) -> dict[Path, tuple[int, str | None, str | None]]:
+    snapshot: dict[Path, tuple[int, str | None, str | None]] = {}
+    for path in paths:
+        if path.is_symlink():
+            snapshot[path] = (path.stat().st_size, None, path.readlink().as_posix())
+        elif path.is_file():
+            snapshot[path] = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest(), None)
+        else:
+            snapshot[path] = (path.stat().st_size, None, None)
+    return snapshot
 
 
 def init_fixture_repo(tmp_path: Path, *, dirty: bool = False, include_remote_url: bool = False) -> Path:
@@ -178,12 +191,16 @@ def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path
 
     input_paths = sorted(path for path in repo_dir.rglob("*") if ".git" not in path.parts)
     input_paths.append(adapter_path)
-    mtimes_before = {path: path.stat().st_mtime_ns for path in input_paths}
+    tree_before = sorted(path.relative_to(scenario_dir).as_posix() for path in input_paths)
+    snapshot_before = snapshot_paths(input_paths)
+    git_status_before = git(repo_dir, "status", "--porcelain").stdout
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert {path: path.stat().st_mtime_ns for path in input_paths} == mtimes_before
+    assert sorted(path.relative_to(scenario_dir).as_posix() for path in input_paths) == tree_before
+    assert snapshot_paths(input_paths) == snapshot_before
+    assert git(repo_dir, "status", "--porcelain").stdout == git_status_before
 
     payload = json.loads(proc.stdout)
     expected_commit = git(repo_dir, "rev-parse", "--verify", "main^{commit}").stdout.strip()
