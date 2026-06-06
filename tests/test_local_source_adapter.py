@@ -54,15 +54,21 @@ def test_local_directory_adapter_plans_candidates_and_handoff_records(tmp_path: 
     assert payload["blocker_count"] == 0
     assert payload["handoff_record_count"] == 3
     assert payload["handoff_validation"]["ok"] is True
-    assert {entry["relative_path"] for entry in payload["candidates"]} == {
-        "nested/report.pdf",
+    assert [entry["relative_path"] for entry in payload["candidates"]] == [
         "nested/data.json",
+        "nested/report.pdf",
         "top/notes.pdf",
-    }
+    ]
     assert any(entry["reason"] == "excluded" for entry in payload["skipped_entries"])
 
     records = [json.loads(line) for line in handoff_jsonl.read_text(encoding="utf-8").splitlines()]
     assert records == payload["handoff_records"]
+    assert [record["sequence"] for record in records] == [1, 2, 3]
+    assert [record["relative_path"] for record in records] == [
+        "nested/data.json",
+        "nested/report.pdf",
+        "top/notes.pdf",
+    ]
     first_record = records[0]
     assert first_record["schema_version"] == "source-adapter-handoff.v1"
     assert first_record["record_family"] == "capture"
@@ -83,6 +89,97 @@ def test_local_file_adapter_handles_single_file_root(tmp_path: Path) -> None:
     assert payload["handoff_record_count"] == 1
     record = payload["handoff_records"][0]
     assert record["source_specific"] == {"source_filename": "single.pdf"}
+
+
+def test_local_directory_adapter_rejects_symlink_escape_and_keeps_binary_bytes_as_candidates(
+    tmp_path: Path,
+) -> None:
+    corpus_root = tmp_path / "corpus"
+    corpus_root.mkdir()
+    payload_path = corpus_root / "payload.txt"
+    payload_path.write_bytes(b"\x00binary\xffpayload\n")
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_secret = outside_dir / "secret.txt"
+    outside_secret.write_text("secret\n", encoding="utf-8")
+    symlink_path = corpus_root / "escape.txt"
+    symlink_path.symlink_to(outside_secret)
+    adapter_path = tmp_path / "source_adapter.json"
+    adapter_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "source-adapter.v1",
+                "adapter_id": "runtime_binary_containment",
+                "display_name": "Runtime binary containment",
+                "workspace_id": "alpha_subject",
+                "description": "Fixture adapter with binary and symlink containment cases.",
+                "input_family": "local_directory",
+                "locator": {
+                    "local_path": "corpus",
+                    "include_globs": ["**/*.txt"],
+                },
+                "content_profile": {
+                    "content_kinds": ["text", "binary"],
+                    "hazard_flags": [],
+                },
+                "provenance": {
+                    "discovery_provenance": "test fixture",
+                    "acquisition_method": "manual_drop",
+                    "source_description": "Binary file and symlink containment fixture.",
+                },
+                "rights_and_storage": {
+                    "payload_storage_policy_class": "private_only",
+                    "metadata_storage_policy_class": "tracked_derived",
+                    "rights_posture": "private_local_only",
+                },
+                "automation_posture": "operator_review_required",
+                "normalized_handoff": {
+                    "record_family": "capture",
+                    "batch_unit": "per_file",
+                    "preserve_fields": [
+                        "original_locator",
+                        "discovery_provenance",
+                        "rights_posture",
+                        "transform_lineage",
+                    ],
+                    "source_specific_fields": ["relative_path", "source_filename"],
+                },
+                "transform_lineage": [
+                    {
+                        "step_id": "handoff",
+                        "step_kind": "emit_handoff",
+                        "description": "Emit local capture handoff.",
+                        "deterministic": True,
+                        "review_required": True,
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["candidate_count"] == 1
+    assert payload["blocker_count"] == 0
+    assert payload["skipped_count"] == 1
+    assert payload["candidates"] == [
+        {
+            "resolved_source_path": str(payload_path),
+            "relative_path": "payload.txt",
+            "size_bytes": payload_path.stat().st_size,
+        }
+    ]
+    assert payload["skipped_entries"][0]["reason"] == "symlink_not_allowed"
+    assert payload["handoff_records"][0]["source_specific"] == {
+        "relative_path": "payload.txt",
+        "source_filename": "payload.txt",
+    }
 
 
 def test_local_directory_adapter_reports_blockers_for_missing_or_unmatched_roots(tmp_path: Path) -> None:

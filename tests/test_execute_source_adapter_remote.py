@@ -732,6 +732,45 @@ def test_remote_http_failure_records_attempt_without_successful_extraction(tmp_p
         server.shutdown()
 
 
+def test_remote_partial_failure_remains_coherent_and_validator_clean(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        urls = [f"{base_url}/text", f"{base_url}/missing"]
+        handoff = make_handoff(tmp_path, urls)
+        gate_request = make_gate_request(tmp_path, urls=urls, allowed_prefix=base_url)
+        output = tmp_path / "remote-partial-failure-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode != 0
+        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        captures = load_jsonl(output / "capture-events.jsonl")
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        assert execution["status"] == "failed"
+        assert execution["network_access_attempted"] is True
+        assert execution["urls_attempted"] == 2
+        assert execution["urls_succeeded"] == 1
+        assert execution["urls_failed"] == 1
+        assert captures[0]["status"] == "completed"
+        assert captures[1]["status"] == "failed"
+        assert extractions[0]["status"] == "completed"
+        assert extractions[1]["status"] == "failed"
+        assert (output / captures[0]["transient_payload_path"]).read_bytes() == b"remote fixture text\n"
+        assert captures[1]["failure_reason"] == "http_status_404"
+        assert extractions[1]["failure_reason"] == "http_status_404"
+
+        validator_proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(output)],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+    finally:
+        server.shutdown()
+
+
 def test_redirect_inside_allowlist_is_captured(tmp_path: Path) -> None:
     server, base_url = fixture_server()
     try:
