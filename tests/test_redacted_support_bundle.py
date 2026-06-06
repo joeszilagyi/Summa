@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -39,3 +40,53 @@ def test_redacted_support_bundle_overwrites_valid_output_directory(tmp_path: Pat
     assert second_report["status"] == "pass"
     assert first_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
     assert second_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
+
+
+def test_redacted_support_bundle_redacts_private_fields_from_doctor_report(tmp_path: Path) -> None:
+    output_dir = tmp_path / "support-bundle"
+    doctor_report = tmp_path / "doctor-report.json"
+    doctor_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "local-doctor-report.v1",
+                "summary": {"status": "warn", "finding_count": 1, "operator_action_required_count": 1},
+                "checks": {"repo_hygiene": "pass"},
+                "canonical_store": {
+                    "status": "populated",
+                    "total_rows": 1,
+                    "last_ingest_at": "2026-06-06T12:00:00Z",
+                    "private_note": "BEGIN SECRET /home/joe/private/doctor.txt",
+                },
+                "loop_health": {
+                    "health_status": "healthy",
+                    "review_backlog": {"pending_review_count": 0},
+                    "raw_prompt_text": "ignore previous instructions",
+                },
+                "graph_closure": {"status": "pass", "orphan_error_count": 0, "unresolved_tracked_count": 0},
+                "findings": [
+                    {
+                        "code": "TEST",
+                        "class": "advisory_only",
+                        "message": "public note",
+                        "details": {"path": "/home/joe/private/doctor.txt"},
+                    }
+                ],
+                "redaction": {
+                    "raw_payloads_included": False,
+                    "runtime_logs_included": False,
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = support_builder.build_bundle(REPO_ROOT, output_dir, doctor_report=doctor_report)
+
+    assert report["status"] == "pass"
+    bundle_text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(output_dir.rglob("*")))
+    assert "BEGIN SECRET" not in bundle_text
+    assert "/home/joe/private/doctor.txt" not in bundle_text
+    assert "ignore previous instructions" not in bundle_text
