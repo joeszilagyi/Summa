@@ -729,3 +729,29 @@ def test_migration_sql_contains_no_destructive_statements() -> None:
     ).upper()
     assert "DROP TABLE" not in sql_text
     assert "CREATE TABLE AS SELECT" not in sql_text
+
+
+def test_check_mode_survives_stale_wal_and_shm_sidecars(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO work (
+                  work_key_v1, work_type, title, review_state, created_at, record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "work:wal-sidecar",
+                    "article",
+                    "WAL Sidecar Fixture",
+                    "needs_review",
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        shm_path = db_path.with_name(db_path.name + "-shm")
