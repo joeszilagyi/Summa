@@ -1088,6 +1088,17 @@ def _structured_numeric_value(payload: dict[str, Any]) -> float | int | None:
     return None
 
 
+def _claim_is_excluded_from_structured_contradictions(row: sqlite3.Row | None) -> bool:
+    if row is None:
+        return False
+    review_state = (
+        canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE
+        if row["review_state"] is None
+        else str(row["review_state"]).strip().lower()
+    )
+    return review_state in CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES
+
+
 def _claim_about_ref(row: sqlite3.Row, payload: dict[str, Any]) -> str | None:
     about_object_ref = row["about_object_ref"]
     if isinstance(about_object_ref, str) and about_object_ref.strip():
@@ -1472,8 +1483,22 @@ def detect_relational_contradictions_for_relationship(
     source_relationship_id: int,
     changed_at: str,
     source_run_id: str | None = None,
+    relationship_row: sqlite3.Row | None = None,
+    subject_facts: EndpointFacts | None = None,
+    object_facts: EndpointFacts | None = None,
 ) -> dict[str, Any]:
-    row = _load_relationship_row(conn, source_relationship_id)
+    if relationship_row is None:
+        relationship_row = _load_relationship_row(conn, source_relationship_id)
+    else:
+        loaded_row_id = int(relationship_row["source_relationship_id"])
+        if loaded_row_id != source_relationship_id:
+            raise CanonicalReconciliationError(
+                "relationship_row source_relationship_id does not match requested row"
+            )
+    row = relationship_row
+    if row is None:
+        return {"results": [], "skipped": ["relationship row is missing"]}
+
     predicate = str(row["predicate"]).strip().casefold()
     if predicate == CONTRADICTION_PREDICATE:
         return {"results": [], "skipped": ["contradiction relationship rows are not checked"]}
@@ -1486,16 +1511,18 @@ def detect_relational_contradictions_for_relationship(
     if not isinstance(to_object_ref, str) or not to_object_ref.strip():
         return {"results": [], "skipped": ["relationship has no to_object_ref"]}
     workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
-    subject_facts = load_relationship_endpoint_facts(
-        conn,
-        object_ref=str(row["from_object_ref"]),
-        workspace_id=workspace_id,
-    )
-    object_facts = load_relationship_endpoint_facts(
-        conn,
-        object_ref=to_object_ref,
-        workspace_id=workspace_id,
-    )
+    if subject_facts is None:
+        subject_facts = load_relationship_endpoint_facts(
+            conn,
+            object_ref=str(row["from_object_ref"]),
+            workspace_id=workspace_id,
+        )
+    if object_facts is None:
+        object_facts = load_relationship_endpoint_facts(
+            conn,
+            object_ref=to_object_ref,
+            workspace_id=workspace_id,
+        )
     contradictions, skipped = evaluate_temporal_relation_constraint(
         row=row,
         subject_facts=subject_facts,
@@ -1545,10 +1572,37 @@ def run_relational_constraint_pass(
         "relational_constraints_skipped": 0,
         "relational_contradictions_detected": 0,
     }
+    endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] = {}
+
+    def endpoint_facts_for_cache(
+        object_ref: str,
+        workspace_id: str | None,
+    ) -> EndpointFacts:
+        key = (workspace_id, object_ref)
+        if key not in endpoint_facts_cache:
+            endpoint_facts_cache[key] = load_relationship_endpoint_facts(
+                conn,
+                object_ref=object_ref,
+                workspace_id=workspace_id,
+            )
+        return endpoint_facts_cache[key]
+
     for row in rows:
         predicate = str(row["predicate"]).strip().casefold()
         if predicate not in RELATIONAL_CONSTRAINTS:
             continue
+        workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
+        to_object_ref = row["to_object_ref"]
+        if not isinstance(to_object_ref, str):
+            continue
+        subject_facts = endpoint_facts_for_cache(
+            object_ref=str(row["from_object_ref"]),
+            workspace_id=workspace_id,
+        )
+        object_facts = endpoint_facts_for_cache(
+            object_ref=to_object_ref,
+            workspace_id=workspace_id,
+        )
         if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(
             conn, row
         ):
@@ -1558,12 +1612,222 @@ def run_relational_constraint_pass(
         result = detect_relational_contradictions_for_relationship(
             conn,
             source_relationship_id=int(row["source_relationship_id"]),
+            relationship_row=row,
+            subject_facts=subject_facts,
+            object_facts=object_facts,
             changed_at=changed_at,
             source_run_id=source_run_id,
         )
         counts["relational_contradictions_detected"] += len(result["results"])
         counts["relational_constraints_skipped"] += len(result["skipped"])
     return counts
+
+
+def _structured_contradictions_for_claim_group(
+    conn: sqlite3.Connection,
+    *,
+    claim_rows: list[sqlite3.Row],
+    provenance_event_ref: str,
+    changed_at: str,
+    source_run_id: str | None = None,
+    include_excluded_claim_states: bool = False,
+) -> list[canonical_store.CanonicalWriteResult]:
+    results: list[canonical_store.CanonicalWriteResult] = []
+    payloads: dict[int, dict[str, Any] | None] = {}
+    for row in claim_rows:
+        payloads[int(row["source_claim_id"])] = _structured_claim_payload(row)
+
+    claims_for_key: dict[tuple[str | None, str, str], list[sqlite3.Row]] = {}
+
+    for left_row in claim_rows:
+        left_claim_id = int(left_row["source_claim_id"])
+        left_payload = payloads[left_claim_id]
+        if left_payload is None:
+            continue
+
+        left_about_ref = _claim_about_ref(left_row, left_payload)
+        left_claim_type = str(left_row["claim_type"] or left_payload.get("claim_type") or "").strip()
+        left_workspace_id = None if left_row["workspace_id"] is None else str(left_row["workspace_id"])
+
+        left_numeric = _structured_numeric_value(left_payload)
+        if left_numeric is not None and left_claim_type and left_about_ref is not None:
+            claim_key = (left_workspace_id, left_about_ref, left_claim_type)
+            peer_rows = claims_for_key.get(claim_key)
+            if peer_rows is None:
+                peer_rows = _claims_for_ref_and_type(
+                    conn,
+                    about_object_ref=left_about_ref,
+                    claim_type=left_claim_type,
+                    workspace_id=left_workspace_id,
+                    excluded_review_states=()
+                    if include_excluded_claim_states
+                    else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                )
+                claims_for_key[claim_key] = peer_rows
+            for right_row in peer_rows:
+                right_claim_id = int(right_row["source_claim_id"])
+                right_payload = payloads.get(right_claim_id)
+                if right_payload is None:
+                    right_payload = _structured_claim_payload(right_row)
+                    payloads[right_claim_id] = right_payload
+                if right_claim_id == left_claim_id:
+                    continue
+                right_numeric = _structured_numeric_value(right_payload)
+                if right_numeric is None or right_numeric == left_numeric:
+                    continue
+                right_about_ref = _claim_about_ref(right_row, right_payload)
+                if right_about_ref != left_about_ref:
+                    continue
+                left_id = min(left_claim_id, right_claim_id)
+                right_id = max(left_claim_id, right_claim_id)
+                left_value = left_numeric if left_id == left_claim_id else right_numeric
+                right_value = right_numeric if left_id == left_claim_id else left_numeric
+                rationale = (
+                    f"structured claim conflict for {left_about_ref} {left_claim_type}: "
+                    f"{left_value} versus {right_value}"
+                )
+                should_persist = not (
+                    _claim_is_excluded_from_structured_contradictions(left_row)
+                    or _claim_is_excluded_from_structured_contradictions(right_row)
+                )
+                if should_persist:
+                    result = record_source_contradiction(
+                        conn,
+                        offending_namespace="source_claim",
+                        offending_id=left_id,
+                        target_object_ref=_source_claim_ref(right_id),
+                        provenance_event_ref=provenance_event_ref,
+                        workspace_id=left_workspace_id,
+                        rule_id=QUANTITY_CONFLICT_RULE,
+                        rationale=rationale,
+                        changed_at=changed_at,
+                        source_run_id=source_run_id,
+                    )
+                    update_review_state(
+                        conn,
+                        target_namespace="source_claim",
+                        target_id=right_id,
+                        new_state=RECONCILIATION_REVIEW_STATE,
+                        changed_at=changed_at,
+                        reason=QUANTITY_CONFLICT_RULE,
+                        note=rationale,
+                        source_namespace="source_relationship",
+                        source_id=str(result.row_id),
+                        source_run_id=source_run_id,
+                    )
+                else:
+                    result = canonical_store.CanonicalWriteResult(
+                        table="source_relationship",
+                        row_id=-1,
+                        key=None,
+                        created=False,
+                    )
+                results.append(result)
+
+        relation_type = left_claim_type.casefold()
+        left_predicate = str(left_payload.get("predicate") or "").strip().casefold()
+        if relation_type in {"taught_by", "relationship_taught_by"} or left_predicate == "taught_by":
+            subject_ref = left_about_ref
+            object_ref = left_payload.get("to_object_ref") or left_payload.get("object_object_ref")
+            if (
+                isinstance(subject_ref, str)
+                and subject_ref
+                and isinstance(object_ref, str)
+                and object_ref
+            ):
+                birth_rows = _claims_for_ref_and_type(
+                    conn,
+                    about_object_ref=subject_ref,
+                    claim_type="birth_year",
+                    workspace_id=left_workspace_id,
+                    excluded_review_states=()
+                    if include_excluded_claim_states
+                    else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                )
+                death_rows = _claims_for_ref_and_type(
+                    conn,
+                    about_object_ref=object_ref,
+                    claim_type="death_year",
+                    workspace_id=left_workspace_id,
+                    excluded_review_states=()
+                    if include_excluded_claim_states
+                    else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                )
+                for birth_row in birth_rows:
+                    birth_payload = _structured_claim_payload(birth_row)
+                    birth_year = (
+                        None
+                        if birth_payload is None
+                        else normalize_year(birth_payload.get("year", birth_payload.get("value")))
+                    )
+                    if birth_year is None:
+                        continue
+                    for death_row in death_rows:
+                        death_payload = _structured_claim_payload(death_row)
+                        death_year = (
+                            None
+                            if death_payload is None
+                            else normalize_year(
+                                death_payload.get("year", death_payload.get("value"))
+                            )
+                        )
+                        if death_year is None or birth_year <= death_year:
+                            continue
+                        rationale = (
+                            f"claim says {subject_ref} was taught_by {object_ref}, "
+                            f"but subject birth year {birth_year} is after object death year {death_year}"
+                        )
+                        should_persist = not (
+                            _claim_is_excluded_from_structured_contradictions(left_row)
+                            or _claim_is_excluded_from_structured_contradictions(birth_row)
+                            or _claim_is_excluded_from_structured_contradictions(death_row)
+                        )
+                        if should_persist:
+                            result = record_source_contradiction(
+                                conn,
+                                offending_namespace="source_claim",
+                                offending_id=left_claim_id,
+                                target_object_ref=_source_claim_ref(int(death_row["source_claim_id"])),
+                                provenance_event_ref=provenance_event_ref,
+                                workspace_id=left_workspace_id,
+                                rule_id=TAUGHT_BY_IMPOSSIBLE_RULE,
+                                rationale=rationale,
+                                changed_at=changed_at,
+                                source_run_id=source_run_id,
+                            )
+                        else:
+                            result = canonical_store.CanonicalWriteResult(
+                                table="source_relationship",
+                                row_id=-1,
+                                key=None,
+                                created=False,
+                            )
+                        relation_row = conn.execute(
+                            """
+                            SELECT source_relationship_id
+                            FROM source_relationship
+                            WHERE provenance_event_ref=? AND from_object_ref=? AND to_object_ref=? AND predicate='taught_by'
+                            ORDER BY source_relationship_id
+                            LIMIT 1
+                            """,
+                            (provenance_event_ref, subject_ref, object_ref),
+                        ).fetchone()
+                        if relation_row is not None and should_persist:
+                            update_review_state(
+                                conn,
+                                target_namespace="source_relationship",
+                                target_id=int(relation_row["source_relationship_id"]),
+                                new_state=RECONCILIATION_REVIEW_STATE,
+                                changed_at=changed_at,
+                                reason=TAUGHT_BY_IMPOSSIBLE_RULE,
+                                note=rationale,
+                                source_namespace="source_relationship",
+                                source_id=str(result.row_id),
+                                source_run_id=source_run_id,
+                            )
+                        results.append(result)
+                        return results
+    return results
 
 
 def detect_structured_contradictions_for_claim(
@@ -1575,151 +1839,14 @@ def detect_structured_contradictions_for_claim(
     source_run_id: str | None = None,
 ) -> list[canonical_store.CanonicalWriteResult]:
     row = _load_claim_row(conn, source_claim_id)
-    payload = _structured_claim_payload(row)
-    if payload is None:
-        return []
-    claim_type = str(row["claim_type"] or payload.get("claim_type") or "").strip()
-    if not claim_type:
-        return []
-    results: list[canonical_store.CanonicalWriteResult] = []
-    workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
-    about_object_ref = _claim_about_ref(row, payload)
-
-    numeric_value = _structured_numeric_value(payload)
-    if about_object_ref and numeric_value is not None:
-        peers = _claims_for_ref_and_type(
-            conn,
-            about_object_ref=about_object_ref,
-            claim_type=claim_type,
-            workspace_id=workspace_id,
-        )
-        for peer in peers:
-            peer_id = int(peer["source_claim_id"])
-            if peer_id == source_claim_id:
-                continue
-            peer_payload = _structured_claim_payload(peer)
-            if peer_payload is None:
-                continue
-            peer_numeric = _structured_numeric_value(peer_payload)
-            if peer_numeric is None or peer_numeric == numeric_value:
-                continue
-            left_id = min(source_claim_id, peer_id)
-            right_id = max(source_claim_id, peer_id)
-            left_value = numeric_value if left_id == source_claim_id else peer_numeric
-            right_value = peer_numeric if left_id == source_claim_id else numeric_value
-            rationale = (
-                f"structured claim conflict for {about_object_ref} {claim_type}: "
-                f"{left_value} versus {right_value}"
-            )
-            result = record_source_contradiction(
-                conn,
-                offending_namespace="source_claim",
-                offending_id=left_id,
-                target_object_ref=_source_claim_ref(right_id),
-                provenance_event_ref=provenance_event_ref,
-                workspace_id=workspace_id,
-                rule_id=QUANTITY_CONFLICT_RULE,
-                rationale=rationale,
-                changed_at=changed_at,
-                source_run_id=source_run_id,
-            )
-            update_review_state(
-                conn,
-                target_namespace="source_claim",
-                target_id=right_id,
-                new_state=RECONCILIATION_REVIEW_STATE,
-                changed_at=changed_at,
-                reason=QUANTITY_CONFLICT_RULE,
-                note=rationale,
-                source_namespace="source_relationship",
-                source_id=str(result.row_id),
-                source_run_id=source_run_id,
-            )
-            results.append(result)
-
-    relation_type = claim_type.casefold()
-    predicate = str(payload.get("predicate") or "").strip().casefold()
-    if relation_type in {"taught_by", "relationship_taught_by"} or predicate == "taught_by":
-        subject_ref = about_object_ref
-        object_ref = payload.get("to_object_ref") or payload.get("object_object_ref")
-        if (
-            isinstance(subject_ref, str)
-            and subject_ref
-            and isinstance(object_ref, str)
-            and object_ref
-        ):
-            birth_rows = _claims_for_ref_and_type(
-                conn,
-                about_object_ref=subject_ref,
-                claim_type="birth_year",
-                workspace_id=workspace_id,
-            )
-            death_rows = _claims_for_ref_and_type(
-                conn,
-                about_object_ref=object_ref,
-                claim_type="death_year",
-                workspace_id=workspace_id,
-            )
-            for birth_row in birth_rows:
-                birth_payload = _structured_claim_payload(birth_row)
-                birth_year = (
-                    None
-                    if birth_payload is None
-                    else normalize_year(birth_payload.get("year", birth_payload.get("value")))
-                )
-                if birth_year is None:
-                    continue
-                for death_row in death_rows:
-                    death_payload = _structured_claim_payload(death_row)
-                    death_year = (
-                        None
-                        if death_payload is None
-                        else normalize_year(death_payload.get("year", death_payload.get("value")))
-                    )
-                    if death_year is None or birth_year <= death_year:
-                        continue
-                    rationale = (
-                        f"claim says {subject_ref} was taught_by {object_ref}, "
-                        f"but subject birth year {birth_year} is after object death year {death_year}"
-                    )
-                    result = record_source_contradiction(
-                        conn,
-                        offending_namespace="source_claim",
-                        offending_id=source_claim_id,
-                        target_object_ref=_source_claim_ref(int(death_row["source_claim_id"])),
-                        provenance_event_ref=provenance_event_ref,
-                        workspace_id=workspace_id,
-                        rule_id=TAUGHT_BY_IMPOSSIBLE_RULE,
-                        rationale=rationale,
-                        changed_at=changed_at,
-                        source_run_id=source_run_id,
-                    )
-                    relation_row = conn.execute(
-                        """
-                        SELECT source_relationship_id
-                        FROM source_relationship
-                        WHERE provenance_event_ref=? AND from_object_ref=? AND to_object_ref=? AND predicate='taught_by'
-                        ORDER BY source_relationship_id
-                        LIMIT 1
-                        """,
-                        (provenance_event_ref, subject_ref, object_ref),
-                    ).fetchone()
-                    if relation_row is not None:
-                        update_review_state(
-                            conn,
-                            target_namespace="source_relationship",
-                            target_id=int(relation_row["source_relationship_id"]),
-                            new_state=RECONCILIATION_REVIEW_STATE,
-                            changed_at=changed_at,
-                            reason=TAUGHT_BY_IMPOSSIBLE_RULE,
-                            note=rationale,
-                            source_namespace="source_relationship",
-                            source_id=str(result.row_id),
-                            source_run_id=source_run_id,
-                        )
-                    results.append(result)
-                    return results
-    return results
+    return _structured_contradictions_for_claim_group(
+        conn,
+        claim_rows=[row],
+        provenance_event_ref=provenance_event_ref,
+        changed_at=changed_at,
+        source_run_id=source_run_id,
+        include_excluded_claim_states=True,
+    )
 
 
 def run_reconciliation_pass_for_ingest(
@@ -1812,18 +1939,26 @@ def run_reconciliation_pass_for_ingest(
 
     claim_rows = conn.execute(
         """
-        SELECT source_claim_id
+        SELECT *
         FROM source_claim
         WHERE provenance_event_ref=?
         ORDER BY source_claim_id
         """,
         (provenance_event_ref,),
     ).fetchall()
+    grouped_claim_rows: dict[tuple[str | None, str | None, str], list[sqlite3.Row]] = {}
+    for claim_row in claim_rows:
+        about_object_ref = None if claim_row["about_object_ref"] is None else str(claim_row["about_object_ref"])
+        claim_type = "" if claim_row["claim_type"] is None else str(claim_row["claim_type"])
+        workspace_key = None if claim_row["workspace_id"] is None else str(claim_row["workspace_id"])
+        key = (workspace_key, about_object_ref, claim_type)
+        grouped_claim_rows.setdefault(key, []).append(claim_row)
+
     seen_relationship_rows: set[int] = set()
-    for row in claim_rows:
-        results = detect_structured_contradictions_for_claim(
+    for claim_group in grouped_claim_rows.values():
+        results = _structured_contradictions_for_claim_group(
             conn,
-            source_claim_id=int(row["source_claim_id"]),
+            claim_rows=claim_group,
             provenance_event_ref=provenance_event_ref,
             changed_at=changed_at,
             source_run_id=source_run_id,
