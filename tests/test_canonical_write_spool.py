@@ -345,6 +345,49 @@ def test_replay_dry_run_does_not_mutate_db_or_spool(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_path: Path) -> None:
+    spool_dir = tmp_path / "spool"
+    spool_dir.mkdir()
+    nested = spool_dir / "canonical-unavailable" / "unknown-run"
+    nested.mkdir(parents=True, exist_ok=True)
+    unrelated = nested / "notes.txt"
+    unrelated.write_text("ignore me\n", encoding="utf-8")
+
+    batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={
+            "artifact_refs": [
+                {
+                    "artifact_type": "gather_candidate_batch",
+                    "artifact_path": str(CANDIDATE_BATCH),
+                    "artifact_hash": batch_hash,
+                }
+            ]
+        },
+        replay_recipe={"batch_path": str(CANDIDATE_BATCH), "batch_hash": batch_hash},
+        failure="database is locked",
+        canonical_db_path=Path("canonical.sqlite"),
+        spool_dir=spool_dir,
+        originating_tool="pytest",
+        created_at=FIXED_TIMESTAMP,
+    )
+    valid_path = canonical_write_spool.write_spool_record(spool_dir, record)
+    partial_path = nested / "partial.json"
+    partial_path.write_text('{"schema_version": "canonical-write-spool-record.v1"', encoding="utf-8")
+
+    validate_proc = run_script(VALIDATE, ["--spool-path", str(spool_dir)])
+    assert validate_proc.returncode == 1
+    assert "unreadable" in validate_proc.stdout or "JSONDecodeError" in validate_proc.stdout
+
+    partial_path.unlink()
+    validate_again = run_script(VALIDATE, ["--spool-path", str(spool_dir)])
+    assert validate_again.returncode == 0, validate_again.stdout + validate_again.stderr
+    report = json.loads(validate_again.stdout)
+    assert report["record_count"] == 1
+    assert unrelated.exists()
+
+
 def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
     spool_dir = tmp_path / "spool"
     batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
