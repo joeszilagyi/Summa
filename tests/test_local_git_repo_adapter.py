@@ -14,14 +14,39 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.scripts import plan_local_git_repo_adapter
+from tools.scripts import execute_source_adapter as source_executor
  
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_local_git_repo_adapter.py"
+EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_git_repo"
 
 
 def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_executor(*, handoff: Path, output: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(handoff),
+            "--output",
+            str(output),
+            "--mode",
+            "local",
+            "--run-id",
+            output.name,
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -260,3 +285,44 @@ def test_local_git_repo_refuses_remote_clone_behavior(tmp_path: Path) -> None:
 
     assert proc.returncode == 1
     assert "locator field repo_url is not allowed for input_family local_git_repo" in proc.stderr
+
+
+def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
+    adapter_path = write_adapter(scenario_dir)
+    repo_dir = scenario_dir / "repo"
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    output = tmp_path / "local-git-execution"
+    exec_proc = run_executor(handoff=handoff_jsonl, output=output)
+
+    assert exec_proc.returncode == source_executor.EXIT_PASS, exec_proc.stdout + exec_proc.stderr
+
+    execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+    captures = [json.loads(line) for line in (output / "capture-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    extractions = [
+        json.loads(line) for line in (output / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    expected_commit = git(repo_dir, "rev-parse", "--verify", "main^{commit}").stdout.strip()
+    assert execution["adapter_type"] == "local_git_repo"
+    assert execution["status"] == "completed"
+    assert execution["network_access_attempted"] is False
+    assert execution["capture_event_count"] == 1
+    assert execution["extraction_record_count"] == 2
+    assert set(execution["local_input_paths_processed"]) == {
+        str(repo_dir / "nested" / "data.json"),
+        str(repo_dir / "tracked.md"),
+    }
+    assert captures[0]["capture_method"] == "local_git_snapshot"
+    assert captures[0]["repo_state"] == "clean"
+    assert captures[0]["git_commit"] == expected_commit
+    assert [entry["extraction_method"] for entry in extractions] == ["git_file_text_extract", "git_file_text_extract"]
+    assert [entry["status"] for entry in extractions] == ["completed", "completed"]
+    assert (output / "execution-record.json").read_bytes() == (
+        json.dumps(execution, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
