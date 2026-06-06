@@ -200,6 +200,24 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def open_targets_under(root: Path) -> list[Path]:
+    fd_root = Path("/proc/self/fd")
+    targets: list[Path] = []
+    if not fd_root.exists():
+        return targets
+    for fd_path in fd_root.iterdir():
+        try:
+            target = Path(fd_path.readlink())
+        except OSError:
+            continue
+        try:
+            target.relative_to(root)
+        except ValueError:
+            continue
+        targets.append(target)
+    return targets
+
+
 def test_execute_remote_fetches_emits_denied_evidence_rows(tmp_path: Path) -> None:
     server, base_url = fixture_server()
     try:
@@ -418,6 +436,51 @@ def test_gate_pass_writes_exact_text_without_trailing_newline(tmp_path: Path) ->
         assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
     finally:
         server.shutdown()
+
+
+def test_write_execution_artifacts_closes_files_before_validation(tmp_path: Path) -> None:
+    output = tmp_path / "local-run"
+    handoff_path = tmp_path / "handoff.jsonl"
+    handoff_path.write_text("{}\n", encoding="utf-8")
+    handoff_hash = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
+    execution_record = source_executor.dry_run_execution_record(
+        run_id="dry-run-close-check",
+        created_at="2026-06-03T12:34:56Z",
+        handoff_path=handoff_path,
+        handoff_hash=handoff_hash,
+        adapter_payload={"adapter_id": "runtime_local_file", "workspace_id": "alpha_subject"},
+        adapter_type="local_source",
+        executor_mode="local",
+        local_input_paths=[],
+        gate_report=None,
+        planned_actions=[],
+    )
+
+    source_executor.write_execution_artifacts(
+        output_dir=output,
+        execution_record=execution_record,
+        capture_events=[],
+        extraction_records=[],
+        denial_record=None,
+        gate_report=None,
+        text_artifacts={"extracted-text/extraction-0001.txt": "closed before validation\n"},
+        binary_artifacts={"payloads/capture-0001.bin": b"closed before validation\n"},
+    )
+
+    assert open_targets_under(output) == []
+    assert (output / "extracted-text" / "extraction-0001.txt").read_text(encoding="utf-8") == (
+        "closed before validation\n"
+    )
+    assert (output / "payloads" / "capture-0001.bin").read_bytes() == b"closed before validation\n"
+
+    validator_proc = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(output / "execution-record.json")],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
 
 
 def test_validator_detects_mutated_extracted_text_artifact(tmp_path: Path) -> None:

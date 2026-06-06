@@ -245,6 +245,90 @@ def test_exact_work_duplicate_reuses_existing_row_and_records_duplicate_event(tm
     assert report["counts"]["deduped"]["work"] == 1
 
 
+def test_transitive_work_dedup_clustering_preserves_all_inputs(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    first_batch = build_batch(
+        [
+            work_candidate(
+                "cand:cluster.a",
+                work_key="work.fixture.cluster.a",
+                title="Clustered Work",
+                canonical_url="https://example.test/clustered-work",
+            )
+        ],
+        run_id="gather-cluster-a",
+    )
+    second_batch = build_batch(
+        [
+            work_candidate(
+                "cand:cluster.b",
+                work_key="work.fixture.cluster.b",
+                title="Clustered Work",
+                canonical_url="https://example.test/clustered-work",
+                identifier_scheme="doi",
+                identifier_value="10.1234/cluster-bridge",
+            )
+        ],
+        run_id="gather-cluster-b",
+    )
+    third_batch = build_batch(
+        [
+            work_candidate(
+                "cand:cluster.c",
+                work_key="work.fixture.cluster.c",
+                title="Clustered Work",
+                canonical_url="https://example.test/clustered-work",
+                identifier_scheme="doi",
+                identifier_value="10.1234/cluster-follow-up",
+            )
+        ],
+        run_id="gather-cluster-c",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, first_batch, batch_name="cluster-a.json", db_path=db_path)
+        with conn:
+            ingest_batch(conn, second_batch, batch_name="cluster-b.json", db_path=db_path)
+        with conn:
+            report = ingest_batch(conn, third_batch, batch_name="cluster-c.json", db_path=db_path)
+        work_rows = conn.execute(
+            "SELECT work_id, work_key_v1, title FROM work ORDER BY work_id"
+        ).fetchall()
+        duplicate_events = conn.execute(
+            """
+            SELECT note_text
+            FROM provenance_event
+            WHERE event_type='work_duplicate_encountered'
+            ORDER BY provenance_event_id
+            """
+        ).fetchall()
+        work_identifiers = conn.execute(
+            "SELECT scheme, value FROM work_identifier ORDER BY work_identifier_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    duplicate_notes = [json.loads(row["note_text"]) for row in duplicate_events]
+
+    assert len(work_rows) == 1
+    assert work_rows[0]["work_key_v1"] == "work.fixture.cluster.a"
+    assert work_rows[0]["title"] == "Clustered Work"
+    assert len(duplicate_events) == 2
+    assert {note["incoming_work_key"] for note in duplicate_notes} == {
+        "work.fixture.cluster.b",
+        "work.fixture.cluster.c",
+    }
+    assert all(note["matched_by"] == "normalized_title_type_source" for note in duplicate_notes)
+    assert len(work_identifiers) == 2
+    assert {f"{row['scheme']}:{row['value']}" for row in work_identifiers} == {
+        "doi:10.1234/cluster-bridge",
+        "doi:10.1234/cluster-follow-up",
+    }
+    assert report["counts"]["deduped"]["work"] == 1
+
+
 def test_rejected_work_identifier_does_not_exactly_match(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
