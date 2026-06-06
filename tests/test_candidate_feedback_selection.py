@@ -465,6 +465,44 @@ def test_lead_scope_sql_supports_explicit_table_aliases() -> None:
     assert params == ("alpha_subject", 1, 2)
 
 
+def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None:
+    zero_weights = {name: 0.0 for name in planner.DEFAULT_SCORING_WEIGHTS}
+    facet_scores = planner.aggregate_facet_scores(
+        enabled_facets=["sources", "open_questions"],
+        bundles={
+            "sources": {"bundle_id": "bundle:sources"},
+            "open_questions": {"bundle_id": "bundle:open_questions"},
+        },
+        history=[],
+        lead_candidates=[],
+        weights=zero_weights,
+    )
+    assert [item["facet"] for item in facet_scores] == ["sources", "open_questions"]
+    assert [item["candidate_id"] for item in facet_scores] == ["facet:sources", "facet:open_questions"]
+
+    lead_scores = planner.aggregate_lead_scores(
+        enabled_facets=["sources", "open_questions"],
+        lead_candidates=[
+            {
+                "candidate_id": "lead:z",
+                "facet": "sources",
+                "score": 0.5,
+            },
+            {
+                "candidate_id": "lead:a",
+                "facet": "sources",
+                "score": 0.5,
+            },
+            {
+                "candidate_id": "lead:b",
+                "facet": "open_questions",
+                "score": 0.5,
+            },
+        ],
+    )
+    assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:z", "lead:b"]
+
+
 def validate_plan(path: Path) -> dict[str, object]:
     report, exit_code = validator.validate_candidate_feedback_plan(path)
     assert exit_code == validator.EXIT_PASS, report
