@@ -41,6 +41,7 @@ def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        timeout=20,
     )
 
 
@@ -51,6 +52,7 @@ def run_driver(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        timeout=20,
     )
 
 
@@ -365,6 +367,23 @@ def seed_feedback_state(db_path: Path, *, subject_id: str) -> dict[str, str]:
         conn.close()
 
 
+def source_access_ref(db_path: Path, *, citation_hint: str) -> str:
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT source_access_id
+            FROM source_access
+            WHERE citation_hint=?
+            """,
+            (citation_hint,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return f"source_access:{row['source_access_id']}"
+
+
 def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) -> None:
     class CountingConnection(sqlite3.Connection):
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -513,16 +532,17 @@ def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_p
     db_path = bootstrap_db(tmp_path)
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
+    high_ref = source_access_ref(db_path, citation_hint="High yield source lead")
 
     result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert payload["next_action"]["action_kind"] == "facet_lead"
     assert payload["next_action"]["selected_facet"] == "sources"
-    assert payload["next_action"]["selected_object_ref"] == "source_access:1"
+    assert payload["next_action"]["selected_object_ref"] == high_ref
     lead_scores = payload["lead_scores"]
-    assert lead_scores[0]["object_ref"] == "source_access:1"
-    assert lead_scores[1]["object_ref"] != "source_access:1"
+    assert lead_scores[0]["object_ref"] == high_ref
+    assert lead_scores[1]["object_ref"] != high_ref
     assert lead_scores[0]["score"] > lead_scores[1]["score"]
     explanation = payload["selection_explanation"]
     selected = explanation["selected_candidate"]
@@ -541,21 +561,22 @@ def test_candidate_feedback_planner_deprioritizes_low_yield_locus_but_keeps_it_d
     db_path = bootstrap_db(tmp_path)
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
+    low_ref = source_access_ref(db_path, citation_hint="Low yield source lead")
 
     _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
 
-    low_lead = next(item for item in payload["lead_scores"] if item["object_ref"] == "source_access:2")
+    low_lead = next(item for item in payload["lead_scores"] if item["object_ref"] == low_ref)
     assert "repeated_low_yield" in low_lead["reason_codes"]
     assert low_lead["score"] < 0
     assert {
-        "candidate_id": "source_access:2",
+        "candidate_id": low_ref,
         "candidate_kind": "lead",
         "score": low_lead["score"],
         "reason": "repeated_low_yield",
     } in payload["deferred"]
     explanation = payload["selection_explanation"]
     assert any(
-        candidate["candidate_id"] == "source_access:2"
+        candidate["candidate_id"] == low_ref
         and candidate["reason"] == "repeated_low_yield"
         for candidate in explanation["excluded_candidates"]
     )
@@ -568,6 +589,7 @@ def test_unknown_extraction_status_is_neutral_for_source_access_leads(tmp_path: 
     db_path = bootstrap_db(tmp_path)
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
+    high_ref = source_access_ref(db_path, citation_hint="High yield source lead")
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -585,7 +607,7 @@ def test_unknown_extraction_status_is_neutral_for_source_access_leads(tmp_path: 
 
     _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
 
-    source_access_lead = next(item for item in payload["lead_scores"] if item["object_ref"] == "source_access:1")
+    source_access_lead = next(item for item in payload["lead_scores"] if item["object_ref"] == high_ref)
     assert source_access_lead["signals"]["successful_extractions"] == 0
     assert source_access_lead["signals"]["failed_extractions"] == 0
     assert any(
