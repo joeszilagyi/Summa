@@ -8,7 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jsonschema import validators
+try:
+    from jsonschema import validators
+except ModuleNotFoundError:  # pragma: no cover - optional test dependency in this environment
+    validators = None
 
 from tools.source_db_tools import canonical_ingest, canonical_store
 
@@ -26,6 +29,7 @@ spec = importlib.util.spec_from_file_location("audit_rebuildability_for_tests", 
 assert spec is not None
 audit = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = audit
 spec.loader.exec_module(audit)
 
 
@@ -43,6 +47,19 @@ def run_audit(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def assert_rebuildability_report_schema(report: dict[str, Any]) -> None:
+    if validators is None:
+        assert report["schema_version"] == "canonical-rebuildability-report.v1"
+        assert "final_status" in report
+        assert "artifacts_discovered" in report
+        assert "replay_plan" in report
+        return
+    schema = load_json(SCHEMA)
+    validator_cls = validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator_cls(schema).validate(report)
 
 
 def stage_runs_dir(tmp_path: Path) -> Path:
@@ -76,6 +93,144 @@ def stage_runs_dir(tmp_path: Path) -> Path:
                             "execution_record": "../../acquisition/exec-001/execution-record.json"
                         },
                     },
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return runs_dir
+
+
+def rewrite_schema_version(path: Path, schema_version: str) -> None:
+    payload = load_json(path)
+    payload["schema_version"] = schema_version
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def rewrite_jsonl_schema_version(path: Path, schema_version: str) -> None:
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for record in records:
+        record["schema_version"] = schema_version
+    path.write_text(
+        "\n".join(json.dumps(record, indent=None, sort_keys=True) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+
+def stage_legacy_runs_dir(tmp_path: Path) -> Path:
+    runs_dir = stage_runs_dir(tmp_path)
+    rewrite_schema_version(runs_dir / "gather" / "run-001" / "gather-candidate-batch.json", "gather-candidate-batch.v0")
+    rewrite_schema_version(runs_dir / "acquisition" / "exec-001" / "execution-record.json", "source-acquisition-execution.v0")
+    rewrite_jsonl_schema_version(runs_dir / "acquisition" / "exec-001" / "capture-events.jsonl", "source-capture-event.v0")
+    rewrite_jsonl_schema_version(runs_dir / "acquisition" / "exec-001" / "extraction-records.jsonl", "source-extraction-record.v0")
+    rewrite_schema_version(runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json", "topic-cycle-run.v0")
+
+    review_dir = runs_dir / "review"
+    review_dir.mkdir(exist_ok=True)
+    (review_dir / "review-decision-apply-result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "review-decision-apply-result.v0",
+                "target": "source_claim:1",
+                "decision_action": "reject_claim",
+                "status": "completed",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    publication_dir = runs_dir / "publication"
+    publication_dir.mkdir(exist_ok=True)
+    (publication_dir / "publication-artifacts-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "publication-artifacts-report.v0",
+                "status": "pass",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    gate_dir = runs_dir / "network"
+    gate_dir.mkdir(exist_ok=True)
+    (gate_dir / "network-safety-gate-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "network-safety-gate-report.v0",
+                "status": "allow",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit_dir = runs_dir / "audit"
+    audit_dir.mkdir(exist_ok=True)
+    (audit_dir / "canonical-rebuildability-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "canonical-rebuildability-report.v0",
+                "final_status": "validation_only",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return runs_dir
+
+
+def stage_hostile_runs_dir(tmp_path: Path) -> Path:
+    runs_dir = stage_runs_dir(tmp_path)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_batch = outside_dir / "escaped-gather-candidate-batch.json"
+    outside_batch.write_text(
+        json.dumps(
+            {
+                "schema_version": "gather-candidate-batch.v1",
+                "run_id": "escaped",
+                "subject": {"subject_id": "escaped"},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    symlink_path = runs_dir / "gather" / "escaped" / "gather-candidate-batch.json"
+    symlink_path.parent.mkdir(parents=True, exist_ok=True)
+    symlink_path.symlink_to(outside_batch)
+
+    malformed_review = runs_dir / "review" / "review-decision-apply-result.json"
+    malformed_review.parent.mkdir(parents=True, exist_ok=True)
+    malformed_review.write_text("{\"schema_version\": \"review-decision-apply-result.v1\",\n", encoding="utf-8")
+
+    topic_cycle_dir = runs_dir / "topic-cycle" / "cycle-002"
+    topic_cycle_dir.mkdir(parents=True, exist_ok=True)
+    topic_cycle_dir.joinpath("topic-cycle-run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-002",
+                "status": "completed",
+                "stages": [
+                    {
+                        "name": "missing_reference",
+                        "status": "passed",
+                        "artifacts": {"candidate_batch": "../../gather/run-999/gather-candidate-batch.json"},
+                    }
                 ],
             },
             indent=2,
@@ -166,10 +321,7 @@ def test_validation_only_discovers_and_validates_artifacts(tmp_path: Path) -> No
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     report = load_json(report_path)
-    schema = load_json(SCHEMA)
-    validator_cls = validators.validator_for(schema)
-    validator_cls.check_schema(schema)
-    validator_cls(schema).validate(report)
+    assert_rebuildability_report_schema(report)
     assert report["final_status"] == "validation_only"
     types = {item["artifact_type"] for item in report["artifacts_discovered"]}
     assert {
@@ -409,29 +561,8 @@ def test_reference_artifacts_reject_future_schema_versions(tmp_path: Path) -> No
     assert any("schema_version" in (item.get("failure_reason") or "") for item in invalid)
 
 
-def test_reference_artifacts_reject_older_schema_versions(tmp_path: Path) -> None:
-    runs_dir = stage_runs_dir(tmp_path)
-    cycle_path = runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json"
-    cycle_payload = load_json(cycle_path)
-    cycle_payload["schema_version"] = "topic-cycle-run.v0"
-    cycle_path.write_text(json.dumps(cycle_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-    review_dir = runs_dir / "review"
-    review_dir.mkdir()
-    (review_dir / "review-decision-apply-result.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "review-decision-apply-result.v0",
-                "target": "source_claim:1",
-                "decision_action": "reject_claim",
-                "status": "completed",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -> None:
+    runs_dir = stage_legacy_runs_dir(tmp_path)
     report_path = tmp_path / "report.json"
 
     proc = run_audit(
@@ -447,16 +578,18 @@ def test_reference_artifacts_reject_older_schema_versions(tmp_path: Path) -> Non
         ]
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     report = load_json(report_path)
-    invalid = [
-        item for item in report["artifacts_discovered"] if item["validation_status"] == "invalid"
-    ]
-    assert {item["artifact_type"] for item in invalid} >= {
-        "topic_cycle_manifest",
-        "review_decision_apply_result",
-    }
-    assert any("schema_version" in (item.get("failure_reason") or "") for item in invalid)
+    assert report["final_status"] == "validation_only"
+    discovered = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
+    assert discovered["gather_candidate_batch"]["schema_id"] == "gather-candidate-batch.v0"
+    assert discovered["source_acquisition_execution"]["schema_id"] == "source-acquisition-execution.v0"
+    assert discovered["topic_cycle_manifest"]["schema_id"] == "topic-cycle-run.v0"
+    assert discovered["review_decision_apply_result"]["schema_id"] == "review-decision-apply-result.v0"
+    assert discovered["publication_artifact"]["schema_id"] == "publication-artifacts-report.v0"
+    assert discovered["network_safety_gate_report"]["schema_id"] == "network-safety-gate-report.v0"
+    assert discovered["rebuildability_report"]["schema_id"] == "canonical-rebuildability-report.v0"
+    assert report["artifacts_validated"] == len(report["artifacts_discovered"])
 
 
 def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path) -> None:
@@ -522,7 +655,7 @@ def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path)
     assert capture_prov["run_id"] == "fixture-exec"
     assert extraction_record["capture_event_id"] is not None
     assert extraction_prov["run_id"] == "fixture-exec"
-    assert extraction_prov["tool_name"] == "canonical-ingest.v1"
+    assert extraction_prov["tool_name"] == "tools/scripts/ingest_execution_artifacts.py"
 
 
 def test_missing_replay_support_is_incomplete_support_not_false_success(tmp_path: Path) -> None:

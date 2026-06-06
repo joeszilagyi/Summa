@@ -40,6 +40,9 @@ CONTRACT_VERSION = "1"
 EXECUTION_SCHEMA_VERSION = "source-acquisition-execution.v1"
 CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
 EXTRACTION_SCHEMA_VERSION = "source-extraction-record.v1"
+SUPPORTED_EXECUTION_SCHEMA_VERSIONS = {EXECUTION_SCHEMA_VERSION, "source-acquisition-execution.v0"}
+SUPPORTED_CAPTURE_SCHEMA_VERSIONS = {CAPTURE_SCHEMA_VERSION, "source-capture-event.v0"}
+SUPPORTED_EXTRACTION_SCHEMA_VERSIONS = {EXTRACTION_SCHEMA_VERSION, "source-extraction-record.v0"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -221,11 +224,11 @@ def validate_execution_record(
     extraction_records: list[dict[str, Any]],
     errors: list[dict[str, Any]],
 ) -> None:
-    if payload.get("schema_version") != EXECUTION_SCHEMA_VERSION:
+    if payload.get("schema_version") not in SUPPORTED_EXECUTION_SCHEMA_VERSIONS:
         add_error(
             errors,
             code="INVALID_EXECUTION_SCHEMA_VERSION",
-            message=f"schema_version must equal {EXECUTION_SCHEMA_VERSION}",
+            message=f"schema_version must be one of {sorted(SUPPORTED_EXECUTION_SCHEMA_VERSIONS)!r}",
             path="$.schema_version",
         )
     for key in (
@@ -342,11 +345,11 @@ def validate_capture_events(
 ) -> None:
     for index, record in enumerate(records):
         base = f"$[{index}]"
-        if record.get("schema_version") != CAPTURE_SCHEMA_VERSION:
+        if record.get("schema_version") not in SUPPORTED_CAPTURE_SCHEMA_VERSIONS:
             add_error(
                 errors,
                 code="INVALID_CAPTURE_SCHEMA_VERSION",
-                message=f"schema_version must equal {CAPTURE_SCHEMA_VERSION}",
+                message=f"schema_version must be one of {sorted(SUPPORTED_CAPTURE_SCHEMA_VERSIONS)!r}",
                 path=f"{base}.schema_version",
             )
         for key in (
@@ -467,11 +470,11 @@ def validate_extraction_records(
     artifact_root_resolved = artifact_root.resolve()
     for index, record in enumerate(records):
         base = f"$[{index}]"
-        if record.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
+        if record.get("schema_version") not in SUPPORTED_EXTRACTION_SCHEMA_VERSIONS:
             add_error(
                 errors,
                 code="INVALID_EXTRACTION_SCHEMA_VERSION",
-                message=f"schema_version must equal {EXTRACTION_SCHEMA_VERSION}",
+                message=f"schema_version must be one of {sorted(SUPPORTED_EXTRACTION_SCHEMA_VERSIONS)!r}",
                 path=f"{base}.schema_version",
             )
         for key in (

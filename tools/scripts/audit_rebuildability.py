@@ -44,24 +44,29 @@ REFERENCE_ONLY_TYPES = {
     "feedback_plan",
     "review_decision_apply_result",
     "graph_closure_report",
+    "network_safety_gate_report",
+    "rebuildability_report",
     "release_readiness_report",
     "publication_artifact",
 }
 
 EXPECTED_REFERENCE_SCHEMAS: dict[str, set[str]] = {
-    "candidate_ingest_report": {"canonical-ingest-report.v1"},
-    "execution_ingest_report": {"canonical-ingest-report.v1"},
-    "topic_cycle_manifest": {"topic-cycle-run.v1"},
-    "scheduled_cycle_manifest": {"scheduled-topic-cycles-run.v1"},
-    "feedback_plan": {"candidate-feedback-plan.v1"},
-    "review_decision_apply_result": {"review-decision-apply-result.v1"},
-    "graph_closure_report": {"canonical-graph-closure-report.v1"},
-    "release_readiness_report": {"release-readiness-report.v1"},
+    "candidate_ingest_report": {"canonical-ingest-report.v1", "canonical-ingest-report.v0"},
+    "execution_ingest_report": {"canonical-ingest-report.v1", "canonical-ingest-report.v0"},
+    "topic_cycle_manifest": {"topic-cycle-run.v1", "topic-cycle-run.v0"},
+    "scheduled_cycle_manifest": {"scheduled-topic-cycles-run.v1", "scheduled-topic-cycles-run.v0"},
+    "feedback_plan": {"candidate-feedback-plan.v1", "candidate-feedback-plan.v0"},
+    "review_decision_apply_result": {"review-decision-apply-result.v1", "review-decision-apply-result.v0"},
+    "graph_closure_report": {"canonical-graph-closure-report.v1", "canonical-graph-closure-report.v0"},
+    "network_safety_gate_report": {"network-safety-gate-report.v1", "network-safety-gate-report.v0"},
+    "rebuildability_report": {"canonical-rebuildability-report.v1", "canonical-rebuildability-report.v0"},
+    "release_readiness_report": {"release-readiness-report.v1", "release-readiness-report.v0"},
 }
 
 PUBLICATION_REFERENCE_SCHEMAS = {
-    "knowledge_tree_export.json": {"knowledge-tree-export.v1"},
-    "public_presentation.json": {"public-presentation.v1"},
+    "knowledge_tree_export.json": {"knowledge-tree-export.v1", "knowledge-tree-export.v0"},
+    "public_presentation.json": {"public-presentation.v1", "public-presentation.v0"},
+    "publication-artifacts-report.json": {"publication-artifacts-report.v1", "publication-artifacts-report.v0"},
 }
 
 
@@ -361,6 +366,16 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
                 )
             )
             continue
+        if name == "network-safety-gate-report.json":
+            artifacts.append(
+                reference_artifact(
+                    path,
+                    "network_safety_gate_report",
+                    stage="network_gate",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["network_safety_gate_report"],
+                )
+            )
+            continue
         if name == "graph-closure-report.json":
             artifacts.append(
                 reference_artifact(
@@ -368,6 +383,16 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
                     "graph_closure_report",
                     stage="graph_closure",
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["graph_closure_report"],
+                )
+            )
+            continue
+        if name in {"canonical-rebuildability-report.json", "rebuildability-report.json"}:
+            artifacts.append(
+                reference_artifact(
+                    path,
+                    "rebuildability_report",
+                    stage="rebuildability",
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["rebuildability_report"],
                 )
             )
             continue
