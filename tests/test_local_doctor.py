@@ -24,8 +24,10 @@ import migration_ledger  # noqa: E402
 
 
 def test_local_doctor_report_is_read_only_and_redacted() -> None:
+    start = time.monotonic()
     report = local_doctor.build_report(REPO_ROOT)
     body = json.dumps(report)
+    elapsed = time.monotonic() - start
 
     assert report["schema_version"] == "local-doctor-report.v1"
     assert report["read_only"] is True
@@ -59,6 +61,7 @@ def test_local_doctor_report_is_read_only_and_redacted() -> None:
     assert set(report["public_gates"]).issuperset({"surfaces", "status"})
     assert report["canonical_store"]["status"] == "absent"
     assert report["redaction"]["raw_payloads_included"] is False
+    assert elapsed < 10.0, f"local_doctor.build_report exceeded its explicit 10s budget: {elapsed:.3f}s"
     assert "/home/" not in body
 
 
