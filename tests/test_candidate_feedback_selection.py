@@ -41,6 +41,7 @@ def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        timeout=20,
     )
 
 
@@ -51,6 +52,7 @@ def run_driver(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        timeout=20,
     )
 
 
