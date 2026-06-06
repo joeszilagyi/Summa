@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -72,3 +73,57 @@ def test_atomic_write_text_keeps_renamed_output_when_directory_fsync_fails(
     atomic_write_text(output, "payload\n")
 
     assert output.read_text(encoding="utf-8") == "payload\n"
+
+
+@pytest.mark.parametrize(
+    "exc_type, expected_message",
+    [
+        (OSError, "cross-device link"),
+        (PermissionError, "permission denied"),
+    ],
+)
+def test_atomic_write_json_cleans_temp_files_when_replace_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    exc_type: type[BaseException],
+    expected_message: str,
+) -> None:
+    output = tmp_path / "artifact.json"
+
+    def fail_replace(self: Path, target: Path) -> None:  # type: ignore[override]
+        raise exc_type(expected_message)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(exc_type, match=expected_message):
+        atomic_write_json(output, {"b": 2, "a": 1})
+
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "exc_type, expected_message",
+    [
+        (OSError, "cross-device link"),
+        (PermissionError, "permission denied"),
+    ],
+)
+def test_atomic_write_jsonl_cleans_temp_files_when_replace_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    exc_type: type[BaseException],
+    expected_message: str,
+) -> None:
+    output = tmp_path / "artifact.jsonl"
+
+    def fail_replace(self: Path, target: Path) -> None:  # type: ignore[override]
+        raise exc_type(expected_message)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(exc_type, match=expected_message):
+        atomic_write_jsonl(output, [{"b": 2, "a": 1}])
+
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []

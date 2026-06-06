@@ -293,3 +293,101 @@ def test_handoff_validator_rejects_family_specific_state_mismatch(tmp_path: Path
 
     assert proc.returncode == 1
     assert "remote_state is not allowed for local_source handoff records" in proc.stdout
+
+
+def test_handoff_validator_reports_jsonl_line_numbers_for_parse_failures(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
+    handoff_path = tmp_path / "invalid.jsonl"
+    handoff_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema_version": "source-adapter-handoff.v1",
+                        "adapter_id": "alpha_subject_local_drop",
+                        "workspace_id": "alpha_subject",
+                        "record_family": "capture",
+                        "batch_unit": "per_file",
+                        "adapter_path": str(adapter_path),
+                        "emitted_at": "2026-06-02T00:00:00Z",
+                        "sequence": 1,
+                        "resolved_source_path": "/tmp/example.pdf",
+                        "relative_path": "example.pdf",
+                        "preserved": {
+                            "original_locator": {
+                                "adapter_local_path": "corpus",
+                                "resolved_source_path": "/tmp/example.pdf",
+                                "relative_path": "example.pdf",
+                            },
+                            "discovery_provenance": "validator fixture",
+                            "rights_posture": "private_local_only",
+                            "byte_retention_status": "retained_private_only",
+                            "discard_metadata": {"discard_required": False, "discard_reason": None},
+                            "refetchability_status": "local_replayable",
+                            "source_metadata": {"content_kinds": ["pdf"], "hazard_flags": []},
+                            "transform_lineage": [],
+                        },
+                        "source_specific": {
+                            "relative_path": "example.pdf",
+                            "source_filename": "example.pdf",
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                '{"schema_version": "source-adapter-handoff.v1",',
+                json.dumps(
+                    {
+                        "schema_version": "source-adapter-handoff.v1",
+                        "adapter_id": "alpha_subject_local_drop",
+                        "workspace_id": "alpha_subject",
+                        "record_family": "capture",
+                        "batch_unit": "per_file",
+                        "adapter_path": str(adapter_path),
+                        "emitted_at": "2026-06-02T00:00:00Z",
+                        "sequence": 2,
+                        "resolved_source_path": "/tmp/example-2.pdf",
+                        "relative_path": "example-2.pdf",
+                        "preserved": {
+                            "original_locator": {
+                                "adapter_local_path": "corpus",
+                                "resolved_source_path": "/tmp/example-2.pdf",
+                                "relative_path": "example-2.pdf",
+                            },
+                            "discovery_provenance": "validator fixture",
+                            "rights_posture": "private_local_only",
+                            "byte_retention_status": "retained_private_only",
+                            "discard_metadata": {"discard_required": False, "discard_reason": None},
+                            "refetchability_status": "local_replayable",
+                            "source_metadata": {"content_kinds": ["pdf"], "hazard_flags": []},
+                            "transform_lineage": [],
+                        },
+                        "source_specific": {
+                            "relative_path": "example-2.pdf",
+                            "source_filename": "example-2.pdf",
+                        },
+                    },
+                    sort_keys=True,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report_json = tmp_path / "report.json"
+
+    proc = run_command(
+        [
+            str(VALIDATOR),
+            str(handoff_path),
+            "--adapter",
+            str(adapter_path),
+            "--report-json",
+            str(report_json),
+        ]
+    )
+
+    assert proc.returncode == 1
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    assert report["status"] == "fail"
+    assert report["errors"][0]["line"] == 2
+    assert "invalid JSON syntax" in report["errors"][0]["message"]

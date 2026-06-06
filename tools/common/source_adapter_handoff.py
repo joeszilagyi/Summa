@@ -94,6 +94,7 @@ def validate_source_adapter_handoff_record(
 ) -> list[str]:
     errors: list[str] = []
     variant = infer_handoff_variant(record, adapter_payload)
+    record_variant = infer_handoff_variant(record)
     expected_specific = allowed_source_specific_fields_for_variant(variant)
     handoff = adapter_payload.get("normalized_handoff") if isinstance(adapter_payload, dict) else None
     adapter_input_family = adapter_payload.get("input_family") if isinstance(adapter_payload, dict) else None
@@ -119,6 +120,10 @@ def validate_source_adapter_handoff_record(
         errors.append("adapter_id must match the source adapter manifest")
     if workspace_id is not None and record.get("workspace_id") != workspace_id:
         errors.append("workspace_id must match the source adapter manifest")
+    if adapter_payload is not None and record_variant != variant:
+        errors.append(
+            f"handoff record variant {record_variant} does not match adapter-declared variant {variant}"
+        )
     if isinstance(handoff, dict):
         if record.get("record_family") != handoff.get("record_family"):
             errors.append("record_family must match normalized_handoff.record_family")
