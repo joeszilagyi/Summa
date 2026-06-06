@@ -102,6 +102,15 @@ def test_local_doctor_redacts_sensitive_values() -> None:
     assert value["secret"] == "token=[redacted]"
 
 
+def test_local_doctor_strips_terminal_escape_sequences() -> None:
+    value = local_doctor.redact(
+        "start\x1b]52;c;SGVsbG8=\x07\x1b[0m\x1b[2J\x1b[H\x1b]8;;https://example.test\x07click\x1b]8;;\x07end"
+    )
+
+    assert value == "startclickend"
+    assert "\x1b" not in value
+
+
 def test_local_doctor_reports_broken_validator_fixture(tmp_path: Path) -> None:
     report = local_doctor.build_report(tmp_path)
 

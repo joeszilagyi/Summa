@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import workspace_lock  # noqa: E402
+from tools.common.operator_text import strip_terminal_escapes  # noqa: E402
 from tools.common.topic_workspace_registry import (  # noqa: E402
     TopicWorkspaceRegistryError,
     discover_registry_path,
@@ -56,7 +57,8 @@ def redact(value: Any) -> Any:
         return [redact(item) for item in value]
     if not isinstance(value, str):
         return value
-    text = SECRET_RE.sub(r"\1=[redacted]", value)
+    text = strip_terminal_escapes(value)
+    text = SECRET_RE.sub(r"\1=[redacted]", text)
     text = re.sub(r"/(?:home|Users|tmp)/\S+", "[redacted-path]", text)
     return text
 
@@ -1005,9 +1007,7 @@ def render_text(report: dict[str, Any]) -> str:
     if isinstance(canonical_store_summary, dict):
         lines.append(f"canonical_store.status={canonical_store_summary.get('status')}")
         lines.append(f"canonical_store.total_rows={canonical_store_summary.get('total_rows')}")
-        lines.append(
-            f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}"
-        )
+        lines.append(f"canonical_store.last_ingest_at={canonical_store_summary.get('last_ingest_at')}")
     loop_health_summary = report.get("loop_health", {})
     if isinstance(loop_health_summary, dict):
         lines.append(f"loop_health.status={loop_health_summary.get('health_status')}")

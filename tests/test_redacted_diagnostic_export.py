@@ -370,6 +370,22 @@ def test_redactor_handles_absolute_local_paths_for_public_and_private_modes() ->
     assert private_redactor.redact_path(absolute_path) == str(absolute_path)
 
 
+def test_redactor_strips_terminal_escape_sequences() -> None:
+    redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+
+    redacted = redactor.redact_text(
+        "start\x1b]52;c;SGVsbG8=\x07\x1b[0m\x1b[2J\x1b[H\x1b]8;;https://example.test\x07click\x1b]8;;\x07end"
+    )
+
+    assert redacted == "startclickend"
+    assert "\x1b" not in redacted
+
+
 def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
     tmp_path: Path,
 ) -> None:

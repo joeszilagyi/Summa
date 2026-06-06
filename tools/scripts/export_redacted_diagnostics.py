@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.leak_scanner import scan_directory  # noqa: E402
+from tools.common.operator_text import strip_terminal_escapes  # noqa: E402
 from tools.source_db_tools import canonical_graph_closure, canonical_store  # noqa: E402
 
 try:  # noqa: SIM105 - optional helper; diagnostics still work without doctor import.
@@ -200,9 +201,10 @@ class Redactor:
     def redact_text(self, value: str | None) -> str | None:
         if value is None:
             return None
+        text = strip_terminal_escapes(value)
         if self.internal_full_fidelity:
-            return value
-        text = TEXT_SENTINEL_RE.sub("[redacted-sentinel]", value)
+            return text
+        text = TEXT_SENTINEL_RE.sub("[redacted-sentinel]", text)
         text = SECRET_RE.sub("[redacted-secret]", text)
         text = URL_RE.sub(lambda match: self.redact_url(match.group(0)) or "[redacted-url]", text)
         text = PATH_RE.sub(
@@ -211,7 +213,7 @@ class Redactor:
         )
         if local_doctor is not None:
             redacted = local_doctor.redact(text)
-            return str(redacted) if redacted is not None else None
+            return strip_terminal_escapes(str(redacted)) if redacted is not None else None
         return text
 
     def redact_json(self, value: Any) -> Any:
