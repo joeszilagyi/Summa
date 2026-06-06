@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import time
 from pathlib import Path
+
+from tools.common.operator_text import strip_terminal_escapes
 
 DEFAULT_LOG_NAME = "index-actions.log"
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
@@ -28,6 +31,12 @@ RUN_ORIGIN_DETECTION_STEPS = 12
 RUN_ORIGIN_TIMEOUT_SECONDS = 0.25
 LOG_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 PS_PARENT_FIELDS = ("comm=", "ppid=")
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)(?:^|[\s'\"(])(?:/home/|/Users/|/tmp/|file://|~/|[A-Za-z]:\\\\)[^\s'\"()]+"
+)
+PROMPT_FIELD_RE = re.compile(
+    r"(?i)\b((?:raw_)?(?:prompt|source_text)(?:_text)?)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s]+)"
+)
 
 
 def env_non_negative_int(name: str, default: int) -> int:
@@ -74,6 +83,26 @@ def env_non_negative_int_any(names: tuple[str, ...], default: int) -> int:
         if os.environ.get(name) is not None:
             return env_non_negative_int(name, default)
     return default
+
+
+def sanitize_log_message(message: str) -> str:
+    """Remove terminal escapes and obvious local path/prompt payloads from log text."""
+
+    text = strip_terminal_escapes(message)
+    text = PROMPT_FIELD_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    text = ABSOLUTE_PATH_RE.sub(lambda match: " " + "[redacted-path]", text)
+    return text
+
+
+class _SanitizeLogMessages(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        record.msg = sanitize_log_message(message)
+        record.args = ()
+        return True
 
 
 def _read_process_metadata(pid: int) -> tuple[str | None, int | None]:
@@ -200,12 +229,14 @@ def build_logger(tool_name: str, log_path: Path, *, verbose: bool = False, langu
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(fmt)
+    file_handler.addFilter(_SanitizeLogMessages())
     logger.addHandler(file_handler)
 
     if env_value(INDEX_LOG_ACTIVE_ENV) != "1":
         stream_handler = logging.StreamHandler()
         stream_handler.setLevel(logging.INFO if verbose else logging.WARNING)
         stream_handler.setFormatter(fmt)
+        stream_handler.addFilter(_SanitizeLogMessages())
         logger.addHandler(stream_handler)
 
     return logger

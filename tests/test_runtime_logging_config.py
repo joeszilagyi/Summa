@@ -50,6 +50,32 @@ def test_python_logger_uses_utc_z_timestamps(
     assert abs((now_utc - logged_at).total_seconds()) < 10
 
 
+def test_python_logger_sanitizes_audit_messages(tmp_path: Path) -> None:
+    log_path = tmp_path / "index-actions.log"
+    logger = runtime_logging.build_logger("audit_tool", log_path)
+    logger.info(
+        "run_id=run-123 workspace_id=workspace-9 command=exec input_hash=sha256:in output_hash=sha256:out "
+        "failure_code=42 duration_ms=17 network_attempted=false llm_invoked=true "
+        "prompt_text=should-not-leak /home/joe/private/prompt.txt \x1b[31mred"
+    )
+    for handler in logger.handlers:
+        handler.flush()
+
+    line = log_path.read_text(encoding="utf-8").strip()
+    assert "run_id=run-123" in line
+    assert "workspace_id=workspace-9" in line
+    assert "command=exec" in line
+    assert "input_hash=sha256:in" in line
+    assert "output_hash=sha256:out" in line
+    assert "failure_code=42" in line
+    assert "duration_ms=17" in line
+    assert "network_attempted=false" in line
+    assert "llm_invoked=true" in line
+    assert "prompt_text=[redacted]" in line
+    assert "[redacted-path]" in line
+    assert "\x1b" not in line
+
+
 def _restore_tz(original_tz: str | None) -> None:
     if original_tz is None:
         os.environ.pop("TZ", None)
