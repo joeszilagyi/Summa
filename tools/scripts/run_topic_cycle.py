@@ -837,8 +837,14 @@ def candidate_ingest_stage(
             )
         finally:
             conn.close()
+        report_path = run_dir / "candidate-ingest" / "canonical-ingest-report.json"
+        write_json(report_path, report)
         stage.counts = report.get("counts")
-        stage.artifacts = {"ingest_report": report, "mutated": False}
+        stage.artifacts = {
+            "ingest_report": str(report_path),
+            "ingest_report_sha256": hash_file(report_path),
+            "mutated": False,
+        }
         finish_stage(stage, status="dry_run")
         add_stage(manifest, stage)
         return report

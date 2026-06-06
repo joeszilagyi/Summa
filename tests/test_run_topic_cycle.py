@@ -237,6 +237,9 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert stages["run_gather"]["status"] == "passed"
     assert stages["ingest_candidate_batch"]["status"] == "dry_run"
     assert stages["execute_source_adapter"]["status"] == "skipped"
+    assert stages["ingest_candidate_batch"]["artifacts"]["mutated"] is False  # type: ignore[index]
+    assert Path(stages["ingest_candidate_batch"]["artifacts"]["ingest_report"]).is_file()  # type: ignore[index]
+    assert isinstance(stages["ingest_candidate_batch"]["artifacts"]["ingest_report_sha256"], str)  # type: ignore[index]
 
 
 def test_topic_cycle_rejects_resume_on_fresh_run_dir(tmp_path: Path) -> None:
