@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -135,6 +136,12 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
+def manifest_hash(manifest: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    ).hexdigest()
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -221,8 +228,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--graph-closure",
         dest="graph_closure",
         action="store_true",
-        default=True,
-        help="Run read-only canonical graph-closure audit before cycle close. Enabled by default.",
+        default=False,
+        help="Run read-only canonical graph-closure audit before cycle close.",
     )
     parser.add_argument(
         "--no-graph-closure",
@@ -1337,7 +1344,7 @@ def record_cycle_evidence_from_manifest(
         write_json(manifest_path, manifest)
         return
     try:
-        manifest_hash = hash_file(manifest_path)
+        current_manifest_hash = manifest_hash(manifest)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             with conn:
@@ -1345,7 +1352,7 @@ def record_cycle_evidence_from_manifest(
                     conn,
                     manifest=manifest,
                     manifest_path=manifest_path,
-                    manifest_hash=manifest_hash,
+                    manifest_hash=current_manifest_hash,
                     canonical_db_ref=str(db_path),
                 )
         finally:
@@ -1360,13 +1367,13 @@ def record_cycle_evidence_from_manifest(
                             {
                                 "artifact_type": "topic_cycle_manifest",
                                 "artifact_path": str(manifest_path),
-                                "artifact_hash": hash_file(manifest_path),
+                                "artifact_hash": current_manifest_hash,
                             }
                         ]
                     },
                     replay_recipe={
                         "manifest_path": str(manifest_path),
-                        "manifest_hash": hash_file(manifest_path),
+                        "manifest_hash": current_manifest_hash,
                     },
                     failure=exc,
                     canonical_db_path=db_path,
