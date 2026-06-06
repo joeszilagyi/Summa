@@ -17,6 +17,11 @@ fi
 SELF_DIR="$(cd -- "$(dirname -- "$THIS_SCRIPT")" && pwd -P)"
 PYTHON_BIN="${PYTHON:-python3}"
 TARGET_SCRIPT="$SELF_DIR/replay_canonical_write_spool.py"
+CONSOLE_COMMAND="summa-replay-canonical-write-spool"
+
+if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+  exec "$CONSOLE_COMMAND" "$@"
+fi
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "python executable not found: $PYTHON_BIN"
 [[ -r "$TARGET_SCRIPT" ]] || fail "Missing canonical write spool replay command: $TARGET_SCRIPT"

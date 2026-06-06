@@ -19,8 +19,12 @@ PYTHON_BIN="${PYTHON:-python3}"
 TARGET_SCRIPT="$SELF_DIR/run_topic_gather.py"
 LLM_RUNNER_LIB="$SELF_DIR/lib/llm_runner.sh"
 LLM_RUNNER_BRIDGE="$SELF_DIR/lib/llm_runner_bridge.sh"
+CONSOLE_COMMAND="summa-run-gather"
 
 ensure_dependencies() {
+  if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+    return
+  fi
   command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "python executable not found: $PYTHON_BIN"
   [[ -r "$TARGET_SCRIPT" ]] || fail "Missing gather driver: $TARGET_SCRIPT"
   [[ -r "$LLM_RUNNER_LIB" ]] || fail "Missing llm_runner library: $LLM_RUNNER_LIB"
@@ -29,9 +33,16 @@ ensure_dependencies() {
 
 if [[ "${1:-}" == "--check" ]]; then
   ensure_dependencies
-  printf 'Index_Run_Gather.sh: ready (driver: %s, python: %s)\n' "$TARGET_SCRIPT" "$PYTHON_BIN"
+  if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+    printf 'Index_Run_Gather.sh: ready (console command: %s)\n' "$CONSOLE_COMMAND"
+  else
+    printf 'Index_Run_Gather.sh: ready (driver: %s, python: %s)\n' "$TARGET_SCRIPT" "$PYTHON_BIN"
+  fi
   exit 0
 fi
 
 ensure_dependencies
+if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+  exec "$CONSOLE_COMMAND" "$@"
+fi
 exec "$PYTHON_BIN" "$TARGET_SCRIPT" "$@"

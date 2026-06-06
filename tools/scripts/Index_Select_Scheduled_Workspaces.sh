@@ -17,6 +17,11 @@ fi
 SELF_DIR="$(cd -- "$SCRIPT_DIR" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 TARGET_SCRIPT="$SELF_DIR/select_scheduled_workspaces.py"
+CONSOLE_COMMAND="summa-select-scheduled-workspaces"
+
+if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+  exec "$CONSOLE_COMMAND" "$@"
+fi
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not installed or not in PATH"
 [[ -r "$TARGET_SCRIPT" ]] || fail "Target script not readable: $TARGET_SCRIPT"

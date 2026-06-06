@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from packaging.version import Version
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HYGIENE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "repo-hygiene.yml"
@@ -131,6 +132,17 @@ def create_isolated_install_venv(tmp_path: Path) -> Path:
     return root
 
 
+def write_fake_console_command(bin_dir: Path, command: str, capture_path: Path) -> Path:
+    script_path = bin_dir / command
+    script_path.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n',
+        encoding="utf-8",
+    )
+    script_path.chmod(0o755)
+    return script_path
+
+
 def test_pyproject_declares_python_floor_and_stdlib_runtime() -> None:
     pyproject = load_pyproject()
 
@@ -222,6 +234,36 @@ def test_live_index_wrappers_are_packaged_or_explicitly_excluded() -> None:
         assert "TODO" not in reason.upper()
         assert "MAYBE" not in reason.upper()
         assert (REPO_ROOT / "tools" / "scripts" / wrapper_name).is_file()
+
+
+@pytest.mark.parametrize("wrapper_name,console_command", sorted(INDEX_WRAPPER_CONSOLE_COMMANDS.items()))
+def test_live_index_wrappers_prefer_installed_console_commands(
+    wrapper_name: str, console_command: str, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    capture_path = tmp_path / f"{console_command}.argv"
+    write_fake_console_command(bin_dir, console_command, capture_path)
+
+    wrapper_path = REPO_ROOT / "tools" / "scripts" / wrapper_name
+    env = {
+        **os.environ,
+        "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "PYTHON": "python-does-not-exist",
+        "PYTHON_BIN": "python-does-not-exist",
+        "SUMMA_WRAPPER_CAPTURE": str(capture_path),
+    }
+    proc = subprocess.run(
+        ["bash", str(wrapper_path), "--sentinel", "wrapper-test"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert capture_path.read_text(encoding="utf-8").splitlines() == ["--sentinel", "wrapper-test"]
 
 
 def test_pytest_config_moved_into_pyproject() -> None:

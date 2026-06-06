@@ -7,6 +7,7 @@ set -euo pipefail
 readonly SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly BUILDER="$SELF_DIR/build_publication_artifacts.py"
 readonly PYTHON_BIN="${PYTHON:-python3}"
+readonly CONSOLE_COMMAND="summa-build-knowledge-tree"
 
 usage() {
   cat <<'EOF_USAGE'
@@ -30,6 +31,9 @@ EOF_USAGE
 }
 
 ensure_dependencies() {
+  if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+    return
+  fi
   if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     echo "python executable not found: $PYTHON_BIN" >&2
     exit 1
@@ -46,6 +50,9 @@ ensure_dependencies() {
 
 run_builder() {
   local -a args=("$@")
+  if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+    exec "$CONSOLE_COMMAND" "${args[@]}"
+  fi
   "$PYTHON_BIN" "$BUILDER" "${args[@]}"
 }
 
@@ -82,7 +89,11 @@ done
 if (( DRY_RUN )); then
   ensure_dependencies
   printf 'DRY-RUN:'
-  printf ' %q' "$PYTHON_BIN" "$BUILDER" "${builder_args[@]}"
+  if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+    printf ' %q' "$CONSOLE_COMMAND" "${builder_args[@]}"
+  else
+    printf ' %q' "$PYTHON_BIN" "$BUILDER" "${builder_args[@]}"
+  fi
   printf '\n'
   exit 0
 fi
