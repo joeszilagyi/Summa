@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-from tools.common.atomic_write import atomic_write_jsonl  # noqa: E402
+from tools.common.atomic_write import atomic_write_jsonl, stable_json_text  # noqa: E402
 from tools.common.source_adapter_handoff import (  # noqa: E402
     build_remote_url_manifest_handoff_record,
     validate_source_adapter_handoff_record,
@@ -209,7 +209,7 @@ def main() -> int:
         return 1
 
     if args.format == "json":
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(stable_json_text(payload))
     else:
         sys.stdout.write(render_text(payload))
     return 1 if not payload["handoff_validation"]["ok"] else 0
