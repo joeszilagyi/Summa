@@ -1,0 +1,15 @@
+{
+  "fixtures": [
+    {
+      "notes": "Legacy store before provenance_event_ref was added to source_access.",
+      "path": "v2.sqlite",
+      "version": 2
+    },
+    {
+      "notes": "Legacy store with provenance_event_ref and source_access lead identity.",
+      "path": "v4.sqlite",
+      "version": 4
+    }
+  ],
+  "schema_version": "canonical-store-migration-fixture-corpus.v1"
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -18,6 +19,7 @@ from tools.source_db_tools import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = REPO_ROOT / "tools" / "source_db_tools" / "init_canonical_store.py"
+MIGRATION_FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "canonical_store_migrations"
 FIXED_TIMESTAMP = "2026-06-03T08:00:00Z"
 
 
@@ -755,3 +757,40 @@ def test_check_mode_survives_stale_wal_and_shm_sidecars(tmp_path: Path) -> None:
             )
         wal_path = db_path.with_name(db_path.name + "-wal")
         shm_path = db_path.with_name(db_path.name + "-shm")
+        assert wal_path.exists() or shm_path.exists()
+        check_result = canonical_store.check_canonical_store(db_path)
+    finally:
+        conn.close()
+
+    assert check_result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+
+
+def test_versioned_migration_fixture_corpus_upgrades_real_stores(tmp_path: Path) -> None:
+    manifest = json.loads((MIGRATION_FIXTURE_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "canonical-store-migration-fixture-corpus.v1"
+
+    for entry in manifest["fixtures"]:
+        version = int(entry["version"])
+        fixture_path = MIGRATION_FIXTURE_ROOT / entry["path"]
+        copied_path = tmp_path / f"fixture-v{version}.sqlite"
+        shutil.copy2(fixture_path, copied_path)
+
+        result = canonical_store.init_canonical_store(
+            copied_path,
+            applied_at=FIXED_TIMESTAMP,
+            applied_by="pytest",
+        )
+        assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+
+        conn = canonical_store.connect_canonical_store(copied_path)
+        try:
+            version_row = canonical_store.get_schema_version(conn)
+            source_access_count = conn.execute("SELECT COUNT(*) FROM source_access").fetchone()[0]
+            work_count = conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert version_row is not None
+        assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
+        assert int(source_access_count) >= 1
+        assert int(work_count) >= 1
