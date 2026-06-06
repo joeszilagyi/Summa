@@ -315,7 +315,7 @@ def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> N
         fake_load_validated_execution_artifacts
     )
 
-    args = SimpleNamespace(mode="live", degraded_spool=True)
+    args = SimpleNamespace(mode="live", degraded_spool=True, candidate_batch_fixture=None)
     manifest = {"stages": []}
 
     with pytest.raises(module.TopicCycleError) as excinfo:
@@ -726,6 +726,82 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     stages = stages_by_name(manifest)
     assert stages["run_gather"]["artifacts"]["candidate_batch_sha256"] == "candidate-hash"  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
+
+
+def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Path, monkeypatch) -> None:
+    module = load_run_topic_cycle_module()
+
+    batch_path = tmp_path / "gather-candidate-batch.json"
+    batch_path.write_text(
+        Path(CANDIDATE_BATCH).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    db_path = tmp_path / "canonical.sqlite"
+    run_dir = tmp_path / "candidate-ingest-run"
+
+    def fake_load_validated(path: Path):
+        assert path == batch_path
+        return ({}, "batch-hash")
+
+    def fake_ingest(*args, **kwargs):
+        raise RuntimeError("forced ingest failure")
+
+    def fake_connect(_: Path):
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def close(self) -> None:
+                return None
+
+        return FakeConn()
+
+    hashed_batch_path: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        if path == batch_path:
+            hashed_batch_path.append(path)
+            raise AssertionError("candidate batch was rehashed")
+        return "0" * 64
+
+    monkeypatch.setattr(module.canonical_ingest, "load_validated_candidate_batch", fake_load_validated)
+    monkeypatch.setattr(module.canonical_ingest, "ingest_candidate_batch", fake_ingest)
+    monkeypatch.setattr(module.canonical_store, "connect_canonical_store", fake_connect)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+
+    args = SimpleNamespace(
+        mode="live",
+        degraded_spool=True,
+        candidate_batch_fixture=None,
+        spool_dir=None,
+    )
+    manifest = {
+        "run_id": "cycle-830",
+        "stages": [],
+        "workspace": {"workspace_id": "fixture_workspace"},
+        "cycle_event_id": "cycle:fixture",
+        "canonical_db": {"mutated": False},
+        "subject": {"subject_id": "fixture_subject"},
+    }
+
+    result = module.candidate_ingest_stage(
+        args=args,
+        manifest=manifest,
+        db_path=db_path,
+        batch_path=batch_path,
+        run_dir=run_dir,
+    )
+
+    assert hashed_batch_path == []
+    assert result["status"] == "spooled"
+    spool_path = Path(result["spool_record_path"])  # type: ignore[index]
+    spool_payload = json.loads(spool_path.read_text(encoding="utf-8"))
+    refs = spool_payload["operation_input"]["artifact_refs"][0]
+    assert refs["artifact_hash"] == "batch-hash"
+    assert spool_payload["replay_recipe"]["batch_hash"] == "batch-hash"
 
 
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:

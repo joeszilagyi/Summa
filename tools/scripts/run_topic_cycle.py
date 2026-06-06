@@ -888,13 +888,13 @@ def candidate_ingest_stage(
                         {
                             "artifact_type": "gather_candidate_batch",
                             "artifact_path": str(ingest_batch_path),
-                            "artifact_hash": hash_file(ingest_batch_path),
+                            "artifact_hash": batch_hash,
                         }
                     ]
                 },
                 replay_recipe={
                     "batch_path": str(ingest_batch_path),
-                    "batch_hash": hash_file(ingest_batch_path),
+                    "batch_hash": batch_hash,
                     "strict": True,
                 },
                 failure=exc,
