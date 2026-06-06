@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
@@ -268,6 +270,28 @@ def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path
     prompt_text = prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8")
     hostile_text = HOSTILE_SOURCE_FIXTURE.read_text(encoding="utf-8")
     assert_text_only_inside_wrapped_blocks(prompt_text, hostile_text)
+
+
+def test_run_topic_gather_reads_mixed_unicode_source_text(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "café-😀.txt"
+    source_text = "prefix\u200f e\u0301 😀\x00 suffix"
+    source_path.write_text(source_text, encoding="utf-8")
+
+    read_back = driver.read_text_file(source_path, label="source text file")
+
+    assert read_back == source_text
+
+
+def test_run_topic_gather_rejects_invalid_utf8_source_text_file(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "invalid-utf8.txt"
+    source_path.write_bytes(b"valid-prefix\xffinvalid-suffix")
+
+    with pytest.raises(driver.GatherDriverError, match="must be valid UTF-8 text"):
+        driver.read_text_file(source_path, label="source text file")
 
 
 def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> None:
