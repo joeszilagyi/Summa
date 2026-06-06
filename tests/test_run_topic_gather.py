@@ -294,6 +294,45 @@ def test_run_topic_gather_rejects_invalid_utf8_source_text_file(tmp_path: Path) 
         driver.read_text_file(source_path, label="source text file")
 
 
+def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    large_source_path = workspace_root / "large-source.txt"
+    source_chunk = "Large input line with emoji 😀 and combining e\u0301.\n"
+    large_source_path.write_text(source_chunk * 25000, encoding="utf-8")
+    run_id = "large-source"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--source-text-file",
+            str(large_source_path),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    batch_path = batch_path_for(workspace_root, run_id)
+    prompt_path = prompt_path_for(workspace_root, run_id)
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_PASS, report
+
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert payload["source_text_wrapping"]["source_block_count"] == 1
+    assert prompt_path.stat().st_size > large_source_path.stat().st_size
+
+
 def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
