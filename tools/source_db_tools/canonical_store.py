@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 5
-CURRENT_MIGRATION_ID = "0005_extraction_detected_entity_workspace"
+CURRENT_SCHEMA_VERSION = 6
+CURRENT_MIGRATION_ID = "0006_reconciliation_hot_path_indexes"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -59,12 +59,16 @@ REQUIRED_INDEXES = {
     "ix_source_access_work",
     "ix_source_access_provenance_event_ref",
     "ix_source_access_workspace",
+    "ix_source_access_canonical_url",
+    "ix_source_access_original_locator",
     "ux_source_access_lead_identity_workspace",
     "ux_source_access_lead_identity_global",
     "ix_source_claim_about",
     "ix_source_claim_review",
+    "ix_source_claim_workspace_type_review",
     "ix_source_relationship_refs",
     "ix_source_relationship_review",
+    "ix_source_relationship_workspace_provenance_predicate",
     "ix_topic_extension_topic",
     "ix_work_identifier_work",
     "ux_work_identifier_scheme_value",
@@ -227,9 +231,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=5,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0005_extraction_detected_entity_workspace",
         sql_path=MIGRATIONS_DIR / "0005_extraction_detected_entity_workspace.sql",
         notes="Add extraction_detected_entity workspace scope for standalone candidate ingests.",
+    ),
+    MigrationSpec(
+        version=6,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0006_reconciliation_hot_path_indexes.sql",
+        notes="Add reconciliation hot-path indexes for query-heavy lookups.",
     ),
 )
 

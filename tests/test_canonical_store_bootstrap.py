@@ -245,6 +245,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0003_source_access_provenance_event_ref",
         "0004_source_access_lead_identity",
         "0005_extraction_detected_entity_workspace",
+        "0006_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -291,6 +292,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
     assert result.applied_migration_ids == (
         "0004_source_access_lead_identity",
         "0005_extraction_detected_entity_workspace",
+        "0006_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -399,7 +401,10 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
     )
 
     assert result.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
-    assert result.applied_migration_ids == ("0005_extraction_detected_entity_workspace",)
+    assert result.applied_migration_ids == (
+        "0005_extraction_detected_entity_workspace",
+        "0006_reconciliation_hot_path_indexes",
+    )
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
