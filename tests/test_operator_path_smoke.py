@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.scripts import operator_path_smoke
 
 
@@ -225,6 +227,41 @@ def test_operator_path_smoke_wrapper_handles_workspace_paths_with_spaces(tmp_pat
     assert workspace.is_dir()
     checks = {check["name"] for check in payload["checks"]}
     assert "bootstrap_workspace_apply" in checks
+
+
+@pytest.mark.parametrize(
+    "workspace_name",
+    [
+        r"C:\Users\joe\Summa fixture",
+        r"drive-letter-like:C",
+        r"backslash\segment\name",
+        "leading and trailing ",
+    ],
+)
+def test_operator_path_smoke_handles_windows_like_workspace_names(
+    tmp_path: Path, workspace_name: str
+) -> None:
+    workspace = tmp_path / workspace_name
+
+    proc = run_wrapper(
+        [
+            "--dry-run",
+            "--json",
+            "--workspace",
+            str(workspace),
+            "--run-id",
+            "fixture-windows-like-paths",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "passed"
+    assert workspace.exists()
+    assert workspace.is_dir()
+    assert workspace.name == Path(workspace_name).name
 
 
 def test_operator_path_smoke_json_failure_for_invalid_workspace_path(tmp_path: Path) -> None:

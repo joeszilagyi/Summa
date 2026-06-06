@@ -201,6 +201,48 @@ def test_run_topic_gather_dry_run_is_deterministic(tmp_path: Path) -> None:
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_run_topic_gather_is_cwd_independent_for_absolute_paths(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "cwd-independent"
+
+    args = [
+        "--subject",
+        str(manifest_path),
+        "--workspace",
+        str(workspace_root),
+        "--facet",
+        "sources",
+        "--mode",
+        "dry-run",
+        "--run-id",
+        run_id,
+        "--created-at",
+        FIXED_CREATED_AT,
+    ]
+
+    repo_cwd = run_driver(args)
+    temp_cwd = subprocess.run(
+        [sys.executable, str(DRIVER_PATH), *args],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    prompt_path = prompt_path_for(workspace_root, run_id)
+
+    assert repo_cwd.returncode == 0, repo_cwd.stdout + repo_cwd.stderr
+    assert temp_cwd.returncode == 0, temp_cwd.stdout + temp_cwd.stderr
+    assert repo_cwd.stdout == temp_cwd.stdout
+    assert batch_path.is_file()
+    assert prompt_path.is_file()
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_PASS, report
+
+
 def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

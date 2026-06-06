@@ -17,6 +17,11 @@ fi
 SELF_DIR="$(cd -- "$(dirname -- "$THIS_SCRIPT")" && pwd -P)"
 BOOTSTRAP_SCRIPT="$SELF_DIR/bootstrap_topic_workspace.py"
 [[ -f "$BOOTSTRAP_SCRIPT" ]] || fail "Missing bootstrap target: $BOOTSTRAP_SCRIPT"
+CONSOLE_COMMAND="summa-new-topic"
+
+if command -v "$CONSOLE_COMMAND" >/dev/null 2>&1; then
+  exec "$CONSOLE_COMMAND" "$@"
+fi
 
 PYTHON_BIN="python3"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "$PYTHON_BIN is not installed or not in PATH"
