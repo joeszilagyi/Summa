@@ -56,6 +56,16 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
+markers = [
+  "unit: a fast, in-process test",
+  "integration: a higher-cost integration-style test",
+  "slow: a longer-running test",
+  "network_fixture: tests that exercise network-like fixtures",
+  "subprocess: tests that spawn external processes",
+  "sqlite: tests that exercise sqlite-backed persistence",
+  "git: tests that invoke git commands",
+  "publication: tests focused on operator publication workflows",
+]
 pythonpath = [
   ".",
   "tools/source_db_tools/tests"
