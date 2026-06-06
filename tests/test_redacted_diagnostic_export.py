@@ -10,6 +10,9 @@ from jsonschema import validators
 
 from tools.source_db_tools import canonical_store, cycle_evidence_ledger
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "scripts"))
+from export_redacted_diagnostics import Redactor  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "export_redacted_diagnostics.py"
 MANIFEST_SCHEMA = REPO_ROOT / "config" / "redacted-diagnostic-manifest.v1.schema.json"
@@ -339,6 +342,31 @@ def test_default_export_excludes_private_sentinel_paths_urls_text_and_payload_co
     assert "private review note" not in bundle_text
     assert "path-hmac:" in bundle_text
     assert "sensitive.example.test" in bundle_text
+
+
+def test_redactor_handles_absolute_local_paths_for_public_and_private_modes() -> None:
+    absolute_path = Path("/home/operator/private fixtures/payload.txt")
+    public_redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+    private_redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=True,
+    )
+
+    public_path = public_redactor.redact_path(absolute_path)
+    public_json = public_redactor.redact_json({"local_path": str(absolute_path)})
+
+    assert public_path is not None
+    assert public_path.startswith("path-hmac:")
+    assert str(absolute_path) not in public_path
+    assert public_json["local_path"] == public_path
+    assert private_redactor.redact_path(absolute_path) == str(absolute_path)
 
 
 def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
