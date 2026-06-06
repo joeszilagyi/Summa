@@ -63,6 +63,66 @@ def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> N
     assert "Subject Tree" in (publish_root / "index.html").read_text(encoding="utf-8")
 
 
+def test_render_page_html_escapes_hostile_html_and_attributes() -> None:
+    page = {
+        "page_id": "page-1",
+        "page_family": "family-1",
+        "route": "pages/current.html",
+        "title": '<script>alert("x")</script>',
+        "lede": '<img src=x onerror="alert(1)">',
+        "summary_cards": [
+            {"label": "<b>Label</b>", "value": '" onmouseover="alert(1)'},
+        ],
+        "source_ids": ['source-1<script>alert(1)</script>'],
+        "related_page_ids": ["page-2"],
+        "redaction_gate_refs": ['javascript:alert(1)" onclick="x'],
+        "sections": [
+            {
+                "heading": '<svg onload="alert(1)">',
+                "paragraphs": ['<!-- comment --> <script>alert(1)</script>'],
+                "bullet_items": ['[link](javascript:alert(1))', 'quote " breaker'],
+                "link_page_ids": ["page-2"],
+            }
+        ],
+    }
+    presentation_page = {
+        "breadcrumbs": ["index.html", 'pages/" onclick="alert(1).html'],
+        "navigation_children": ['children/" onclick="alert(1).html'],
+        "page_family": "family-1",
+        "reader_state": '"><img src=x onerror="alert(1)">',
+        "review_state": "needs_review",
+        "validation_state": 'validated"><script>alert(1)</script>',
+        "publication_state": "public",
+        "source_transparency": '<svg onload="alert(1)">',
+        "empty_state": "<textarea autofocus>",
+        "redaction_gate_refs": ['<img src=x onerror="alert(1)">'],
+    }
+    export_payload = {
+        "display_name": '<span onclick="alert(1)">Subject Tree</span>',
+        "export_profile": "public",
+        "workspace_id": "workspace-1",
+    }
+    page_route_map = {
+        "page-1": "pages/current.html",
+        "page-2": 'pages/target/" onclick="alert(1).html',
+    }
+
+    html = builder.render_page_html(
+        page,
+        presentation_page,
+        page_route_map=page_route_map,
+        export_payload=export_payload,
+    )
+
+    assert "<script>" not in html
+    assert "<img" not in html
+    assert '" onclick="' not in html
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in html
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in html
+    assert "&quot; onclick=&quot;alert(1)" in html
+    assert "javascript:alert(1)" in html
+
+
 def test_build_static_knowledge_tree_restores_previous_output_on_publish_failure(tmp_path: Path) -> None:
     publish_root = tmp_path / "public-site"
     publish_root.mkdir()
