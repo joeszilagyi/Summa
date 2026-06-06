@@ -359,6 +359,56 @@ def test_invalid_artifact_reports_failure(tmp_path: Path) -> None:
     assert report["errors"]
 
 
+def test_reference_artifacts_reject_future_schema_versions(tmp_path: Path) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    cycle_path = runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json"
+    cycle_payload = load_json(cycle_path)
+    cycle_payload["schema_version"] = "topic-cycle-run.v999"
+    cycle_path.write_text(json.dumps(cycle_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    review_dir = runs_dir / "review"
+    review_dir.mkdir()
+    (review_dir / "review-decision-apply-result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "review-decision-apply-result.v999",
+                "target": "source_claim:1",
+                "decision_action": "reject_claim",
+                "status": "completed",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+
+    proc = run_audit(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "validate_only",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = load_json(report_path)
+    invalid = [
+        item for item in report["artifacts_discovered"] if item["validation_status"] == "invalid"
+    ]
+    assert {item["artifact_type"] for item in invalid} >= {
+        "topic_cycle_manifest",
+        "review_decision_apply_result",
+    }
+    assert any("schema_version" in (item.get("failure_reason") or "") for item in invalid)
+
+
 def test_missing_replay_support_is_incomplete_support_not_false_success(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     review_dir = runs_dir / "review"
