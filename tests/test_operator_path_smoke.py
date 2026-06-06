@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+from tools.scripts import operator_path_smoke
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +110,17 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     assert checks["bootstrap_workspace_apply"]["status"] == "passed"
     assert checks["build_workspace_overview"]["status"] == "passed"
     assert checks["run_topic_cycle"]["status"] == "passed"
+    assert checks["bootstrap_workspace_apply"]["artifact_path"] == str(
+        workspace / "topic-workspace" / ".indexer" / "subject_manifest.json"
+    )
+    assert checks["run_topic_cycle"]["artifact_path"] == str(
+        workspace / "topic-cycle" / "fixture-smoke" / "topic-cycle-run.json"
+    )
+    assert checks["canonical_family_counts"]["artifact_path"] == str(workspace / "canonical.sqlite")
+    assert checks["run_local_doctor"]["artifact_path"] == str(workspace / "doctor-report.json")
+    assert checks["build_operator_dashboard"]["artifact_path"] == str(
+        workspace / "operator-dashboard.html"
+    )
 
     expected_paths = [
         workspace / "topic_workspaces.local.json",
@@ -117,9 +132,73 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
     for path in expected_paths:
         assert path.exists(), path
 
+    subject_manifest = json.loads(
+        (workspace / "topic-workspace" / ".indexer" / "subject_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert subject_manifest["schema_version"] == "subject-manifest.v1"
+    assert subject_manifest["subject_id"]
+
+    topic_cycle_path = workspace / "topic-cycle" / "fixture-smoke" / "topic-cycle-run.json"
+    topic_cycle = json.loads(topic_cycle_path.read_text(encoding="utf-8"))
+    assert topic_cycle["schema_version"] == "topic-cycle-run.v1"
+    assert topic_cycle["status"] == "completed"
+    assert topic_cycle["canonical_db"]["mutated"] is True
+    assert topic_cycle["canonical_db"]["final_summary"]["status"] == "populated"
+    assert topic_cycle["canonical_db"]["final_summary"]["total_rows"] > 0
+    assert topic_cycle["canonical_db"]["final_summary"]["family_counts"]
+    stage_statuses = {stage["name"]: stage["status"] for stage in topic_cycle["stages"]}
+    assert stage_statuses["ingest_candidate_batch"] == "passed"
+    assert stage_statuses["ingest_execution_artifacts"] == "passed"
+
+    conn = sqlite3.connect(workspace / "canonical.sqlite")
+    try:
+        db_counts = {
+            "work": int(conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]),
+            "source_claim": int(conn.execute("SELECT COUNT(*) FROM source_claim").fetchone()[0]),
+            "source_access": int(conn.execute("SELECT COUNT(*) FROM source_access").fetchone()[0]),
+            "source_relationship": int(
+                conn.execute("SELECT COUNT(*) FROM source_relationship").fetchone()[0]
+            ),
+            "capture_event": int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0]),
+            "extraction_record": int(
+                conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]
+            ),
+            "provenance_event": int(conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0]),
+            "cycle_event": int(conn.execute("SELECT COUNT(*) FROM cycle_event").fetchone()[0]),
+            "cycle_stage_event": int(
+                conn.execute("SELECT COUNT(*) FROM cycle_stage_event").fetchone()[0]
+            ),
+        }
+    finally:
+        conn.close()
+
+    assert all(count > 0 for count in db_counts.values())
+    assert db_counts == {
+        "work": 1,
+        "source_claim": 3,
+        "source_access": 2,
+        "source_relationship": 1,
+        "capture_event": 1,
+        "extraction_record": 1,
+        "provenance_event": 2,
+        "cycle_event": 1,
+        "cycle_stage_event": 12,
+    }
+
+    final_family_counts = topic_cycle["canonical_db"]["final_summary"]["family_counts"]
+
     doctor_report = json.loads((workspace / "doctor-report.json").read_text(encoding="utf-8"))
     assert doctor_report["canonical_store"]["status"] == "populated"
     assert doctor_report["canonical_store"]["total_rows"] > 0
+    assert doctor_report["canonical_store"]["family_counts"] == final_family_counts
+    for table_name, count in db_counts.items():
+        assert doctor_report["canonical_store"]["table_counts"][table_name] == count
+
+    dashboard_body = (workspace / "operator-dashboard.html").read_text(encoding="utf-8")
+    assert "Summa Operator Health" in dashboard_body
+    assert "canonical store" in dashboard_body.lower()
 
 
 def test_operator_path_smoke_wrapper_handles_workspace_paths_with_spaces(tmp_path: Path) -> None:
@@ -205,15 +284,83 @@ def test_operator_path_smoke_keeps_repo_root_intact_when_workspace_is_tmp(tmp_pa
         root_drift_path.unlink(missing_ok=True)
 
 
-def test_operator_path_smoke_wrapper_points_to_existing_python_target() -> None:
-    body = WRAPPER.read_text(encoding="utf-8")
+def test_operator_path_smoke_wrapper_invokes_the_python_target(tmp_path: Path) -> None:
+    capture_path = tmp_path / "python-argv.txt"
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim_path = shim_dir / "python3"
+    shim_path.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n'
+        'exec "$REAL_PYTHON" "$@"\n',
+        encoding="utf-8",
+    )
+    shim_path.chmod(0o755)
 
-    assert 'operator_path_smoke.py' in body
-    assert PY_TOOL.exists()
+    env = {
+        **os.environ,
+        "PATH": str(shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "REAL_PYTHON": sys.executable,
+        "SUMMA_WRAPPER_CAPTURE": str(capture_path),
+    }
+    proc = subprocess.run(
+        ["bash", str(WRAPPER), "--help"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    captured_args = capture_path.read_text(encoding="utf-8").splitlines()
+    assert Path(captured_args[0]) == PY_TOOL
+    assert captured_args[1:] == ["--help"]
 
 
-def test_operator_path_smoke_uses_real_topic_cycle_path() -> None:
-    body = PY_TOOL.read_text(encoding="utf-8")
+def test_operator_path_smoke_run_topic_cycle_uses_the_real_script_path(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    ctx = operator_path_smoke.SmokeContext(
+        repo_root=REPO_ROOT,
+        workspace_path=tmp_path / "workspace",
+        dry_run=True,
+        run_id="fixture-smoke",
+        timestamp="2026-06-03T12:00:00Z",
+        registry_path=tmp_path / "workspace" / "topic_workspaces.local.json",
+        topic_workspace_root=tmp_path / "workspace" / "topic-workspace",
+        subject_manifest_path=(
+            tmp_path / "workspace" / "topic-workspace" / ".indexer" / "subject_manifest.json"
+        ),
+        subject_id="alpha_subject",
+        canonical_db_path=tmp_path / "workspace" / "canonical.sqlite",
+    )
+    ctx.subject_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.subject_manifest_path.write_text(
+        json.dumps({"schema_version": "subject-manifest.v1", "subject_id": "alpha_subject"}) + "\n",
+        encoding="utf-8",
+    )
 
-    assert "run_topic_cycle.py" in body
-    assert "smoke_run_topic_cycle" in body
+    captured: dict[str, list[str]] = {}
+
+    def fake_checked_command(command: list[str], *, cwd: Path, label: str) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        payload = {
+            "schema_version": "topic-cycle-run.v1",
+            "status": "completed",
+            "canonical_db": {"mutated": True},
+            "stages": [
+                {"name": "ingest_candidate_batch", "status": "passed"},
+                {"name": "ingest_execution_artifacts", "status": "passed"},
+            ],
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(operator_path_smoke, "checked_command", fake_checked_command)
+
+    artifact_path, summary = operator_path_smoke.smoke_run_topic_cycle(ctx)
+
+    assert artifact_path == str(ctx.workspace_path / "topic-cycle" / ctx.run_id / "topic-cycle-run.json")
+    assert "real topic-cycle path" in summary
+    assert captured["command"][1] == str(REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py")
+    assert captured["command"][captured["command"].index("--run-id") + 1] == "fixture-smoke"
