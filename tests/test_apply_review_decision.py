@@ -178,6 +178,27 @@ def count_rows(conn, table: str) -> int:
     return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
+PROTECTED_TABLES = (
+    "authority_record",
+    "authority_reconciliation",
+    "authority_merge_event",
+    "extraction_detected_entity",
+    "review_state_history",
+    "source_claim",
+    "source_relationship",
+    "work_subject",
+)
+
+
+def snapshot_protected_counts(conn) -> dict[str, int]:
+    return {table: count_rows(conn, table) for table in PROTECTED_TABLES}
+
+
+def assert_non_decreasing_counts(before: dict[str, int], after: dict[str, int]) -> None:
+    for table, before_count in before.items():
+        assert after[table] >= before_count, f"{table} decreased from {before_count} to {after[table]}"
+
+
 def review_history_count(conn, *, namespace: str, target_id: int) -> int:
     return int(
         conn.execute(
@@ -578,6 +599,157 @@ def test_resolve_contradiction_preserves_relationship_and_underlying_claims(tmp_
     assert relationship["predicate"] == "contradicts"
     assert relationship["review_state"] == "reviewed"
     assert claim_count == 2
+
+
+def test_review_actions_preserve_protected_rows_and_stable_ids(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            merge_winner_id = create_authority(conn, "Batch Merge Winner")
+            merge_loser_id = create_authority(conn, "Batch Merge Loser")
+            merge_reconciliation_id = insert_reconciliation(
+                conn, loser_id=merge_loser_id, winner_id=merge_winner_id
+            )
+            claim_prov = provenance(conn, "batch-claim")
+            claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=claim_prov.event_key,
+                source_claim_key_v1="claim:apply-review:batch-claim",
+                about_object_ref="authority:batch-claim",
+                claim_text="Batch claim to reject.",
+                claim_type="structured_fixture",
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            contradiction_left = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=claim_prov.event_key,
+                source_claim_key_v1="claim:apply-review:left-batch",
+                about_object_ref="authority:batch-claim",
+                claim_text="Left batch claim.",
+                claim_type="fixture",
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            contradiction_right = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=claim_prov.event_key,
+                source_claim_key_v1="claim:apply-review:right-batch",
+                about_object_ref="authority:batch-claim",
+                claim_text="Right batch claim.",
+                claim_type="fixture",
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            contradiction = canonical_store.record_source_relationship(
+                conn,
+                provenance_event_ref=claim_prov.event_key,
+                from_object_ref=f"source_claim:{contradiction_left.row_id}",
+                to_object_ref=f"source_claim:{contradiction_right.row_id}",
+                predicate="contradicts",
+                evidence_note="batch contradiction",
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            reject_winner_id = create_authority(conn, "Batch Reject Winner")
+            reject_loser_id = create_authority(conn, "Batch Reject Loser")
+            reject_reconciliation_id = insert_reconciliation(
+                conn, loser_id=reject_loser_id, winner_id=reject_winner_id
+            )
+
+        before = snapshot_protected_counts(conn)
+
+        review_decision_apply.apply_review_decision(
+            conn,
+            target=f"authority_reconciliation:{merge_reconciliation_id}",
+            decision_action="accept_merge",
+            reviewer="operator",
+            reason="Batch merge review.",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        after_merge = snapshot_protected_counts(conn)
+        assert_non_decreasing_counts(before, after_merge)
+
+        review_decision_apply.apply_review_decision(
+            conn,
+            target=f"source_claim:{claim.row_id}",
+            decision_action="reject_claim",
+            reviewer="operator",
+            reason="Batch claim review.",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        after_reject_claim = snapshot_protected_counts(conn)
+        assert_non_decreasing_counts(after_merge, after_reject_claim)
+
+        review_decision_apply.apply_review_decision(
+            conn,
+            target=f"source_relationship:{contradiction.row_id}",
+            decision_action="resolve_contradiction",
+            reviewer="operator",
+            reason="Batch contradiction review.",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        after_resolve = snapshot_protected_counts(conn)
+        assert_non_decreasing_counts(after_reject_claim, after_resolve)
+
+        review_decision_apply.apply_review_decision(
+            conn,
+            target=f"authority_reconciliation:{reject_reconciliation_id}",
+            decision_action="reject_merge",
+            reviewer="operator",
+            reason="Batch reject review.",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        after_reject_merge = snapshot_protected_counts(conn)
+        assert_non_decreasing_counts(after_resolve, after_reject_merge)
+
+        merge_loser = conn.execute(
+            "SELECT merged_into_authority_record_id, review_state FROM authority_record WHERE authority_record_id=?",
+            (merge_loser_id,),
+        ).fetchone()
+        merge_winner = conn.execute(
+            "SELECT review_state FROM authority_record WHERE authority_record_id=?",
+            (merge_winner_id,),
+        ).fetchone()
+        reject_loser = conn.execute(
+            "SELECT merged_into_authority_record_id, review_state FROM authority_record WHERE authority_record_id=?",
+            (reject_loser_id,),
+        ).fetchone()
+        claim_row = conn.execute(
+            "SELECT review_state FROM source_claim WHERE source_claim_id=?",
+            (claim.row_id,),
+        ).fetchone()
+        contradiction_row = conn.execute(
+            "SELECT review_state FROM source_relationship WHERE source_relationship_id=?",
+            (contradiction.row_id,),
+        ).fetchone()
+        merge_history = review_history_count(conn, namespace="authority_reconciliation", target_id=merge_reconciliation_id)
+        reject_history = review_history_count(conn, namespace="source_claim", target_id=claim.row_id)
+        contradiction_history = review_history_count(
+            conn, namespace="source_relationship", target_id=contradiction.row_id
+        )
+        reject_merge_history = review_history_count(
+            conn, namespace="authority_reconciliation", target_id=reject_reconciliation_id
+        )
+    finally:
+        conn.close()
+
+    assert merge_loser["merged_into_authority_record_id"] == merge_winner_id
+    assert merge_loser["review_state"] == "demoted"
+    assert merge_winner["review_state"] == "needs_review"
+    assert reject_loser["merged_into_authority_record_id"] is None
+    assert reject_loser["review_state"] == "needs_review"
+    assert claim_row["review_state"] == "rejected"
+    assert contradiction_row["review_state"] == "reviewed"
+    assert merge_history == 1
+    assert reject_history == 1
+    assert contradiction_history == 1
+    assert reject_merge_history == 1
 
 
 def test_dry_run_reports_intended_merge_without_mutating(tmp_path: Path) -> None:

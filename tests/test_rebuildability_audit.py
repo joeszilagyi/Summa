@@ -49,6 +49,17 @@ def run_audit(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_audit_with_timeout(args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
 def assert_rebuildability_report_schema(report: dict[str, Any]) -> None:
     if validators is None:
         assert report["schema_version"] == "canonical-rebuildability-report.v1"
@@ -99,6 +110,26 @@ def stage_runs_dir(tmp_path: Path) -> Path:
             sort_keys=True,
         )
         + "\n",
+        encoding="utf-8",
+    )
+    return runs_dir
+
+
+def stage_noisy_runs_dir(tmp_path: Path) -> Path:
+    runs_dir = stage_runs_dir(tmp_path)
+    noise_root = runs_dir / "noise"
+    for branch_index in range(12):
+        branch_dir = noise_root / f"branch-{branch_index:02d}" / "deep" / "layer"
+        branch_dir.mkdir(parents=True, exist_ok=True)
+        for file_index in range(150):
+            (branch_dir / f"artifact-{branch_index:02d}-{file_index:04d}.txt").write_text(
+                f"noise file {branch_index}:{file_index}\n",
+                encoding="utf-8",
+            )
+    huge_text_dir = runs_dir / "extracted-text"
+    huge_text_dir.mkdir(parents=True, exist_ok=True)
+    (huge_text_dir / "bulk-transcript.txt").write_text(
+        "lorem ipsum dolor sit amet\n" * 5000,
         encoding="utf-8",
     )
     return runs_dir
@@ -331,6 +362,33 @@ def test_validation_only_discovers_and_validates_artifacts(tmp_path: Path) -> No
     } <= types
     assert report["replay_plan"]["replayable_artifact_count"] == 2
     assert report["temp_rebuild_db"] is None
+
+
+def test_validation_only_completes_on_large_noisy_run_tree_within_timeout(tmp_path: Path) -> None:
+    runs_dir = stage_noisy_runs_dir(tmp_path)
+    report_path = tmp_path / "report.json"
+
+    proc = run_audit_with_timeout(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "validate_only",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ],
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    report = load_json(report_path)
+    assert_rebuildability_report_schema(report)
+    assert report["final_status"] == "validation_only"
+    assert len(report["artifacts_discovered"]) == 3
+    assert report["replay_plan"]["replayable_artifact_count"] == 2
+    assert report["artifacts_missing"] == []
 
 
 def test_rebuild_temp_replays_artifacts_and_runs_graph_closure(tmp_path: Path) -> None:
