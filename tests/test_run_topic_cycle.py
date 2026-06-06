@@ -489,8 +489,8 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert isinstance(manifest["cycle_event_id"], str)
     assert manifest["cycle_event_id"].startswith("cycle:")
     assert manifest["canonical_db"]["mutated"] is True  # type: ignore[index]
-    assert manifest["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}  # type: ignore[index]
-    assert Path(manifest["graph_closure"]["report_path"]).is_file()  # type: ignore[index]
+    assert manifest["graph_closure"]["status"] == "disabled"  # type: ignore[index]
+    assert manifest["graph_closure"].get("report_path") is None
     assert table_count(db_path, "work") >= 1
     assert table_count(db_path, "source_claim") >= 1
     assert table_count(db_path, "capture_event") >= 1
@@ -516,7 +516,7 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_candidate_batch"]["status"] == "passed"
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
-    assert stages["graph_closure_audit"]["status"] in {"passed", "warning"}
+    assert stages["graph_closure_audit"]["status"] in {"passed", "warning", "skipped"}
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
     assert manifest["selection_explanations"]
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
@@ -618,7 +618,7 @@ def test_topic_cycle_degraded_spool_records_pending_canonical_write(
     assert manifest["spool_records"]
     assert manifest["spool_records"][0]["operation_kind"] == "candidate_batch_ingest"  # type: ignore[index]
     assert Path(manifest["spool_records"][0]["path"]).is_file()  # type: ignore[index]
-    assert manifest["graph_closure"]["status"] == "unavailable"  # type: ignore[index]
+    assert manifest["graph_closure"]["status"] == "disabled"  # type: ignore[index]
 
 
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
@@ -641,6 +641,7 @@ def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) ->
             "--timestamp",
             "2026-06-03T12:00:00Z",
             "--dry-run",
+            "--graph-closure",
             "--graph-closure-strict",
         ]
     )
