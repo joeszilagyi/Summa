@@ -93,6 +93,15 @@ def enumerate_directory(
 
     for path in sorted(root.rglob("*")):
         relative_path = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            skipped.append(
+                {
+                    "path": str(path),
+                    "relative_path": relative_path,
+                    "reason": "symlink_not_allowed",
+                }
+            )
+            continue
         if path.is_dir():
             skipped.append({"path": str(path), "relative_path": relative_path, "reason": "not_a_file"})
             continue
@@ -114,6 +123,8 @@ def enumerate_file(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any
         return [], [], [f"local file root not found: {root}"]
     if not root.is_file():
         return [], [], [f"local file root is not a file: {root}"]
+    if root.is_symlink():
+        return [], [], [f"local file root is a symlink: {root}"]
     return [{"path": root, "relative_path": root.name, "size_bytes": root.stat().st_size}], [], []
 
 
