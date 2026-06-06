@@ -596,3 +596,32 @@ def test_index_run_gather_wrapper_help_and_dry_run(tmp_path: Path) -> None:
 
     assert dry_run_result.returncode == 0, dry_run_result.stdout + dry_run_result.stderr
     assert batch_path_for(workspace_root, run_id).is_file()
+
+
+def test_index_run_gather_docs_example_executes_in_dry_run(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "reviewable-dry-run"
+
+    proc = run_wrapper(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
+    assert payload["mode"] == "dry_run"
+    assert payload["run_id"] == run_id
