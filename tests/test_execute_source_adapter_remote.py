@@ -171,6 +171,7 @@ def run_executor(
     output: Path,
     gate_request: Path,
     allow_network: bool,
+    dry_run: bool = False,
     max_response_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [
@@ -191,6 +192,8 @@ def run_executor(
         "--timeout-seconds",
         "2",
     ]
+    if dry_run:
+        args.append("--dry-run")
     if max_response_bytes is not None:
         args.extend(["--max-response-bytes", str(max_response_bytes)])
     if allow_network:
@@ -643,6 +646,28 @@ def test_missing_allow_network_denies_without_fetch(tmp_path: Path) -> None:
         assert denial_record["considered_urls"] == [url]
         assert load_jsonl(output / "capture-events.jsonl") == []
         assert FixtureHandler.request_paths == []
+    finally:
+        server.shutdown()
+
+
+def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/text"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url, dry_run=True)
+        output = tmp_path / "remote-dry-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True, dry_run=True)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        assert execution["status"] == "dry_run"
+        assert execution["canonical_persistence_attempted"] is False
+        assert execution["network_access_attempted"] is False
+        assert load_jsonl(output / "capture-events.jsonl") == []
+        assert load_jsonl(output / "extraction-records.jsonl") == []
+        assert not (output / "payloads").exists()
     finally:
         server.shutdown()
 
