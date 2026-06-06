@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+from tools.scripts import operator_path_smoke
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -205,15 +208,83 @@ def test_operator_path_smoke_keeps_repo_root_intact_when_workspace_is_tmp(tmp_pa
         root_drift_path.unlink(missing_ok=True)
 
 
-def test_operator_path_smoke_wrapper_points_to_existing_python_target() -> None:
-    body = WRAPPER.read_text(encoding="utf-8")
+def test_operator_path_smoke_wrapper_invokes_the_python_target(tmp_path: Path) -> None:
+    capture_path = tmp_path / "python-argv.txt"
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim_path = shim_dir / "python3"
+    shim_path.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n'
+        'exec "$REAL_PYTHON" "$@"\n',
+        encoding="utf-8",
+    )
+    shim_path.chmod(0o755)
 
-    assert 'operator_path_smoke.py' in body
-    assert PY_TOOL.exists()
+    env = {
+        **os.environ,
+        "PATH": str(shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "REAL_PYTHON": sys.executable,
+        "SUMMA_WRAPPER_CAPTURE": str(capture_path),
+    }
+    proc = subprocess.run(
+        ["bash", str(WRAPPER), "--help"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    captured_args = capture_path.read_text(encoding="utf-8").splitlines()
+    assert Path(captured_args[0]) == PY_TOOL
+    assert captured_args[1:] == ["--help"]
 
 
-def test_operator_path_smoke_uses_real_topic_cycle_path() -> None:
-    body = PY_TOOL.read_text(encoding="utf-8")
+def test_operator_path_smoke_run_topic_cycle_uses_the_real_script_path(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    ctx = operator_path_smoke.SmokeContext(
+        repo_root=REPO_ROOT,
+        workspace_path=tmp_path / "workspace",
+        dry_run=True,
+        run_id="fixture-smoke",
+        timestamp="2026-06-03T12:00:00Z",
+        registry_path=tmp_path / "workspace" / "topic_workspaces.local.json",
+        topic_workspace_root=tmp_path / "workspace" / "topic-workspace",
+        subject_manifest_path=(
+            tmp_path / "workspace" / "topic-workspace" / ".indexer" / "subject_manifest.json"
+        ),
+        subject_id="alpha_subject",
+        canonical_db_path=tmp_path / "workspace" / "canonical.sqlite",
+    )
+    ctx.subject_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.subject_manifest_path.write_text(
+        json.dumps({"schema_version": "subject-manifest.v1", "subject_id": "alpha_subject"}) + "\n",
+        encoding="utf-8",
+    )
 
-    assert "run_topic_cycle.py" in body
-    assert "smoke_run_topic_cycle" in body
+    captured: dict[str, list[str]] = {}
+
+    def fake_checked_command(command: list[str], *, cwd: Path, label: str) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        payload = {
+            "schema_version": "topic-cycle-run.v1",
+            "status": "completed",
+            "canonical_db": {"mutated": True},
+            "stages": [
+                {"name": "ingest_candidate_batch", "status": "passed"},
+                {"name": "ingest_execution_artifacts", "status": "passed"},
+            ],
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(operator_path_smoke, "checked_command", fake_checked_command)
+
+    artifact_path, summary = operator_path_smoke.smoke_run_topic_cycle(ctx)
+
+    assert artifact_path == str(ctx.workspace_path / "topic-cycle" / ctx.run_id / "topic-cycle-run.json")
+    assert "real topic-cycle path" in summary
+    assert captured["command"][1] == str(REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py")
+    assert captured["command"][captured["command"].index("--run-id") + 1] == "fixture-smoke"
