@@ -91,6 +91,78 @@ def test_local_file_adapter_handles_single_file_root(tmp_path: Path) -> None:
     assert record["source_specific"] == {"source_filename": "single.pdf"}
 
 
+def test_local_directory_adapter_rejects_symlink_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "file.txt").write_text("fixture\n", encoding="utf-8")
+    symlink_root = tmp_path / "symlink-root"
+    symlink_root.symlink_to(source_root, target_is_directory=True)
+
+    adapter_path = tmp_path / "source_adapter.json"
+    adapter_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "source-adapter.v1",
+                "adapter_id": "runtime_symlink_root",
+                "display_name": "Runtime symlink root",
+                "workspace_id": "alpha_subject",
+                "description": "Fixture adapter with a symlinked directory root.",
+                "input_family": "local_directory",
+                "locator": {
+                    "local_path": str(symlink_root),
+                    "include_globs": ["**/*.txt"],
+                },
+                "content_profile": {
+                    "content_kinds": ["text"],
+                    "hazard_flags": [],
+                },
+                "provenance": {
+                    "discovery_provenance": "test fixture",
+                    "acquisition_method": "manual_drop",
+                    "source_description": "Symlinked directory root fixture.",
+                },
+                "rights_and_storage": {
+                    "payload_storage_policy_class": "private_only",
+                    "metadata_storage_policy_class": "tracked_derived",
+                    "rights_posture": "private_local_only",
+                },
+                "automation_posture": "operator_review_required",
+                "normalized_handoff": {
+                    "record_family": "capture",
+                    "batch_unit": "per_file",
+                    "preserve_fields": [
+                        "original_locator",
+                        "discovery_provenance",
+                        "rights_posture",
+                    ],
+                    "source_specific_fields": ["relative_path", "source_filename"],
+                },
+                "transform_lineage": [
+                    {
+                        "step_id": "handoff",
+                        "step_kind": "emit_handoff",
+                        "description": "Emit local capture handoff.",
+                        "deterministic": True,
+                        "review_required": True,
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["blocker_count"] == 1
+    assert payload["blockers"][0].startswith("local directory root is a symlink")
+    assert payload["candidate_count"] == 0
+
+
 def test_local_directory_adapter_rejects_symlink_escape_and_keeps_binary_bytes_as_candidates(
     tmp_path: Path,
 ) -> None:
