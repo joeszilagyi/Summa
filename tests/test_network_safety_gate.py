@@ -178,6 +178,24 @@ def test_allowlisted_rejects_subdomain_forgery_for_bare_host_prefix() -> None:
     ) is True
 
 
+def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_userinfo() -> None:
+    assert gate.allowlisted(
+        "https://xn--bcher-kva.example/alpha",
+        hosts=["xn--bcher-kva.example"],
+        prefixes=[],
+    ) is True
+    assert gate.allowlisted(
+        "https://archives.example.gov:443/subject/alpha",
+        hosts=[],
+        prefixes=["https://ARCHIVES.EXAMPLE.GOV/subject"],
+    ) is True
+    assert gate.allowlisted(
+        "https://example.com@attacker.invalid/path",
+        hosts=["attacker.invalid"],
+        prefixes=[],
+    ) is False
+
+
 def test_network_safety_gate_refuses_dirty_worktree_when_required(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()

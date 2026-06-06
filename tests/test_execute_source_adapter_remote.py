@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tools.scripts import execute_source_adapter as source_executor
 
 
@@ -371,6 +373,106 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: P
     assert execution_record["urls_denied"] == 2
     assert capture_events[0]["status"] == "denied"
     assert extraction_records[0]["status"] == "denied"
+
+
+def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [
+        {
+            "sequence": 1,
+            "relative_path": "one",
+            "preserved": {
+                "original_locator": {"entry_url": "https://example.test/one"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://example.test/manifest.json"},
+        },
+        {
+            "sequence": 2,
+            "relative_path": "two",
+            "preserved": {
+                "original_locator": {"entry_url": "https://example.test/two"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://example.test/manifest.json"},
+        },
+    ]
+    base_gate_report = {
+        "schema_version": "network-safety-gate-report.v1",
+        "decision": "allow",
+        "execution_allowed": True,
+        "counts": {"errors": 0, "warnings": 0},
+        "checks": {
+            "network_policy": {
+                "user_agent": "SummaRemoteTest/1.0",
+                "allow_http": True,
+                "robots_mode": "respect_robots",
+            },
+            "rate_limits": {"min_interval_seconds": 0},
+            "allowlist": {"hosts": [], "url_prefixes": ["https://example.test/"]},
+        },
+    }
+    gate_request_path = tmp_path / "gate-request.json"
+    gate_request_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
+
+    wrong_order_report = {
+        **base_gate_report,
+        "planned_actions": [
+            {"url": "https://example.test/two", "status": "planned", "method": "GET"},
+            {"url": "https://example.test/one", "status": "planned", "method": "GET"},
+        ],
+    }
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: wrong_order_report)
+
+    with pytest.raises(
+        source_executor.SourceAcquisitionError,
+        match="planned action order does not match handoff order",
+    ):
+        source_executor.execute_remote_url_manifest(
+            records=records,
+            run_id="remote-gate-order-mismatch",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_path=tmp_path / "handoff.jsonl",
+            handoff_hash="a" * 64,
+            adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+            gate_request_path=gate_request_path,
+            dry_run=False,
+            allow_network=True,
+            timeout_seconds=2,
+            max_response_bytes=1024,
+        )
+
+    extra_action_report = {
+        **base_gate_report,
+        "planned_actions": [
+            {"url": "https://example.test/one", "status": "planned", "method": "GET"},
+            {"url": "https://example.test/two", "status": "planned", "method": "GET"},
+            {"url": "https://example.test/extra", "status": "planned", "method": "GET"},
+        ],
+    }
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: extra_action_report)
+
+    with pytest.raises(
+        source_executor.SourceAcquisitionError,
+        match="includes unexpected planned actions for: https://example.test/extra",
+    ):
+        source_executor.execute_remote_url_manifest(
+            records=records,
+            run_id="remote-gate-extra-action",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_path=tmp_path / "handoff.jsonl",
+            handoff_hash="a" * 64,
+            adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+            gate_request_path=gate_request_path,
+            dry_run=False,
+            allow_network=True,
+            timeout_seconds=2,
+            max_response_bytes=1024,
+        )
 
 
 def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path) -> None:

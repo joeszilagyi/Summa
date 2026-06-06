@@ -48,19 +48,52 @@ def url_host(value: str) -> str:
     return (urlparse(value).hostname or "").casefold()
 
 
+def normalize_host(value: str) -> str:
+    host = value.casefold()
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
+def normalized_allowlist_url(value: str) -> str | None:
+    parsed = urlparse(value)
+    if parsed.username or parsed.password:
+        return None
+    host = parsed.hostname or ""
+    normalized_host = normalize_host(host)
+    if ":" in normalized_host and not normalized_host.startswith("["):
+        normalized_host = f"[{normalized_host}]"
+    port = parsed.port
+    scheme = parsed.scheme.casefold()
+    if (scheme, port) in {("http", 80), ("https", 443)}:
+        port = None
+    netloc = normalized_host if port is None else f"{normalized_host}:{port}"
+    path = parsed.path or "/"
+    normalized = parsed._replace(
+        scheme=scheme,
+        netloc=netloc,
+        path=path,
+        params="",
+        fragment="",
+    ).geturl()
+    return normalized
+
+
 def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
     parsed = urlparse(url)
-    normalized_url = parsed.geturl()
-    host = (parsed.hostname or "").casefold()
+    normalized_url = normalized_allowlist_url(url)
+    if normalized_url is None:
+        return False
+    host = normalize_host(parsed.hostname or "")
     for allowed_host in hosts:
-        normalized_host = allowed_host.casefold()
+        normalized_host = normalize_host(allowed_host)
         if host == normalized_host or host.endswith("." + normalized_host):
             return True
     for prefix in prefixes:
-        parsed_prefix = urlparse(prefix)
-        normalized_prefix = parsed_prefix.geturl()
-        if not parsed_prefix.path:
-            normalized_prefix = parsed_prefix._replace(path="/").geturl()
+        normalized_prefix = normalized_allowlist_url(prefix)
+        if normalized_prefix is None:
+            continue
         if normalized_url.startswith(normalized_prefix):
             return True
     return False
