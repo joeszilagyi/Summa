@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import datetime as dt
 import re
 import sys
 from pathlib import Path
@@ -325,7 +326,11 @@ def validate_timestamp_string(
     if not isinstance(value, str) or not value.strip():
         add_error(errors, code=code, message=f"{field} must be a non-blank timestamp string")
         return
-    if not is_rfc3339_datetime(value):
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is None or not is_rfc3339_datetime(value) or parsed.tzinfo is None:
         add_error(errors, code=code, message=f"{field} must be an RFC3339 timestamp")
 
 
