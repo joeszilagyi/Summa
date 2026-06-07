@@ -180,6 +180,21 @@ def test_fetch_rows_in_batches_streams_with_fetchmany() -> None:
     assert cursor.calls == 3
 
 
+def test_iter_record_batches_slices_records_for_executemany() -> None:
+    records = [
+        {"projection_id": "record-1"},
+        {"projection_id": "record-2"},
+        {"projection_id": "record-3"},
+    ]
+
+    batches = list(builder.iter_record_batches(records, batch_size=2))
+
+    assert batches == [
+        [{"projection_id": "record-1"}, {"projection_id": "record-2"}],
+        [{"projection_id": "record-3"}],
+    ]
+
+
 def test_public_projection_excludes_superseded_blocked_and_local_only_fields(tmp_path: Path) -> None:
     db = create_search_db(tmp_path)
     ledger = create_correction_ledger(tmp_path)

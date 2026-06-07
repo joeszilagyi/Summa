@@ -45,6 +45,7 @@ from tools.validators.validate_local_search_projection import validate_local_sea
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
 SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROJECTION_FETCH_BATCH_SIZE = 1000
+PROJECTION_INSERT_BATCH_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -627,6 +628,13 @@ def fetch_rows_in_batches(cursor: sqlite3.Cursor, *, batch_size: int) -> Iterato
         yield rows
 
 
+def iter_record_batches(
+    records: list[dict[str, Any]], *, batch_size: int
+) -> Iterator[list[dict[str, Any]]]:
+    for start in range(0, len(records), batch_size):
+        yield records[start : start + batch_size]
+
+
 def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_existing_file(args.db)
     _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
@@ -830,60 +838,63 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 int(bool(payload["policy"]["private_paths_exposed"])),
             ),
         )
-        search_projection_rows = []
-        search_projection_fts_rows = []
-        for record in payload["records"]:
-            indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])
-            search_projection_rows.append(
-                (
-                    record["projection_id"],
-                    record["object_ref"],
-                    record["object_type"],
-                    record["object_pk"],
-                    record["title"],
-                    record["subtitle"],
-                    record["review_state"],
-                    record["publication_state"],
-                    record["confidence_score"],
-                    record["authority_level"],
-                    record["public_blocker"],
-                    record["lineage_state"],
-                    payload["profile"],
-                    json.dumps(record["visible_profiles"], sort_keys=True),
-                    json.dumps(record["suppressed_fields"], sort_keys=True),
-                    json.dumps(record["indexed_fields"], sort_keys=True),
+        for record_batch in iter_record_batches(
+            payload["records"], batch_size=PROJECTION_INSERT_BATCH_SIZE
+        ):
+            search_projection_rows = []
+            search_projection_fts_rows = []
+            for record in record_batch:
+                indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])
+                search_projection_rows.append(
+                    (
+                        record["projection_id"],
+                        record["object_ref"],
+                        record["object_type"],
+                        record["object_pk"],
+                        record["title"],
+                        record["subtitle"],
+                        record["review_state"],
+                        record["publication_state"],
+                        record["confidence_score"],
+                        record["authority_level"],
+                        record["public_blocker"],
+                        record["lineage_state"],
+                        payload["profile"],
+                        json.dumps(record["visible_profiles"], sort_keys=True),
+                        json.dumps(record["suppressed_fields"], sort_keys=True),
+                        json.dumps(record["indexed_fields"], sort_keys=True),
+                    )
                 )
-            )
-            search_projection_fts_rows.append(
-                (
-                    record["projection_id"],
-                    record["object_ref"],
-                    record["object_type"],
-                    record["title"],
-                    record["subtitle"] or "",
-                    indexed_text,
+                search_projection_fts_rows.append(
+                    (
+                        record["projection_id"],
+                        record["object_ref"],
+                        record["object_type"],
+                        record["title"],
+                        record["subtitle"] or "",
+                        indexed_text,
+                    )
                 )
-            )
-        if search_projection_rows:
-            conn.executemany(
-                """
-                INSERT INTO search_projection (
-                  projection_id, object_ref, object_type, object_pk, title, subtitle,
-                  review_state, publication_state, confidence_score, authority_level, public_blocker,
-                  lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                search_projection_rows,
-            )
-        if search_projection_fts_rows:
-            conn.executemany(
-                """
-                INSERT INTO search_projection_fts (
-                  projection_id, object_ref, object_type, title, subtitle, indexed_text
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                search_projection_fts_rows,
-            )
+            if search_projection_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO search_projection (
+                      projection_id, object_ref, object_type, object_pk, title, subtitle,
+                      review_state, publication_state, confidence_score, authority_level, public_blocker,
+                      lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    search_projection_rows,
+                )
+            if search_projection_fts_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO search_projection_fts (
+                      projection_id, object_ref, object_type, title, subtitle, indexed_text
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    search_projection_fts_rows,
+                )
         conn.commit()
         conn.close()
         conn = None
