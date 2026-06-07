@@ -648,30 +648,36 @@ def seed_database(
     assign_unknown_leads: bool = False,
     lead_country_slug: str | None = None,
     overwrite_curation: bool = False,
+    full_export: bool = False,
 ) -> dict[str, Any]:
     ensure_schema(conn)
     raw_records = iter_seed_records(seed_path)
-    unknown_id = ensure_unknown_locus(
-        conn, topic_id, discovered_at=discovered_at, discovered_by=discovered_by
-    )
     inserted_or_updated = 1
     manual_seed_records = 0
-    for raw in raw_records:
-        record = normalize_seed_record(
-            raw,
-            topic_id=topic_id,
-            seed_path=seed_path,
-            discovered_at=discovered_at,
-            discovered_by=discovered_by,
+    changed_locus_ids: list[str] = []
+    with conn:
+        changed_locus_ids.append(
+            ensure_unknown_locus(
+                conn, topic_id, discovered_at=discovered_at, discovered_by=discovered_by
+            )
         )
-        upsert_source_locus(
-            conn,
-            record,
-            updated_at=discovered_at,
-            overwrite_curation=overwrite_curation,
-        )
-        inserted_or_updated += 1
-        manual_seed_records += 1
+        for raw in raw_records:
+            record = normalize_seed_record(
+                raw,
+                topic_id=topic_id,
+                seed_path=seed_path,
+                discovered_at=discovered_at,
+                discovered_by=discovered_by,
+            )
+            upsert_source_locus(
+                conn,
+                record,
+                updated_at=discovered_at,
+                overwrite_curation=overwrite_curation,
+            )
+            inserted_or_updated += 1
+            manual_seed_records += 1
+            changed_locus_ids.append(record["locus_id"])
     assigned_unknown_leads = 0
     if assign_unknown_leads:
         assigned_unknown_leads = assign_unknown_locus_to_unlinked_leads(
@@ -681,15 +687,15 @@ def seed_database(
             discovered_at=discovered_at,
             discovered_by=discovered_by,
         )
-    conn.commit()
-    export = export_source_loci(conn, topic_id)
+    export = export_source_loci(conn, topic_id) if full_export else None
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "topic_id": topic_id,
         "seed_path": seed_path.as_posix(),
         "inserted_or_updated": inserted_or_updated,
         "manual_seed_records": manual_seed_records,
-        "unknown_locus_id": unknown_id,
+        "unknown_locus_id": changed_locus_ids[0],
+        "changed_locus_ids": changed_locus_ids,
         "assigned_unknown_leads": assigned_unknown_leads,
         "source_locus_export": export,
     }
@@ -730,6 +736,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Allow reseeding to replace existing curation fields for matching locus_id.",
     )
     seed.add_argument("--lead-country-slug")
+    seed.add_argument(
+        "--full-export",
+        action="store_true",
+        help="Include the full source_locus export in the seed report instead of only changed locus IDs.",
+    )
     seed.add_argument("--report-json", type=Path)
 
     productivity = subparsers.add_parser("update-productivity", help="Increment deterministic source-locus counters.")
@@ -765,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
                 assign_unknown_leads=args.assign_unknown_to_unlinked_leads,
                 lead_country_slug=args.lead_country_slug,
                 overwrite_curation=args.overwrite_curation,
+                full_export=args.full_export,
             )
         elif args.command == "update-productivity":
             metrics = update_productivity(
