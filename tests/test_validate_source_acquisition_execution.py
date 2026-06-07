@@ -114,3 +114,24 @@ def test_execution_validation_rejects_duplicate_extraction_ids(tmp_path: Path) -
 
     assert proc.returncode == validator.EXIT_VALIDATION_FAILED
     assert any(error["code"] == "DUPLICATE_EXTRACTION_ID" for error in report.get("errors", []))
+
+
+def test_execution_validation_rejects_extraction_hash_and_count_mismatches(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    extraction_records[0]["input_hash"] = "0" * 64
+    extraction_records[0]["byte_count_in"] = 999
+
+    write_json_lines(run_dir / "extraction-records.jsonl", extraction_records)
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    codes = {error["code"] for error in report.get("errors", [])}
+    assert "EXTRACTION_INPUT_HASH_MISMATCH" in codes
+    assert "EXTRACTION_BYTE_COUNT_MISMATCH" in codes

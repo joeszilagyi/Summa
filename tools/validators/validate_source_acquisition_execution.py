@@ -484,6 +484,7 @@ def validate_extraction_records(
     *,
     expected_run_id: str,
     capture_ids: set[str],
+    capture_records: dict[str, dict[str, Any]],
     artifact_root: Path,
     errors: list[dict[str, Any]],
 ) -> None:
@@ -544,6 +545,22 @@ def validate_extraction_records(
                 message=f"capture_id does not exist in capture-events.jsonl: {capture_id}",
                 path=f"{base}.capture_id",
             )
+        capture_record = capture_records.get(capture_id) if isinstance(capture_id, str) else None
+        if capture_record is not None:
+            if record.get("input_hash") != capture_record.get("content_hash"):
+                add_error(
+                    errors,
+                    code="EXTRACTION_INPUT_HASH_MISMATCH",
+                    message="extraction input_hash does not match referenced capture content_hash",
+                    path=f"{base}.input_hash",
+                )
+            if record.get("byte_count_in") != capture_record.get("byte_count"):
+                add_error(
+                    errors,
+                    code="EXTRACTION_BYTE_COUNT_MISMATCH",
+                    message="extraction byte_count_in does not match referenced capture byte_count",
+                    path=f"{base}.byte_count_in",
+                )
         _require_nonnegative_int(
             record.get("byte_count_in"),
             errors=errors,
@@ -684,6 +701,11 @@ def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any],
         extraction_records,
         expected_run_id=expected_run_id,
         capture_ids=capture_ids,
+        capture_records={
+            str(record["capture_id"]): record
+            for record in capture_events
+            if isinstance(record.get("capture_id"), str)
+        },
         artifact_root=paths["run_dir"],
         errors=errors,
     )
