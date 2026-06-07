@@ -73,6 +73,8 @@ def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProces
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(ADAPTER),
             "--output",
             str(output),
             "--mode",
@@ -101,6 +103,8 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(ADAPTER),
             "--output",
             str(output),
             "--mode",
@@ -145,6 +149,44 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
     assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
     assert (output / "manifest.json").exists()
+
+
+def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    records = [json.loads(line) for line in handoff.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records[0]["adapter_path"] = str(FIXTURE_ROOT / "corpus" / "prompt_notes.pdf")
+    mismatched_handoff = tmp_path / "local-source-handoff-mismatched.jsonl"
+    mismatched_handoff.write_text(
+        json.dumps(records[0], ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "local-source-execution"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(mismatched_handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "handoff adapter_path does not match trusted adapter manifest" in (proc.stdout + proc.stderr)
 
     assert [capture["source_reference"]["relative_path"] for capture in captures] == [
         "oversize/big.pdf",

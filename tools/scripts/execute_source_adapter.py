@@ -105,6 +105,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to a validated source-adapter handoff JSON or JSONL file.",
     )
     parser.add_argument(
+        "--adapter",
+        required=True,
+        help="Trusted source-adapter manifest path used to validate and execute the handoff.",
+    )
+    parser.add_argument(
         "--output", required=True, help="Workspace-local run directory for execution artifacts."
     )
     parser.add_argument(
@@ -207,7 +212,9 @@ def load_validated_handoff_records(
     return records, sha256_bytes(handoff_path.read_bytes())
 
 
-def ensure_single_adapter_context(records: list[dict[str, Any]]) -> Path:
+def ensure_single_adapter_context(
+    records: list[dict[str, Any]], *, expected_adapter_path: Path
+) -> None:
     adapter_paths = {str(record.get("adapter_path", "")).strip() for record in records}
     if len(adapter_paths) != 1:
         raise SourceAcquisitionError(
@@ -217,9 +224,10 @@ def ensure_single_adapter_context(records: list[dict[str, Any]]) -> Path:
     if not adapter_path_value:
         raise SourceAcquisitionError("handoff records must include a non-blank adapter_path")
     adapter_path = Path(adapter_path_value).expanduser().resolve()
-    if not adapter_path.exists() or not adapter_path.is_file():
-        raise SourceAcquisitionError(f"adapter manifest path is unavailable: {adapter_path}")
-    return adapter_path
+    if adapter_path != expected_adapter_path.resolve():
+        raise SourceAcquisitionError(
+            f"handoff adapter_path does not match trusted adapter manifest: {adapter_path}"
+        )
 
 
 def determine_variant(records: list[dict[str, Any]], *, adapter_payload: dict[str, Any]) -> str:
@@ -910,6 +918,7 @@ def execute_local_source(
     text_artifacts: dict[str, str] = {}
     local_paths: list[str] = []
     failed = False
+    root = expected_local_root(adapter_payload, adapter_path=adapter_path)
     capture_method = (
         "local_file_copy"
         if adapter_payload["input_family"] == "local_file"
@@ -919,7 +928,6 @@ def execute_local_source(
     for index, record in enumerate(
         sorted(records, key=lambda item: int(item["sequence"])), start=1
     ):
-        root = expected_local_root(record, adapter_path=adapter_path)
         source_path = Path(record["resolved_source_path"]).expanduser().resolve()
         if adapter_payload["input_family"] == "local_file":
             if source_path != root:
@@ -1044,13 +1052,13 @@ def execute_structured_data(
     capture_size_by_path: dict[str, int] = {}
     record_map_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, str]]]] = {}
     records_by_source_path: dict[str, list[dict[str, Any]]] = {}
+    root = expected_local_root(adapter_payload, adapter_path=adapter_path)
 
     for record in sorted(records, key=lambda item: int(item["sequence"])):
         records_by_source_path.setdefault(record["resolved_source_path"], []).append(record)
 
     source_items = sorted(records_by_source_path.items(), key=lambda item: item[0])
     for capture_index, (source_path_value, grouped_records) in enumerate(source_items, start=1):
-        root = expected_local_root(grouped_records[0], adapter_path=adapter_path)
         if adapter_payload["input_family"] == "local_file":
             expected_path = root
             source_path = Path(source_path_value).expanduser().resolve()
@@ -2018,11 +2026,13 @@ def execute_remote_url_manifest(
 def main() -> int:
     args = parse_args()
     handoff_path = resolve_cli_path(args.handoff, base_dir=Path.cwd())
+    adapter_path = resolve_cli_path(args.adapter, base_dir=Path.cwd())
     output_dir = resolve_cli_path(args.output, base_dir=Path.cwd())
     created_at = normalize_created_at(args.created_at)
     run_id = resolve_run_id(output_dir, run_id=args.run_id)
 
     try:
+        adapter_payload = load_validated_adapter(adapter_path)
         raw_records, load_errors, load_exit = validate_source_adapter_handoff.load_records(
             handoff_path
         )
@@ -2033,8 +2043,9 @@ def main() -> int:
                 else "source-adapter handoff could not be loaded"
             )
             raise SourceAcquisitionError(message)
-        adapter_path = ensure_single_adapter_context([record for _, record in raw_records])
-        adapter_payload = load_validated_adapter(adapter_path)
+        ensure_single_adapter_context(
+            [record for _, record in raw_records], expected_adapter_path=adapter_path
+        )
         records, handoff_hash = load_validated_handoff_records(
             handoff_path, adapter_path=adapter_path
         )

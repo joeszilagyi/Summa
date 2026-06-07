@@ -14,6 +14,7 @@ EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 STRUCTURED_FIXTURE_ROOT = (
     REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "structured_data"
 )
+ADAPTER = STRUCTURED_FIXTURE_ROOT / "source_adapter.json"
 
 
 def canonical_json_bytes(value: dict[str, Any]) -> bytes:
@@ -45,6 +46,8 @@ def run_executor(*, handoff: Path, output: Path) -> subprocess.CompletedProcess[
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(ADAPTER),
             "--output",
             str(output),
             "--mode",

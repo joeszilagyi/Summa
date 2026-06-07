@@ -31,13 +31,15 @@ def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_executor(*, handoff: Path, output: Path) -> subprocess.CompletedProcess[str]:
+def run_executor(*, handoff: Path, output: Path, adapter_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(adapter_path),
             "--output",
             str(output),
             "--mode",
@@ -298,7 +300,7 @@ def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> Non
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
     output = tmp_path / "local-git-execution"
-    exec_proc = run_executor(handoff=handoff_jsonl, output=output)
+    exec_proc = run_executor(handoff=handoff_jsonl, output=output, adapter_path=adapter_path)
 
     assert exec_proc.returncode == source_executor.EXIT_PASS, exec_proc.stdout + exec_proc.stderr
 

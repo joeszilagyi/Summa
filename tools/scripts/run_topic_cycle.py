@@ -33,6 +33,7 @@ from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     validate_candidate_feedback_plan,
 )
+from tools.validators import validate_source_adapter_handoff  # noqa: E402
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     EXIT_PASS as EXIT_GATHER_PASS,
 )
@@ -120,6 +121,36 @@ def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
     if path.is_absolute():
         return path.resolve()
     return ((base or Path.cwd()) / path).resolve()
+
+
+def load_handoff_adapter_path(handoff_path: Path) -> Path:
+    loaded_records, errors, exit_code = validate_source_adapter_handoff.load_records(handoff_path)
+    if exit_code != validate_source_adapter_handoff.EXIT_PASS or not loaded_records:
+        message = errors[0]["message"] if errors else "source-adapter handoff could not be loaded"
+        raise TopicCycleError(message, stage_name="execute_source_adapter")
+    adapter_paths = {
+        str(record.get("adapter_path", "")).strip()
+        for _, record in loaded_records
+        if isinstance(record, dict)
+    }
+    if len(adapter_paths) != 1:
+        raise TopicCycleError(
+            "source-adapter handoff must contain records from exactly one adapter_path",
+            stage_name="execute_source_adapter",
+        )
+    adapter_path_value = next(iter(adapter_paths))
+    if not adapter_path_value:
+        raise TopicCycleError(
+            "source-adapter handoff records must include a non-blank adapter_path",
+            stage_name="execute_source_adapter",
+        )
+    adapter_path = resolve_path(adapter_path_value)
+    if not adapter_path.exists() or not adapter_path.is_file():
+        raise TopicCycleError(
+            f"trusted adapter manifest is unavailable: {adapter_path}",
+            stage_name="execute_source_adapter",
+        )
+    return adapter_path
 
 
 def hash_file(path: Path) -> str:
@@ -958,11 +989,14 @@ def acquisition_stage(
     stage = StageRecord(name="execute_source_adapter")
     stage.started_at = utc_now()
     output_dir = run_dir / "execution"
+    adapter_path = load_handoff_adapter_path(resolve_path(args.source_handoff))
     command = [
         sys.executable,
         str(REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"),
         "--handoff",
         str(resolve_path(args.source_handoff)),
+        "--adapter",
+        str(adapter_path),
         "--output",
         str(output_dir),
         "--mode",
