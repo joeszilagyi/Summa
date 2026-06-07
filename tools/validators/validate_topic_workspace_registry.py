@@ -9,8 +9,8 @@ Documentation: tools/validators/README.md
 from __future__ import annotations
 
 import argparse
-import json
 import datetime as dt
+import json
 import re
 import sys
 from pathlib import Path
@@ -22,8 +22,8 @@ from common import (
     EXIT_VALIDATION_FAILED,
     add_report_args,
     display_path,
-    is_rfc3339_datetime,
     emit_report,
+    is_rfc3339_datetime,
     render_text_report,
 )
 
@@ -31,9 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.topic_workspace_registry import resolve_existing_path  # noqa: E402
-
 import validate_subject_manifest  # noqa: E402
+
+from tools.common.topic_workspace_registry import resolve_existing_path  # noqa: E402
 
 VALIDATOR_NAME = "topic_workspace_registry"
 CONTRACT_VERSION = "1"
