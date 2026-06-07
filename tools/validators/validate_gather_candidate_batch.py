@@ -107,6 +107,15 @@ def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return payload
 
 
+def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
+    candidate_path = Path(raw_path)
+    batch_dir = batch_path.parent.resolve()
+    if not candidate_path.is_absolute():
+        candidate_path = batch_dir / candidate_path
+    candidate_path = candidate_path.expanduser().resolve()
+    return candidate_path
+
+
 def load_json_object(target: Path, *, label: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
     errors: list[dict[str, Any]] = []
     if not target.exists():
@@ -470,8 +479,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="rendered_prompt_hash does not match rendered_prompt",
                     path="$.prompt.rendered_prompt_hash",
                 )
+        path: Path | None = None
         if isinstance(rendered_prompt_path, str):
-            path = Path(rendered_prompt_path)
+            path = resolve_prompt_path(rendered_prompt_path, batch_path=target)
+        if path is not None:
             if not path.is_file():
                 add_error(
                     errors,

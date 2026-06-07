@@ -496,6 +496,52 @@ def test_gather_candidate_batch_validator_accepts_driver_output_and_rejects_muta
     assert "LIVE_ENGINE_INVOCATION_REQUIRED" in validate_fail.stdout
 
 
+def test_gather_candidate_batch_validator_resolves_prompt_path_from_batch_directory(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "prompt-path-relative"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    prompt_dir = batch_path.parent / "prompt-cache"
+    prompt_dir.mkdir()
+    copied_prompt = prompt_dir / "rendered-prompt.txt"
+    copied_prompt.write_text(
+        prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    payload["prompt"]["rendered_prompt_path"] = "prompt-cache/rendered-prompt.txt"
+    batch_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_PASS, report
+
+
+
+
 def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
