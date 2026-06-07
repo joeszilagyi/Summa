@@ -6,7 +6,6 @@ import datetime as dt
 import json
 import sqlite3
 from pathlib import Path
-from statistics import median
 from typing import Any
 
 from tools.source_db_tools import canonical_store
@@ -192,26 +191,25 @@ def _load_cycle_events(
     return list(reversed(events))
 
 
-def _scoped_row_query(
-    conn: sqlite3.Connection,
-    *,
+def _scoped_pending_timestamp_source_sql(
     table_name: str,
     timestamp_column: str,
+    *,
     scope_id: str | None,
     placeholders: str,
-    params: tuple[Any, ...],
-) -> list[sqlite3.Row]:
+) -> tuple[str, tuple[Any, ...]]:
+    params = tuple(sorted(PENDING_REVIEW_STATES))
     if scope_id is None:
-        return conn.execute(
+        return (
             f"""
             SELECT {timestamp_column} AS timestamp_value
             FROM {table_name}
             WHERE COALESCE(review_state, '') IN ({placeholders})
             """,
             params,
-        ).fetchall()
+        )
     if table_name == "extraction_detected_entity":
-        return conn.execute(
+        return (
             f"""
             SELECT entity.{timestamp_column} AS timestamp_value
             FROM extraction_detected_entity AS entity
@@ -223,9 +221,9 @@ def _scoped_row_query(
               AND COALESCE(entity.review_state, '') IN ({placeholders})
             """,
             (scope_id, *params),
-        ).fetchall()
+        )
     if table_name == "authority_reconciliation":
-        return conn.execute(
+        return (
             f"""
             SELECT reconciliation.{timestamp_column} AS timestamp_value
             FROM authority_reconciliation AS reconciliation
@@ -250,8 +248,8 @@ def _scoped_row_query(
               AND COALESCE(reconciliation.review_state, '') IN ({placeholders})
             """,
             (scope_id, *params),
-        ).fetchall()
-    return conn.execute(
+        )
+    return (
         f"""
         SELECT {timestamp_column} AS timestamp_value
         FROM {table_name}
@@ -259,7 +257,7 @@ def _scoped_row_query(
           AND COALESCE(review_state, '') IN ({placeholders})
         """,
         (scope_id, *params),
-    ).fetchall()
+    )
 
 
 def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, Any]:
@@ -337,39 +335,80 @@ def _backlog_metrics_scoped(
     now: dt.datetime,
 ) -> dict[str, Any]:
     by_family: dict[str, int] = {}
-    pending_timestamps: list[dt.datetime] = []
     placeholders = _state_placeholders(PENDING_REVIEW_STATES)
-    params = tuple(sorted(PENDING_REVIEW_STATES))
+    now_iso = now.isoformat().replace("+00:00", "Z")
+    pending_age_selects: list[str] = []
+    pending_age_params: list[Any] = []
     for table_name, _pk_column, timestamp_column in REVIEWABLE_TABLES:
-        rows = _scoped_row_query(
-            conn,
-            table_name=table_name,
-            timestamp_column=timestamp_column,
+        source_sql, source_params = _scoped_pending_timestamp_source_sql(
+            table_name,
+            timestamp_column,
             scope_id=workspace_id,
             placeholders=placeholders,
-            params=params,
         )
-        by_family[table_name] = len(rows)
-        for row in rows:
-            parsed = _parse_timestamp(row["timestamp_value"])
-            if parsed is not None:
-                pending_timestamps.append(parsed)
-    ages = [max(0.0, (now - timestamp).total_seconds() / 86400.0) for timestamp in pending_timestamps]
+        by_family[table_name] = _safe_count(
+            conn,
+            f"SELECT COUNT(*) FROM ({source_sql}) AS pending_rows",
+            source_params,
+        )
+        pending_age_selects.append(
+            f"SELECT (julianday(?) - julianday(timestamp_value)) AS age_days FROM ({source_sql}) AS pending_rows"
+        )
+        pending_age_params.extend((now_iso, *source_params))
+    if pending_age_selects:
+        age_row = conn.execute(
+            f"""
+            WITH pending_ages AS (
+              {" UNION ALL ".join(pending_age_selects)}
+            ),
+            ordered AS (
+              SELECT
+                age_days,
+                ROW_NUMBER() OVER (ORDER BY age_days) AS rn
+              FROM pending_ages
+            ),
+            stats AS (
+              SELECT COUNT(*) AS total FROM pending_ages
+            )
+            SELECT
+              (SELECT total FROM stats) AS pending_count,
+              (SELECT MIN(age_days) FROM pending_ages) AS oldest_age_days,
+              (
+                SELECT AVG(age_days)
+                FROM ordered, stats
+                WHERE rn IN (
+                  CASE
+                    WHEN total % 2 = 1 THEN CAST((total + 1) / 2 AS INTEGER)
+                    ELSE CAST(total / 2 AS INTEGER)
+                  END,
+                  CASE
+                    WHEN total % 2 = 1 THEN CAST((total + 1) / 2 AS INTEGER)
+                    ELSE CAST(total / 2 AS INTEGER) + 1
+                  END
+                )
+              ) AS median_age_days,
+              (
+                SELECT age_days
+                FROM ordered, stats
+                WHERE rn = CAST(ROUND((total - 1) * 0.9) AS INTEGER) + 1
+                LIMIT 1
+              ) AS p90_age_days
+            """,
+            tuple(pending_age_params),
+        ).fetchone()
+    else:
+        age_row = None
+    pending_review_count = sum(by_family.values())
+    oldest_age = age_row["oldest_age_days"] if age_row is not None else None
+    median_age = age_row["median_age_days"] if age_row is not None else None
+    p90_age = age_row["p90_age_days"] if age_row is not None else None
     return {
-        "pending_review_count": sum(by_family.values()),
+        "pending_review_count": pending_review_count,
         "pending_by_family": by_family,
-        "oldest_pending_age_days": round(max(ages), 2) if ages else None,
-        "median_pending_age_days": round(float(median(ages)), 2) if ages else None,
-        "p90_pending_age_days": _percentile(ages, 0.9),
+        "oldest_pending_age_days": round(float(oldest_age), 2) if oldest_age is not None else None,
+        "median_pending_age_days": round(float(median_age), 2) if median_age is not None else None,
+        "p90_pending_age_days": round(float(p90_age), 2) if p90_age is not None else None,
     }
-
-
-def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    index = int(round((len(ordered) - 1) * percentile))
-    return round(float(ordered[index]), 2)
 
 
 def _contradiction_metrics(

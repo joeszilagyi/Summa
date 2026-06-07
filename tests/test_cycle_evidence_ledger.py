@@ -385,56 +385,44 @@ def test_cycle_event_start_replay_ignores_status_transition_for_force_reruns(
 def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
-    plan_path = tmp_path / "candidate-feedback-plan.json"
-    plan_path.write_text(
-        json.dumps(
+    plan_payload = {
+        "next_action": {
+            "action_id": "next-action:fixture:sources:facet:1",
+            "action_kind": "facet_only",
+            "subject_id": "fixture_subject",
+            "selected_facet": "sources",
+            "selected_prompt_bundle_id": "bundle:sources",
+            "selected_object_ref": None,
+            "selected_lead_kind": None,
+            "selected_source_locus_id": None,
+            "selected_source_lead_id": None,
+            "selected_label": "sources",
+            "selected_review_state": None,
+            "selection_score": 1.0,
+            "scoring_policy_id": "candidate-feedback.default.v1",
+            "rationale": "fixture",
+            "reason_codes": ["fixture"],
+            "cycle_depth": 1,
+            "use_prior_state": False,
+            "previous_run_ids_considered": [],
+            "input_record_refs": [],
+            "suggested_cli_args": ["--facet", "sources"],
+        },
+        "deferred": [
             {
-                "schema_version": "candidate-feedback-plan.v1",
-                "next_action": {
-                    "action_id": "next-action:fixture:sources:facet:1",
-                    "action_kind": "facet_only",
-                    "subject_id": "fixture_subject",
-                    "selected_facet": "sources",
-                    "selected_prompt_bundle_id": "bundle:sources",
-                    "selected_object_ref": None,
-                    "selected_lead_kind": None,
-                    "selected_source_locus_id": None,
-                    "selected_source_lead_id": None,
-                    "selected_label": "sources",
-                    "selected_review_state": None,
-                    "selection_score": 1.0,
-                    "scoring_policy_id": "candidate-feedback.default.v1",
-                    "rationale": "fixture",
-                    "reason_codes": ["fixture"],
-                    "cycle_depth": 1,
-                    "use_prior_state": False,
-                    "previous_run_ids_considered": [],
-                    "input_record_refs": [],
-                    "suggested_cli_args": ["--facet", "sources"],
-                },
-                "deferred": [
-                    {
-                        "candidate_id": "lead:123",
-                        "candidate_kind": "lead",
-                        "score": -1.5,
-                        "reason": "repeated_low_yield",
-                    },
-                    {
-                        "candidate_id": "facet:open_questions",
-                        "candidate_kind": "facet",
-                        "score": 0.25,
-                        "reason": "lower_score_than_selected",
-                    },
-                ],
-                "warnings": [],
-                "errors": [],
+                "candidate_id": "lead:123",
+                "candidate_kind": "lead",
+                "score": -1.5,
+                "reason": "repeated_low_yield",
             },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+            {
+                "candidate_id": "facet:open_questions",
+                "candidate_kind": "facet",
+                "score": 0.25,
+                "reason": "lower_score_than_selected",
+            },
+        ],
+    }
     try:
         with conn:
             cycle_event_id = cycle_evidence_ledger.record_cycle_event_start(
@@ -449,11 +437,12 @@ def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Pa
                 started_at=FIXED_TIMESTAMP,
                 status="running",
             )
-            cycle_evidence_ledger._record_feedback_candidates(  # type: ignore[attr-defined]
+            cycle_evidence_ledger._record_feedback_candidates_payload(  # type: ignore[attr-defined]
                 conn,
                 cycle_event_id=cycle_event_id,
                 stage_event_id=None,
-                feedback_plan_path=plan_path,
+                payload=plan_payload,
+                source_artifact_path="candidate-feedback-plan.json",
             )
         rows = conn.execute(
             """
@@ -478,13 +467,82 @@ def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Pa
     assert [bool(row["retryable"]) for row in rows] == [True, False]
 
 
-def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monkeypatch) -> None:
-    class FakeCursor:
-        def __init__(self, row: dict[str, int]) -> None:
-            self._row = row
+def test_candidate_batch_payload_records_considered_candidates_without_file_reads(
+    tmp_path: Path,
+) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            cycle_event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="candidate-batch-payload",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at=FIXED_TIMESTAMP,
+                status="running",
+            )
+            cycle_evidence_ledger._record_candidate_batch_payload(  # type: ignore[attr-defined]
+                conn,
+                cycle_event_id=cycle_event_id,
+                stage_event_id=None,
+                batch={
+                    "facet": {"name": "sources"},
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate-1",
+                            "candidate_type": "source_lead",
+                            "review_status": "proposed",
+                            "persistence_status": "workspace_only",
+                            "origin": {"source": "fixture"},
+                        },
+                        {
+                            "candidate_id": "candidate-2",
+                            "candidate_type": "source_lead",
+                            "review_status": "rejected",
+                            "persistence_status": "discarded",
+                            "origin": {"source": "fixture"},
+                        },
+                    ],
+                },
+                source_artifact_path="gather-candidate-batch.json",
+            )
+        rows = conn.execute(
+            """
+            SELECT candidate_ref_id, candidate_kind, candidate_label, selected
+            FROM cycle_candidate_considered
+            ORDER BY candidate_ref_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
 
-        def fetchone(self) -> dict[str, int]:
+    assert [row["candidate_ref_id"] for row in rows] == ["candidate-1", "candidate-2"]
+    assert [row["candidate_kind"] for row in rows] == ["source_lead", "source_lead"]
+    assert [row["candidate_label"] for row in rows] == [
+        "source_lead / proposed / workspace_only",
+        "source_lead / rejected / discarded",
+    ]
+    assert [bool(row["selected"]) for row in rows] == [False, False]
+
+
+def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeCursor:
+        def __init__(self, row: dict[str, int] | None = None, rows: list[dict[str, object]] | None = None) -> None:
+            self._row = row
+            self._rows = rows or []
+
+        def fetchone(self) -> dict[str, int] | None:
             return self._row
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return self._rows
 
     class FakeConnection:
         def __init__(self) -> None:
@@ -492,8 +550,8 @@ def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monk
 
         def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeCursor:
             self.sql.append(sql)
-            assert params == ("cycle:test",) * 6 or params == ("cycle:test",)
             if "cycle_stage_event" in sql and "cycle_operator_override" in sql:
+                assert params == ("cycle:test",) * 6
                 return FakeCursor(
                     {
                         "stages": 3,
@@ -504,6 +562,73 @@ def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monk
                         "operator_overrides": 2,
                     }
                 )
+            if "UNION ALL" in sql and "cycle_artifact_ref" in sql:
+                assert params == ("cycle:test", "cycle:test")
+                return FakeCursor(
+                    rows=[
+                        {
+                            "row_kind": "stage",
+                            "stage_event_id": "stage:test",
+                            "cycle_event_id": "cycle:test",
+                            "run_id": "run:test",
+                            "stage_name": "run_gather",
+                            "stage_order": 1,
+                            "started_at": FIXED_TIMESTAMP,
+                            "ended_at": FIXED_TIMESTAMP,
+                            "status": "passed",
+                            "required_stage": 1,
+                            "skipped_reason": None,
+                            "command_name": "run_topic_cycle.py",
+                            "helper_name": None,
+                            "input_artifact_ref_id": None,
+                            "output_artifact_ref_id": None,
+                            "validation_status": "pass",
+                            "error_summary": None,
+                            "metadata_json": "{}",
+                            "created_at": FIXED_TIMESTAMP,
+                            "record_last_updated": FIXED_TIMESTAMP,
+                            "artifact_ref_id": None,
+                            "artifact_type": None,
+                            "artifact_path": None,
+                            "artifact_hash": None,
+                            "byte_count": None,
+                            "privacy_classification": None,
+                            "public_safe": None,
+                            "schema_id": None,
+                        },
+                        {
+                            "row_kind": "artifact",
+                            "stage_event_id": None,
+                            "cycle_event_id": "cycle:test",
+                            "run_id": None,
+                            "stage_name": None,
+                            "stage_order": None,
+                            "started_at": None,
+                            "ended_at": None,
+                            "status": None,
+                            "required_stage": None,
+                            "skipped_reason": None,
+                            "command_name": None,
+                            "helper_name": None,
+                            "input_artifact_ref_id": None,
+                            "output_artifact_ref_id": None,
+                            "validation_status": "pass",
+                            "error_summary": None,
+                            "metadata_json": "{}",
+                            "created_at": FIXED_TIMESTAMP,
+                            "record_last_updated": FIXED_TIMESTAMP,
+                            "artifact_ref_id": "artifact:test",
+                            "artifact_type": "candidate_batch",
+                            "artifact_path": "candidate-batch.json",
+                            "artifact_hash": "sha256:" + "a" * 64,
+                            "byte_count": 12,
+                            "privacy_classification": "local_operator",
+                            "public_safe": 0,
+                            "schema_id": "gather-candidate-batch.v1",
+                        },
+                    ]
+                )
+            assert params == ("cycle:test",)
             raise AssertionError(f"unexpected SQL: {sql}")
 
     conn = FakeConnection()
@@ -511,16 +636,6 @@ def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monk
         cycle_evidence_ledger,
         "load_cycle_event",
         lambda _conn, _event_id: {"cycle_event_id": "cycle:test", "status": "completed"},
-    )
-    monkeypatch.setattr(
-        cycle_evidence_ledger,
-        "list_cycle_stage_events",
-        lambda _conn, _event_id: [{"stage_name": "run_gather"}],
-    )
-    monkeypatch.setattr(
-        cycle_evidence_ledger,
-        "list_cycle_artifacts",
-        lambda _conn, _event_id: [{"artifact_type": "candidate_batch"}],
     )
 
     summary = cycle_evidence_ledger.summarize_cycle_evidence(conn, "cycle:test")
@@ -535,6 +650,10 @@ def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monk
     }
     count_queries = [sql for sql in conn.sql if "SELECT COUNT(*) FROM" in sql]
     assert len(count_queries) == 1
+    detail_queries = [sql for sql in conn.sql if "UNION ALL" in sql and "cycle_artifact_ref" in sql]
+    assert len(detail_queries) == 1
+    assert [stage["stage_name"] for stage in summary["stages"]] == ["run_gather"]
+    assert [artifact["artifact_type"] for artifact in summary["artifacts"]] == ["candidate_batch"]
 
 
 def test_record_stage_artifacts_streams_hash_without_read_bytes(
@@ -708,10 +827,10 @@ def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candi
             "cycle_evidence_ledger": {"status": "pending"},
         }
 
-        def fail_read_json_object(*_args, **_kwargs):
+        def fail_read_text(self: Path, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             raise AssertionError("record_topic_cycle_manifest should reuse stage evidence")
 
-        monkeypatch.setattr(cycle_evidence_ledger, "_read_json_object", fail_read_json_object)
+        monkeypatch.setattr(Path, "read_text", fail_read_text, raising=False)
 
         event_id = cycle_evidence_ledger.record_topic_cycle_manifest(
             conn,
