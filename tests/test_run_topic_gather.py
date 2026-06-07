@@ -540,6 +540,48 @@ def test_gather_candidate_batch_validator_resolves_prompt_path_from_batch_direct
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_gather_candidate_batch_validator_rejects_prompt_path_outside_batch(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "prompt-path-outside"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    outside_prompt = batch_path.parent.parent / "outside-prompt.txt"
+    outside_prompt.write_text("outside prompt", encoding="utf-8")
+
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    payload["prompt"]["rendered_prompt_path"] = "../../outside-prompt.txt"
+    batch_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert any(
+        error["code"] == "PROMPT_PATH_OUTSIDE_BATCH" for error in report["errors"]
+    )
+
+
 
 
 def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp_path: Path) -> None:

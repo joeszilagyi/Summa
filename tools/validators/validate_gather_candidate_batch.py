@@ -113,6 +113,10 @@ def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
     if not candidate_path.is_absolute():
         candidate_path = batch_dir / candidate_path
     candidate_path = candidate_path.expanduser().resolve()
+    try:
+        candidate_path.relative_to(batch_dir)
+    except ValueError:
+        raise ValueError("rendered_prompt_path must remain inside the batch directory")
     return candidate_path
 
 
@@ -481,7 +485,15 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 )
         path: Path | None = None
         if isinstance(rendered_prompt_path, str):
-            path = resolve_prompt_path(rendered_prompt_path, batch_path=target)
+            try:
+                path = resolve_prompt_path(rendered_prompt_path, batch_path=target)
+            except ValueError as exc:
+                add_error(
+                    errors,
+                    code="PROMPT_PATH_OUTSIDE_BATCH",
+                    message=str(exc),
+                    path="$.prompt.rendered_prompt_path",
+                )
         if path is not None:
             if not path.is_file():
                 add_error(
