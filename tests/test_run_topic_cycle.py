@@ -218,6 +218,55 @@ def test_stage_plan_matches_feedback_plan_mode() -> None:
     ]
 
 
+def test_validate_store_stage_uses_fast_population_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+    manifest: dict[str, object] = {"canonical_db": {}, "stages": []}
+    include_counts_calls: list[bool] = []
+
+    def fake_summary(db_path: Path, *, include_counts: bool = True) -> dict[str, object]:
+        include_counts_calls.append(include_counts)
+        return {
+            "path": str(db_path),
+            "exists": True,
+            "initialized": True,
+            "valid": True,
+            "schema_version": 8,
+            "current_migration_id": "m8",
+            "status": "initialized_empty",
+            "family_counts": {},
+            "table_counts": {},
+            "total_rows": None,
+            "last_provenance_event_at": None,
+            "last_provenance_event_type": None,
+            "last_provenance_event_id": None,
+            "last_ingest_at": None,
+            "last_ingest_event_type": None,
+            "last_ingest_provenance_event_id": None,
+            "warnings": [],
+            "errors": [],
+            "recommended_interpretation": "Canonical store is initialized and valid, but contains no canonical records yet.",
+        }
+
+    monkeypatch.setattr(module.canonical_store, "summarize_canonical_store_population", fake_summary)
+    monkeypatch.setattr(
+        module.canonical_store,
+        "check_canonical_store",
+        lambda db_path: SimpleNamespace(schema_version=8, current_migration_id="m8"),
+    )
+
+    module.validate_store_stage(
+        args=SimpleNamespace(degraded_spool=False),
+        manifest=manifest,
+        db_path=tmp_path / "canonical.sqlite",
+    )
+
+    assert include_counts_calls == [False]
+    assert manifest["canonical_db"]["initial_summary"]["status"] == "initialized_empty"
+    assert manifest["canonical_db"]["initial_summary"]["table_counts"] == {}
+
+
 def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"

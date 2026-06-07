@@ -661,7 +661,10 @@ def validate_store_stage(
     stage.inputs = {"db": str(db_path)}
     try:
         check = canonical_store.check_canonical_store(db_path)
-        summary = canonical_store.summarize_canonical_store_population(db_path)
+        summary = canonical_store.summarize_canonical_store_population(
+            db_path,
+            include_counts=False,
+        )
         manifest["canonical_db"]["initial_summary"] = summary
         stage.validation = {
             "status": "pass",

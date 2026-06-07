@@ -2449,6 +2449,20 @@ def _count_known_tables(
     return counts
 
 
+def _has_known_table_rows(
+    conn: sqlite3.Connection,
+    table_names: Iterable[str],
+    *,
+    existing_tables: set[str] | None = None,
+) -> bool:
+    table_set = actual_tables(conn) if existing_tables is None else existing_tables
+    for table_name in sorted({name for name in table_names if name in table_set}):
+        row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+        if row is not None:
+            return True
+    return False
+
+
 def _latest_provenance_event(
     conn: sqlite3.Connection,
     *,
@@ -2491,7 +2505,11 @@ def _recommended_store_interpretation(status: str) -> str:
     return interpretations.get(status, "Canonical store state is unknown.")
 
 
-def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
+def summarize_canonical_store_population(
+    db_path: Path | str,
+    *,
+    include_counts: bool = True,
+) -> dict[str, Any]:
     path = resolve_db_path(db_path)
     summary: dict[str, Any] = {
         "path": str(path),
@@ -2537,15 +2555,6 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
     substantive_tables = expected_tables | supporting_tables
     try:
         table_set = actual_tables(conn)
-        summary["table_counts"] = _count_known_tables(
-            conn,
-            substantive_tables | schema_metadata_tables_from_outline(outline),
-            existing_tables=table_set,
-        )
-        summary["family_counts"] = {
-            family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
-            for family, tables in sorted(family_mapping.items())
-        }
         last_provenance = _latest_provenance_event(conn)
         if last_provenance is not None:
             summary["last_provenance_event_at"] = last_provenance["event_timestamp"]
@@ -2566,6 +2575,20 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
                 "uninitialized"
             )
             return summary
+
+        if include_counts:
+            summary["table_counts"] = _count_known_tables(
+                conn,
+                substantive_tables | metadata_tables,
+                existing_tables=table_set,
+            )
+            summary["family_counts"] = {
+                family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
+                for family, tables in sorted(family_mapping.items())
+            }
+        else:
+            summary["table_counts"] = {}
+            summary["family_counts"] = {}
 
         schema_row = get_schema_version(conn)
         if schema_row is None:
@@ -2591,21 +2614,41 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
             return summary
 
         summary["valid"] = True
-        substantive_total = sum(
-            summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
-        )
-        non_event_total = sum(
-            summary["table_counts"].get(table_name, 0)
-            for table_name in (substantive_tables - {"provenance_event"})
-        )
-        summary["total_rows"] = substantive_total
-        summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
-        if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
-            summary["warnings"].append(
-                "provenance events exist, but no substantive canonical family rows were found"
+        if include_counts:
+            substantive_total = sum(
+                summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
             )
-        if substantive_total > 0 and summary["last_ingest_at"] is None:
-            summary["warnings"].append("no recognized ingest provenance events were found")
+            non_event_total = sum(
+                summary["table_counts"].get(table_name, 0)
+                for table_name in (substantive_tables - {"provenance_event"})
+            )
+            summary["total_rows"] = substantive_total
+            summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
+            if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
+                summary["warnings"].append(
+                    "provenance events exist, but no substantive canonical family rows were found"
+                )
+            if substantive_total > 0 and summary["last_ingest_at"] is None:
+                summary["warnings"].append("no recognized ingest provenance events were found")
+        else:
+            has_substantive_rows = _has_known_table_rows(
+                conn,
+                substantive_tables,
+                existing_tables=table_set,
+            )
+            has_non_event_rows = _has_known_table_rows(
+                conn,
+                substantive_tables - {"provenance_event"},
+                existing_tables=table_set,
+            )
+            summary["total_rows"] = None
+            summary["status"] = "initialized_empty" if not has_substantive_rows else "populated"
+            if has_substantive_rows and not has_non_event_rows:
+                summary["warnings"].append(
+                    "provenance events exist, but no substantive canonical family rows were found"
+                )
+            if has_substantive_rows and summary["last_ingest_at"] is None:
+                summary["warnings"].append("no recognized ingest provenance events were found")
         summary["recommended_interpretation"] = _recommended_store_interpretation(summary["status"])
         return summary
     finally:

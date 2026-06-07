@@ -893,7 +893,7 @@ def summarize_loop_health(
         "limitations": [],
         "read_only": True,
     }
-    population = canonical_store.summarize_canonical_store_population(path)
+    population = canonical_store.summarize_canonical_store_population(path, include_counts=False)
     if population["status"] in {"absent", "uninitialized", "invalid"}:
         base["limitations"].append(f"canonical_store_{population['status']}")
         base["warnings"].extend(population.get("errors", []))
