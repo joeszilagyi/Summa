@@ -1,12 +1,20 @@
+import argparse
 import json
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "Index_Workspace_Overview.sh"
 PY_TOOL = REPO_ROOT / "tools" / "scripts" / "build_workspace_overview_view.py"
+
+spec = importlib.util.spec_from_file_location("workspace_overview_view_for_tests", PY_TOOL)
+assert spec is not None
+workspace_overview_view = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(workspace_overview_view)
 
 
 def run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -192,6 +200,44 @@ def test_workspace_overview_filters_and_renders_text(tmp_path: Path) -> None:
     assert "workspace_count=1" in result.stdout
     assert "workspace[0].workspace_id=manual_topic" in result.stdout
     assert "workspace[0].publish_readiness=blocked" in result.stdout
+
+
+def test_workspace_overview_reuses_manifest_summary_cache(tmp_path: Path, monkeypatch) -> None:
+    public_root = tmp_path / "workspaces" / "public_topic"
+    private_root = tmp_path / "workspaces" / "private_topic"
+    public_root.mkdir(parents=True)
+    private_root.mkdir(parents=True)
+
+    manifest = write_manifest(public_root, subject_id="subject.shared", display_name="Shared Topic")
+    private_manifest = private_root / ".indexer" / "subject_manifest.json"
+    private_manifest.parent.mkdir(parents=True, exist_ok=True)
+    private_manifest.write_text(manifest.read_text(encoding="utf-8"), encoding="utf-8")
+
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(workspace_id="public_topic", workspace_root=public_root, manifest_path=manifest),
+            workspace_record(workspace_id="private_topic", workspace_root=private_root, manifest_path=private_manifest),
+        ],
+    )
+
+    read_counts: dict[Path, int] = {}
+    original_read_text = Path.read_text
+
+    def counting_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == manifest:
+            read_counts[self] = read_counts.get(self, 0) + 1
+        return original_read_text(self, *args, **kwargs)
+
+    workspace_overview_view.load_manifest_summary.cache_clear()
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    payload = workspace_overview_view.build_overview_payload(
+        argparse.Namespace(registry=str(registry_path), workspace_ids=[], format="json")
+    )
+
+    assert payload["counts"]["total_workspaces"] == 2
+    assert read_counts[manifest] == 1
 
 
 def test_workspace_overview_rejects_unknown_workspace_id(tmp_path: Path) -> None:

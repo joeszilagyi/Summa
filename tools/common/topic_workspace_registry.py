@@ -278,6 +278,18 @@ def _workspace_id_from_registry_record(
     return normalized_workspace_id
 
 
+def build_workspace_index(workspaces: list[Any]) -> dict[str, dict[str, Any]]:
+    workspace_index: dict[str, dict[str, Any]] = {}
+    seen_workspace_ids: set[str] = set()
+    for workspace in workspaces:
+        workspace_id = _workspace_id_from_registry_record(
+            workspace,
+            seen_workspace_ids=seen_workspace_ids,
+        )
+        workspace_index[workspace_id] = workspace
+    return workspace_index
+
+
 def resolve_workspace(
     *,
     registry_path: str | Path | None = None,
@@ -308,16 +320,8 @@ def resolve_workspace(
         source_label="workspace_id",
     )
 
-    selected: dict[str, Any] | None = None
-    seen_workspace_ids: set[str] = set()
-    for workspace in workspaces:
-        workspace_id = _workspace_id_from_registry_record(
-            workspace,
-            seen_workspace_ids=seen_workspace_ids,
-        )
-        if workspace_id == selected_id:
-            selected = workspace
-
+    workspace_index = build_workspace_index(workspaces)
+    selected = workspace_index.get(selected_id)
     if selected is None:
         raise TopicWorkspaceRegistryError(f"workspace_id not found in topic workspace registry: {selected_id}")
 
@@ -353,25 +357,23 @@ def resolve_workspaces(
         )
         requested_ids.append(normalized_workspace_id)
         requested_id_set.add(normalized_workspace_id)
-    selected_records: list[tuple[str, dict[str, Any]]] = []
-    available_ids: set[str] = set()
-    seen_workspace_ids: set[str] = set()
-
-    for workspace in workspaces:
-        workspace_id = _workspace_id_from_registry_record(
-            workspace,
-            seen_workspace_ids=seen_workspace_ids,
-        )
-        available_ids.add(workspace_id)
-        if requested_id_set and workspace_id not in requested_id_set:
-            continue
-        selected_records.append((workspace_id, workspace))
+    workspace_index = build_workspace_index(workspaces)
+    available_ids = set(workspace_index)
 
     missing_ids = [workspace_id for workspace_id in requested_ids if workspace_id not in available_ids]
     if missing_ids:
         raise TopicWorkspaceRegistryError(
             "workspace_id not found in topic workspace registry: " + ", ".join(missing_ids)
         )
+
+    selected_records: list[tuple[str, dict[str, Any]]] = []
+    if requested_id_set:
+        for workspace_id in requested_ids:
+            workspace = workspace_index.get(workspace_id)
+            if workspace is not None:
+                selected_records.append((workspace_id, workspace))
+    else:
+        selected_records = [(workspace_id, workspace) for workspace_id, workspace in workspace_index.items()]
 
     return [
         _resolve_workspace_record(

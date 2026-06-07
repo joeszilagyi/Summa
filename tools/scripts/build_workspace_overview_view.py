@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,7 @@ def require_nonblank_string(value: Any, *, field: str, index: int) -> str:
     return value
 
 
+@lru_cache(maxsize=1024)
 def load_manifest_summary(path: Path) -> tuple[str, dict[str, Any]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
