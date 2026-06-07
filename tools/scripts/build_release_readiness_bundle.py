@@ -28,6 +28,7 @@ MANIFEST_NAME = "release-readiness-bundle-manifest.json"
 FINAL_REPORT_NAME = "release-readiness-report.json"
 FINAL_TEXT_REPORT_NAME = "release-readiness-report.txt"
 GRAPH_CLOSURE_REPORT_NAME = "graph-closure-report.json"
+REPORT_TIMEOUT_SECONDS = 600.0
 
 REQUIRED_REPORTS: dict[str, str] = {
     "doctor": validate_release_readiness.DOCTOR_REPORT_NAME,
@@ -210,7 +211,35 @@ def copy_report(*, key: str, source: Path, output_dir: Path) -> StagedReport:
 
 
 def run_command(command: list[str], *, report_path: Path, label: str) -> tuple[dict[str, Any], int]:
-    proc = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True, check=False)
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=REPORT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if report_path.exists():
+            report_path.unlink(missing_ok=True)
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        details = "; ".join(
+            item
+            for item in (
+                f"stdout={stdout}" if stdout else None,
+                f"stderr={stderr}" if stderr else None,
+            )
+            if item
+        )
+        message = (
+            f"{label} timed out after {REPORT_TIMEOUT_SECONDS:g}s before producing a usable report: "
+            f"{report_path}"
+        )
+        if details:
+            message = f"{message}; {details}"
+        raise ReleaseReadinessBundleError(message) from exc
     if not report_path.exists():
         raise ReleaseReadinessBundleError(
             f"{label} did not produce expected report: {report_path}; "
