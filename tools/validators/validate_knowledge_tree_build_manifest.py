@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -244,8 +244,8 @@ def validate_timestamp(payload: dict[str, Any], field: str, errors: list[dict[st
 
 
 def is_output_relative_path(value: str) -> bool:
-    path = Path(value)
-    return bool(value.strip()) and not path.is_absolute() and ".." not in path.parts
+    path = PurePosixPath(value)
+    return bool(value.strip()) and "\\" not in value and not path.is_absolute() and ".." not in path.parts
 
 
 def validate_output_relative_path(
