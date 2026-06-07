@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -347,6 +348,49 @@ def test_run_mode_can_generate_reports_with_stubbed_upstream_tools(
     assert exit_code == 0
     assert manifest["mode"] == "run"
     assert {item["source_kind"] for item in manifest["staged_reports"]} == {"generated"}
+    assert load_json(output_dir / "release-readiness-report.json")["status"] == "pass"
+
+
+def test_run_mode_generates_required_reports_concurrently(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    output_dir = tmp_path / "bundle"
+    started = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_generated_report_command(
+        key: str, args: argparse.Namespace, destination: Path
+    ) -> list[str]:
+        return ["fake-tool", key, str(destination)]
+
+    def fake_run_command(
+        command: list[str], *, report_path: Path, label: str
+    ) -> tuple[dict[str, Any], int]:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active >= 2:
+                started.set()
+        assert started.wait(timeout=1.0), "expected concurrent required report generation"
+        try:
+            source = fixture_inputs("pass") / report_path.name
+            shutil.copyfile(source, report_path)
+            return load_json(report_path), 0
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(builder, "generated_report_command", fake_generated_report_command)
+    monkeypatch.setattr(builder, "run_command", fake_run_command)
+    args = builder.parse_args(["--mode", "run", "--output-dir", str(output_dir)])
+    manifest, exit_code = builder.build_release_readiness_bundle(args)
+
+    assert exit_code == 0
+    assert max_active >= 2
+    assert [item["key"] for item in manifest["staged_reports"]] == list(builder.REQUIRED_REPORTS)
     assert load_json(output_dir / "release-readiness-report.json")["status"] == "pass"
 
 

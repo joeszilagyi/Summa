@@ -314,3 +314,169 @@ def test_local_doctor_reports_populated_canonical_store_and_last_ingest(tmp_path
     assert report["canonical_store"]["last_ingest_at"] is not None
     assert report["checks"]["canonical_store_population"] == "pass"
     assert report["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}
+
+
+def test_local_doctor_database_integrity_defaults_to_metadata_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "fixture.sqlite"
+    db_path.write_bytes(b"sqlite placeholder")
+    quick_check_calls = 0
+
+    class FakeCursor:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def fetchone(self) -> object:
+            return self.value
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("ok",)]
+
+    class FakeConnection:
+        def execute(self, query: str) -> FakeCursor:
+            nonlocal quick_check_calls
+            if query == "PRAGMA user_version":
+                return FakeCursor((7,))
+            if query == "SELECT version FROM schema_info LIMIT 1":
+                return FakeCursor(("schema.v1",))
+            if query == "PRAGMA quick_check":
+                quick_check_calls += 1
+                return FakeCursor([("ok",)])
+            raise AssertionError(f"unexpected query: {query}")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(local_doctor.sqlite3, "connect", lambda *args, **kwargs: FakeConnection())
+
+    metadata_report = local_doctor.sqlite_integrity_for_path(db_path)
+    quick_check_report = local_doctor.sqlite_integrity_for_path(db_path, quick_check=True)
+
+    assert metadata_report["integrity_mode"] == "metadata"
+    assert metadata_report["status"] == "pass"
+    assert metadata_report["integrity_result"] == ["metadata_only"]
+    assert quick_check_report["integrity_mode"] == "quick_check"
+    assert quick_check_report["status"] == "pass"
+    assert quick_check_calls == 1
+
+
+def test_local_doctor_uses_cached_migration_ledger_receipts_for_older_ledgers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    ledger_root = repo_root / "runtime" / "ledgers"
+    old_path = ledger_root / "000-old.migration-ledger.jsonl"
+    new_path = ledger_root / "001-new.migration-ledger.jsonl"
+    old_event = migration_ledger.build_event(
+        workspace_id="fixture_workspace",
+        migration_id="mig:old",
+        migration_type="artifact_contract_migration",
+        subject_ref="contract/knowledge_tree_build_manifest",
+        tool_surface="tool.build_static_knowledge_tree_py",
+        tool_version="2026.06.02",
+        input_version="v1",
+        output_version="v2",
+        input_artifact_refs=[
+            {
+                "role": "schema_contract",
+                "path": "config/knowledge_tree_build_manifest.schema.json",
+                "version": "v1",
+            }
+        ],
+        output_artifact_refs=[
+            {
+                "role": "schema_contract",
+                "path": "config/knowledge_tree_build_manifest.schema.json",
+                "version": "v2",
+            }
+        ],
+        occurred_at="2026-06-02T10:00:00Z",
+        event_id="mle:old.001",
+    )
+    new_event = migration_ledger.build_event(
+        workspace_id="fixture_workspace",
+        migration_id="mig:new",
+        migration_type="artifact_contract_migration",
+        subject_ref="contract/knowledge_tree_build_manifest",
+        tool_surface="tool.build_static_knowledge_tree_py",
+        tool_version="2026.06.02",
+        input_version="v2",
+        output_version="v3",
+        input_artifact_refs=[
+            {
+                "role": "schema_contract",
+                "path": "config/knowledge_tree_build_manifest.schema.json",
+                "version": "v2",
+            }
+        ],
+        output_artifact_refs=[
+            {
+                "role": "schema_contract",
+                "path": "config/knowledge_tree_build_manifest.schema.json",
+                "version": "v3",
+            }
+        ],
+        occurred_at="2026-06-02T11:00:00Z",
+        event_id="mle:new.001",
+    )
+    migration_ledger.append_event(old_path, old_event)
+    migration_ledger.append_event(new_path, new_event)
+    old_time = time.time() - 120
+    new_time = time.time()
+    os.utime(old_path, (old_time, old_time))
+    os.utime(new_path, (new_time, new_time))
+
+    old_result, old_exit_code = local_doctor.validate_migration_ledger.validate_migration_ledger(
+        old_path
+    )
+    assert old_exit_code == local_doctor.validate_migration_ledger.EXIT_PASS
+    receipt_path = local_doctor.migration_ledger_receipt_path(old_path)
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "counts": old_result["counts"],
+                "latest_event": old_result["latest_event"],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    direct_calls: list[Path] = []
+    real_validate = local_doctor.validate_migration_ledger.validate_migration_ledger
+
+    def counting_validate(path: Path):
+        direct_calls.append(path)
+        return real_validate(path)
+
+    monkeypatch.setattr(
+        local_doctor.validate_migration_ledger, "validate_migration_ledger", counting_validate
+    )
+
+    posture, findings = local_doctor.inspect_migration_posture(repo_root)
+
+    assert findings == []
+    assert posture["validation_mode"] == "fast"
+    assert posture["validated_ledger_count"] == 1
+    assert posture["cached_receipt_count"] == 1
+    assert posture["skipped_ledger_count"] == 0
+    assert posture["event_count"] == 2
+    assert posture["latest_event_id"] == "mle:new.001"
+    assert direct_calls == [new_path]
+
+    direct_calls.clear()
+    posture_full, findings_full = local_doctor.inspect_migration_posture(
+        repo_root, validate_all=True
+    )
+
+    assert findings_full == []
+    assert posture_full["validation_mode"] == "full"
+    assert posture_full["validated_ledger_count"] == 2
+    assert posture_full["cached_receipt_count"] == 0
+    assert posture_full["skipped_ledger_count"] == 0
+    assert posture_full["event_count"] == 2
+    assert posture_full["latest_event_id"] == "mle:new.001"
+    assert direct_calls == [old_path, new_path]

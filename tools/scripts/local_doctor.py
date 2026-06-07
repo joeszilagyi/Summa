@@ -233,13 +233,14 @@ def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
+def sqlite_integrity_for_path(path: Path, *, quick_check: bool = False) -> dict[str, Any]:
     result = {
         "path": str(path),
         "status": "unknown",
         "integrity_result": None,
         "schema_version": None,
         "user_version": None,
+        "integrity_mode": "quick_check" if quick_check else "metadata",
     }
     uri = f"file:{path.resolve()}?mode=ro"
     try:
@@ -258,10 +259,14 @@ def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
             result["schema_version"] = row[0] if row else None
         except sqlite3.DatabaseError:
             result["schema_version"] = None
-        rows = conn.execute("PRAGMA quick_check").fetchall()
-        values = [row[0] for row in rows]
-        result["integrity_result"] = values
-        result["status"] = "pass" if values == ["ok"] else "fail"
+        if quick_check:
+            rows = conn.execute("PRAGMA quick_check").fetchall()
+            values = [row[0] for row in rows]
+            result["integrity_result"] = values
+            result["status"] = "pass" if values == ["ok"] else "fail"
+        else:
+            result["integrity_result"] = ["metadata_only"]
+            result["status"] = "pass"
     except sqlite3.DatabaseError as exc:
         result["status"] = "fail"
         result["integrity_result"] = f"quick_check_failed: {exc}"
@@ -270,7 +275,12 @@ def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
     return result
 
 
-def inspect_databases(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def inspect_databases(
+    repo_root: Path,
+    *,
+    quick_check: bool = False,
+    quick_check_sample: int = 0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     paths = sorted(
         {
             *repo_root.glob("dbs/**/*.sqlite"),
@@ -279,7 +289,11 @@ def inspect_databases(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[
             *repo_root.glob("index/Topics/**/*.sqlite3"),
         }
     )
-    databases = [sqlite_integrity_for_path(path) for path in paths]
+    sampled_quick_check_paths = set(paths if quick_check else paths[: max(0, quick_check_sample)])
+    databases = [
+        sqlite_integrity_for_path(path, quick_check=quick_check or path in sampled_quick_check_paths)
+        for path in paths
+    ]
     findings = []
     for database in databases:
         if database["status"] != "pass":
@@ -601,7 +615,33 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
     return posture, findings
 
 
-def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def migration_ledger_receipt_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}-report.json")
+
+
+def load_migration_ledger_receipt(path: Path) -> dict[str, Any] | None:
+    receipt_path = migration_ledger_receipt_path(path)
+    if not receipt_path.exists() or not receipt_path.is_file():
+        return None
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    counts = payload.get("counts")
+    latest_event = payload.get("latest_event")
+    status = payload.get("status")
+    if not isinstance(counts, dict) or not isinstance(latest_event, dict) or status not in {"pass", "warn", "fail"}:
+        return None
+    return payload
+
+
+def inspect_migration_posture(
+    repo_root: Path,
+    *,
+    validate_all: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     ledger_root = repo_root / "runtime" / "ledgers"
     posture = {
         "ledger_root": str(ledger_root),
@@ -617,6 +657,10 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
         "latest_backup_ref": None,
         "latest_snapshot_ref": None,
         "latest_rollback_of_event_id": None,
+        "validation_mode": "full" if validate_all else "fast",
+        "validated_ledger_count": 0,
+        "cached_receipt_count": 0,
+        "skipped_ledger_count": 0,
         "status": "unknown",
     }
     findings: list[dict[str, Any]] = []
@@ -648,23 +692,34 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
         )
         return posture, findings
 
+    latest_path = max(ledger_paths, key=lambda path: (path.stat().st_mtime_ns, path.name))
     latest_event: dict[str, Any] | None = None
     for path in ledger_paths:
-        result, exit_code = validate_migration_ledger.validate_migration_ledger(path)
-        if exit_code != validate_migration_ledger.EXIT_PASS:
-            findings.append(
-                finding(
-                    "MIGRATION_LEDGER_INVALID",
-                    "operator_action_required",
-                    "migration ledger failed validation",
-                    path=str(path),
-                    errors=result.get("errors", [])[:5],
+        if validate_all or path == latest_path:
+            result, exit_code = validate_migration_ledger.validate_migration_ledger(path)
+            posture["validated_ledger_count"] += 1
+            if exit_code != validate_migration_ledger.EXIT_PASS:
+                findings.append(
+                    finding(
+                        "MIGRATION_LEDGER_INVALID",
+                        "operator_action_required",
+                        "migration ledger failed validation",
+                        path=str(path),
+                        errors=result.get("errors", [])[:5],
+                    )
                 )
-            )
-            continue
-        posture["event_count"] += result["counts"]["accepted"]
-        candidate = result.get("latest_event")
-        if candidate is not None and (
+                continue
+            posture["event_count"] += result["counts"]["accepted"]
+            candidate = result.get("latest_event")
+        else:
+            receipt = load_migration_ledger_receipt(path)
+            if receipt is None or receipt.get("status") != "pass":
+                posture["skipped_ledger_count"] += 1
+                continue
+            posture["cached_receipt_count"] += 1
+            posture["event_count"] += int(receipt.get("counts", {}).get("accepted", 0))
+            candidate = receipt.get("latest_event")
+        if isinstance(candidate, dict) and (
             latest_event is None or candidate["occurred_at"] > latest_event["occurred_at"]
         ):
             latest_event = candidate
@@ -836,6 +891,9 @@ def build_report(
     *,
     registry: str | Path | None = None,
     canonical_db: str | Path | None = None,
+    database_quick_check: bool = False,
+    database_quick_check_sample: int = 0,
+    validate_all_migration_ledgers: bool = False,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     status, status_detail = git_status(repo_root)
@@ -882,7 +940,11 @@ def build_report(
         inspect_workspaces(registry_path) if registry_status == "pass" else ([], [])
     )
     findings.extend(workspace_findings)
-    databases, database_findings = inspect_databases(repo_root)
+    databases, database_findings = inspect_databases(
+        repo_root,
+        quick_check=database_quick_check,
+        quick_check_sample=database_quick_check_sample,
+    )
     findings.extend(database_findings)
     canonical_store_summary, canonical_store_findings = inspect_canonical_store(
         repo_root,
@@ -903,7 +965,10 @@ def build_report(
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
     findings.extend(backup_findings)
-    migration_posture, migration_findings = inspect_migration_posture(repo_root)
+    migration_posture, migration_findings = inspect_migration_posture(
+        repo_root,
+        validate_all=validate_all_migration_ledgers,
+    )
     findings.extend(migration_findings)
     scheduler, scheduler_findings = inspect_scheduler(repo_root, registry_path, registry_status)
     findings.extend(scheduler_findings)
@@ -1063,11 +1128,36 @@ def main(argv: list[str] | None = None) -> int:
         "--canonical-db",
         help="Optional canonical SQLite path to summarize read-only. Defaults to <repo-root>/canonical.sqlite.",
     )
+    database_mode = parser.add_mutually_exclusive_group()
+    database_mode.add_argument("--fast", action="store_true", help="Use metadata-only database checks (default).")
+    database_mode.add_argument(
+        "--database-quick-check",
+        action="store_true",
+        help="Run PRAGMA quick_check against every discovered database.",
+    )
+    parser.add_argument(
+        "--database-quick-check-sample",
+        type=int,
+        default=0,
+        help="Run PRAGMA quick_check against the first N discovered databases while keeping the rest on metadata-only checks.",
+    )
+    parser.add_argument(
+        "--full-migration-ledger-validation",
+        action="store_true",
+        help="Validate every migration ledger instead of using the fast latest-ledger/receipt path.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
 
-    report = build_report(args.repo_root, registry=args.registry, canonical_db=args.canonical_db)
+    report = build_report(
+        args.repo_root,
+        registry=args.registry,
+        canonical_db=args.canonical_db,
+        database_quick_check=args.database_quick_check,
+        database_quick_check_sample=max(0, args.database_quick_check_sample),
+        validate_all_migration_ledgers=args.full_migration_ledger_validation,
+    )
     body = (
         json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.format == "json"
