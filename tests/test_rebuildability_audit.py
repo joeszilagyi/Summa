@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -407,10 +409,10 @@ def test_validation_only_completes_on_large_noisy_run_tree_within_timeout(tmp_pa
         timeout=30,
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     report = load_json(report_path)
     assert_rebuildability_report_schema(report)
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "incomplete_support"
     assert len(report["artifacts_discovered"]) == 3
     assert report["replay_plan"]["replayable_artifact_count"] == 2
     assert report["artifacts_missing"] == []
@@ -439,7 +441,7 @@ def test_rebuild_temp_replays_artifacts_and_runs_graph_closure(tmp_path: Path) -
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     report = load_json(report_path)
-    assert report["final_status"] in {"rebuildable", "rebuildable_with_warnings"}
+    assert report["final_status"] == "incomplete_support"
     assert rebuilt_db.is_file()
     assert table_count(rebuilt_db, "work") >= 1
     assert table_count(rebuilt_db, "capture_event") >= 1
@@ -676,6 +678,151 @@ def test_find_missing_artifacts_includes_non_json_references(tmp_path: Path) -> 
     ]
 
 
+def test_find_missing_artifacts_reuses_discovered_manifest_payload_without_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    artifacts = audit.discover_artifacts(runs_dir)
+
+    def fail_read_json(_path: Path) -> dict[str, Any] | None:
+        raise AssertionError("topic-cycle payload should be reused from discovery")
+
+    monkeypatch.setattr(audit, "read_json", fail_read_json)
+
+    missing = audit.find_missing_artifacts(artifacts, runs_dir)
+
+    assert missing == []
+
+
+def test_discover_artifacts_validates_replayable_artifacts_in_parallel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    barrier = threading.Barrier(2)
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    original_candidate = audit.validate_candidate_batch
+    original_execution = audit.validate_execution_dir
+
+    def wrap_candidate(path: Path) -> audit.Artifact:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=5)
+            return original_candidate(path)
+        finally:
+            with lock:
+                active -= 1
+
+    def wrap_execution(path: Path) -> audit.Artifact:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=5)
+            return original_execution(path)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(audit, "validate_candidate_batch", wrap_candidate)
+    monkeypatch.setattr(audit, "validate_execution_dir", wrap_execution)
+
+    artifacts = audit.discover_artifacts(runs_dir)
+
+    assert max_active >= 2
+    assert {
+        artifact.artifact_type
+        for artifact in artifacts
+        if artifact.artifact_type in {"gather_candidate_batch", "source_acquisition_execution"}
+    } == {"gather_candidate_batch", "source_acquisition_execution"}
+
+
+def test_replay_artifacts_reuses_discovery_validation_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    db_path = tmp_path / "rebuilt.sqlite"
+    bootstrap_db(db_path)
+    artifacts = audit.discover_artifacts(runs_dir)
+    replayable = [
+        artifact for artifact in artifacts if artifact.artifact_type in audit.REPLAYABLE_TYPES
+    ]
+
+    def fail_candidate_batch(*_args: object, **_kwargs: object) -> tuple[dict[str, Any], str]:
+        raise AssertionError("candidate batch should reuse discovery inputs")
+
+    def fail_execution_artifacts(
+        *_args: object, **_kwargs: object
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]]:
+        raise AssertionError("execution artifacts should reuse discovery inputs")
+
+    def fail_spool_record(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise AssertionError("spool records should reuse discovery inputs")
+
+    monkeypatch.setattr(audit.canonical_ingest, "load_validated_candidate_batch", fail_candidate_batch)
+    monkeypatch.setattr(
+        audit.canonical_ingest,
+        "load_validated_execution_artifacts",
+        fail_execution_artifacts,
+    )
+    monkeypatch.setattr(audit.canonical_write_spool, "load_spool_record", fail_spool_record)
+
+    results, errors = audit.replay_artifacts(db_path=db_path, artifacts=replayable, strict=True)
+
+    assert errors == []
+    assert {item["status"] for item in results} == {"replayed"}
+
+
+def test_table_content_hash_summary_streams_key_rows_without_fetchall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeCursor:
+        def __init__(
+            self,
+            *,
+            rows: list[dict[str, Any]] | None = None,
+            fetchall_rows: list[dict[str, Any]] | None = None,
+            allow_fetchall: bool = True,
+        ) -> None:
+            self._rows = rows or []
+            self._fetchall_rows = fetchall_rows or []
+            self._allow_fetchall = allow_fetchall
+
+        def fetchall(self) -> list[dict[str, Any]]:
+            if not self._allow_fetchall:
+                raise AssertionError("streaming key hash code should not fetchall rows")
+            return self._fetchall_rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class FakeConnection:
+        def execute(self, sql: str) -> FakeCursor:
+            if sql == "PRAGMA table_info(authority_record)":
+                return FakeCursor(fetchall_rows=[{"name": "authority_key_v1"}])
+            if sql.startswith("SELECT authority_key_v1 AS value FROM authority_record"):
+                return FakeCursor(
+                    rows=[{"value": "alpha"}, {"value": "beta"}],
+                    allow_fetchall=False,
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(audit.canonical_store, "connect_existing_read_only", lambda _path: FakeConnection())
+    monkeypatch.setattr(audit.canonical_store, "actual_tables", lambda _conn: ["authority_record"])
+
+    summary = audit.table_content_hash_summary(tmp_path / "fake.sqlite")
+
+    assert summary == {
+        "authority_record": hashlib.sha256("alpha\nbeta".encode()).hexdigest()
+    }
+
+
 def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     (runs_dir / "gather" / "run-001" / "gather-candidate-batch.json").unlink()
@@ -697,7 +844,7 @@ def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> No
     assert proc.returncode == 1
     report = load_json(report_path)
     assert report["artifacts_missing"]
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "not_rebuildable"
 
 
 def test_invalid_artifact_reports_failure(tmp_path: Path) -> None:
@@ -900,7 +1047,7 @@ def test_rebuildability_audit_survives_hostile_run_directories(tmp_path: Path) -
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     report = load_json(report_path)
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "not_rebuildable"
     assert report["artifacts_missing"]
     assert any(item["validation_status"] == "invalid" for item in report["artifacts_discovered"])
     assert any(
@@ -1008,8 +1155,8 @@ def test_deterministic_with_fixed_timestamp_and_kept_temp_db(tmp_path: Path) -> 
         ]
     )
 
-    assert first_proc.returncode == 0, first_proc.stdout + first_proc.stderr
-    assert second_proc.returncode == 0, second_proc.stdout + second_proc.stderr
+    assert first_proc.returncode == 1, first_proc.stdout + first_proc.stderr
+    assert second_proc.returncode == 1, second_proc.stdout + second_proc.stderr
     assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
 
 
