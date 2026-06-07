@@ -228,6 +228,7 @@ def test_seed_database_streams_jsonl_records_without_materializing_list(
 
     records = [
         {
+            "locus_id": "locus:stream_topic:archive:one",
             "display_name": "Streamed Archive One",
             "locus_type": "archive",
             "query_family": "archives",
@@ -237,6 +238,7 @@ def test_seed_database_streams_jsonl_records_without_materializing_list(
             "refetchability_status": "not_checked",
         },
         {
+            "locus_id": "locus:stream_topic:archive:two",
             "display_name": "Streamed Archive Two",
             "locus_type": "archive",
             "query_family": "archives",
@@ -252,6 +254,13 @@ def test_seed_database_streams_jsonl_records_without_materializing_list(
         "iter_seed_records",
         lambda _path: StreamingRecords(records),
     )
+    monkeypatch.setattr(
+        source_locus_seed,
+        "export_source_loci",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("full export should not run unless explicitly requested")
+        ),
+    )
 
     try:
         report = source_locus_seed.seed_database(
@@ -266,4 +275,9 @@ def test_seed_database_streams_jsonl_records_without_materializing_list(
 
     assert report["manual_seed_records"] == 2
     assert report["inserted_or_updated"] == 3
-    assert report["source_locus_export"]["counts"]["total_loci"] == 3
+    assert report["changed_locus_ids"] == [
+        "locus:unknown_locus:stream-topic",
+        "locus:stream_topic:archive:one",
+        "locus:stream_topic:archive:two",
+    ]
+    assert report["source_locus_export"] is None
