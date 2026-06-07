@@ -106,3 +106,23 @@ def test_redacted_support_bundle_scans_manifest_after_writing_it(tmp_path: Path,
 
     assert report["status"] == "pass"
     assert scan_calls == [False, True]
+
+
+def test_redacted_recent_log_reads_tail_without_read_text(tmp_path: Path, monkeypatch) -> None:
+    log_path = tmp_path / "runtime" / "logs" / "index-actions.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"line {index}" for index in range(1, 205)]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("redacted_recent_log should not read the entire file as text")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    tail = support_builder.redacted_recent_log(tmp_path)
+
+    assert tail is not None
+    tail_lines = tail.splitlines()
+    assert len(tail_lines) == support_builder.MAX_LOG_LINES
+    assert tail_lines[0] == "line 5"
+    assert tail_lines[-1] == "line 204"

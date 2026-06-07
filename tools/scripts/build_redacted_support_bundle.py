@@ -27,6 +27,7 @@ from tools.common.leak_scanner import scan_directory  # noqa: E402
 
 MANIFEST_SCHEMA_VERSION = "redacted-support-bundle.v1"
 MAX_LOG_LINES = 200
+TAIL_READ_CHUNK_SIZE = 8192
 
 
 class SupportBundleError(RuntimeError):
@@ -51,6 +52,28 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def redacted_text(value: str) -> str:
     return local_doctor.redact(value)
+
+
+def tail_text(path: Path, *, line_count: int) -> str | None:
+    if line_count <= 0:
+        return None
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            file_size = handle.tell()
+            buffer = b""
+            while file_size > 0 and buffer.count(b"\n") <= line_count:
+                read_size = min(TAIL_READ_CHUNK_SIZE, file_size)
+                file_size -= read_size
+                handle.seek(file_size)
+                buffer = handle.read(read_size) + buffer
+    except OSError:
+        return None
+
+    lines = buffer.splitlines()[-line_count:]
+    if not lines:
+        return None
+    return "\n".join(redacted_text(line.decode("utf-8", errors="replace")) for line in lines) + "\n"
 
 
 def _is_recognized_support_bundle_root(path: Path) -> bool:
@@ -137,11 +160,7 @@ def redacted_recent_log(repo_root: Path) -> str | None:
     log_path = repo_root / "runtime" / "logs" / "index-actions.log"
     if not log_path.exists() or not log_path.is_file():
         return None
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-MAX_LOG_LINES:]
-    except OSError:
-        return None
-    return "\n".join(redacted_text(line) for line in lines) + "\n"
+    return tail_text(log_path, line_count=MAX_LOG_LINES)
 
 
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
