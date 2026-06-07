@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,7 @@ ACTION_KINDS = {
 METHODS = {"GET", "HEAD"}
 ROBOTS_MODES = {"respect_robots", "not_applicable"}
 ROBOTS_OPTIONAL_ACTION_KINDS = {"api_call", "clone_repo"}
+GIT_STATUS_TIMEOUT_SECONDS = 10
 
 
 class NetworkSafetyGateError(RuntimeError):
@@ -107,12 +109,19 @@ def are_http_prefixes(values: list[str]) -> bool:
 
 
 def git_worktree_is_clean(repo_root: Path) -> tuple[bool | None, str | None]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=GIT_STATUS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"git status timed out after {GIT_STATUS_TIMEOUT_SECONDS} seconds"
     if proc.returncode != 0:
         return None, proc.stderr.strip() or "git status failed"
     return proc.stdout.strip() == "", None

@@ -5,6 +5,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -194,6 +197,45 @@ def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_user
         hosts=["attacker.invalid"],
         prefixes=[],
     ) is False
+
+
+def test_git_worktree_is_clean_uses_timeout_and_optional_locks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+
+    clean, detail = gate.git_worktree_is_clean(repo_root)
+
+    assert clean is True
+    assert detail is None
+    run_kwargs = captured["kwargs"]
+    assert isinstance(run_kwargs, dict)
+    assert run_kwargs["timeout"] == gate.GIT_STATUS_TIMEOUT_SECONDS
+    env = run_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+def test_git_worktree_is_clean_reports_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+
+    clean, detail = gate.git_worktree_is_clean(repo_root)
+
+    assert clean is None
+    assert detail == f"git status timed out after {gate.GIT_STATUS_TIMEOUT_SECONDS} seconds"
 
 
 def test_network_safety_gate_refuses_dirty_worktree_when_required(tmp_path: Path) -> None:
