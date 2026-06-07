@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -13,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER_PATH = REPO_ROOT / "tools" / "scripts" / "build_candidate_feedback_plan.py"
 DRIVER_PATH = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_candidate_feedback_plan.py"
+BATCH_VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_gather_candidate_batch.py"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
 
 validator_spec = importlib.util.spec_from_file_location(
@@ -33,6 +35,15 @@ planner = importlib.util.module_from_spec(planner_spec)
 assert planner_spec.loader is not None
 planner_spec.loader.exec_module(planner)
 
+batch_validator_spec = importlib.util.spec_from_file_location(
+    "gather_candidate_batch_validator_for_selection_tests",
+    BATCH_VALIDATOR_PATH,
+)
+assert batch_validator_spec is not None
+batch_validator = importlib.util.module_from_spec(batch_validator_spec)
+assert batch_validator_spec.loader is not None
+batch_validator_spec.loader.exec_module(batch_validator)
+
 
 def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -45,7 +56,11 @@ def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_driver(args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_driver(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(DRIVER_PATH), *args],
         cwd=REPO_ROOT,
@@ -53,7 +68,31 @@ def run_driver(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
         timeout=20,
+        env=env,
     )
+
+
+def write_fake_codex(bin_dir: Path) -> Path:
+    log_path = bin_dir / "codex.log"
+    script_path = bin_dir / "codex"
+    script_path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+log_path="${FAKE_CODEX_LOG:?}"
+{
+  printf 'argc=%s\\n' "$#"
+  idx=1
+  for arg in "$@"; do
+    printf 'arg[%s]=%s\\n' "$idx" "$arg"
+    idx=$((idx + 1))
+  done
+} > "$log_path"
+printf '%s' "${FAKE_CODEX_OUTPUT:-FAKE CODEX OUTPUT}"
+""",
+        encoding="utf-8",
+    )
+    script_path.chmod(0o755)
+    return log_path
 
 
 def bootstrap_db(tmp_path: Path) -> Path:
@@ -550,6 +589,7 @@ def test_candidate_feedback_planner_sparse_state_uses_bootstrap_selection(tmp_pa
     assert payload["counts"]["gather_runs_considered"] == 0
     assert payload["next_action"]["action_kind"] == "facet_bootstrap"
     assert payload["next_action"]["selected_facet"] == "sources"
+    assert payload["next_action"]["should_call_llm"] is True
     assert payload["next_action"]["use_prior_state"] is False
     assert payload["next_action"]["previous_run_ids_considered"] == []
     assert "bootstrap_no_prior_productivity" in payload["next_action"]["reason_codes"]
@@ -578,6 +618,7 @@ def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_p
     assert payload["next_action"]["action_kind"] == "facet_lead"
     assert payload["next_action"]["selected_facet"] == "sources"
     assert payload["next_action"]["selected_object_ref"] == high_ref
+    assert payload["next_action"]["should_call_llm"] is False
     lead_scores = payload["lead_scores"]
     assert lead_scores[0]["object_ref"] == high_ref
     assert lead_scores[1]["object_ref"] != high_ref
@@ -590,6 +631,66 @@ def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_p
         candidate["candidate_id"] == selected["candidate_id"]
         for candidate in explanation["considered_candidates"]
     )
+
+
+def test_gather_skips_live_llm_when_feedback_plan_selects_a_deterministic_lead(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+    _planner_result, output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+
+    assert payload["next_action"]["should_call_llm"] is False
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = "UNUSED"
+    run_id = "feedback-guided-live-noop"
+
+    result = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--feedback-plan",
+            str(output_path),
+            "--db",
+            str(db_path),
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ],
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not fake_log.exists()
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    batch_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert batch_payload["mode"] == "live"
+    assert batch_payload["engine"]["invoked"] is False
+    assert batch_payload["engine"]["engine_present"] is False
+    assert batch_payload["raw_engine_output"] is None
+    assert batch_payload["engine_output_ref"] is None
+    assert batch_payload["feedback_plan"]["next_action"]["should_call_llm"] is False
+
+    report, exit_code = batch_validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == batch_validator.EXIT_PASS, report
 
 
 def test_candidate_feedback_planner_deprioritizes_low_yield_locus_but_keeps_it_deferred(tmp_path: Path) -> None:

@@ -133,6 +133,7 @@ NEXT_ACTION_REQUIRED_KEYS = {
     "subject_id",
     "selected_facet",
     "selected_prompt_bundle_id",
+    "should_call_llm",
     "selection_score",
     "scoring_policy_id",
     "rationale",
@@ -542,6 +543,8 @@ def validate_next_action(payload: dict[str, Any], enabled_facets: list[str], pre
     if selected_facet is not None and enabled_facets and selected_facet not in set(enabled_facets):
         add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.selected_facet is not enabled for the subject: {selected_facet}")
     validate_nonblank_string(next_action.get("selected_prompt_bundle_id"), field_name="next_action.selected_prompt_bundle_id", errors=errors, code="INVALID_NEXT_ACTION")
+    if not isinstance(next_action.get("should_call_llm"), bool):
+        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.should_call_llm must be a boolean")
     if next_action.get("selected_object_ref") is not None and not isinstance(next_action.get("selected_object_ref"), str):
         add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.selected_object_ref must be null or a string")
     if next_action.get("selected_lead_kind") not in LEAD_KINDS | {None}:
@@ -582,6 +585,18 @@ def validate_next_action(payload: dict[str, Any], enabled_facets: list[str], pre
         add_error(errors, code="INVALID_NEXT_ACTION", message="non-lead next actions must not include selected_lead_kind")
     if next_action.get("action_kind") != "facet_lead" and next_action.get("selected_object_ref") is not None:
         add_error(errors, code="INVALID_NEXT_ACTION", message="non-lead next actions must not include selected_object_ref")
+    if next_action.get("selected_object_ref") is None and next_action.get("should_call_llm") is not True:
+        add_error(
+            errors,
+            code="INVALID_NEXT_ACTION",
+            message="non-lead next actions must set should_call_llm=true",
+        )
+    if next_action.get("selected_object_ref") is not None and next_action.get("should_call_llm") is not False:
+        add_error(
+            errors,
+            code="INVALID_NEXT_ACTION",
+            message="lead next actions must set should_call_llm=false",
+        )
 
 
 def validate_deferred(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:

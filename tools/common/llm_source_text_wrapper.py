@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +37,6 @@ class WrappedSourceBlock:
     hazard_flags: tuple[str, ...]
     instruction_negation: str
     source_text: str
-    raw_text: str
     start_offset: int
     end_offset: int
 
@@ -56,6 +56,7 @@ def _require_nonblank_string(payload: dict[str, object], field: str) -> str:
     return value.strip()
 
 
+@lru_cache(maxsize=None)
 def load_template(path: Path = TEMPLATE_PATH) -> WrapperTemplate:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -139,7 +140,6 @@ def parse_wrapped_blocks(prompt_text: str, *, template: WrapperTemplate | None =
                 hazard_flags=hazard_flags,
                 instruction_negation=match.group("instruction_negation").strip(),
                 source_text=source_text,
-                raw_text=prompt_text[match.start():raw_end],
                 start_offset=match.start(),
                 end_offset=raw_end,
             )

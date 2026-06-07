@@ -1030,6 +1030,7 @@ def select_next_action(
         score = float(top_facet["score"])
         input_record_refs = []
         use_prior_state = bool(previous_run_ids)
+    should_call_llm = selected_object_ref is None
 
     selected_facet = top_facet["facet"] if not productive_leads else productive_leads[0]["facet"]
     selected_prompt_bundle_id = (
@@ -1051,6 +1052,7 @@ def select_next_action(
         "subject_id": subject["subject_id"],
         "selected_facet": selected_facet,
         "selected_prompt_bundle_id": selected_prompt_bundle_id,
+        "should_call_llm": should_call_llm,
         "selected_object_ref": selected_object_ref,
         "selected_lead_kind": selected_lead_kind,
         "selected_source_locus_id": selected_source_locus_id,
@@ -1366,6 +1368,7 @@ def render_text_plan(payload: dict[str, Any]) -> str:
         f"selected_facet={payload['next_action']['selected_facet']}",
         f"selected_prompt_bundle_id={payload['next_action']['selected_prompt_bundle_id']}",
         f"action_kind={payload['next_action']['action_kind']}",
+        f"should_call_llm={str(payload['next_action']['should_call_llm']).lower()}",
         f"selection_score={payload['next_action']['selection_score']}",
         f"cycle_depth={payload['next_action']['cycle_depth']}",
         f"use_prior_state={str(payload['next_action']['use_prior_state']).lower()}",

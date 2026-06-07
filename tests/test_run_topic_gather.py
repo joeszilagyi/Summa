@@ -179,6 +179,7 @@ def test_run_topic_gather_quotes_untrusted_metadata_in_wrapped_json_blocks() -> 
             "subject_id": "alpha.fixture",
             "selected_facet": "sources",
             "selected_prompt_bundle_id": "bundle-01",
+            "should_call_llm": True,
             "selection_score": 0.5,
             "scoring_policy_id": "candidate-feedback.default.v1",
             "rationale": "Keep the developer message isolated.",
@@ -236,8 +237,6 @@ def test_run_topic_gather_quotes_untrusted_metadata_in_wrapped_json_blocks() -> 
             "display_name": subject["display_name"],
             "domain_pack": subject["domain_pack"],
             "scope_statement": subject["scope_statement"],
-            "enabled_facets": subject["enabled_facets"],
-            "query_families": subject["query_families"],
         },
         indent=2,
         ensure_ascii=False,
@@ -250,6 +249,7 @@ def test_run_topic_gather_quotes_untrusted_metadata_in_wrapped_json_blocks() -> 
             "subject_id": "alpha.fixture",
             "selected_facet": "sources",
             "selected_prompt_bundle_id": "bundle-01",
+            "should_call_llm": True,
             "selection_score": 0.5,
             "scoring_policy_id": "candidate-feedback.default.v1",
             "rationale": "Keep the developer message isolated.",
@@ -490,6 +490,43 @@ def test_run_topic_gather_reads_mixed_unicode_source_text(tmp_path: Path) -> Non
     read_back = driver.read_text_file(source_path, label="source text file")
 
     assert read_back == source_text
+
+
+def test_run_topic_gather_source_text_fingerprint_encodes_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "source.txt"
+    source_text = "Prefix with emoji 😀 and combining e\u0301."
+    source_path.write_text(source_text, encoding="utf-8")
+    expected_bytes = source_text.encode("utf-8")
+    expected_hash = hashlib.sha256(expected_bytes).hexdigest()
+
+    class EncodeCountingStr(str):
+        encode_calls = 0
+
+        def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+            type(self).encode_calls += 1
+            return super().encode(encoding, errors)
+
+    counting_text = EncodeCountingStr(source_text)
+
+    def fake_read_text_file(path: Path, *, label: str) -> str:
+        assert path == source_path.resolve()
+        assert label == "source text file"
+        return counting_text
+
+    monkeypatch.setattr(driver, "read_text_file", fake_read_text_file)
+    template = wrapper_common.load_template()
+
+    blocks, rendered_blocks = driver.resolve_source_text_blocks([str(source_path)], template=template)
+
+    assert EncodeCountingStr.encode_calls == 1
+    assert len(rendered_blocks) == 1
+    assert blocks[0]["byte_count"] == len(expected_bytes)
+    assert blocks[0]["sha256"] == expected_hash
 
 
 def test_run_topic_gather_rejects_invalid_utf8_source_text_file(tmp_path: Path) -> None:
