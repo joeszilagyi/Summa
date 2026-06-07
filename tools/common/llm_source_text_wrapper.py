@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +57,7 @@ def _require_nonblank_string(payload: dict[str, object], field: str) -> str:
     return value.strip()
 
 
+@lru_cache(maxsize=None)
 def load_template(path: Path = TEMPLATE_PATH) -> WrapperTemplate:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
