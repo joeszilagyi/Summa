@@ -11,15 +11,18 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK_ROOT = REPO_ROOT / "runtime" / "locks"
 ID_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+HEARTBEAT_REFRESH_INTERVAL_SECONDS = 30.0
 
 
 class WorkspaceLockError(RuntimeError):
@@ -38,6 +41,16 @@ def safe_workspace_id(workspace_id: str) -> str:
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_timestamp(value: str) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).timestamp()
 
 
 def lock_path_for(workspace_id: str, lock_root: Path = DEFAULT_LOCK_ROOT) -> Path:
@@ -95,10 +108,21 @@ def stale_reason(path: Path, *, stale_after_seconds: int, now: float | None = No
     if host == socket.gethostname() and isinstance(pid, int) and not pid_is_alive(pid):
         return "dead_pid"
 
-    age = current_time - path.stat().st_mtime
+    heartbeat_at = metadata.get("heartbeat_at")
+    heartbeat_timestamp = parse_timestamp(heartbeat_at) if isinstance(heartbeat_at, str) else None
+    if heartbeat_timestamp is None:
+        age = current_time - path.stat().st_mtime
+    else:
+        age = current_time - heartbeat_timestamp
     if age >= stale_after_seconds:
         return "heartbeat_expired"
     return None
+
+
+def heartbeat_refresh_interval_seconds(stale_after_seconds: int) -> float:
+    if stale_after_seconds <= 0:
+        return HEARTBEAT_REFRESH_INTERVAL_SECONDS
+    return max(0.01, min(HEARTBEAT_REFRESH_INTERVAL_SECONDS, stale_after_seconds / 3.0))
 
 
 def quarantine_stale_lock(path: Path, *, reason: str, quarantine_root: Path | None = None) -> Path:
@@ -183,18 +207,44 @@ def acquire_workspace_lock(
                     f"workspace lock appears stale ({reason}) and break_stale is false: {lock_path}"
                 )
 
-            write_metadata(
-                handle,
-                metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path),
+            metadata = metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path)
+            write_metadata(handle, metadata)
+            refresh_stop = threading.Event()
+            refresh_lock = threading.Lock()
+            refresh_interval = heartbeat_refresh_interval_seconds(stale_after_seconds)
+
+            def refresh_heartbeat(
+                *,
+                _stop: threading.Event = refresh_stop,
+                _interval: float = refresh_interval,
+                _lock: threading.Lock = refresh_lock,
+                _handle = handle,
+                _metadata = metadata,
+            ) -> None:
+                while not _stop.wait(_interval):
+                    with _lock:
+                        try:
+                            write_metadata(_handle, _metadata)
+                        except OSError:
+                            return
+
+            heartbeat_thread = threading.Thread(
+                target=refresh_heartbeat,
+                name=f"workspace-lock-heartbeat-{workspace_id}",
+                daemon=True,
             )
+            heartbeat_thread.start()
             try:
                 yield lock_path
             finally:
                 try:
-                    handle.seek(0)
-                    handle.truncate()
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                    refresh_stop.set()
+                    heartbeat_thread.join()
+                    with refresh_lock:
+                        handle.seek(0)
+                        handle.truncate()
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 finally:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     handle.close()
