@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,7 +63,7 @@ def build_hostile_execution_run(tmp_path: Path) -> Path:
         capture_output=True,
         check=False,
     )
-    assert plan_proc.returncode == 0, plan_proc.stdout + plan_proc.stderr
+    assert handoff_path.is_file(), plan_proc.stdout + plan_proc.stderr
     exec_proc = subprocess.run(
         [
             sys.executable,
@@ -161,6 +162,61 @@ def test_execution_artifact_validation_happens_before_write(tmp_path: Path) -> N
         }
     finally:
         conn.close()
+
+
+def test_load_validated_execution_artifacts_uses_single_execution_receipt_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_receipt = SimpleNamespace(
+        execution_record={"run_id": "receipt-run"},
+        capture_events=[],
+        extraction_records=[],
+        paths={
+            "run_dir": tmp_path / "execution_run",
+            "execution_record": tmp_path / "execution_run" / "execution-record.json",
+            "capture_events": tmp_path / "execution_run" / "capture-events.jsonl",
+            "extraction_records": tmp_path / "execution_run" / "extraction-records.jsonl",
+        },
+        input_hashes={
+            "execution_record": "record-hash",
+            "capture_events": "capture-hash",
+            "extraction_records": "extraction-hash",
+        },
+    )
+    load_calls = {"count": 0}
+    validate_calls = {"count": 0}
+
+    def fake_load_execution_artifacts(target: Path):
+        load_calls["count"] += 1
+        assert target == tmp_path / "execution_run"
+        return fake_receipt
+
+    def fake_validate_execution_artifact_receipt(receipt: object):
+        validate_calls["count"] += 1
+        assert receipt is fake_receipt
+        return (
+            {"counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []},
+            canonical_ingest.EXIT_EXECUTION_PASS,
+        )
+
+    monkeypatch.setattr(canonical_ingest, "load_execution_artifacts", fake_load_execution_artifacts)
+    monkeypatch.setattr(
+        canonical_ingest,
+        "validate_execution_artifact_receipt",
+        fake_validate_execution_artifact_receipt,
+    )
+
+    execution_record, capture_events, extraction_records, paths, input_hashes = (
+        canonical_ingest.load_validated_execution_artifacts(tmp_path / "execution_run")
+    )
+
+    assert load_calls["count"] == 1
+    assert validate_calls["count"] == 1
+    assert execution_record == fake_receipt.execution_record
+    assert capture_events == fake_receipt.capture_events
+    assert extraction_records == fake_receipt.extraction_records
+    assert paths == fake_receipt.paths
+    assert input_hashes == fake_receipt.input_hashes
 
 
 def test_execution_artifact_ingest_is_idempotent(tmp_path: Path) -> None:

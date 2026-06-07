@@ -70,6 +70,19 @@ HOSTILE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"</[A-Za-z]"),
     ),
 }
+
+
+def _compile_hazard_pattern(patterns: tuple[re.Pattern[str], ...]) -> re.Pattern[str]:
+    joined = "|".join(
+        f"(?i:{pattern.pattern})" if pattern.flags & re.IGNORECASE else f"(?:{pattern.pattern})"
+        for pattern in patterns
+    )
+    return re.compile(joined)
+
+
+HOSTILE_HAZARD_REGEXES: dict[str, re.Pattern[str]] = {
+    flag: _compile_hazard_pattern(patterns) for flag, patterns in HOSTILE_PATTERNS.items()
+}
 CANDIDATE_TYPE_HINTS = {
     "sources": "source_lead",
     "timeline": "timeline_item",
@@ -264,8 +277,8 @@ def ensure_file(path: Path, *, label: str) -> Path:
 
 def detect_hazard_flags(source_text: str) -> list[str]:
     flags: list[str] = []
-    for flag, patterns in HOSTILE_PATTERNS.items():
-        if any(pattern.search(source_text) for pattern in patterns):
+    for flag, pattern in HOSTILE_HAZARD_REGEXES.items():
+        if pattern.search(source_text):
             flags.append(flag)
     return flags
 
@@ -600,7 +613,7 @@ def candidate_type_hint_for_facet(facet: str) -> str:
     return CANDIDATE_TYPE_HINTS.get(facet, "unknown")
 
 
-def write_text(path: Path, body: str) -> None:
+def write_text(path: Path, body: str, *, sync: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=str(path.parent), delete=False
@@ -608,7 +621,8 @@ def write_text(path: Path, body: str) -> None:
         tmp_path = Path(handle.name)
         handle.write(body)
         handle.flush()
-        os.fsync(handle.fileno())
+        if sync:
+            os.fsync(handle.fileno())
     try:
         os.replace(tmp_path, path)
     finally:
@@ -616,8 +630,18 @@ def write_text(path: Path, body: str) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+def sync_paths(paths: list[Path]) -> None:
+    for path in paths:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
+
+
+def write_json(path: Path, payload: dict[str, Any], *, sync: bool = True) -> None:
+    write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        sync=sync,
+    )
 
 
 def parse_stamp_footer(text: str) -> dict[str, str]:
@@ -1049,7 +1073,7 @@ def main() -> int:
             raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
 
         rendered_prompt_path = run_dir / "rendered-prompt.txt"
-        write_text(rendered_prompt_path, rendered_prompt)
+        write_text(rendered_prompt_path, rendered_prompt, sync=False)
 
         live_result: dict[str, Any] | None = None
         should_call_llm = True
@@ -1091,7 +1115,7 @@ def main() -> int:
                 raise GatherDriverError(
                     f"debug rendered prompt failed leak scan: {sample}"
                 )
-        write_json(batch_path, batch)
+        write_json(batch_path, batch, sync=False)
 
         validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
         if validation_exit_code != 0:
@@ -1099,6 +1123,9 @@ def main() -> int:
                 f"{error['code']}: {error['message']}" for error in validation_result["errors"]
             )
             raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
+
+        if args.mode != "dry-run":
+            sync_paths([rendered_prompt_path, batch_path])
 
         if args.format == "json":
             candidate_batch_sha256 = hash_file(batch_path)

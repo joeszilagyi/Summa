@@ -915,6 +915,122 @@ def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(tmp_path:
     assert result["status"] == "spooled"
 
 
+def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_ingest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    run_dir = tmp_path / "topic-cycle-run"
+    run_dir.mkdir()
+    execution_run_dir = run_dir / "execution"
+    db_path = tmp_path / "canonical.sqlite"
+
+    fake_receipt = module.ExecutionArtifactReceipt(
+        execution_record={"run_id": "cycle-832"},
+        capture_events=[],
+        extraction_records=[],
+        paths={
+            "run_dir": execution_run_dir,
+            "execution_record": execution_run_dir / "execution-record.json",
+            "capture_events": execution_run_dir / "capture-events.jsonl",
+            "extraction_records": execution_run_dir / "extraction-records.jsonl",
+        },
+        input_hashes={
+            "execution_record": "record-hash",
+            "capture_events": "capture-hash",
+            "extraction_records": "extraction-hash",
+        },
+    )
+    load_calls = {"count": 0}
+    validate_calls = {"count": 0}
+    ingest_calls = {"count": 0}
+
+    def fake_load_execution_artifacts(target: Path):
+        load_calls["count"] += 1
+        assert target == execution_run_dir
+        return fake_receipt
+
+    def fake_validate_execution_artifact_receipt(receipt: object):
+        validate_calls["count"] += 1
+        assert receipt is fake_receipt
+        return (
+            {"counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []},
+            module.EXIT_EXECUTION_PASS,
+        )
+
+    def fake_run_command(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_load_handoff_adapter_path(_: Path) -> Path:
+        return tmp_path / "adapter.json"
+
+    def fake_resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
+        return Path(raw_path)
+
+    def fake_ingest(*args, **kwargs):
+        ingest_calls["count"] += 1
+        assert args[1] == fake_receipt.execution_record
+        assert args[2] == fake_receipt.capture_events
+        assert args[3] == fake_receipt.extraction_records
+        assert kwargs["paths"] == fake_receipt.paths
+        assert kwargs["input_hashes"] == fake_receipt.input_hashes
+        return {"status": "completed", "counts": {}}
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(module, "run_command", fake_run_command)
+    monkeypatch.setattr(module, "load_handoff_adapter_path", fake_load_handoff_adapter_path)
+    monkeypatch.setattr(module, "resolve_path", fake_resolve_path)
+    monkeypatch.setattr(module, "load_execution_artifacts", fake_load_execution_artifacts)
+    monkeypatch.setattr(module, "validate_execution_artifact_receipt", fake_validate_execution_artifact_receipt)
+    monkeypatch.setattr(module.canonical_ingest, "load_validated_execution_artifacts", lambda *_: pytest.fail("unexpected execution reload"))
+    monkeypatch.setattr(module.canonical_ingest, "ingest_execution_artifacts", fake_ingest)
+    monkeypatch.setattr(module.canonical_store, "connect_canonical_store", lambda _: FakeConn())
+
+    args = SimpleNamespace(
+        allow_network=False,
+        execution_run_fixture=None,
+        source_handoff="handoff.json",
+        mode="live",
+        degraded_spool=False,
+        spool_dir=None,
+    )
+    manifest = {
+        "run_id": "cycle-832",
+        "started_at": "2026-06-03T12:34:56Z",
+        "warnings": [],
+        "stages": [],
+        "canonical_db": {"mutated": False},
+    }
+
+    acquired_run_dir, receipt = module.acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+    assert acquired_run_dir == execution_run_dir
+    assert receipt is fake_receipt
+    assert load_calls["count"] == 1
+    assert validate_calls["count"] == 1
+
+    result = module.execution_ingest_stage(
+        args=args,
+        manifest=manifest,
+        db_path=db_path,
+        execution_run_dir=acquired_run_dir,
+        execution_artifacts=receipt,
+        run_dir=run_dir,
+    )
+
+    assert ingest_calls["count"] == 1
+    assert result["status"] == "completed"
+    assert load_calls["count"] == 1
+
+
 
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 import shutil
 from pathlib import Path
+
+import pytest
 
 from tools.validators import validate_source_acquisition_execution as validator
 
@@ -40,6 +43,31 @@ def run_validator(run_dir: Path, *, tmp_path: Path) -> tuple[subprocess.Complete
     )
     report = json.loads((tmp_path / "actual" / "report.json").read_text(encoding="utf-8"))
     return proc, report
+
+
+def test_execution_artifact_loader_streams_jsonl_and_hashes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+    capture_events_path = run_dir / "capture-events.jsonl"
+    extraction_records_path = run_dir / "extraction-records.jsonl"
+    original_read_text = validator.Path.read_text
+
+    def read_text_side_effect(self: Path, *args: object, **kwargs: object) -> str:
+        if self in {capture_events_path, extraction_records_path}:
+            raise AssertionError("JSONL inputs should be streamed with Path.open(), not read_text()")
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(validator.Path, "read_text", read_text_side_effect)
+
+    receipt = validator.load_execution_artifacts(run_dir)
+
+    assert receipt.input_hashes["capture_events"] == hashlib.sha256(
+        capture_events_path.read_bytes()
+    ).hexdigest()
+    assert receipt.input_hashes["extraction_records"] == hashlib.sha256(
+        extraction_records_path.read_bytes()
+    ).hexdigest()
 
 
 def test_execution_validation_rejects_capture_handoff_hash_mismatch(tmp_path: Path) -> None:

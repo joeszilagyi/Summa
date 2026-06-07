@@ -480,6 +480,36 @@ def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path
     assert_text_only_inside_wrapped_blocks(prompt_text, hostile_text)
 
 
+def test_run_topic_gather_hazard_detection_searches_each_flag_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CountingPattern:
+        def __init__(self, *, matched: bool) -> None:
+            self.matched = matched
+            self.search_calls = 0
+
+        def search(self, text: str) -> object | None:
+            self.search_calls += 1
+            return object() if self.matched else None
+
+    prompt_pattern = CountingPattern(matched=True)
+    markup_pattern = CountingPattern(matched=False)
+    monkeypatch.setattr(
+        driver,
+        "HOSTILE_HAZARD_REGEXES",
+        {
+            "prompt_injection_text": prompt_pattern,
+            "hostile_markup": markup_pattern,
+        },
+    )
+
+    flags = driver.detect_hazard_flags("any source text")
+
+    assert flags == ["prompt_injection_text"]
+    assert prompt_pattern.search_calls == 1
+    assert markup_pattern.search_calls == 1
+
+
 def test_run_topic_gather_reads_mixed_unicode_source_text(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -527,6 +557,32 @@ def test_run_topic_gather_source_text_fingerprint_encodes_once(
     assert len(rendered_blocks) == 1
     assert blocks[0]["byte_count"] == len(expected_bytes)
     assert blocks[0]["sha256"] == expected_hash
+
+
+def test_run_topic_gather_write_text_can_defer_and_group_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fsync_calls: list[int] = []
+
+    def fake_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+
+    monkeypatch.setattr(driver.os, "fsync", fake_fsync)
+
+    strict_path = tmp_path / "strict.txt"
+    relaxed_path = tmp_path / "relaxed.txt"
+    grouped_path = tmp_path / "grouped.json"
+
+    driver.write_text(strict_path, "strict", sync=True)
+    assert len(fsync_calls) == 1
+
+    driver.write_text(relaxed_path, "relaxed", sync=False)
+    driver.write_json(grouped_path, {"value": 1}, sync=False)
+    assert len(fsync_calls) == 1
+
+    driver.sync_paths([relaxed_path, grouped_path])
+
+    assert len(fsync_calls) == 3
 
 
 def test_run_topic_gather_rejects_invalid_utf8_source_text_file(tmp_path: Path) -> None:
