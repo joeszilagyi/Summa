@@ -861,7 +861,7 @@ def validate_emitted_artifacts(output_dir: Path) -> None:
         [
             sys.executable,
             str(REPO_ROOT / "tools" / "scripts" / "validate_source_acquisition_execution.py"),
-            str(output_dir / "execution-record.json"),
+            str(output_dir),
         ],
         cwd=REPO_ROOT,
         text=True,
