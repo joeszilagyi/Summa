@@ -545,6 +545,57 @@ def test_selector_derives_deterministic_planner_run_id_when_not_provided(tmp_pat
     )
 
 
+def test_selector_planner_id_derives_from_selected_workspace_ids(tmp_path: Path) -> None:
+    first_root = tmp_path / "workspaces" / "first"
+    second_root = tmp_path / "workspaces" / "second"
+    first_root.mkdir(parents=True)
+    second_root.mkdir(parents=True)
+    first_manifest = write_manifest(first_root, subject_id="subject.first")
+    second_manifest = write_manifest(second_root, subject_id="subject.second")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="first_workspace",
+                workspace_root=first_root,
+                manifest_path=first_manifest,
+            ),
+            workspace_record(
+                workspace_id="second_workspace",
+                workspace_root=second_root,
+                manifest_path=second_manifest,
+            ),
+        ],
+    )
+
+    full = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--format",
+            "json",
+        ]
+    )
+    limited = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert full.returncode == 0, full.stdout + full.stderr
+    assert limited.returncode == 0, limited.stdout + limited.stderr
+    assert json.loads(full.stdout)["planner_run_id"] != json.loads(limited.stdout)["planner_run_id"]
+
+
 def test_selector_rejects_invalid_run_budget() -> None:
     proc = run_selector(["--run-budget-max-attempts", "0"])
 

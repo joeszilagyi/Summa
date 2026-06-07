@@ -72,6 +72,13 @@ def parse_timestamp(raw_value: str, *, label: str) -> datetime:
         raise SelectionError(f"{label} must be an ISO-8601 timestamp") from exc
 
 
+def normalize_planned_at(raw_value: str | None, *, label: str) -> str:
+    parsed = parse_timestamp(raw_value or utc_now(), label=label)
+    if parsed.tzinfo is None:
+        raise SelectionError(f"{label} must include a timezone")
+    return parsed.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def parse_args() -> argparse.Namespace:
     default_registry_display = DEFAULT_REGISTRY_PATH.relative_to(REPO_ROOT).as_posix()
     parser = argparse.ArgumentParser(
@@ -580,23 +587,6 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         raise SelectionError("--limit must be at least 1")
 
     validate_registry_or_raise(registry_path)
-    planned_at = (
-        parse_timestamp(args.planned_at, label="--planned-at")
-        if args.planned_at
-        else parse_timestamp(
-            utc_now(),
-            label="generated planned_at",
-        )
-    )
-    args.planned_at = planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    if args.planner_run_id is None:
-        args.planner_run_id = _derive_planner_run_id(
-            planned_at=args.planned_at,
-            registry_path=registry_path,
-            workspace_ids=args.workspace_ids,
-            args=args,
-        )
-
     try:
         resolved_workspaces = resolve_workspaces(
             registry_path=registry_path,
@@ -604,6 +594,12 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         )
     except TopicWorkspaceRegistryError as exc:
         raise SelectionError(str(exc)) from exc
+
+    planned_at = normalize_planned_at(
+        args.planned_at,
+        label="--planned-at" if args.planned_at else "generated planned_at",
+    )
+    args.planned_at = planned_at
 
     saturation_policy, saturation_conn = saturation_context(args)
     try:
@@ -620,14 +616,14 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
                 workspace=workspace,
                 policy=saturation_policy,
                 conn=saturation_conn,
-                planned_at=planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                planned_at=planned_at,
             )
             reasons = scheduler_ineligibility_reasons(workspace, include_manual=args.include_manual)
             reasons.extend(
                 scheduler_policy_ineligibility_reasons(
                     workspace,
                     args=args,
-                    planned_at=planned_at,
+                    planned_at=parse_timestamp(planned_at, label="planned_at"),
                 )
             )
             reasons.extend(
@@ -661,6 +657,15 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 deferred_entry["reasons"] = ["selection limit reached"]
             skipped.append(deferred_entry)
+
+    selected_workspace_ids = [workspace["workspace_id"] for workspace in selected]
+    if args.planner_run_id is None:
+        args.planner_run_id = _derive_planner_run_id(
+            planned_at=args.planned_at,
+            registry_path=registry_path,
+            workspace_ids=selected_workspace_ids,
+            args=args,
+        )
 
     planned_records = build_planned_run_records(
         selected=selected,
