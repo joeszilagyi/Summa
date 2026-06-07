@@ -377,12 +377,28 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
     errors: list[dict[str, str]] = []
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
+            reader = csv.DictReader(handle, restkey="__EXTRA_FIELDS__")
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
             if len(reader.fieldnames) != len(set(reader.fieldnames)):
                 return {}, [{"context": "line:1", "reason": "duplicate CSV header"}]
             for row_index, row in enumerate(reader, start=1):
+                if row.get("__EXTRA_FIELDS__"):
+                    errors.append(
+                        {
+                            "context": f"line:{reader.line_num}",
+                            "reason": "csv row has extra columns",
+                        }
+                    )
+                    continue
+                if any(value is None for key, value in row.items() if key != "__EXTRA_FIELDS__"):
+                    errors.append(
+                        {
+                            "context": f"line:{reader.line_num}",
+                            "reason": "csv row is missing one or more required fields",
+                        }
+                    )
+                    continue
                 row_map[f"row:{row_index}"] = dict(row)
     except UnicodeDecodeError:
         errors.append({"context": "file", "reason": "file is not valid UTF-8"})

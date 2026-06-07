@@ -141,6 +141,19 @@ def test_serialize_structured_value_rejects_nonstandard_floats() -> None:
         source_executor.serialize_structured_value({"value": float("nan")})
 
 
+def test_load_csv_row_map_rejects_overflow_and_short_rows(tmp_path: Path) -> None:
+    csv_path = tmp_path / "bad.csv"
+    csv_path.write_text("a,b\n1,2,3\n4\n", encoding="utf-8")
+
+    rows, errors = source_executor.load_csv_row_map(csv_path)
+
+    assert rows == {}
+    assert errors == [
+        {"context": "line:2", "reason": "csv row has extra columns"},
+        {"context": "line:3", "reason": "csv row is missing one or more required fields"},
+    ]
+
+
 def test_structured_record_map_cache_key_includes_record_path() -> None:
     left = source_executor.structured_record_map_cache_key("/tmp/input.json", "json", None)
     right = source_executor.structured_record_map_cache_key("/tmp/input.json", "json", "records")
