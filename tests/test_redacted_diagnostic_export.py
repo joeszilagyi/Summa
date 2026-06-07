@@ -294,6 +294,7 @@ def run_export(
             "fixed-test-redaction-key",
             "--generated-at",
             FIXED_TIMESTAMP,
+            "--deep-counts",
             "--overwrite",
             *extra,
         ],
@@ -449,6 +450,7 @@ def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
 
     assert canonical_summary["table_row_counts"]["work"] == 1
     assert canonical_summary["table_row_counts"]["source_claim"] == 1
+    assert canonical_summary["counts_mode"] == "deep"
     assert graph_shape["edge_counts_by_predicate"]["mentions"] == 1
     assert graph_shape["degree_distribution"]["1"] == 2
     assert graph_shape["component_summary"]["status"] == "skipped"
@@ -456,6 +458,40 @@ def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
     assert relationship_summary["predicate_counts"]["mentions"] == 1
     assert graph_closure["schema_version"] == "canonical-graph-closure-report.v1"
     assert leak_report["status"] == "pass"
+
+
+def test_canonical_summary_defaults_to_shallow_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, _workspace = build_fixture_store(tmp_path)
+    redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+
+    def fail_deep_counts(*args: object, **kwargs: object) -> dict[str, int] | int:
+        raise AssertionError("deep count helpers should not run in shallow mode")
+
+    monkeypatch.setattr(support_builder, "count_table", fail_deep_counts)
+    monkeypatch.setattr(support_builder, "count_by", fail_deep_counts)
+
+    conn = canonical_store.connect_existing_read_only(db_path)
+    try:
+        summary = support_builder.build_canonical_summary(conn, db_path, redactor)
+    finally:
+        conn.close()
+
+    assert summary["counts_mode"] == "shallow"
+    assert summary["table_row_counts"] == {}
+    assert summary["source_access_locator_counts"] == {}
+    assert summary["capture_counts"] == {}
+    assert summary["extraction_counts"] == {}
+    assert summary["detected_entity_counts"] == {}
+    assert summary["authority_reconciliation_counts"] == {}
+    assert summary["provenance_counts"] == {}
+    assert summary["cycle_counts"] == {}
 
 
 def test_source_access_summary_caps_detail_rows_and_aggregates(
@@ -525,6 +561,38 @@ def test_source_access_summary_caps_detail_rows_and_aggregates(
     assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["[blank]"] == 1
     assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["refetchable"] == 1
     assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["blocked"] == 1
+
+
+def test_compute_export_id_uses_db_identity_metadata_without_full_db_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, _workspace = build_fixture_store(tmp_path)
+
+    def fail_hash_file(*args: object, **kwargs: object) -> str:
+        raise AssertionError("compute_export_id should not hash the whole database file")
+
+    monkeypatch.setattr(support_builder, "hash_file", fail_hash_file)
+
+    export_id = support_builder.compute_export_id(db_path, FIXED_TIMESTAMP, "redacted-subject")
+
+    assert export_id.startswith("redacted-diagnostics:")
+    assert len(export_id.split(":", 1)[1]) == 24
+
+
+def test_diagnostic_output_safety_does_not_scan_output_dir_recursively(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "diagnostics"
+    output_dir.mkdir()
+    (output_dir / "nested.sqlite").write_text("sqlite", encoding="utf-8")
+
+    def fail_path_scan(*args: object, **kwargs: object):  # pragma: no cover - failure path
+        raise AssertionError("output safety should not scan directory contents recursively")
+
+    monkeypatch.setattr(Path, "glob", fail_path_scan)
+    monkeypatch.setattr(Path, "rglob", fail_path_scan)
+
+    support_builder._assert_diagnostic_output_target_safe(output_dir, overwrite=False)
 
 
 def test_export_uses_cached_graph_closure_report_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

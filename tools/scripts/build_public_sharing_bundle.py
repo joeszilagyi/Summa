@@ -125,7 +125,10 @@ def _is_recognized_public_sharing_bundle_root(path: Path) -> bool:
 
 
 def ensure_static_output_passes(build_manifest_path: Path) -> dict[str, Any]:
-    report, exit_code = validate_static_knowledge_tree_output(build_manifest_path)
+    report, exit_code = validate_static_knowledge_tree_output(
+        build_manifest_path,
+        validate_page_links_enabled=True,
+    )
     if exit_code != EXIT_STATIC_OUTPUT_PASS:
         first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
         raise PublicSharingBundleError(f"static output validation failed: {first_error}")

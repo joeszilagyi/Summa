@@ -687,8 +687,11 @@ def validate_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(payload.get("landing_page_id"), str) and payload["landing_page_id"] not in seen_page_ids:
         add_error(errors, code="UNKNOWN_LANDING_PAGE", message=f"landing_page_id references unknown page_id: {payload['landing_page_id']}")
 
+    present_page_families = {
+        page.get("page_family") for page in pages if isinstance(page, dict)
+    }
     for page_family in page_families:
-        if page_family not in {page.get("page_family") for page in pages if isinstance(page, dict)}:
+        if page_family not in present_page_families:
             add_error(errors, code="MISSING_PAGE_FAMILY", message=f"page_families references page_family not present in pages: {page_family}")
 
     for page_id, related_refs in page_related_refs.items():

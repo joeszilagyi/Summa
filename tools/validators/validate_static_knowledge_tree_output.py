@@ -94,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("target", help="Path to the build manifest JSON file.")
+    parser.add_argument(
+        "--validate-page-links",
+        action="store_true",
+        help="Also parse rendered HTML pages to validate internal links and assets.",
+    )
     add_report_args(parser)
     return parser.parse_args()
 
@@ -305,7 +310,11 @@ def validate_page_links(
                     )
 
 
-def validate_static_knowledge_tree_output(target: Path) -> tuple[dict[str, Any], int]:
+def validate_static_knowledge_tree_output(
+    target: Path,
+    *,
+    validate_page_links_enabled: bool = False,
+) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
 
@@ -323,7 +332,7 @@ def validate_static_knowledge_tree_output(target: Path) -> tuple[dict[str, Any],
         add_error(errors, code="OUTPUT_ROOT_MISSING", message="build manifest output_root is missing or invalid")
     elif output_root.exists() and not output_root.is_dir():
         add_error(errors, code="OUTPUT_ROOT_NOT_DIRECTORY", message="resolved output_root is not a directory")
-    elif output_root is not None and output_root.is_dir():
+    elif validate_page_links_enabled and output_root is not None and output_root.is_dir():
         validate_page_links(manifest=manifest, output_root=output_root, errors=errors)
 
     current_export_source_map = collect_current_export_source_map(manifest, target)
@@ -343,7 +352,10 @@ def validate_static_knowledge_tree_output(target: Path) -> tuple[dict[str, Any],
 def main() -> int:
     args = parse_args()
     target = Path(args.target)
-    result, exit_code = validate_static_knowledge_tree_output(target)
+    result, exit_code = validate_static_knowledge_tree_output(
+        target,
+        validate_page_links_enabled=bool(args.validate_page_links),
+    )
     status = "pass" if exit_code == EXIT_PASS else "fail"
     report = emit_report(
         contract_version=CONTRACT_VERSION,

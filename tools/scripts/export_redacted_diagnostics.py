@@ -315,9 +315,34 @@ def build_canonical_summary(
     db_path: Path,
     redactor: Redactor,
     schema_cache: SchemaIntrospectionCache | None = None,
+    *,
+    deep_counts: bool = False,
 ) -> dict[str, Any]:
     cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
     tables = cache.table_names()
+    summary: dict[str, Any] = {
+        "schema_version": "redacted-diagnostic-canonical-summary.v1",
+        "canonical_db": db_metadata(db_path, redactor),
+        "counts_mode": "deep" if deep_counts else "shallow",
+        "table_count": len(tables),
+        "table_row_counts": {},
+        "source_access_locator_counts": {},
+        "capture_counts": {},
+        "extraction_counts": {},
+        "detected_entity_counts": {},
+        "authority_reconciliation_counts": {},
+        "provenance_counts": {},
+        "cycle_counts": {},
+        "content_policy": {
+            "payload_bytes": "excluded",
+            "complete_extracted_text": "excluded",
+            "operator_notes": "excluded",
+            "model_prompt_bodies": "excluded",
+        },
+    }
+    if not deep_counts:
+        return summary
+
     table_counts = {table: count_table(conn, table, cache) for table in tables}
     source_domains = Counter[str]()
     if cache.table_exists("source_access"):
@@ -327,45 +352,43 @@ def build_canonical_summary(
             locator = row["canonical_url"] or row["original_locator"]
             redacted = redactor.redact_url(str(locator)) if locator else None
             source_domains[redacted or "[omitted]"] += 1
-    return {
-        "schema_version": "redacted-diagnostic-canonical-summary.v1",
-        "canonical_db": db_metadata(db_path, redactor),
-        "table_count": len(tables),
-        "table_row_counts": table_counts,
-        "source_access_locator_counts": dict(sorted(source_domains.items())),
-        "capture_counts": {
-            "by_method": count_by(conn, "capture_event", "capture_method", cache),
-            "by_mime_type": count_by(conn, "capture_event", "mime_type", cache),
-            "by_review_state": count_by(conn, "capture_event", "review_state", cache),
-        },
-        "extraction_counts": {
-            "by_status": count_by(conn, "extraction_record", "extraction_status", cache),
-            "by_encoding_handling": count_by(conn, "extraction_record", "encoding_handling", cache),
-            "by_truncation_status": count_by(conn, "extraction_record", "truncation_status", cache),
-        },
-        "detected_entity_counts": {
-            "by_type": count_by(conn, "extraction_detected_entity", "entity_type", cache),
-            "by_review_state": count_by(conn, "extraction_detected_entity", "review_state", cache),
-        },
-        "authority_reconciliation_counts": {
-            "by_review_state": count_by(conn, "authority_reconciliation", "review_state", cache),
-            "by_method": count_by(conn, "authority_reconciliation", "method", cache),
-        },
-        "provenance_counts": {
-            "by_event_type": count_by(conn, "provenance_event", "event_type", cache),
-            "by_tool_name": count_by(conn, "provenance_event", "tool_name", cache),
-        },
-        "cycle_counts": {
-            "by_status": count_by(conn, "cycle_event", "status", cache),
-            "by_mode": count_by(conn, "cycle_event", "mode", cache),
-        },
-        "content_policy": {
-            "payload_bytes": "excluded",
-            "complete_extracted_text": "excluded",
-            "operator_notes": "excluded",
-            "model_prompt_bodies": "excluded",
-        },
-    }
+    summary.update(
+        {
+            "table_row_counts": table_counts,
+            "source_access_locator_counts": dict(sorted(source_domains.items())),
+            "capture_counts": {
+                "by_method": count_by(conn, "capture_event", "capture_method", cache),
+                "by_mime_type": count_by(conn, "capture_event", "mime_type", cache),
+                "by_review_state": count_by(conn, "capture_event", "review_state", cache),
+            },
+            "extraction_counts": {
+                "by_status": count_by(conn, "extraction_record", "extraction_status", cache),
+                "by_encoding_handling": count_by(
+                    conn, "extraction_record", "encoding_handling", cache
+                ),
+                "by_truncation_status": count_by(
+                    conn, "extraction_record", "truncation_status", cache
+                ),
+            },
+            "detected_entity_counts": {
+                "by_type": count_by(conn, "extraction_detected_entity", "entity_type", cache),
+                "by_review_state": count_by(conn, "extraction_detected_entity", "review_state", cache),
+            },
+            "authority_reconciliation_counts": {
+                "by_review_state": count_by(conn, "authority_reconciliation", "review_state", cache),
+                "by_method": count_by(conn, "authority_reconciliation", "method", cache),
+            },
+            "provenance_counts": {
+                "by_event_type": count_by(conn, "provenance_event", "event_type", cache),
+                "by_tool_name": count_by(conn, "provenance_event", "tool_name", cache),
+            },
+            "cycle_counts": {
+                "by_status": count_by(conn, "cycle_event", "status", cache),
+                "by_mode": count_by(conn, "cycle_event", "mode", cache),
+            },
+        }
+    )
+    return summary
 
 
 def build_review_state_summary(
@@ -987,15 +1010,36 @@ def build_manifest(
 
 
 def compute_export_id(db_path: Path, generated_at: str, subject: str | None) -> str:
-    db_hash = hash_file(db_path)
-    digest = hashlib.sha256(f"{db_hash}\x1f{generated_at}\x1f{subject or ''}".encode()).hexdigest()[
-        :24
-    ]
+    identity = db_identity_metadata(db_path)
+    identity.update({"generated_at": generated_at, "subject": subject or ""})
+    digest = hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()[:24]
     return f"redacted-diagnostics:{digest}"
 
 
-def _contains_sqlite_file(path: Path) -> bool:
-    return any(item.suffix.lower() == ".sqlite" for item in path.glob("**/*") if item.is_file())
+def db_identity_metadata(db_path: Path) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "db_name": db_path.name,
+        "byte_count": db_path.stat().st_size,
+        "mtime_ns": db_path.stat().st_mtime_ns,
+        "schema_version": None,
+        "current_migration_id": None,
+    }
+    try:
+        conn = canonical_store.connect_existing_read_only(db_path)
+    except canonical_store.CanonicalStoreError:
+        return metadata
+    try:
+        if table_exists(conn, "schema_version"):
+            row = conn.execute(
+                "SELECT schema_version, current_migration_id FROM schema_version WHERE schema_namespace=?",
+                (canonical_store.SCHEMA_NAMESPACE,),
+            ).fetchone()
+            if row is not None:
+                metadata["schema_version"] = int(row["schema_version"])
+                metadata["current_migration_id"] = row["current_migration_id"]
+    finally:
+        conn.close()
+    return metadata
 
 
 def _is_recognized_redacted_diagnostic_bundle(path: Path) -> bool:
@@ -1033,8 +1077,6 @@ def _assert_diagnostic_output_target_safe(output_dir: Path, overwrite: bool) -> 
         raise DiagnosticExportError(f"refusing to write output into reserved workspace path: {output_dir}")
     if _is_canonical_workspace_root(output_dir):
         raise DiagnosticExportError(f"refusing to write output to canonical workspace root: {output_dir}")
-    if _contains_sqlite_file(output_dir):
-        raise DiagnosticExportError(f"refusing to overwrite path with sqlite artifacts: {output_dir}")
 
 
 def run_leak_scan(output_dir: Path) -> dict[str, Any]:
@@ -1108,7 +1150,11 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
 
             sections = {
                 "canonical-summary.json": build_canonical_summary(
-                    conn, db_path, redactor, schema_cache
+                    conn,
+                    db_path,
+                    redactor,
+                    schema_cache,
+                    deep_counts=bool(args.deep_counts),
                 ),
                 "graph-shape.json": build_graph_shape(
                     conn,
@@ -1265,6 +1311,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--redaction-key", help="Optional HMAC key; fingerprint only is recorded.")
     parser.add_argument("--generated-at", help="Fixed RFC3339 timestamp for deterministic tests.")
     parser.add_argument("--export-id", help="Optional explicit export id.")
+    parser.add_argument(
+        "--deep-counts",
+        action="store_true",
+        help="Compute full table and group-by counts for canonical-summary.json.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser.parse_args(argv)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import json
 import subprocess
@@ -37,6 +38,40 @@ def test_valid_minimal_fixture_passes() -> None:
     assert result["counts"] == {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}
     assert result["errors"] == []
     assert result["warnings"] == []
+
+
+def test_page_family_presence_is_scanned_once_for_all_families() -> None:
+    payload = json.loads(load_fixture("valid_minimal").read_text(encoding="utf-8"))
+    base_page = deepcopy(payload["pages"][0])
+    secondary_page = deepcopy(base_page)
+    secondary_page["page_id"] = "page-secondary"
+    secondary_page["page_family"] = "secondary"
+    secondary_page["route"] = "secondary/index.html"
+    secondary_page["title"] = "Secondary page"
+    secondary_page["lede"] = "Secondary lede"
+    secondary_page["related_page_ids"] = []
+
+    class CountingPages(list):
+        def __init__(self, items: list[dict[str, object]]) -> None:
+            super().__init__(items)
+            self.iteration_count = 0
+
+        def __iter__(self):  # type: ignore[override]
+            self.iteration_count += 1
+            return super().__iter__()
+
+    pages = CountingPages([deepcopy(page) for page in payload["pages"]])
+    pages.append(secondary_page)
+    payload["pages"] = pages
+    page_families = list(payload["page_families"])
+    if "secondary" not in page_families:
+        page_families.append("secondary")
+    payload["page_families"] = page_families
+
+    errors = validator.validate_payload(payload)
+
+    assert errors == []
+    assert pages.iteration_count == 2
 
 
 def test_invalid_missing_required_key_fixture_fails() -> None:

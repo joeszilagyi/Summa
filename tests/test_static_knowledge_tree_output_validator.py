@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "tools" / "scripts" / "build_static_knowledge_tree.py"
@@ -58,6 +60,23 @@ def test_valid_static_output_passes() -> None:
         assert result["errors"] == []
 
 
+def test_default_validation_skips_page_link_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as tmp:
+        _, manifest_path, _, _ = build_site(Path(tmp))
+
+        def fail_feed(*args: object, **kwargs: object) -> None:  # pragma: no cover - failure path
+            raise AssertionError("page-link parsing should be opt-in")
+
+        monkeypatch.setattr(validator.LinkCollector, "feed", fail_feed)
+
+        result, exit_code = validator.validate_static_knowledge_tree_output(manifest_path)
+
+        assert exit_code == validator.EXIT_PASS
+        assert result["errors"] == []
+
+
 def test_broken_internal_link_is_detected() -> None:
     from tempfile import TemporaryDirectory
 
@@ -67,7 +86,10 @@ def test_broken_internal_link_is_detected() -> None:
         home_body = home_path.read_text(encoding="utf-8")
         home_path.write_text(home_body.replace("facets/records.html", "/facets/missing.html", 1), encoding="utf-8")
 
-        result, exit_code = validator.validate_static_knowledge_tree_output(manifest_path)
+        result, exit_code = validator.validate_static_knowledge_tree_output(
+            manifest_path,
+            validate_page_links_enabled=True,
+        )
 
         assert exit_code == validator.EXIT_VALIDATION_FAILED
         codes = [error["code"] for error in result["errors"]]
