@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 7
-CURRENT_MIGRATION_ID = "0007_source_claim_open_question_status"
+CURRENT_SCHEMA_VERSION = 8
+CURRENT_MIGRATION_ID = "0008_source_reconciliation_hot_path_indexes"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -66,11 +66,13 @@ REQUIRED_INDEXES = {
     "ux_source_access_lead_identity_global",
     "ix_source_claim_about",
     "ix_source_claim_review",
+    "ix_source_claim_provenance_event_claim_type",
     "ix_source_claim_workspace_type_review",
     "ix_source_claim_workspace_question_review",
     "ix_source_relationship_refs",
     "ix_source_relationship_review",
     "ix_source_relationship_workspace_provenance_predicate",
+    "ix_source_relationship_provenance_workspace_predicate",
     "ix_topic_extension_topic",
     "ix_work_identifier_work",
     "ux_work_identifier_scheme_value",
@@ -245,9 +247,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=7,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0007_source_claim_open_question_status",
         sql_path=MIGRATIONS_DIR / "0007_source_claim_open_question_status.sql",
         notes="Persist open-question claim status for planner hot-path queries.",
+    ),
+    MigrationSpec(
+        version=8,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0008_source_reconciliation_hot_path_indexes.sql",
+        notes="Add remaining source_claim and source_relationship reconciliation indexes.",
     ),
 )
 

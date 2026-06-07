@@ -249,6 +249,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -267,6 +268,10 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     assert version_row is not None
     assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
     assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
+    assert {
+        "ix_source_claim_provenance_event_claim_type",
+        "ix_source_relationship_provenance_workspace_predicate",
+    } <= indexes
 
 
 def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_indexes(
@@ -297,6 +302,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -409,6 +415,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
