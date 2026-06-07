@@ -453,8 +453,6 @@ def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[di
                 for key, raw_value in sorted(refs.items()):
                     if not isinstance(raw_value, str):
                         continue
-                    if not raw_value.endswith((".json", ".jsonl")):
-                        continue
                     candidate = Path(raw_value)
                     if not candidate.is_absolute():
                         candidate = (artifact.path.parent / candidate).resolve()

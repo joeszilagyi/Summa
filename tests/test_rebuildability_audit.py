@@ -585,6 +585,54 @@ def test_find_missing_artifacts_rejects_absolute_refs_outside_runs_root(tmp_path
     ]
 
 
+def test_find_missing_artifacts_includes_non_json_references(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
+    cycle_dir.mkdir(parents=True)
+    (cycle_dir / "topic-cycle-run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-001",
+                "status": "completed",
+                "stages": [
+                    {
+                        "name": "ingest_candidate_batch",
+                        "status": "passed",
+                        "artifacts": {"transcript": "../../documents/transcript.txt"},
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = [
+        audit.Artifact(
+            artifact_type="topic_cycle_manifest",
+            path=cycle_dir / "topic-cycle-run.json",
+            hash=None,
+            schema_id="topic-cycle-run.v1",
+            run_id="cycle-001",
+            stage="cycle",
+            validation_status="valid",
+            replay_status="pending",
+        )
+    ]
+
+    missing = audit.find_missing_artifacts(artifacts, runs_dir)
+
+    assert missing == [
+        {
+            "referenced_by": "topic-cycle/cycle-001/topic-cycle-run.json",
+            "stage": "ingest_candidate_batch",
+            "artifact_key": "transcript",
+            "missing_path": str((runs_dir / "documents" / "transcript.txt").resolve()),
+        }
+    ]
+
+
 def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     (runs_dir / "gather" / "run-001" / "gather-candidate-batch.json").unlink()
