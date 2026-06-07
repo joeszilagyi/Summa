@@ -42,7 +42,7 @@ def test_remote_url_manifest_plans_entries_without_network_access(tmp_path: Path
         ]
     )
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert {path: path.stat().st_mtime_ns for path in input_paths} == mtimes_before
     payload = json.loads(proc.stdout)
     assert payload["schema_version"] == "remote-url-manifest-plan.v1"

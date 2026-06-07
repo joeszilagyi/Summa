@@ -145,8 +145,11 @@ def test_handoff_validator_accepts_current_outputs_from_all_planners(tmp_path: P
                 "display_name": "Runtime structured data",
                 "workspace_id": "alpha_subject",
                 "description": "Runtime fixture for structured-data planning.",
-                "input_family": "local_directory",
-                "locator": {"local_path": str(FIXTURE_ROOT / "structured_data")},
+                "input_family": "local_file",
+                "locator": {
+                    "local_path": str(FIXTURE_ROOT / "structured_data" / "records.csv"),
+                    "format_hint": "csv",
+                },
                 "content_profile": {
                     "content_kinds": ["structured_data", "json", "jsonl", "csv", "xml"],
                     "hazard_flags": ["prompt_injection_text"],

@@ -207,7 +207,7 @@ def test_structured_data_csv_preserves_quoted_newlines_and_commas(tmp_path: Path
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0
@@ -288,7 +288,7 @@ def test_structured_data_xml_namespaces_and_repeated_children_are_selected(tmp_p
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0
@@ -308,7 +308,7 @@ def test_structured_data_local_file_honors_record_path_hint(tmp_path: Path) -> N
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0

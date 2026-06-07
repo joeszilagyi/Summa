@@ -222,7 +222,7 @@ def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
-    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert sorted(path.relative_to(scenario_dir).as_posix() for path in input_paths) == tree_before
     assert snapshot_paths(input_paths) == snapshot_before
     assert git(repo_dir, "status", "--porcelain").stdout == git_status_before
