@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,15 @@ SUPPORTED_CAPTURE_STATUSES = {"completed", "failed", "skipped", "denied"}
 SUPPORTED_EXTRACTION_STATUSES = {"completed", "failed", "skipped", "denied"}
 
 
+@dataclass(frozen=True)
+class ExecutionArtifactReceipt:
+    execution_record: dict[str, Any]
+    capture_events: list[dict[str, Any]]
+    extraction_records: list[dict[str, Any]]
+    paths: dict[str, Path]
+    input_hashes: dict[str, str]
+
+
 class DuplicateJsonKeyError(ValueError):
     """Raised when JSON object parsing sees a duplicate key."""
 
@@ -83,6 +93,12 @@ def add_error(
     errors.append({"code": code, "line": line, "message": message, "path": path})
 
 
+def _validation_failure_result(code: str, message: str, exit_code: int) -> tuple[dict[str, Any], int]:
+    result = {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []}
+    add_error(result["errors"], code=code, message=message)
+    return result, exit_code
+
+
 def reject_json_constant(value: str) -> None:
     raise NonStandardJsonConstantError(f"non-standard JSON constant: {value}")
 
@@ -96,44 +112,58 @@ def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return payload
 
 
-def _load_text(path: Path, *, label: str) -> str:
+def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
     try:
-        return path.read_text(encoding="utf-8")
+        raw_bytes = path.read_bytes()
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"{label} path does not exist: {path}") from exc
     except OSError as exc:
         raise OSError(f"{label} could not be read: {path}") from exc
-    except UnicodeDecodeError as exc:
-        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8") from exc
-
-
-def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
-    raw_text = _load_text(path, label=label)
-    payload = json.loads(
-        raw_text,
-        object_pairs_hook=no_duplicate_object_pairs,
-        parse_constant=reject_json_constant,
-    )
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label} top-level JSON value must be an object")
-    return payload
-
-
-def _load_jsonl_records(path: Path, *, label: str) -> list[dict[str, Any]]:
-    lines = _load_text(path, label=label).splitlines()
-    records: list[dict[str, Any]] = []
-    for line_number, raw_line in enumerate(lines, start=1):
-        if not raw_line.strip():
-            continue
-        value = json.loads(
-            raw_line,
+    raw_hash = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        payload = json.loads(
+            raw_bytes,
             object_pairs_hook=no_duplicate_object_pairs,
             parse_constant=reject_json_constant,
         )
-        if not isinstance(value, dict):
-            raise ValueError(f"{label} line {line_number} must contain a JSON object")
-        records.append(value)
-    return records
+    except UnicodeDecodeError as exc:
+        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} top-level JSON value must be an object")
+    return payload, raw_hash
+
+
+def _load_jsonl_records(path: Path, *, label: str) -> tuple[list[dict[str, Any]], str]:
+    records: list[dict[str, Any]] = []
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                digest.update(raw_line)
+                if not raw_line.strip():
+                    continue
+                try:
+                    value = json.loads(
+                        raw_line,
+                        object_pairs_hook=no_duplicate_object_pairs,
+                        parse_constant=reject_json_constant,
+                    )
+                except UnicodeDecodeError as exc:
+                    raise UnicodeDecodeError(
+                        exc.encoding,
+                        exc.object,
+                        exc.start,
+                        exc.end,
+                        f"{label} line {line_number} is not UTF-8",
+                    ) from exc
+                if not isinstance(value, dict):
+                    raise ValueError(f"{label} line {line_number} must contain a JSON object")
+                records.append(value)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"{label} path does not exist: {path}") from exc
+    except OSError as exc:
+        raise OSError(f"{label} could not be read: {path}") from exc
+    return records, digest.hexdigest()
 
 
 def resolve_execution_artifact_paths(target: Path) -> dict[str, Path]:
@@ -150,12 +180,80 @@ def resolve_execution_artifact_paths(target: Path) -> dict[str, Path]:
     }
 
 
-def load_execution_artifacts(target: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path]]:
+def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
     paths = resolve_execution_artifact_paths(target)
-    execution_record = _load_json_object(paths["execution_record"], label="execution record")
-    capture_events = _load_jsonl_records(paths["capture_events"], label="capture events")
-    extraction_records = _load_jsonl_records(paths["extraction_records"], label="extraction records")
-    return execution_record, capture_events, extraction_records, paths
+    execution_record, execution_record_hash = _load_json_object(
+        paths["execution_record"], label="execution record"
+    )
+    capture_events, capture_events_hash = _load_jsonl_records(
+        paths["capture_events"], label="capture events"
+    )
+    extraction_records, extraction_records_hash = _load_jsonl_records(
+        paths["extraction_records"], label="extraction records"
+    )
+    return ExecutionArtifactReceipt(
+        execution_record=execution_record,
+        capture_events=capture_events,
+        extraction_records=extraction_records,
+        paths=paths,
+        input_hashes={
+            "execution_record": execution_record_hash,
+            "capture_events": capture_events_hash,
+            "extraction_records": extraction_records_hash,
+        },
+    )
+
+
+def validate_execution_artifact_receipt(receipt: ExecutionArtifactReceipt) -> tuple[dict[str, Any], int]:
+    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
+    warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    counts["inspected"] = 1
+    validate_execution_record(
+        receipt.execution_record,
+        capture_events=receipt.capture_events,
+        extraction_records=receipt.extraction_records,
+        errors=errors,
+    )
+    expected_run_id = (
+        receipt.execution_record.get("run_id")
+        if isinstance(receipt.execution_record.get("run_id"), str)
+        else ""
+    )
+    expected_input_handoff_hash = receipt.execution_record.get("input_handoff_hash")
+    if not isinstance(expected_input_handoff_hash, str):
+        expected_input_handoff_hash = ""
+    validate_capture_events(
+        receipt.capture_events,
+        expected_run_id=expected_run_id,
+        expected_input_handoff_hash=expected_input_handoff_hash,
+        errors=errors,
+    )
+    capture_ids = {
+        record["capture_id"]
+        for record in receipt.capture_events
+        if isinstance(record.get("capture_id"), str)
+    }
+    validate_extraction_records(
+        receipt.extraction_records,
+        expected_run_id=expected_run_id,
+        capture_ids=capture_ids,
+        capture_records={
+            str(record["capture_id"]): record
+            for record in receipt.capture_events
+            if isinstance(record.get("capture_id"), str)
+        },
+        artifact_root=receipt.paths["run_dir"],
+        errors=errors,
+    )
+
+    if errors:
+        counts["rejected"] = 1
+        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
+
+    counts["accepted"] = 1
+    return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
 
 
 def _require_string(
@@ -693,69 +791,20 @@ def validate_extraction_records(
 
 
 def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any], int]:
-    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
-    warnings: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-
     try:
-        execution_record, capture_events, extraction_records, paths = load_execution_artifacts(target)
+        receipt = load_execution_artifacts(target)
     except FileNotFoundError as exc:
-        add_error(errors, code="INPUT_NOT_FOUND", message=str(exc))
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_INPUT_UNAVAILABLE
+        return _validation_failure_result("INPUT_NOT_FOUND", str(exc), EXIT_INPUT_UNAVAILABLE)
     except (OSError, UnicodeDecodeError) as exc:
-        add_error(errors, code="INPUT_UNREADABLE", message=str(exc))
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_INPUT_UNAVAILABLE
+        return _validation_failure_result("INPUT_UNREADABLE", str(exc), EXIT_INPUT_UNAVAILABLE)
     except DuplicateJsonKeyError as exc:
-        add_error(errors, code="DUPLICATE_JSON_KEY", message=str(exc))
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
+        return _validation_failure_result("DUPLICATE_JSON_KEY", str(exc), EXIT_VALIDATION_FAILED)
     except NonStandardJsonConstantError as exc:
-        add_error(errors, code="NON_STANDARD_JSON_CONSTANT", message=str(exc))
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
+        return _validation_failure_result("NON_STANDARD_JSON_CONSTANT", str(exc), EXIT_VALIDATION_FAILED)
     except (json.JSONDecodeError, ValueError) as exc:
-        add_error(errors, code="JSON_PARSE_ERROR", message=str(exc))
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
+        return _validation_failure_result("JSON_PARSE_ERROR", str(exc), EXIT_VALIDATION_FAILED)
 
-    counts["inspected"] = 1
-    validate_execution_record(
-        execution_record,
-        capture_events=capture_events,
-        extraction_records=extraction_records,
-        errors=errors,
-    )
-    expected_run_id = execution_record.get("run_id") if isinstance(execution_record.get("run_id"), str) else ""
-    expected_input_handoff_hash = execution_record.get("input_handoff_hash")
-    if not isinstance(expected_input_handoff_hash, str):
-        expected_input_handoff_hash = ""
-    validate_capture_events(
-        capture_events,
-        expected_run_id=expected_run_id,
-        expected_input_handoff_hash=expected_input_handoff_hash,
-        errors=errors,
-    )
-    capture_ids = {
-        record["capture_id"]
-        for record in capture_events
-        if isinstance(record.get("capture_id"), str)
-    }
-    validate_extraction_records(
-        extraction_records,
-        expected_run_id=expected_run_id,
-        capture_ids=capture_ids,
-        capture_records={
-            str(record["capture_id"]): record
-            for record in capture_events
-            if isinstance(record.get("capture_id"), str)
-        },
-        artifact_root=paths["run_dir"],
-        errors=errors,
-    )
-
-    if errors:
-        counts["rejected"] = 1
-        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
-
-    counts["accepted"] = 1
-    return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
+    return validate_execution_artifact_receipt(receipt)
 
 
 def main() -> int:

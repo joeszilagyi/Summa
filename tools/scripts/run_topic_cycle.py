@@ -44,7 +44,9 @@ from tools.validators.validate_source_acquisition_execution import (  # noqa: E4
     EXIT_PASS as EXIT_EXECUTION_PASS,
 )
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
-    validate_source_acquisition_execution,
+    ExecutionArtifactReceipt,
+    load_execution_artifacts,
+    validate_execution_artifact_receipt,
 )
 
 SCHEMA_VERSION = "topic-cycle-run.v1"
@@ -1011,7 +1013,7 @@ def acquisition_stage(
     args: argparse.Namespace,
     manifest: dict[str, Any],
     run_dir: Path,
-) -> Path | None:
+) -> tuple[Path | None, ExecutionArtifactReceipt | None]:
     if args.allow_network:
         manifest["warnings"].append(
             "remote acquisition remains disabled in F26; --allow-network was ignored"
@@ -1020,12 +1022,12 @@ def acquisition_stage(
         stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
         stage.skipped_reason = "execution fixture supplied"
         add_stage(manifest, stage)
-        return resolve_path(args.execution_run_fixture)
+        return resolve_path(args.execution_run_fixture), None
     if not args.source_handoff:
         stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
         stage.skipped_reason = "no source handoff supplied"
         add_stage(manifest, stage)
-        return None
+        return None, None
     stage = StageRecord(name="execute_source_adapter")
     stage.started_at = utc_now()
     output_dir = run_dir / "execution"
@@ -1053,7 +1055,8 @@ def acquisition_stage(
             fail_stage(
                 stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed"
             )
-        report, exit_code = validate_source_acquisition_execution(output_dir)
+        receipt = load_execution_artifacts(output_dir)
+        report, exit_code = validate_execution_artifact_receipt(receipt)
         stage.validation = {
             "status": "pass" if exit_code == EXIT_EXECUTION_PASS else "fail",
             "report": report,
@@ -1068,7 +1071,7 @@ def acquisition_stage(
         }
         finish_stage(stage)
         add_stage(manifest, stage)
-        return output_dir
+        return output_dir, receipt
     except TopicCycleError:
         raise
     except Exception as exc:
@@ -1081,6 +1084,7 @@ def execution_ingest_stage(
     manifest: dict[str, Any],
     db_path: Path,
     execution_run_dir: Path | None,
+    execution_artifacts: ExecutionArtifactReceipt | None = None,
     run_dir: Path,
 ) -> dict[str, Any] | None:
     if execution_run_dir is None:
@@ -1092,20 +1096,29 @@ def execution_ingest_stage(
     stage.started_at = utc_now()
     stage.inputs = {"execution_run_dir": str(execution_run_dir)}
     try:
-        loaded_paths = None
-        loaded_hashes = None
-        try:
-            execution_record, capture_events, extraction_records, paths, input_hashes = (
-                canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
-            )
-        except Exception:
-            if not args.degraded_spool:
-                raise
-            execution_record, capture_events, extraction_records, paths, input_hashes = (
-                canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
-            )
-        loaded_paths = paths
-        loaded_hashes = input_hashes
+        loaded_paths: dict[str, Path] | None = None
+        loaded_hashes: dict[str, str] | None = None
+        if execution_artifacts is None:
+            try:
+                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                    canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+                )
+            except Exception:
+                if not args.degraded_spool:
+                    raise
+                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                    canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+                )
+            loaded_paths = paths
+            loaded_hashes = input_hashes
+        else:
+            execution_record = execution_artifacts.execution_record
+            capture_events = execution_artifacts.capture_events
+            extraction_records = execution_artifacts.extraction_records
+            paths = execution_artifacts.paths
+            input_hashes = execution_artifacts.input_hashes
+            loaded_paths = paths
+            loaded_hashes = input_hashes
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             if args.mode == "dry-run":
@@ -1570,12 +1583,18 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         candidate_ingest_stage(
             args=args, manifest=manifest, db_path=db_path, batch_path=batch_path, run_dir=run_dir
         )
-        execution_run_dir = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+        acquisition_result = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+        if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
+            execution_run_dir, execution_artifacts = acquisition_result
+        else:
+            execution_run_dir = acquisition_result
+            execution_artifacts = None
         execution_ingest_stage(
             args=args,
             manifest=manifest,
             db_path=db_path,
             execution_run_dir=execution_run_dir,
+            execution_artifacts=execution_artifacts,
             run_dir=run_dir,
         )
         if args.build_next_feedback_plan:

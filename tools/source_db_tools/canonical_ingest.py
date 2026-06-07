@@ -19,7 +19,7 @@ from tools.validators.validate_source_acquisition_execution import (
 )
 from tools.validators.validate_source_acquisition_execution import (
     load_execution_artifacts,
-    validate_source_acquisition_execution,
+    validate_execution_artifact_receipt,
 )
 
 INGEST_REPORT_SCHEMA_VERSION = "canonical-ingest-report.v1"
@@ -87,29 +87,6 @@ def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
     return payload, raw_text
 
 
-def _load_jsonl(path: Path, *, label: str) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError as exc:
-        raise CanonicalIngestError(f"{label} path does not exist: {path}") from exc
-    except OSError as exc:
-        raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
-    records: list[dict[str, Any]] = []
-    for line_number, raw_line in enumerate(lines, start=1):
-        if not raw_line.strip():
-            continue
-        try:
-            value = json.loads(raw_line)
-        except json.JSONDecodeError as exc:
-            raise CanonicalIngestError(
-                f"{label} line {line_number} is not valid JSON (column {exc.colno})"
-            ) from exc
-        if not isinstance(value, dict):
-            raise CanonicalIngestError(f"{label} line {line_number} must be a JSON object")
-        records.append(value)
-    return records
-
-
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
     payload, batch_text = _load_json_object(batch_path, label="candidate batch")
     result, exit_code = validate_gather_candidate_batch_validator.validate_gather_candidate_batch_payload(
@@ -131,7 +108,13 @@ def load_validated_execution_artifacts(
 ) -> tuple[
     dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]
 ]:
-    result, exit_code = validate_source_acquisition_execution(target)
+    try:
+        receipt = load_execution_artifacts(target)
+    except (FileNotFoundError, OSError, UnicodeDecodeError, DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError, ValueError) as exc:
+        raise CanonicalIngestError(
+            f"source acquisition execution validation failed: {exc}"
+        ) from exc
+    result, exit_code = validate_execution_artifact_receipt(receipt)
     if exit_code != EXIT_EXECUTION_PASS:
         message = "; ".join(
             f"{error['code']}: {error['message']}" for error in result.get("errors", [])
@@ -139,17 +122,12 @@ def load_validated_execution_artifacts(
         raise CanonicalIngestError(
             f"source acquisition execution validation failed: {message or target}"
         )
-    execution_record, capture_events, extraction_records, paths = load_execution_artifacts(target)
     return (
-        execution_record,
-        capture_events,
-        extraction_records,
-        paths,
-        {
-            "execution_record": hash_file(paths["execution_record"]),
-            "capture_events": hash_file(paths["capture_events"]),
-            "extraction_records": hash_file(paths["extraction_records"]),
-        },
+        receipt.execution_record,
+        receipt.capture_events,
+        receipt.extraction_records,
+        receipt.paths,
+        receipt.input_hashes,
     )
 
 
