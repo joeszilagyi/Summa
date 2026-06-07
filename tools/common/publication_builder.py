@@ -439,47 +439,55 @@ def read_publication_snapshot(
             table_name: table_fingerprint(conn, table_name) for table_name in sorted(required_tables)
         }
 
-        authority_rows = conn.execute(
+        authority_total = 0
+        public_authorities = []
+        for row in conn.execute(
             """
             SELECT *
             FROM authority_record
             WHERE merged_into_authority_record_id IS NULL
             ORDER BY COALESCE(sort_label, preferred_label, authority_key_v1), authority_record_id
             """
-        ).fetchall()
-        public_authorities = [
-            {
-                "authority_record_id": as_int(row["authority_record_id"]),
-                "preferred_label": nonblank(row["preferred_label"]) or f"Authority {row['authority_record_id']}",
-                "authority_type": nonblank(row["authority_type"]) or "entity",
-                "confidence_score": row["confidence_score"],
-            }
-            for row in authority_rows
-            if row_is_public(row)
-        ]
+        ):
+            authority_total += 1
+            if not row_is_public(row):
+                continue
+            public_authorities.append(
+                {
+                    "authority_record_id": as_int(row["authority_record_id"]),
+                    "preferred_label": nonblank(row["preferred_label"]) or f"Authority {row['authority_record_id']}",
+                    "authority_type": nonblank(row["authority_type"]) or "entity",
+                    "confidence_score": row["confidence_score"],
+                }
+            )
         public_authority_ids = {item["authority_record_id"] for item in public_authorities}
 
-        work_rows = conn.execute(
+        work_total = 0
+        public_works = []
+        for row in conn.execute(
             """
             SELECT *
             FROM work
             ORDER BY COALESCE(title, work_key_v1), work_id
             """
-        ).fetchall()
-        public_works = [
-            {
-                "work_id": as_int(row["work_id"]),
-                "title": nonblank(row["title"]) or f"Work {row['work_id']}",
-                "work_type": nonblank(row["work_type"]) or "work",
-                "first_seen_at": nonblank(row["first_seen_at"]),
-                "last_seen_at": nonblank(row["last_seen_at"]),
-            }
-            for row in work_rows
-            if row_is_public(row)
-        ]
+        ):
+            work_total += 1
+            if not row_is_public(row):
+                continue
+            public_works.append(
+                {
+                    "work_id": as_int(row["work_id"]),
+                    "title": nonblank(row["title"]) or f"Work {row['work_id']}",
+                    "work_type": nonblank(row["work_type"]) or "work",
+                    "first_seen_at": nonblank(row["first_seen_at"]),
+                    "last_seen_at": nonblank(row["last_seen_at"]),
+                }
+            )
         public_work_ids = {item["work_id"] for item in public_works}
 
-        source_rows = conn.execute(
+        source_total = 0
+        public_sources = []
+        for row in conn.execute(
             """
             SELECT
               sa.*,
@@ -488,9 +496,8 @@ def read_publication_snapshot(
             LEFT JOIN work AS w ON w.work_id = sa.work_id
             ORDER BY COALESCE(sa.canonical_url, sa.citation_hint, sa.source_access_id), sa.source_access_id
             """
-        ).fetchall()
-        public_sources = []
-        for row in source_rows:
+        ):
+            source_total += 1
             if not row_is_public(row):
                 continue
             public_sources.append(
@@ -504,15 +511,16 @@ def read_publication_snapshot(
                 }
             )
 
-        claim_rows = conn.execute(
+        claim_total = 0
+        public_claims = []
+        for row in conn.execute(
             """
             SELECT *
             FROM source_claim
             ORDER BY COALESCE(public_summary, claim_type, source_claim_id), source_claim_id
             """
-        ).fetchall()
-        public_claims = []
-        for row in claim_rows:
+        ):
+            claim_total += 1
             public_summary = nonblank(row["public_summary"])
             if not row_is_public(row) or public_summary is None:
                 continue
@@ -525,32 +533,36 @@ def read_publication_snapshot(
                 }
             )
 
-        relationship_rows = conn.execute(
+        relationship_total = 0
+        public_relationships = []
+        for row in conn.execute(
             """
             SELECT *
             FROM source_relationship
             ORDER BY predicate, COALESCE(target_label, to_object_ref, from_object_ref), source_relationship_id
             """
-        ).fetchall()
-        public_relationships = [
-            {
-                "source_relationship_id": as_int(row["source_relationship_id"]),
-                "predicate": nonblank(row["predicate"]) or "related_to",
-                "target_label": nonblank(row["target_label"]) or nonblank(row["to_object_ref"]) or "related record",
-            }
-            for row in relationship_rows
-            if row_is_public(row)
-        ]
+        ):
+            relationship_total += 1
+            if not row_is_public(row):
+                continue
+            public_relationships.append(
+                {
+                    "source_relationship_id": as_int(row["source_relationship_id"]),
+                    "predicate": nonblank(row["predicate"]) or "related_to",
+                    "target_label": nonblank(row["target_label"]) or nonblank(row["to_object_ref"]) or "related record",
+                }
+            )
 
-        topic_rows = conn.execute(
+        topic_total = 0
+        public_topics = []
+        for row in conn.execute(
             """
             SELECT *
             FROM topic_extension
             ORDER BY extension_type, COALESCE(summary_short, topic_id), topic_extension_id
             """
-        ).fetchall()
-        public_topics = []
-        for row in topic_rows:
+        ):
+            topic_total += 1
             summary_short = nonblank(row["summary_short"])
             if not row_is_public(row) or summary_short is None:
                 continue
@@ -564,15 +576,16 @@ def read_publication_snapshot(
                 }
             )
 
-        subject_rows = conn.execute(
+        subject_total = 0
+        public_work_subjects = []
+        for row in conn.execute(
             """
             SELECT *
             FROM work_subject
             ORDER BY COALESCE(subject_role, subject_object_ref, authority_record_id), work_subject_id
             """
-        ).fetchall()
-        public_work_subjects = []
-        for row in subject_rows:
+        ):
+            subject_total += 1
             if not is_searchable_review_state(nonblank(row["review_state"])):
                 continue
             work_id = as_int(row["work_id"])
@@ -589,15 +602,16 @@ def read_publication_snapshot(
                 }
             )
 
-        detected_rows = conn.execute(
+        detected_total = 0
+        public_detected_entities = []
+        for row in conn.execute(
             """
             SELECT *
             FROM extraction_detected_entity
             ORDER BY COALESCE(normalized_label, entity_label), detected_entity_id
             """
-        ).fetchall()
-        public_detected_entities = []
-        for row in detected_rows:
+        ):
+            detected_total += 1
             authority_id = as_int(row["authority_record_id"], 0) if row["authority_record_id"] is not None else None
             if authority_id not in public_authority_ids:
                 continue
@@ -611,33 +625,29 @@ def read_publication_snapshot(
                 }
             )
 
-        provenance_rows = conn.execute(
+        provenance_total = 0
+        public_provenance_events = []
+        for row in conn.execute(
             """
             SELECT provenance_event_id, event_type, actor_label, event_timestamp
             FROM provenance_event
             ORDER BY event_timestamp, provenance_event_id
             """
-        ).fetchall()
-        public_provenance_events = [
-            {
-                "provenance_event_id": as_int(row["provenance_event_id"]),
-                "event_type": nonblank(row["event_type"]) or "event",
-                "actor_label": nonblank(row["actor_label"]) or "operator",
-                "event_timestamp": nonblank(row["event_timestamp"]) or "",
-            }
-            for row in provenance_rows
-            if nonblank(row["event_timestamp"])
-        ]
-
-        capture_rows = conn.execute(
-            "SELECT capture_event_id FROM capture_event ORDER BY capture_event_id"
-        ).fetchall()
-        extraction_rows = conn.execute(
-            "SELECT extraction_id, extraction_status FROM extraction_record ORDER BY extraction_id"
-        ).fetchall()
-        review_history_rows = conn.execute(
-            "SELECT review_state_history_key_v1, new_state FROM review_state_history ORDER BY changed_at, review_state_history_key_v1"
-        ).fetchall()
+        ):
+            provenance_total += 1
+            if not nonblank(row["event_timestamp"]):
+                continue
+            public_provenance_events.append(
+                {
+                    "provenance_event_id": as_int(row["provenance_event_id"]),
+                    "event_type": nonblank(row["event_type"]) or "event",
+                    "actor_label": nonblank(row["actor_label"]) or "operator",
+                    "event_timestamp": nonblank(row["event_timestamp"]) or "",
+                }
+            )
+        capture_count = as_int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0])
+        extraction_count = as_int(conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0])
+        review_history_count = as_int(conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0])
     except sqlite3.DatabaseError as exc:
         raise PublicationBuildError(f"database query failed while building publication snapshot: {db_path}") from exc
     finally:
@@ -706,14 +716,14 @@ def read_publication_snapshot(
         "public_claims": len(public_claims),
         "public_relationships": len(public_relationships),
         "public_topics": len(public_topics),
-        "withheld_authorities": max(len(authority_rows) - len(public_authorities), 0),
-        "withheld_works": max(len(work_rows) - len(public_works), 0),
-        "withheld_sources": max(len(source_rows) - len(public_sources), 0),
-        "withheld_claims": max(len(claim_rows) - len(public_claims), 0),
-        "withheld_relationships": max(len(relationship_rows) - len(public_relationships), 0),
-        "captures": len(capture_rows),
-        "extractions": len(extraction_rows),
-        "review_events": len(review_history_rows),
+        "withheld_authorities": max(authority_total - len(public_authorities), 0),
+        "withheld_works": max(work_total - len(public_works), 0),
+        "withheld_sources": max(source_total - len(public_sources), 0),
+        "withheld_claims": max(claim_total - len(public_claims), 0),
+        "withheld_relationships": max(relationship_total - len(public_relationships), 0),
+        "captures": capture_count,
+        "extractions": extraction_count,
+        "review_events": review_history_count,
         "search_indexed": as_int(search_artifacts.projection_payload["counts"]["projected_records"]),
         "search_returned": as_int(search_artifacts.results_payload["counts"]["returned"]),
     }
