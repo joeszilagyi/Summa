@@ -301,6 +301,39 @@ def test_publish_output_dir_swaps_staged_tree_into_place(tmp_path: Path) -> None
     assert not staging.exists()
 
 
+def test_validate_emitted_artifacts_validates_the_run_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "local-source-execution"
+    output_dir.mkdir()
+    calls: list[list[str]] = []
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command: list[str], **kwargs: object) -> FakeCompletedProcess:
+        calls.append(command)
+        assert kwargs["cwd"] == REPO_ROOT
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(source_executor.subprocess, "run", fake_run)
+
+    source_executor.validate_emitted_artifacts(output_dir)
+
+    assert calls == [
+        [
+            sys.executable,
+            str(REPO_ROOT / "tools" / "scripts" / "validate_source_acquisition_execution.py"),
+            str(output_dir),
+        ]
+    ]
+
+
 def test_compute_git_snapshot_hash_is_order_insensitive() -> None:
     left = source_executor.compute_git_snapshot_hash(
         [
