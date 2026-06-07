@@ -291,6 +291,7 @@
         "prompt_bundle_id",
         "score",
         "selected",
+        "supporting_facet",
         "reason_codes",
         "rationale",
         "signals"
@@ -313,6 +314,9 @@
           "type": "number"
         },
         "selected": {
+          "type": "boolean"
+        },
+        "supporting_facet": {
           "type": "boolean"
         },
         "reason_codes": {

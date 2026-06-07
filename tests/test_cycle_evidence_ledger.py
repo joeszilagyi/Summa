@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -379,3 +380,99 @@ def test_cycle_event_start_replay_ignores_status_transition_for_force_reruns(
         conn.close()
 
     assert first_id == second_id
+
+
+def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    plan_path = tmp_path / "candidate-feedback-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "candidate-feedback-plan.v1",
+                "next_action": {
+                    "action_id": "next-action:fixture:sources:facet:1",
+                    "action_kind": "facet_only",
+                    "subject_id": "fixture_subject",
+                    "selected_facet": "sources",
+                    "selected_prompt_bundle_id": "bundle:sources",
+                    "selected_object_ref": None,
+                    "selected_lead_kind": None,
+                    "selected_source_locus_id": None,
+                    "selected_source_lead_id": None,
+                    "selected_label": "sources",
+                    "selected_review_state": None,
+                    "selection_score": 1.0,
+                    "scoring_policy_id": "candidate-feedback.default.v1",
+                    "rationale": "fixture",
+                    "reason_codes": ["fixture"],
+                    "cycle_depth": 1,
+                    "use_prior_state": False,
+                    "previous_run_ids_considered": [],
+                    "input_record_refs": [],
+                    "suggested_cli_args": ["--facet", "sources"],
+                },
+                "deferred": [
+                    {
+                        "candidate_id": "lead:123",
+                        "candidate_kind": "lead",
+                        "score": -1.5,
+                        "reason": "repeated_low_yield",
+                    },
+                    {
+                        "candidate_id": "facet:open_questions",
+                        "candidate_kind": "facet",
+                        "score": 0.25,
+                        "reason": "lower_score_than_selected",
+                    },
+                ],
+                "warnings": [],
+                "errors": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        with conn:
+            cycle_event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="feedback-plan-fallback",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at=FIXED_TIMESTAMP,
+                status="running",
+            )
+            cycle_evidence_ledger._record_feedback_candidates(  # type: ignore[attr-defined]
+                conn,
+                cycle_event_id=cycle_event_id,
+                stage_event_id=None,
+                feedback_plan_path=plan_path,
+            )
+        rows = conn.execute(
+            """
+            SELECT candidate_kind, candidate_ref_type, candidate_ref_id, exclusion_reason, retryable
+            FROM cycle_candidate_excluded
+            ORDER BY candidate_ref_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert [row["candidate_ref_id"] for row in rows] == ["facet:open_questions", "lead:123"]
+    assert [row["candidate_ref_type"] for row in rows] == [
+        "candidate_feedback_plan",
+        "candidate_feedback_plan",
+    ]
+    assert [row["candidate_kind"] for row in rows] == ["facet", "lead"]
+    assert [row["exclusion_reason"] for row in rows] == [
+        "lower_score_than_selected",
+        "repeated_low_yield",
+    ]
+    assert [bool(row["retryable"]) for row in rows] == [True, False]

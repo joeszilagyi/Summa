@@ -546,9 +546,15 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert stages["graph_closure_audit"]["status"] in {"passed", "warning", "skipped"}
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
+    assert manifest["feedback_plan_pre"] is None
+    assert manifest["feedback_plan"] is None
+    assert manifest["active_feedback_plan_for_gather"] is None
+    assert manifest["feedback_plan_post"]["path"]  # type: ignore[index]
     assert manifest["selection_explanations"]
+    assert len(manifest["selection_explanations"]) == 1
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
-    assert manifest["selection_explanations"][0]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["when"] == "post"
+    assert manifest["selection_explanations"][0]["path"] == manifest["feedback_plan_post"]["path"]  # type: ignore[index]
 
 
 def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
@@ -606,6 +612,8 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["cycle_depth"] == 2
     assert manifest["prior_state"]["context_hash"]  # type: ignore[index]
     assert manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["feedback_plan_pre"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["active_feedback_plan_for_gather"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
 
 

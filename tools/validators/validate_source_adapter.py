@@ -12,15 +12,26 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from common import (
-    EXIT_INPUT_UNAVAILABLE,
-    EXIT_PASS,
-    EXIT_VALIDATION_FAILED,
-    add_report_args,
-    display_path,
-    emit_report,
-    render_text_report,
-)
+try:
+    from common import (
+        EXIT_INPUT_UNAVAILABLE,
+        EXIT_PASS,
+        EXIT_VALIDATION_FAILED,
+        add_report_args,
+        display_path,
+        emit_report,
+        render_text_report,
+    )
+except ModuleNotFoundError:
+    from tools.validators.common import (  # type: ignore
+        EXIT_INPUT_UNAVAILABLE,
+        EXIT_PASS,
+        EXIT_VALIDATION_FAILED,
+        add_report_args,
+        display_path,
+        emit_report,
+        render_text_report,
+    )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:

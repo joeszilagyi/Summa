@@ -58,3 +58,13 @@ DEFAULT_SCORING_WEIGHTS = {
     "bootstrap_bias": 0.25,
 }
 
+DEFERRED_NON_RETRYABLE_REASON_CODES = {
+    "repeated_low_yield",
+}
+
+
+def deferred_candidate_retryable(reason: str | None) -> bool:
+    reason_code = str(reason or "").strip()
+    if not reason_code:
+        return True
+    return reason_code not in DEFERRED_NON_RETRYABLE_REASON_CODES

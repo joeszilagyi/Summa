@@ -333,6 +333,9 @@ def build_manifest(
         "stage_plan": [],
         "stages": [],
         "feedback_plan": None,
+        "feedback_plan_pre": None,
+        "feedback_plan_post": None,
+        "active_feedback_plan_for_gather": None,
         "selection_explanations": [],
         "next_action": None,
         "operator_overrides": collect_operator_overrides(args),
@@ -416,6 +419,22 @@ def attach_feedback_selection_explanation(
             "sha256": hash_file(path),
         }
     )
+
+
+def record_feedback_plan_reference(
+    manifest: dict[str, Any], *, path: Path, when: str
+) -> None:
+    record = {
+        "path": str(path),
+        "sha256": hash_file(path),
+        "when": when,
+    }
+    if when == "post":
+        manifest["feedback_plan_post"] = record
+        return
+    manifest["feedback_plan_pre"] = record
+    manifest["feedback_plan"] = record
+    manifest["active_feedback_plan_for_gather"] = record
 
 
 def collect_operator_overrides(args: argparse.Namespace) -> list[dict[str, str]]:
@@ -649,6 +668,8 @@ def build_feedback_plan_stage(
         str(output),
         "--generated-at",
         manifest["started_at"],
+        "--feedback-plan-stage",
+        f"build_feedback_plan_{when}",
         "--format",
         "json",
     ]
@@ -670,12 +691,9 @@ def build_feedback_plan_stage(
             "feedback_plan_sha256": hash_file(output),
         }
         stage.counts = payload.get("counts")
-        manifest["feedback_plan"] = {
-            "path": str(output),
-            "sha256": hash_file(output),
-            "when": when,
-        }
-        manifest["next_action"] = payload.get("next_action")
+        record_feedback_plan_reference(manifest, path=output, when=when)
+        if when != "post" or manifest.get("next_action") is None:
+            manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
             manifest,
             payload=payload,
@@ -723,7 +741,7 @@ def resolve_feedback_plan(
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "feedback plan failed validation")
         payload = read_json(path, label="candidate feedback plan")
-        manifest["feedback_plan"] = {"path": str(path), "sha256": hash_file(path), "when": "pre"}
+        record_feedback_plan_reference(manifest, path=path, when="pre")
         manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
             manifest,
@@ -852,6 +870,28 @@ def candidate_ingest_stage(
         fixture_target = run_dir / "candidate-ingest" / "gather-candidate-batch.json"
         fixture_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture, fixture_target)
+        fixture_payload = read_json(fixture, label="candidate batch fixture")
+        prompt_ref = (
+            fixture_payload.get("prompt")
+            if isinstance(fixture_payload.get("prompt"), dict)
+            else {}
+        )
+        rendered_prompt_path = prompt_ref.get("rendered_prompt_path")
+        if isinstance(rendered_prompt_path, str) and rendered_prompt_path:
+            source_prompt_path = (
+                resolve_path(rendered_prompt_path)
+                if Path(rendered_prompt_path).is_absolute()
+                else fixture.parent / rendered_prompt_path
+            )
+            if source_prompt_path.is_file():
+                target_prompt_path = (
+                    resolve_path(rendered_prompt_path)
+                    if Path(rendered_prompt_path).is_absolute()
+                    else fixture_target.parent / rendered_prompt_path
+                )
+                if source_prompt_path != target_prompt_path:
+                    target_prompt_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_prompt_path, target_prompt_path)
         ingest_batch_path = fixture_target
     stage.inputs = {"candidate_batch": str(ingest_batch_path)}
     if args.mode == "dry-run":
@@ -1054,9 +1094,16 @@ def execution_ingest_stage(
     try:
         loaded_paths = None
         loaded_hashes = None
-        execution_record, capture_events, extraction_records, paths, input_hashes = (
-            canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
-        )
+        try:
+            execution_record, capture_events, extraction_records, paths, input_hashes = (
+                canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+            )
+        except Exception:
+            if not args.degraded_spool:
+                raise
+            execution_record, capture_events, extraction_records, paths, input_hashes = (
+                canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
+            )
         loaded_paths = paths
         loaded_hashes = input_hashes
         conn = canonical_store.connect_canonical_store(db_path)
@@ -1356,7 +1403,8 @@ def record_cycle_evidence_from_manifest(
                         ]
                     },
                     replay_recipe={
-                        "manifest_path": str(manifest_path),
+                        "artifact_root": str(manifest_path.parent),
+                        "manifest_path": manifest_path.name,
                         "manifest_hash": hash_file(manifest_path),
                     },
                     failure=f"canonical DB path is not a file: {db_path}",
@@ -1424,7 +1472,8 @@ def record_cycle_evidence_from_manifest(
                         ]
                     },
                     replay_recipe={
-                        "manifest_path": str(manifest_path),
+                        "artifact_root": str(manifest_path.parent),
+                        "manifest_path": manifest_path.name,
                         "manifest_hash": current_manifest_hash,
                     },
                     failure=exc,
