@@ -13,6 +13,7 @@ from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXTURE_PROMPT = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "rendered-prompt.txt"
 EXPORT_SCRIPT = REPO_ROOT / "tools" / "scripts" / "build_knowledge_tree_export.py"
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 
@@ -398,14 +399,20 @@ def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> 
 
 def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     valid_payload = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))
+    valid_payload["prompt"]["rendered_prompt"] = FIXTURE_PROMPT.read_text(encoding="utf-8")
+    valid_payload["prompt"]["rendered_prompt_hash"] = hashlib.sha256(
+        FIXTURE_PROMPT.read_text(encoding="utf-8").encode("utf-8")
+    ).hexdigest()
     valid_payload["run_id"] = "run-id-valid"
-    valid_text = json.dumps(valid_payload, ensure_ascii=False, sort_keys=True) + "\n"
+    batch_path = tmp_path / "gather-candidate-batch.json"
+    local_prompt_path = batch_path.parent / "rendered-prompt.txt"
+    local_prompt_path.write_text(FIXTURE_PROMPT.read_text(encoding="utf-8"), encoding="utf-8")
+    valid_payload["prompt"]["rendered_prompt_path"] = "rendered-prompt.txt"
 
+    valid_text = json.dumps(valid_payload, ensure_ascii=False, sort_keys=True) + "\n"
     mutated_payload = json.loads(valid_text)
     mutated_payload["run_id"] = "run-id-mutated"
     mutated_text = json.dumps(mutated_payload, ensure_ascii=False, sort_keys=True) + "\n"
-
-    batch_path = tmp_path / "gather-candidate-batch.json"
     batch_path.write_text(valid_text, encoding="utf-8")
 
     original_read_text = canonical_ingest.Path.read_text
