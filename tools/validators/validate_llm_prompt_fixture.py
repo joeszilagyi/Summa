@@ -211,9 +211,14 @@ def validate_prompt_fixture(target: Path) -> tuple[dict[str, Any], int]:
                 message="wrapped source block count must match source_blocks length",
             )
 
-        outside_text = prompt_text
+        outside_segments: list[str] = []
+        cursor = 0
         for block in parsed_blocks:
-            outside_text = outside_text.replace(block.raw_text, "\n")
+            outside_segments.append(prompt_text[cursor:block.start_offset])
+            outside_segments.append("\n")
+            cursor = block.end_offset
+        outside_segments.append(prompt_text[cursor:])
+        outside_text = "".join(outside_segments)
 
         if not parsed_blocks:
             for index, expected in enumerate(normalized_source_blocks):

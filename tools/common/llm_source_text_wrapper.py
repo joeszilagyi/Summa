@@ -37,7 +37,6 @@ class WrappedSourceBlock:
     hazard_flags: tuple[str, ...]
     instruction_negation: str
     source_text: str
-    raw_text: str
     start_offset: int
     end_offset: int
 
@@ -141,7 +140,6 @@ def parse_wrapped_blocks(prompt_text: str, *, template: WrapperTemplate | None =
                 hazard_flags=hazard_flags,
                 instruction_negation=match.group("instruction_negation").strip(),
                 source_text=source_text,
-                raw_text=prompt_text[match.start():raw_end],
                 start_offset=match.start(),
                 end_offset=raw_end,
             )
