@@ -1407,6 +1407,7 @@ def graph_closure_stage(
         fail_stage(stage, str(exc))
 
     summary = report.get("summary", {})
+    report_sha256 = hash_file(report_path)
     stage.evidence = {
         "artifact_schema_ids": {
             "graph_closure_report": report.get("schema_version"),
@@ -1418,7 +1419,7 @@ def graph_closure_stage(
             "strict": bool(args.graph_closure_strict),
             "status": report.get("status"),
             "report_path": str(report_path),
-            "report_sha256": hash_file(report_path),
+            "report_sha256": report_sha256,
             "orphan_error_count": int(summary.get("true_orphan_error_count", 0)),
             "unresolved_tracked_count": int(summary.get("unresolved_tracked_count", 0)),
             "repairable_count": int(summary.get("repairable_count", 0)),
@@ -1428,7 +1429,7 @@ def graph_closure_stage(
     )
     stage.artifacts = {
         "graph_closure_report": str(report_path),
-        "graph_closure_report_sha256": hash_file(report_path),
+        "graph_closure_report_sha256": report_sha256,
     }
     stage.validation = {
         "status": report.get("status"),

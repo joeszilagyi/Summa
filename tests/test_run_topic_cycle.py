@@ -833,6 +833,79 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert manifest["selection_explanations"][0]["sha256"] == "feedback-hash"  # type: ignore[index]
 
 
+def test_graph_closure_stage_hashes_report_once_without_rehashing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    run_dir = tmp_path / "graph-closure-run"
+    run_dir.mkdir()
+    report_path = run_dir / "graph-closure-report.json"
+    report_payload = {
+        "schema_version": "canonical-graph-closure-report.v1",
+        "status": "pass",
+        "summary": {
+            "true_orphan_error_count": 0,
+            "unresolved_tracked_count": 0,
+            "repairable_count": 0,
+            "quarantined_count": 0,
+        },
+    }
+
+    def fake_audit_canonical_graph_closure(
+        db_path: Path,
+        *,
+        generated_at: str,
+        strict: bool,
+        report_path: Path,
+    ) -> dict[str, object]:
+        assert db_path == tmp_path / "canonical.sqlite"
+        assert generated_at == "2026-06-03T12:34:56Z"
+        assert strict is True
+        assert report_path == run_dir / "graph-closure-report.json"
+        report_path.write_text(
+            json.dumps(report_payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return report_payload
+
+    hashed_paths: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        if path != report_path:
+            raise AssertionError(f"unexpected hash_file call: {path}")
+        hashed_paths.append(path)
+        return "graph-hash"
+
+    monkeypatch.setattr(
+        module.canonical_graph_closure,
+        "audit_canonical_graph_closure",
+        fake_audit_canonical_graph_closure,
+    )
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+
+    args = SimpleNamespace(graph_closure=True, graph_closure_strict=True, graph_closure_report=None)
+    manifest = {
+        "run_id": "cycle-graph-closure",
+        "started_at": "2026-06-03T12:34:56Z",
+        "stages": [],
+        "warnings": [],
+        "graph_closure": {},
+    }
+
+    module.graph_closure_stage(
+        args=args,
+        manifest=manifest,
+        db_path=tmp_path / "canonical.sqlite",
+        run_dir=run_dir,
+    )
+
+    assert hashed_paths == [report_path]
+    assert manifest["graph_closure"]["report_sha256"] == "graph-hash"  # type: ignore[index]
+    stages = stages_by_name(manifest)
+    assert stages["graph_closure_audit"]["artifacts"]["graph_closure_report_sha256"] == "graph-hash"  # type: ignore[index]
+
+
 def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Path, monkeypatch) -> None:
     module = load_run_topic_cycle_module()
 
