@@ -150,6 +150,28 @@ def test_review_queue_view_reports_pending_items_and_counts(tmp_path: Path) -> N
     assert "work:2" not in refs
 
 
+def test_review_queue_list_items_pushes_limit_into_each_target_query(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    executed_sql: list[str] = []
+    conn.set_trace_callback(executed_sql.append)
+    try:
+        rows = review_queue.list_review_items(conn, state="all", limit=1)
+    finally:
+        conn.close()
+
+    assert [row["object_ref"] for row in rows] == ["claim:1"]
+    target_selects = [
+        sql
+        for sql in executed_sql
+        if ("FROM work" in sql or "FROM lead" in sql or "FROM source_claim" in sql)
+    ]
+    assert any("FROM work" in sql and "LIMIT 1" in sql for sql in target_selects)
+    assert any("FROM lead" in sql and "LIMIT 1" in sql for sql in target_selects)
+    assert any("FROM source_claim" in sql and "LIMIT 1" in sql for sql in target_selects)
+
+
 def test_review_queue_view_honors_state_type_and_limit_filters(tmp_path: Path) -> None:
     db = create_review_db(tmp_path)
 

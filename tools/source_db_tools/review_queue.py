@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import heapq
 import json
 import re
 import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -273,6 +275,16 @@ def apply_optional_filter(
     return f"({where}) AND {expr} = ?", params
 
 
+def review_item_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    confidence = row.get("confidence_score")
+    return (
+        confidence is None,
+        confidence if confidence is not None else 2.0,
+        row["object_type"],
+        row["object_pk"],
+    )
+
+
 def list_review_items(
     conn: sqlite3.Connection,
     *,
@@ -288,7 +300,7 @@ def list_review_items(
 ) -> list[dict[str, Any]]:
     if limit is not None and limit < 0:
         raise ValueError("limit must be non-negative")
-    rows: list[dict[str, Any]] = []
+    target_rows_by_sort_key: list[list[dict[str, Any]]] = []
     normalized_object_type = (
         "" if object_type is None else object_type.strip().lower().replace("-", "_")
     )
@@ -346,19 +358,23 @@ def list_review_items(
             WHERE {where}
             ORDER BY COALESCE({confidence_expr}, 2.0), {target.pk_column}
         """
-        for row in conn.execute(query, (key, target.namespace, *params)).fetchall():
+        query_params: tuple[Any, ...] = (key, target.namespace, *params)
+        if limit is not None:
+            query += "\n            LIMIT ?"
+            query_params = (*query_params, limit)
+        target_rows: list[dict[str, Any]] = []
+        for row in conn.execute(query, query_params).fetchall():
             item = dict(row)
             item["object_ref"] = f"{item['object_type']}:{item['object_pk']}"
-            rows.append(item)
-    rows.sort(
-        key=lambda row: (
-            row.get("confidence_score") is None,
-            row.get("confidence_score") or 2.0,
-            row["object_type"],
-            row["object_pk"],
-        )
-    )
-    return rows[:limit] if limit is not None else rows
+            target_rows.append(item)
+        if target_rows:
+            target_rows_by_sort_key.append(target_rows)
+    if limit is not None:
+        merged_rows = heapq.merge(*target_rows_by_sort_key, key=review_item_sort_key)
+        return list(islice(merged_rows, limit))
+    rows = [item for target_rows in target_rows_by_sort_key for item in target_rows]
+    rows.sort(key=review_item_sort_key)
+    return rows
 
 
 def fetch_review_object(
