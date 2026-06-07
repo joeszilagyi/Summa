@@ -127,6 +127,12 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _summary_field(summary: Any, field: str, default: Any = None) -> Any:
+    if isinstance(summary, Mapping):
+        return summary.get(field, default)
+    return getattr(summary, field, default)
+
+
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -724,13 +730,20 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
         conn.close()
 
 
-def db_summary(db_path: Path) -> dict[str, Any]:
-    check = canonical_store.check_canonical_store(db_path)
+def db_summary(
+    db_path: Path,
+    *,
+    store_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if store_summary is None:
+        store_summary = canonical_store.check_canonical_store(db_path)
     return {
         "path": str(db_path),
-        "schema_version": check.schema_version,
-        "current_migration_id": check.current_migration_id,
-        "row_counts": row_count_summary(db_path),
+        "schema_version": _summary_field(store_summary, "schema_version"),
+        "current_migration_id": _summary_field(store_summary, "current_migration_id"),
+        "row_counts": _summary_field(store_summary, "table_counts", {})
+        if store_summary is not None
+        else row_count_summary(db_path),
         "key_hashes": table_content_hash_summary(db_path),
     }
 
@@ -1078,8 +1091,14 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if args.replay_mode == "compare_existing":
             if not args.canonical_db:
                 raise RebuildabilityError("--canonical-db is required in compare_existing mode")
-            existing_summary = db_summary(Path(args.canonical_db).expanduser().resolve())
-            rebuilt_summary = db_summary(rebuild_db)
+            existing_store = canonical_store.check_canonical_store(
+                Path(args.canonical_db).expanduser().resolve()
+            )
+            existing_summary = db_summary(
+                Path(args.canonical_db).expanduser().resolve(),
+                store_summary=existing_store,
+            )
+            rebuilt_summary = db_summary(rebuild_db, store_summary=check)
             comparison = compare_summaries(existing_summary, rebuilt_summary)
             comparison_status = str(comparison["status"])
             report["row_count_comparison"] = {

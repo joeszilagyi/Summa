@@ -532,6 +532,35 @@ def test_compare_existing_detects_mutated_row_content(tmp_path: Path) -> None:
     assert "work" in report["key_hash_comparison"]["differences"]
 
 
+def test_db_summary_reuses_prevalidated_store_summary_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "rebuilt.sqlite"
+    store_summary = {
+        "schema_version": canonical_store.CURRENT_SCHEMA_VERSION,
+        "current_migration_id": canonical_store.CURRENT_MIGRATION_ID,
+        "table_counts": {"work": 2, "capture_event": 1},
+    }
+
+    def fail_check(_path: Path) -> object:
+        raise AssertionError("db_summary should reuse the provided store summary")
+
+    def fail_row_count_summary(_path: Path) -> dict[str, int]:
+        raise AssertionError("row_count_summary should not be called when table_counts are provided")
+
+    monkeypatch.setattr(audit.canonical_store, "check_canonical_store", fail_check)
+    monkeypatch.setattr(audit, "row_count_summary", fail_row_count_summary)
+    monkeypatch.setattr(audit, "table_content_hash_summary", lambda _path: {"work": "abc"})
+
+    summary = audit.db_summary(db_path, store_summary=store_summary)
+
+    assert summary["path"] == str(db_path)
+    assert summary["schema_version"] == canonical_store.CURRENT_SCHEMA_VERSION
+    assert summary["current_migration_id"] == canonical_store.CURRENT_MIGRATION_ID
+    assert summary["row_counts"] == store_summary["table_counts"]
+    assert summary["key_hashes"] == {"work": "abc"}
+
+
 def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
