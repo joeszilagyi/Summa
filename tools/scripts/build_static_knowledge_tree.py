@@ -154,6 +154,10 @@ def default_build_id(*, export_sha256: str, presentation_sha256: str) -> str:
     return f"build-{digest[:16]}"
 
 
+def relative_manifest_path(path: Path, *, anchor: Path) -> str:
+    return os.path.relpath(path, start=anchor).replace(os.sep, "/")
+
+
 def resolve_path(raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -495,15 +499,26 @@ def build_manifest_payload(
     export_payload: dict[str, Any],
     page_records: list[dict[str, Any]],
     asset_records: list[dict[str, Any]],
+    durable_paths: bool = False,
 ) -> dict[str, Any]:
+    export_path_value = (
+        relative_manifest_path(export_path, anchor=publish_root)
+        if durable_paths
+        else str(export_path)
+    )
+    presentation_path_value = (
+        relative_manifest_path(presentation_path, anchor=publish_root)
+        if durable_paths
+        else str(presentation_path)
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "build_id": build_id,
         "export_id": export_payload["export_id"],
         "landing_page_id": export_payload["landing_page_id"],
-        "export_path": str(export_path),
+        "export_path": export_path_value,
         "export_sha256": hash_file(export_path),
-        "presentation_path": str(presentation_path),
+        "presentation_path": presentation_path_value,
         "presentation_sha256": hash_file(presentation_path),
         "built_at": built_at,
         "output_root": ".",
@@ -676,6 +691,15 @@ def build_static_knowledge_tree(
             built_at=effective_built_at,
         )
         publish_stage_dir(stage_site, resolved_publish_root, after_backup_hook=after_backup_hook)
+        final_manifest_path = resolved_publish_root / BUILD_MANIFEST_FILENAME
+        final_manifest_payload = dict(stage_result["manifest"])
+        final_manifest_payload["export_path"] = relative_manifest_path(
+            resolved_export, anchor=resolved_publish_root
+        )
+        final_manifest_payload["presentation_path"] = relative_manifest_path(
+            resolved_presentation, anchor=resolved_publish_root
+        )
+        atomic_write_json(final_manifest_path, final_manifest_payload)
     finally:
         if stage_site.exists():
             shutil.rmtree(stage_site, ignore_errors=True)

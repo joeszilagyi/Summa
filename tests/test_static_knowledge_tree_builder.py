@@ -51,7 +51,10 @@ def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> N
     manifest_path = publish_root / "build-manifest.json"
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["presentation_path"] == str(presentation_fixture().resolve())
+    assert not Path(manifest["export_path"]).is_absolute()
+    assert not Path(manifest["presentation_path"]).is_absolute()
+    assert manifest["export_path"].endswith("knowledge_tree_export.json")
+    assert manifest["presentation_path"].endswith("public_presentation.json")
     assert manifest["output_root"] == "."
 
     report, exit_code = manifest_validator.validate_build_manifest(manifest_path)
