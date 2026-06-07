@@ -243,6 +243,28 @@ def test_remote_url_manifest_rejects_manifest_entry_non_standard_json_constants(
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: NaN"}]
 
 
+def test_remote_url_manifest_rejects_manifest_entry_infinity_constants(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "invalid.jsonl"
+    manifest_jsonl.write_text('{"url":"https://example.com","title":Infinity}\n', encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 0
+    assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: Infinity"}]
+
+
 def test_remote_url_manifest_planner_rejects_duplicate_keys_in_adapter_manifest(tmp_path: Path) -> None:
     manifest_jsonl = FIXTURE_ROOT / "manifest.jsonl"
     adapter_contents = (FIXTURE_ROOT / "source_adapter.json").read_text(encoding="utf-8")
