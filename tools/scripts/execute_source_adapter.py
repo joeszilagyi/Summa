@@ -370,13 +370,13 @@ def ensure_path_within_root(path: Path, *, root: Path) -> None:
         ) from exc
 
 
-def expected_local_root(record: dict[str, Any], *, adapter_path: Path) -> Path:
-    original_locator = record.get("preserved", {}).get("original_locator", {})
-    adapter_local_path = original_locator.get("adapter_local_path")
+def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) -> Path:
+    locator = adapter_payload.get("locator")
+    if not isinstance(locator, dict):
+        raise SourceAcquisitionError("source adapter manifest locator must be an object")
+    adapter_local_path = locator.get("local_path")
     if not isinstance(adapter_local_path, str) or not adapter_local_path.strip():
-        raise SourceAcquisitionError(
-            "handoff preserved.original_locator.adapter_local_path must be a non-blank string"
-        )
+        raise SourceAcquisitionError("source adapter manifest local_path must be a non-blank string")
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 

@@ -149,6 +149,41 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
     assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
     assert (output / "manifest.json").exists()
+    assert [capture["source_reference"]["relative_path"] for capture in captures] == [
+        "oversize/big.pdf",
+        "prompt_notes.pdf",
+    ]
+    assert [capture["status"] for capture in captures] == ["completed", "completed"]
+    assert captures[0]["capture_method"] == "local_directory_walk"
+    assert captures[0]["byte_count"] == (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").stat().st_size
+    assert captures[0]["content_hash"] == hashlib.sha256(
+        (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").read_bytes()
+    ).hexdigest()
+    assert captures[1]["content_hash"] == hashlib.sha256(
+        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_bytes()
+    ).hexdigest()
+
+    assert extractions[0]["status"] == "skipped"
+    assert extractions[0]["failure_reason"] == "oversized_payload"
+    assert extractions[0]["extracted_text_path"] is None
+    assert extractions[1]["status"] == "completed"
+    assert extractions[1]["failure_reason"] is None
+    assert extractions[1]["extracted_text_path"] == "extracted-text/extraction-0002.txt"
+    assert (output / extractions[1]["extracted_text_path"]).read_text(encoding="utf-8") == (
+        FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"
+    ).read_text(encoding="utf-8")
+    assert extractions[1]["byte_count_out"] == len(
+        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_text(encoding="utf-8").encode("utf-8")
+    )
+
+    validator_proc = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(output)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
 
 
 def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
