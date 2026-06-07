@@ -156,19 +156,33 @@ def config_summary(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def ledger_line_count(path: Path) -> int:
+    metadata_path = path.with_name(path.name + ".meta.json")
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = None
+        if isinstance(metadata, dict):
+            line_count = metadata.get("line_count")
+            if isinstance(line_count, int) and not isinstance(line_count, bool):
+                return line_count
+    return sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
+
+
 def ledger_summary(repo_root: Path) -> dict[str, Any]:
     ledger_root = repo_root / "runtime" / "ledgers"
     if not ledger_root.exists():
         return {"ledger_root_present": False, "ledgers": []}
     ledgers = []
     for path in sorted(ledger_root.glob("*")):
-        if path.name == ".gitkeep" or not path.is_file():
+        if path.name == ".gitkeep" or path.name.endswith(".meta.json") or not path.is_file():
             continue
         ledgers.append(
             {
                 "name": path.name,
                 "size_bytes": path.stat().st_size,
-                "line_count": sum(1 for _ in path.open("r", encoding="utf-8", errors="replace")),
+                "line_count": ledger_line_count(path),
             }
         )
     return {"ledger_root_present": True, "ledgers": ledgers}
