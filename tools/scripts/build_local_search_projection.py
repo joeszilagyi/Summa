@@ -213,6 +213,38 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def table_column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def projection_columns_for_target(target: SearchTarget, table_columns: set[str]) -> tuple[str, ...]:
+    columns: list[str] = []
+    mandatory_columns = (
+        target.pk_column,
+        target.review_state_column,
+        "publication_state",
+        "authority_level",
+        "authority_tier",
+        "authority_status",
+        "confidence_score",
+        "confidence",
+        "public_blocker",
+        "public_blocked",
+    )
+    for field_name in mandatory_columns:
+        if field_name in table_columns and field_name not in columns:
+            columns.append(field_name)
+
+    for field_spec in target.field_specs:
+        for candidate in field_spec.candidates:
+            if candidate in table_columns and candidate not in columns:
+                columns.append(candidate)
+    if target.pk_column not in columns:
+        raise RuntimeError(f"missing primary key column in projection target: {target.pk_column}")
+    return tuple(columns)
+
+
 def row_columns(row: sqlite3.Row) -> set[str]:
     return set(row.keys())
 
@@ -601,7 +633,13 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(f"invalid projection target primary key column: {target.pk_column}")
             if not table_exists(conn, target.table):
                 continue
-            rows = conn.execute(f"SELECT * FROM {target.table} ORDER BY {target.pk_column}").fetchall()
+            table_columns = table_column_names(conn, target.table)
+            projection_columns = projection_columns_for_target(target, table_columns)
+            if not projection_columns:
+                continue
+            rows = conn.execute(
+                f"SELECT {', '.join(projection_columns)} FROM {target.table} ORDER BY {target.pk_column}"
+            ).fetchall()
             for row in rows:
                 candidate_records += 1
                 record, excluded_reason = projection_record(
