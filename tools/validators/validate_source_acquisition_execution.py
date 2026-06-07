@@ -48,6 +48,103 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 SUPPORTED_EXECUTION_STATUSES = {"completed", "denied", "dry_run", "failed"}
 SUPPORTED_CAPTURE_STATUSES = {"completed", "failed", "skipped", "denied"}
 SUPPORTED_EXTRACTION_STATUSES = {"completed", "failed", "skipped", "denied"}
+EXECUTION_RECORD_ALLOWED_KEYS = {
+    "schema_version",
+    "run_id",
+    "created_at",
+    "executor_name",
+    "executor_mode",
+    "adapter_id",
+    "workspace_id",
+    "adapter_type",
+    "handoff_path",
+    "input_handoff_hash",
+    "dry_run",
+    "status",
+    "network_access_attempted",
+    "network_access_allowed",
+    "network_access_denied_reason",
+    "network_safety_gate",
+    "local_input_paths_processed",
+    "planned_actions",
+    "capture_event_count",
+    "extraction_record_count",
+    "output_artifacts",
+    "canonical_persistence_attempted",
+    "verification_status",
+}
+CAPTURE_RECORD_ALLOWED_KEYS = {
+    "schema_version",
+    "capture_id",
+    "run_id",
+    "handoff_hash",
+    "handoff_sequences",
+    "adapter_id",
+    "workspace_id",
+    "adapter_type",
+    "source_reference",
+    "original_locator",
+    "normalized_local_path",
+    "normalized_url",
+    "final_url",
+    "redirect_count",
+    "redirect_target",
+    "http_status_code",
+    "request_method",
+    "user_agent",
+    "content_hash",
+    "byte_count",
+    "content_length_header",
+    "content_type",
+    "captured_at",
+    "capture_method",
+    "transient_payload_path",
+    "payload_retention_policy",
+    "network_access_attempted",
+    "rights_posture",
+    "repo_state",
+    "git_ref",
+    "git_commit",
+    "status",
+    "failure_reason",
+    "error_detail",
+    "canonical_persistence_attempted",
+    "verification_status",
+}
+EXTRACTION_RECORD_ALLOWED_KEYS = {
+    "schema_version",
+    "extraction_id",
+    "run_id",
+    "capture_id",
+    "adapter_id",
+    "workspace_id",
+    "adapter_type",
+    "handoff_sequence",
+    "relative_path",
+    "extraction_method",
+    "input_hash",
+    "content_hash",
+    "byte_count_in",
+    "byte_count_out",
+    "encoding_result",
+    "truncation_status",
+    "hostile_replay_flags",
+    "failure_reason",
+    "extracted_text_path",
+    "status",
+    "canonical_persistence_attempted",
+    "verification_status",
+    "structured_format",
+    "record_locator",
+    "record_kind",
+    "parse_error_count",
+    "git_ref",
+    "git_commit",
+    "content_type",
+    "remote_url",
+    "final_url",
+    "network_access_attempted",
+}
 
 
 @dataclass(frozen=True)
@@ -281,6 +378,25 @@ def _require_enum(
         add_error(errors, code=code, message=message, path=path)
 
 
+def _reject_unknown_fields(
+    payload: dict[str, Any],
+    *,
+    allowed: set[str],
+    errors: list[dict[str, Any]],
+    path_prefix: str,
+    code: str,
+    label: str,
+) -> None:
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        add_error(
+            errors,
+            code=code,
+            message=f"unexpected {label} field: {unknown[0]}",
+            path=f"{path_prefix}.{unknown[0]}",
+        )
+
+
 def _require_bool(
     value: Any,
     *,
@@ -338,6 +454,14 @@ def validate_execution_record(
     extraction_records: list[dict[str, Any]],
     errors: list[dict[str, Any]],
 ) -> None:
+    _reject_unknown_fields(
+        payload,
+        allowed=EXECUTION_RECORD_ALLOWED_KEYS,
+        errors=errors,
+        path_prefix="$",
+        code="UNKNOWN_EXECUTION_FIELD",
+        label="execution record",
+    )
     if payload.get("schema_version") not in SUPPORTED_EXECUTION_SCHEMA_VERSIONS:
         add_error(
             errors,
@@ -469,6 +593,14 @@ def validate_capture_events(
     seen_capture_ids: set[str] = set()
     for index, record in enumerate(records):
         base = f"$[{index}]"
+        _reject_unknown_fields(
+            record,
+            allowed=CAPTURE_RECORD_ALLOWED_KEYS,
+            errors=errors,
+            path_prefix=base,
+            code="UNKNOWN_CAPTURE_FIELD",
+            label="capture record",
+        )
         if record.get("schema_version") not in SUPPORTED_CAPTURE_SCHEMA_VERSIONS:
             add_error(
                 errors,
@@ -622,6 +754,14 @@ def validate_extraction_records(
     seen_extraction_ids: set[str] = set()
     for index, record in enumerate(records):
         base = f"$[{index}]"
+        _reject_unknown_fields(
+            record,
+            allowed=EXTRACTION_RECORD_ALLOWED_KEYS,
+            errors=errors,
+            path_prefix=base,
+            code="UNKNOWN_EXTRACTION_FIELD",
+            label="extraction record",
+        )
         if record.get("schema_version") not in SUPPORTED_EXTRACTION_SCHEMA_VERSIONS:
             add_error(
                 errors,

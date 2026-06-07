@@ -30,7 +30,7 @@ from tools.source_db_tools import (  # noqa: E402
     canonical_store,
     canonical_write_spool,
 )
-from tools.common.atomic_write import atomic_write_json
+from tools.common.atomic_write import atomic_write_json, stable_json_text
 
 REPORT_SCHEMA_VERSION = "canonical-rebuildability-report.v1"
 REPLAYABLE_TYPES = {
@@ -1297,15 +1297,7 @@ def main(argv: list[str] | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output, report)
     if args.format == "json":
-        print(
-            json.dumps(
-                report,
-                ensure_ascii=False,
-                allow_nan=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        sys.stdout.write(stable_json_text(report))
     else:
         print(render_text(report), end="")
     return exit_code
