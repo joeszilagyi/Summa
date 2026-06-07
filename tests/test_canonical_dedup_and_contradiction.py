@@ -459,6 +459,63 @@ def test_existing_work_match_fallback_prefilters_by_source_locator(tmp_path: Pat
     )
 
 
+def test_existing_work_match_batches_identifier_lookups(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    traces: list[str] = []
+    try:
+        with conn:
+            provenance_event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="seed-work-batch",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            matching_work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:seeded-batch-match",
+                provenance_event_ref=provenance_event.event_key,
+                work_type="article",
+                title="Batched Identifier Work",
+                confidence_score=1.0,
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=matching_work.row_id,
+                scheme="doi",
+                value="10.1000/batched-match",
+                confidence_score=1.0,
+                review_state="accepted",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.set_trace_callback(traces.append)
+            work_match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={
+                    "identifiers": [
+                        {"scheme": "doi", "value": "10.1000/missing"},
+                        {"scheme": "doi", "value": "10.1000/batched-match"},
+                        {"scheme": "doi", "value": "10.1000/batched-match"},
+                    ]
+                },
+                work_type="article",
+                title="Batched Identifier Work",
+                workspace_id=None,
+            )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert work_match is not None
+    assert work_match.work_id == matching_work.row_id
+    assert sum("candidate_identifiers" in query for query in traces) == 1
+
+
 def test_pending_exact_identifier_duplicates_match_existing_work(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

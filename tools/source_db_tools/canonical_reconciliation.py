@@ -515,48 +515,68 @@ def find_existing_work_match(
     workspace_id: str | None,
 ) -> WorkMatch | None:
     identifiers = candidate_identifiers(structured)
-    for identifier in identifiers:
+    identifier_rows: list[tuple[int, str, str]] = []
+    seen_identifier_keys: set[tuple[str, str]] = set()
+    for index, identifier in enumerate(identifiers):
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        normalized_key = (normalized["scheme"], normalized["value"])
+        if normalized_key in seen_identifier_keys:
+            continue
+        seen_identifier_keys.add(normalized_key)
+        identifier_rows.append((index, normalized["scheme"], normalized["value"]))
+    if identifier_rows:
         review_state_placeholders = ", ".join("?" for _ in WORK_MATCH_REVIEW_STATES)
+        candidate_identifier_values = ", ".join("(?, ?, ?)" for _ in identifier_rows)
         rows = conn.execute(
             f"""
-            SELECT work.work_id, work.work_key_v1
-            FROM work_identifier
+            WITH candidate_identifiers(candidate_index, scheme, value) AS (
+                VALUES {candidate_identifier_values}
+            )
+            SELECT candidate_identifiers.candidate_index, work.work_id, work.work_key_v1
+            FROM candidate_identifiers
+            INNER JOIN work_identifier
+                ON work_identifier.scheme = candidate_identifiers.scheme
+               AND work_identifier.value = candidate_identifiers.value
             INNER JOIN work ON work.work_id = work_identifier.work_id
-            WHERE work_identifier.scheme=? AND work_identifier.value=?
-              AND work_identifier.validity_status='valid'
+            WHERE work_identifier.validity_status='valid'
               AND work.review_state IN ({review_state_placeholders})
               AND work_identifier.review_state IN ({review_state_placeholders})
               AND work_identifier.confidence_score IS NOT NULL
               AND work_identifier.confidence_score >= ?
-            ORDER BY work.work_id
+            ORDER BY candidate_identifiers.candidate_index, work.work_id
             """,
             (
-                normalized["scheme"],
-                normalized["value"],
+                *(value for row in identifier_rows for value in row),
                 *WORK_MATCH_REVIEW_STATES,
                 *WORK_MATCH_REVIEW_STATES,
                 AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
             ),
         ).fetchall()
-        distinct_ids = {int(row["work_id"]) for row in rows}
-        if len(distinct_ids) > 1:
-            raise CanonicalReconciliationError(
-                f"identifier {normalized['scheme']}:{normalized['value']} maps to multiple works"
-            )
-        if rows:
+        rows_by_index: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            rows_by_index.setdefault(int(row["candidate_index"]), []).append(row)
+        for candidate_index, scheme, value in identifier_rows:
+            candidate_rows = rows_by_index.get(candidate_index)
+            if not candidate_rows:
+                continue
+            distinct_ids = {int(row["work_id"]) for row in candidate_rows}
+            if len(distinct_ids) > 1:
+                raise CanonicalReconciliationError(
+                    f"identifier {scheme}:{value} maps to multiple works"
+                )
+            row = candidate_rows[0]
             return WorkMatch(
-                work_id=int(rows[0]["work_id"]),
-                work_key_v1=str(rows[0]["work_key_v1"]),
+                work_id=int(row["work_id"]),
+                work_key_v1=str(row["work_key_v1"]),
                 method="exact_work_identifier",
                 confidence_score=WORK_MATCH_EXACT_IDENTIFIER,
                 identity_key=normalize_work_key(
                     title=title,
                     work_type=work_type,
-                    identifier_scheme=normalized["scheme"],
-                    identifier_value=normalized["value"],
+                    identifier_scheme=scheme,
+                    identifier_value=value,
                 )
-                or f"identifier:{normalized['scheme']}:{normalized['value']}",
+                or f"identifier:{scheme}:{value}",
             )
 
     source_identifier = normalize_locator(
