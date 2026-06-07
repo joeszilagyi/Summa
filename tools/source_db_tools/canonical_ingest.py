@@ -203,7 +203,7 @@ def _append_warning(
 def _safe_json_text(value: dict[str, Any] | list[Any] | str) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
 def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] | None:

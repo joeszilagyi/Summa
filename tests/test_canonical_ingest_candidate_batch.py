@@ -442,3 +442,9 @@ def test_candidate_structured_payload_rejects_non_standard_json_constants() -> N
 
     assert canonical_ingest._candidate_structured_payload(candidate) is None
 
+
+def test_safe_json_text_rejects_non_standard_numbers() -> None:
+    candidate = {"candidate_type": "work", "value": float("nan")}
+
+    with pytest.raises(ValueError, match="Out of range"):
+        canonical_ingest._safe_json_text(candidate)
