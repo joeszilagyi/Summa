@@ -8,7 +8,6 @@ from typing import Any
 
 from tools.scripts import execute_source_adapter as source_executor
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 STRUCTURED_FIXTURE_ROOT = (
