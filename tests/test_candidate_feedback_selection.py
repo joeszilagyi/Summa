@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -584,6 +586,64 @@ def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None
     assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:z", "lead:b"]
 
 
+def test_unscored_productive_lead_is_filtered_before_next_action() -> None:
+    zero_weights = {name: 0.0 for name in planner.DEFAULT_SCORING_WEIGHTS}
+    facet_scores = planner.aggregate_facet_scores(
+        enabled_facets=["sources", "open_questions"],
+        bundles={
+            "sources": {"bundle_id": "bundle:sources"},
+            "open_questions": {"bundle_id": "bundle:open_questions"},
+        },
+        history=[],
+        lead_candidates=[],
+        weights=zero_weights,
+    )
+    lead_scores = planner.aggregate_lead_scores(
+        enabled_facets=["sources", "open_questions"],
+        lead_candidates=[
+            {
+                "candidate_id": "lead:unsupported",
+                "facet": "works",
+                "score": 0.9,
+                "object_ref": "work:1",
+                "lead_kind": "work",
+                "source_locus_id": "locus:works",
+                "source_lead_id": "source-lead:unsupported",
+                "label": "unsupported facet",
+                "review_state": "accepted",
+                "rationale": "should be ignored",
+                "reason_codes": ["open_lead_yield"],
+            },
+            {
+                "candidate_id": "lead:sources",
+                "facet": "sources",
+                "score": 0.1,
+                "object_ref": "source_claim:1",
+                "lead_kind": "source_claim",
+                "source_locus_id": "locus:sources",
+                "source_lead_id": "source-lead:1",
+                "label": "supported facet",
+                "review_state": "accepted",
+                "rationale": "supported",
+                "reason_codes": ["open_lead_yield"],
+            },
+        ],
+    )
+
+    assert [item["candidate_id"] for item in lead_scores] == ["lead:sources"]
+
+    action = planner.select_next_action(
+        subject={"subject_id": "feedback_subject"},
+        facet_scores=facet_scores,
+        lead_scores=lead_scores,
+        previous_run_ids=[],
+        cycle_depth=1,
+    )
+    assert action["action_kind"] == "facet_lead"
+    assert action["selected_facet"] == "sources"
+    assert action["selected_object_ref"] == "source_claim:1"
+
+
 def test_candidate_feedback_validator_rejects_out_of_range_selection_score(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -967,7 +1027,7 @@ def test_open_question_leads_use_persisted_status_without_python_classifier(
     workspace_root.mkdir()
     subject_id = "feedback_subject"
     db_path = bootstrap_db(tmp_path)
-    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -1314,7 +1374,7 @@ def test_entity_leads_use_direct_workspace_filter_without_coalesce(
     workspace_root.mkdir()
     subject_id = "feedback_subject"
     db_path = bootstrap_db(tmp_path)
-    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
     conn = sqlite3.connect(db_path, factory=CountingConnection)
@@ -1403,7 +1463,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
     workspace_root.mkdir()
     subject_id = "feedback_subject"
     db_path = bootstrap_db(tmp_path)
-    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
     conn = sqlite3.connect(db_path, factory=CountingConnection)

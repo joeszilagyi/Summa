@@ -1158,6 +1158,7 @@ def aggregate_lead_scores(
     lead_candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     facet_order = {facet: index for index, facet in enumerate(enabled_facets)}
+    lead_candidates = [item for item in lead_candidates if item["facet"] in facet_order]
     scored = sorted(
         lead_candidates,
         key=lambda item: (
@@ -1202,7 +1203,10 @@ def select_next_action(
     if not facet_scores:
         raise CandidateFeedbackError("feedback planner requires at least one enabled facet")
     top_facet = facet_scores[0]
-    productive_leads = [item for item in lead_scores if float(item["score"]) > 0.0]
+    facet_score_by_name = {item["facet"]: item for item in facet_scores}
+    productive_leads = [
+        item for item in lead_scores if float(item["score"]) > 0.0 and item["facet"] in facet_score_by_name
+    ]
     if productive_leads:
         selected = productive_leads[0]
         action_kind = "facet_lead"
@@ -1236,11 +1240,7 @@ def select_next_action(
     selected_prompt_bundle_id = (
         top_facet["prompt_bundle_id"]
         if not productive_leads
-        else next(
-            item["prompt_bundle_id"]
-            for item in facet_scores
-            if item["facet"] == productive_leads[0]["facet"]
-        )
+        else facet_score_by_name[productive_leads[0]["facet"]]["prompt_bundle_id"]
     )
     cli_args = ["--facet", selected_facet]
     if use_prior_state:
