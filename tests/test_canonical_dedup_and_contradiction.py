@@ -1831,6 +1831,150 @@ def test_relational_constraint_pass_uses_fetched_relationship_rows(
     assert report["relational_contradictions_detected"] == 1
 
 
+def test_structured_contradiction_group_caches_peer_claim_lookups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="peer-cache",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id="structured-contradiction-peer-cache",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture peer cache setup",
+                provenance_event_key_v1="prov:peer-cache",
+            )
+            for claim_type, about_ref, year in (
+                ("birth_year", "authority:person-a", 1940),
+                ("death_year", "authority:person-b", 1945),
+                ("death_year", "authority:person-c", 1946),
+            ):
+                canonical_store.record_source_claim(
+                    conn,
+                    provenance_event_ref=provenance.event_key,
+                    source_claim_key_v1=f"claim:peer-cache:{claim_type}:{about_ref}:{year}",
+                    about_object_ref=about_ref,
+                    claim_text=json.dumps(
+                        {
+                            "claim_type": claim_type,
+                            "about_object_ref": about_ref,
+                            "year": year,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    claim_type=claim_type,
+                    review_state="proposed",
+                    confidence_score=0.96,
+                    workspace_id="fixture_subject",
+                    created_at=FIXED_TIMESTAMP,
+                    record_last_updated=FIXED_TIMESTAMP,
+                )
+            for index, object_ref in enumerate(
+                ("authority:person-b", "authority:person-b", "authority:person-c"),
+                start=1,
+            ):
+                canonical_store.record_source_claim(
+                    conn,
+                    provenance_event_ref=provenance.event_key,
+                    source_claim_key_v1=f"claim:peer-cache:taught_by:{index}",
+                    about_object_ref="authority:person-a",
+                    claim_text=json.dumps(
+                        {
+                            "claim_type": "taught_by",
+                            "from_object_ref": "authority:person-a",
+                            "predicate": "taught_by",
+                            "to_object_ref": object_ref,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    claim_type="taught_by",
+                    review_state="proposed",
+                    confidence_score=0.96,
+                    workspace_id="fixture_subject",
+                    created_at=FIXED_TIMESTAMP,
+                    record_last_updated=FIXED_TIMESTAMP,
+                )
+        claim_rows = conn.execute(
+            """
+            SELECT *
+            FROM source_claim
+            WHERE provenance_event_ref=? AND claim_type='taught_by'
+            ORDER BY source_claim_id
+            """,
+            (provenance.event_key,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    call_counts: dict[tuple[str | None, str, str, tuple[str, ...]], int] = {}
+    original_loader = canonical_reconciliation._claims_for_ref_and_type
+
+    def counting_loader(
+        conn: sqlite3.Connection,
+        *,
+        about_object_ref: str,
+        claim_type: str,
+        workspace_id: str | None,
+        excluded_review_states: tuple[str, ...] = (
+            canonical_reconciliation.CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES
+        ),
+    ) -> list[sqlite3.Row]:
+        key = (workspace_id, about_object_ref, claim_type, excluded_review_states)
+        call_counts[key] = call_counts.get(key, 0) + 1
+        return original_loader(
+            conn,
+            about_object_ref=about_object_ref,
+            claim_type=claim_type,
+            workspace_id=workspace_id,
+            excluded_review_states=excluded_review_states,
+        )
+
+    monkeypatch.setattr(canonical_reconciliation, "_claims_for_ref_and_type", counting_loader)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        results = canonical_reconciliation._structured_contradictions_for_claim_group(
+            conn,
+            claim_rows=claim_rows,
+            provenance_event_ref="prov:peer-cache",
+            changed_at=FIXED_TIMESTAMP,
+            source_run_id="manual-pass",
+        )
+    finally:
+        conn.close()
+
+    assert results == []
+    assert call_counts == {
+        (
+            "fixture_subject",
+            "authority:person-a",
+            "birth_year",
+            canonical_reconciliation.CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+        ): 1,
+        (
+            "fixture_subject",
+            "authority:person-b",
+            "death_year",
+            canonical_reconciliation.CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+        ): 1,
+        (
+            "fixture_subject",
+            "authority:person-c",
+            "death_year",
+            canonical_reconciliation.CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+        ): 1,
+    }
+
+
 def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(

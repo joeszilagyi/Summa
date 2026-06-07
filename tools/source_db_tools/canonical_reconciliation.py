@@ -1156,6 +1156,38 @@ def _claims_for_ref_and_type(
     return list(rows)
 
 
+def _cached_claims_for_ref_and_type(
+    conn: sqlite3.Connection,
+    *,
+    about_object_ref: str,
+    claim_type: str,
+    workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+    claims_for_ref_type_cache: dict[
+        tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]
+    ]
+    | None = None,
+) -> list[sqlite3.Row]:
+    if claims_for_ref_type_cache is None:
+        return _claims_for_ref_and_type(
+            conn,
+            about_object_ref=about_object_ref,
+            claim_type=claim_type,
+            workspace_id=workspace_id,
+            excluded_review_states=excluded_review_states,
+        )
+    key = (workspace_id, about_object_ref, claim_type, excluded_review_states)
+    if key not in claims_for_ref_type_cache:
+        claims_for_ref_type_cache[key] = _claims_for_ref_and_type(
+            conn,
+            about_object_ref=about_object_ref,
+            claim_type=claim_type,
+            workspace_id=workspace_id,
+            excluded_review_states=excluded_review_states,
+        )
+    return claims_for_ref_type_cache[key]
+
+
 def _claims_for_ref_and_types(
     conn: sqlite3.Connection,
     *,
@@ -1649,7 +1681,9 @@ def _structured_contradictions_for_claim_group(
     for row in claim_rows:
         payloads[int(row["source_claim_id"])] = _structured_claim_payload(row)
 
-    claims_for_key: dict[tuple[str | None, str, str], list[sqlite3.Row]] = {}
+    claims_for_ref_type_cache: dict[
+        tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]
+    ] = {}
 
     for left_row in claim_rows:
         left_claim_id = int(left_row["source_claim_id"])
@@ -1667,19 +1701,16 @@ def _structured_contradictions_for_claim_group(
 
         left_numeric = _structured_numeric_value(left_payload)
         if left_numeric is not None and left_claim_type and left_about_ref is not None:
-            claim_key = (left_workspace_id, left_about_ref, left_claim_type)
-            peer_rows = claims_for_key.get(claim_key)
-            if peer_rows is None:
-                peer_rows = _claims_for_ref_and_type(
-                    conn,
-                    about_object_ref=left_about_ref,
-                    claim_type=left_claim_type,
-                    workspace_id=left_workspace_id,
-                    excluded_review_states=()
-                    if include_excluded_claim_states
-                    else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
-                )
-                claims_for_key[claim_key] = peer_rows
+            peer_rows = _cached_claims_for_ref_and_type(
+                conn,
+                about_object_ref=left_about_ref,
+                claim_type=left_claim_type,
+                workspace_id=left_workspace_id,
+                excluded_review_states=()
+                if include_excluded_claim_states
+                else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                claims_for_ref_type_cache=claims_for_ref_type_cache,
+            )
             for right_row in peer_rows:
                 right_claim_id = int(right_row["source_claim_id"])
                 right_payload = payloads.get(right_claim_id)
@@ -1754,7 +1785,7 @@ def _structured_contradictions_for_claim_group(
                 and isinstance(object_ref, str)
                 and object_ref
             ):
-                birth_rows = _claims_for_ref_and_type(
+                birth_rows = _cached_claims_for_ref_and_type(
                     conn,
                     about_object_ref=subject_ref,
                     claim_type="birth_year",
@@ -1762,8 +1793,9 @@ def _structured_contradictions_for_claim_group(
                     excluded_review_states=()
                     if include_excluded_claim_states
                     else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                    claims_for_ref_type_cache=claims_for_ref_type_cache,
                 )
-                death_rows = _claims_for_ref_and_type(
+                death_rows = _cached_claims_for_ref_and_type(
                     conn,
                     about_object_ref=object_ref,
                     claim_type="death_year",
@@ -1771,6 +1803,7 @@ def _structured_contradictions_for_claim_group(
                     excluded_review_states=()
                     if include_excluded_claim_states
                     else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                    claims_for_ref_type_cache=claims_for_ref_type_cache,
                 )
                 for birth_row in birth_rows:
                     birth_payload = _structured_claim_payload(birth_row)
