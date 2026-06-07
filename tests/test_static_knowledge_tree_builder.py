@@ -83,6 +83,26 @@ def test_build_manifest_validator_rejects_windows_style_routes(tmp_path: Path) -
     assert any(error["code"] == "INVALID_ROUTE" for error in report["errors"])
 
 
+def test_build_manifest_validator_rejects_non_html_routes(tmp_path: Path) -> None:
+    publish_root = tmp_path / "public-site"
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T180000Z",
+        built_at="2026-06-02T18:00:00Z",
+    )
+    manifest_path = publish_root / "build-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["pages"][0]["route"] = "pages/current.txt"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report, exit_code = manifest_validator.validate_build_manifest(manifest_path)
+
+    assert exit_code == manifest_validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "INVALID_ROUTE" for error in report["errors"])
+
+
 def test_render_page_html_escapes_hostile_html_and_attributes() -> None:
     page = {
         "page_id": "page-1",

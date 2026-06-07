@@ -267,6 +267,23 @@ def validate_output_relative_path(
     return value
 
 
+def validate_public_route(
+    payload: dict[str, Any],
+    field: str,
+    errors: list[dict[str, Any]],
+    *,
+    code: str,
+) -> str | None:
+    if field not in payload:
+        return None
+    value = payload[field]
+    if not isinstance(value, str) or not value.strip():
+        add_error(errors, code=code, message=f"{field} must be a non-blank string")
+        return None
+    validate_knowledge_tree_export.validate_route(value, errors, field=field)
+    return value
+
+
 def resolve_path(raw_value: str, anchor: Path) -> Path:
     raw = Path(raw_value).expanduser()
     if raw.is_absolute():
@@ -429,7 +446,7 @@ def validate_build_manifest(
             value = page.get(field)
             if field in page and (not isinstance(value, str) or not ID_PATTERN.fullmatch(value)):
                 add_error(errors, code="INVALID_PAGE_IDENTIFIER", message=f"{field} must match ^[a-z0-9][a-z0-9._-]*$")
-        validate_output_relative_path(page, "route", errors, code="INVALID_ROUTE")
+        validate_public_route(page, "route", errors, code="INVALID_ROUTE")
         validate_nonblank_string(page, "title", errors, code="INVALID_TITLE")
         sha_value = page.get("sha256")
         if "sha256" in page and (not isinstance(sha_value, str) or not SHA256_PATTERN.fullmatch(sha_value)):
