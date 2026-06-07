@@ -1236,6 +1236,29 @@ def load_relationship_endpoint_facts(
     )
 
 
+def _cached_relationship_endpoint_facts(
+    conn: sqlite3.Connection,
+    *,
+    object_ref: str,
+    workspace_id: str | None,
+    endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] | None = None,
+) -> EndpointFacts:
+    if endpoint_facts_cache is None:
+        return load_relationship_endpoint_facts(
+            conn,
+            object_ref=object_ref,
+            workspace_id=workspace_id,
+        )
+    key = (workspace_id, object_ref)
+    if key not in endpoint_facts_cache:
+        endpoint_facts_cache[key] = load_relationship_endpoint_facts(
+            conn,
+            object_ref=object_ref,
+            workspace_id=workspace_id,
+        )
+    return endpoint_facts_cache[key]
+
+
 def _relationship_structured_payload(row: sqlite3.Row) -> dict[str, Any]:
     evidence_note = row["evidence_note"]
     if not isinstance(evidence_note, str) or not evidence_note.strip():
@@ -1494,6 +1517,7 @@ def detect_relational_contradictions_for_relationship(
     relationship_row: sqlite3.Row | None = None,
     subject_facts: EndpointFacts | None = None,
     object_facts: EndpointFacts | None = None,
+    endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] | None = None,
 ) -> dict[str, Any]:
     if relationship_row is None:
         relationship_row = _load_relationship_row(conn, source_relationship_id)
@@ -1520,16 +1544,18 @@ def detect_relational_contradictions_for_relationship(
         return {"results": [], "skipped": ["relationship has no to_object_ref"]}
     workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
     if subject_facts is None:
-        subject_facts = load_relationship_endpoint_facts(
+        subject_facts = _cached_relationship_endpoint_facts(
             conn,
             object_ref=str(row["from_object_ref"]),
             workspace_id=workspace_id,
+            endpoint_facts_cache=endpoint_facts_cache,
         )
     if object_facts is None:
-        object_facts = load_relationship_endpoint_facts(
+        object_facts = _cached_relationship_endpoint_facts(
             conn,
             object_ref=to_object_ref,
             workspace_id=workspace_id,
+            endpoint_facts_cache=endpoint_facts_cache,
         )
     contradictions, skipped = evaluate_temporal_relation_constraint(
         row=row,
@@ -1582,19 +1608,6 @@ def run_relational_constraint_pass(
     }
     endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] = {}
 
-    def endpoint_facts_for_cache(
-        object_ref: str,
-        workspace_id: str | None,
-    ) -> EndpointFacts:
-        key = (workspace_id, object_ref)
-        if key not in endpoint_facts_cache:
-            endpoint_facts_cache[key] = load_relationship_endpoint_facts(
-                conn,
-                object_ref=object_ref,
-                workspace_id=workspace_id,
-            )
-        return endpoint_facts_cache[key]
-
     for row in rows:
         predicate = str(row["predicate"]).strip().casefold()
         if predicate not in RELATIONAL_CONSTRAINTS:
@@ -1603,14 +1616,6 @@ def run_relational_constraint_pass(
         to_object_ref = row["to_object_ref"]
         if not isinstance(to_object_ref, str):
             continue
-        subject_facts = endpoint_facts_for_cache(
-            object_ref=str(row["from_object_ref"]),
-            workspace_id=workspace_id,
-        )
-        object_facts = endpoint_facts_for_cache(
-            object_ref=to_object_ref,
-            workspace_id=workspace_id,
-        )
         if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(
             conn, row
         ):
@@ -1621,8 +1626,7 @@ def run_relational_constraint_pass(
             conn,
             source_relationship_id=int(row["source_relationship_id"]),
             relationship_row=row,
-            subject_facts=subject_facts,
-            object_facts=object_facts,
+            endpoint_facts_cache=endpoint_facts_cache,
             changed_at=changed_at,
             source_run_id=source_run_id,
         )

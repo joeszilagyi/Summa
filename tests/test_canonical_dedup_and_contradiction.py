@@ -7,8 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.source_db_tools import authority_reconciliation, canonical_ingest, canonical_reconciliation, canonical_store
-
+from tools.source_db_tools import (
+    authority_reconciliation,
+    canonical_ingest,
+    canonical_reconciliation,
+    canonical_store,
+)
 
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 OLDER_TIMESTAMP = "2026-06-02T09:08:07Z"
@@ -1036,7 +1040,7 @@ def test_rejected_authority_identifier_does_not_auto_merge(tmp_path: Path) -> No
                 review_state="rejected",
                 verified_at=FIXED_TIMESTAMP,
             )
-            report = ingest_batch(
+            ingest_batch(
                 conn,
                 build_batch(
                     [
@@ -1674,6 +1678,105 @@ def test_relational_constraint_pass_is_idempotent(tmp_path: Path) -> None:
     assert pass_report["relational_contradictions_detected"] == 1
 
 
+def test_relational_constraint_pass_caches_endpoint_facts_per_object_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="endpoint-cache",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id="structured-contradiction-endpoint-cache",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture endpoint cache setup",
+                provenance_event_key_v1="prov:endpoint-cache",
+            )
+            for claim_type, about_ref, year in (
+                ("birth_year", "authority:person-a", 1940),
+                ("death_year", "authority:person-a", 2001),
+                ("birth_year", "authority:person-b", 1930),
+                ("death_year", "authority:person-b", 1938),
+            ):
+                canonical_store.record_source_claim(
+                    conn,
+                    provenance_event_ref=provenance.event_key,
+                    source_claim_key_v1=f"claim:endpoint-cache:{claim_type}:{about_ref}:{year}",
+                    about_object_ref=about_ref,
+                    claim_text=json.dumps(
+                        {
+                            "claim_type": claim_type,
+                            "about_object_ref": about_ref,
+                            "year": year,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    claim_type=claim_type,
+                    review_state="proposed",
+                    confidence_score=0.96,
+                    workspace_id="fixture_subject",
+                    created_at=FIXED_TIMESTAMP,
+                    record_last_updated=FIXED_TIMESTAMP,
+                )
+            for predicate, from_ref, to_ref in (
+                ("taught_by", "authority:person-a", "authority:person-b"),
+                ("teacher_of", "authority:person-b", "authority:person-a"),
+            ):
+                canonical_store.record_source_relationship(
+                    conn,
+                    provenance_event_ref=provenance.event_key,
+                    from_object_ref=from_ref,
+                    predicate=predicate,
+                    to_object_ref=to_ref,
+                    workspace_id="fixture_subject",
+                    review_state="proposed",
+                    created_at=FIXED_TIMESTAMP,
+                    record_last_updated=FIXED_TIMESTAMP,
+                )
+    finally:
+        conn.close()
+
+    call_log: list[tuple[str | None, str]] = []
+    original_loader = canonical_reconciliation.load_relationship_endpoint_facts
+
+    def counting_loader(
+        conn: sqlite3.Connection,
+        *,
+        object_ref: str,
+        workspace_id: str | None,
+    ) -> canonical_reconciliation.EndpointFacts:
+        call_log.append((workspace_id, object_ref))
+        return original_loader(conn, object_ref=object_ref, workspace_id=workspace_id)
+
+    monkeypatch.setattr(canonical_reconciliation, "load_relationship_endpoint_facts", counting_loader)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_reconciliation.run_relational_constraint_pass(
+                conn,
+                workspace_id="fixture_subject",
+                changed_at=FIXED_TIMESTAMP,
+                source_run_id="manual-pass",
+            )
+    finally:
+        conn.close()
+
+    assert report["relational_constraints_checked"] == 2
+    assert report["relational_contradictions_detected"] == 2
+    assert call_log == [
+        ("fixture_subject", "authority:person-a"),
+        ("fixture_subject", "authority:person-b"),
+    ]
+
+
 def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(
@@ -2035,9 +2138,8 @@ def test_invalid_structured_year_rolls_back_ingest(tmp_path: Path) -> None:
         with pytest.raises(
             canonical_ingest.CanonicalIngestError,
             match="candidate-batch reconciliation failed",
-        ):
-            with conn:
-                ingest_batch(conn, batch, batch_name="invalid-year.json", db_path=db_path)
+        ), conn:
+            ingest_batch(conn, batch, batch_name="invalid-year.json", db_path=db_path)
         counts = canonical_store.canonical_family_counts(conn)
     finally:
         conn.close()
