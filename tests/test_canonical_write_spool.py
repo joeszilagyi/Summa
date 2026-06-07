@@ -494,3 +494,57 @@ def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(canonical_write_spool.CanonicalWriteSpoolError, match="path mismatch"):
         canonical_write_spool.load_spool_record(moved_path)
+
+
+def test_replay_main_writes_report_with_atomic_json_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spool_dir = tmp_path / "spool"
+    spool_proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(tmp_path / "missing.sqlite"),
+            "--batch",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ],
+    )
+    assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
+    record_path, _ = first_spool_record(spool_dir)
+    db_path = bootstrap_db(tmp_path)
+    output = tmp_path / "replay-report.json"
+    writes: list[Path] = []
+    original_write_text = replay_script.Path.write_text
+
+    def fake_atomic_write(path: Path, payload: object) -> None:
+        writes.append(path)
+        original_write_text(
+            output,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def reject_direct_write(_self: object, *args: object, **kwargs: object) -> None:
+        raise AssertionError("direct write_text should not be used")
+
+    monkeypatch.setattr(replay_script, "atomic_write_json", fake_atomic_write)
+    monkeypatch.setattr(replay_script.Path, "write_text", reject_direct_write)
+
+    exit_code = replay_script.main(
+        [
+            "--db",
+            str(db_path),
+            "--spool-path",
+            str(record_path),
+            "--output",
+            str(output),
+            "--started-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert exit_code == 0
+    assert writes == [output.resolve()]
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["records_replayed"] == 1

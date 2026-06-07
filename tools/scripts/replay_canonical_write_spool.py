@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.source_db_tools import canonical_store, canonical_write_spool  # noqa: E402
+from tools.common.atomic_write import atomic_write_json
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -215,9 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         if not output_path.is_absolute():
             output_path = (Path.cwd() / output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        atomic_write_json(output_path, report)
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
