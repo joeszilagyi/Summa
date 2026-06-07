@@ -30,9 +30,11 @@ for candidate in (
 from tools.common.atomic_write import atomic_write_json, atomic_write_text  # noqa: E402
 from tools.common.operator_text import format_operator_text_value  # noqa: E402
 from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
+    BuildManifestReceipt,
     EXIT_PASS as EXIT_BUILD_MANIFEST_PASS,
     hash_file,
     validate_build_manifest,
+    validate_build_manifest_receipt,
 )
 from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     EXIT_PASS as EXIT_EXPORT_PASS,
@@ -709,7 +711,14 @@ def build_static_knowledge_tree(
         publish_stage_dir(stage_site, resolved_publish_root, after_backup_hook=after_backup_hook)
         final_manifest_path = resolved_publish_root / BUILD_MANIFEST_FILENAME
         atomic_write_json(final_manifest_path, final_manifest_payload)
-        report, exit_code = validate_build_manifest(final_manifest_path)
+        receipt = BuildManifestReceipt(
+            manifest=final_manifest_payload,
+            export_payload=export_payload,
+            presentation_payload=presentation_payload,
+            export_sha256=export_sha256,
+            presentation_sha256=presentation_sha256,
+        )
+        report, exit_code = validate_build_manifest_receipt(receipt)
         if exit_code != EXIT_BUILD_MANIFEST_PASS:
             first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
             raise StaticKnowledgeTreeBuildError(

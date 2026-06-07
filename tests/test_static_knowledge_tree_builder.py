@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -35,6 +36,14 @@ def presentation_fixture() -> Path:
     return FIXTURE_ROOT / "public_presentation.json"
 
 
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> None:
     publish_root = tmp_path / "public-site"
 
@@ -66,6 +75,52 @@ def test_build_static_knowledge_tree_publishes_valid_output(tmp_path: Path) -> N
     assert (publish_root / "facets" / "records.html").is_file()
     assert (publish_root / "assets" / "site.css").is_file()
     assert "Subject Tree" in (publish_root / "index.html").read_text(encoding="utf-8")
+
+
+def test_build_manifest_receipt_validation_uses_in_memory_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    publish_root = tmp_path / "public-site"
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T180002Z",
+        built_at="2026-06-02T18:00:02Z",
+    )
+
+    manifest_path = publish_root / "build-manifest.json"
+    receipt = manifest_validator.BuildManifestReceipt(
+        manifest=json.loads(manifest_path.read_text(encoding="utf-8")),
+        export_payload=json.loads(export_fixture().read_text(encoding="utf-8")),
+        presentation_payload=json.loads(presentation_fixture().read_text(encoding="utf-8")),
+        export_sha256=sha256_of(export_fixture()),
+        presentation_sha256=sha256_of(presentation_fixture()),
+    )
+
+    def fail_validate_export(*_args: object, **_kwargs: object) -> tuple[dict[str, object], int]:
+        raise AssertionError("export validator should not be called by receipt validation")
+
+    def fail_validate_presentation(*_args: object, **_kwargs: object) -> tuple[dict[str, object], int]:
+        raise AssertionError("presentation validator should not be called by receipt validation")
+
+    def fail_hash_file(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("receipt validation should not hash files")
+
+    monkeypatch.setattr(
+        manifest_validator.validate_knowledge_tree_export,
+        "validate_knowledge_tree_export",
+        fail_validate_export,
+    )
+    monkeypatch.setattr(
+        manifest_validator.validate_public_knowledge_tree_presentation,
+        "validate_public_knowledge_tree_presentation",
+        fail_validate_presentation,
+    )
+    monkeypatch.setattr(manifest_validator, "hash_file", fail_hash_file)
+
+    report, exit_code = manifest_validator.validate_build_manifest_receipt(receipt)
+
+    assert exit_code == manifest_validator.EXIT_PASS, report
+    assert report["counts"]["accepted"] == 1
 
 
 def test_build_manifest_validator_rejects_windows_style_routes(tmp_path: Path) -> None:
@@ -219,6 +274,41 @@ def test_build_static_knowledge_tree_restores_previous_output_on_publish_failure
 
     assert (publish_root / "index.html").read_text(encoding="utf-8") == original_body
     assert (publish_root / "build-manifest.json").is_file()
+
+
+def test_build_static_knowledge_tree_uses_manifest_receipt_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    publish_root = tmp_path / "public-site"
+    observed: dict[str, object] = {}
+
+    def fake_validate_build_manifest_receipt(
+        receipt: manifest_validator.BuildManifestReceipt,
+    ) -> tuple[dict[str, object], int]:
+        observed["receipt"] = receipt
+        return (
+            {"counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []},
+            builder.EXIT_BUILD_MANIFEST_PASS,
+        )
+
+    def fail_validate_build_manifest(*_args: object, **_kwargs: object) -> tuple[dict[str, object], int]:
+        raise AssertionError("path-based manifest validation should not be called by the builder")
+
+    monkeypatch.setattr(builder, "validate_build_manifest_receipt", fake_validate_build_manifest_receipt)
+    monkeypatch.setattr(builder, "validate_build_manifest", fail_validate_build_manifest)
+
+    payload = builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T180003Z",
+        built_at="2026-06-02T18:00:03Z",
+    )
+
+    assert payload["status"] == "published"
+    receipt = observed["receipt"]
+    assert isinstance(receipt, builder.BuildManifestReceipt)
+    assert receipt.manifest["build_id"] == "build-20260602T180003Z"
+    assert receipt.export_sha256.startswith("sha256:")
+    assert receipt.presentation_sha256.startswith("sha256:")
 
 
 def test_publish_stage_dir_reports_backup_restored_on_failure(tmp_path: Path) -> None:
