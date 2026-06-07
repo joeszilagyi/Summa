@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import pytest
 import shutil
 import subprocess
 import sys
@@ -155,6 +157,27 @@ def test_public_sharing_bundle_builder_blocks_restricted_text_marker(tmp_path: P
         assert "RAW_PAYLOAD_MARKER" in str(exc)
     else:
         raise AssertionError("expected restricted text gate failure")
+
+
+def test_public_sharing_bundle_builder_rejects_manifest_paths_that_escape_bundle_root(tmp_path: Path) -> None:
+    build_manifest = build_site(tmp_path)
+    payload = json.loads(build_manifest.read_text(encoding="utf-8"))
+
+    output_root = (build_manifest.parent / payload["output_root"]).resolve()
+    index_html = output_root / "index.html"
+    index_digest = hashlib.sha256(index_html.read_bytes()).hexdigest()
+    payload["assets"] = payload.get("assets", [])
+    payload["asset_count"] = len(payload["assets"]) + 1
+    payload["assets"].append(
+        {
+            "path": "index.html//",
+            "sha256": f"sha256:{index_digest}",
+        }
+    )
+    build_manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(sharing_builder.PublicSharingBundleError, match="path traversal"):
+        sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle")
 
 
 def test_public_sharing_bundle_builder_excludes_private_fields_from_export_metadata(

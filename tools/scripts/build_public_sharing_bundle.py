@@ -208,11 +208,32 @@ def included_site_entries(build_manifest: dict[str, Any]) -> list[str]:
     entries: list[str] = []
     for page in build_manifest.get("pages", []):
         if isinstance(page, dict) and isinstance(page.get("route"), str):
-            entries.append(page["route"])
+            entries.append(
+                _normalize_bundle_relative_path(page["route"], field_name="page.route")
+            )
     for asset in build_manifest.get("assets", []):
         if isinstance(asset, dict) and isinstance(asset.get("path"), str):
-            entries.append(asset["path"])
+            entries.append(
+                _normalize_bundle_relative_path(asset["path"], field_name="asset.path")
+            )
     return entries
+
+
+def _normalize_bundle_relative_path(raw_path: str, *, field_name: str) -> str:
+    if "\\" in raw_path:
+        raise PublicSharingBundleError(f"declared site artifact has invalid path separator: {field_name}")
+
+    normalized = PurePosixPath(raw_path)
+    normalized_path = normalized.as_posix()
+
+    if normalized.is_absolute():
+        raise PublicSharingBundleError(f"declared site artifact must be relative: {field_name}")
+    if normalized == PurePosixPath("."):
+        raise PublicSharingBundleError(f"declared site artifact path cannot be empty: {field_name}")
+    if normalized_path != raw_path or ".." in normalized.parts:
+        raise PublicSharingBundleError(f"declared site artifact path traversal detected: {field_name}")
+
+    return normalized_path
 
 
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
