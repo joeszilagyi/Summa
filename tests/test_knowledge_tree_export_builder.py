@@ -138,3 +138,45 @@ def test_export_builder_is_deterministic_with_fixed_timestamp(tmp_path: Path) ->
     assert second.returncode == 0, second.stdout + second.stderr
     assert output_a.read_text(encoding="utf-8") == output_b.read_text(encoding="utf-8")
 
+
+def test_export_builder_records_logical_and_storage_fingerprints(tmp_path: Path) -> None:
+    db_path = create_populated_canonical_store(tmp_path)
+    output_path = tmp_path / "knowledge_tree_export.json"
+
+    result = run_cli(
+        "--db",
+        str(db_path),
+        "--output",
+        str(output_path),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = load_export(output_path)
+
+    builder_notes = payload["notes"]["builder"]
+    source = payload["input_sources"][0]
+    assert builder_notes["canonical_store_fingerprint"] == source["fingerprint"]
+    assert builder_notes["canonical_store_fingerprint"].startswith("sha256:")
+    assert builder_notes["canonical_store_storage_fingerprint"].startswith("sha256:")
+    assert builder_notes["canonical_store_storage_fingerprint"] != builder_notes["canonical_store_fingerprint"]
+    table_fingerprints = builder_notes["canonical_store_table_fingerprints"]
+    assert isinstance(table_fingerprints, dict)
+    assert "authority_record" in table_fingerprints
+    assert table_fingerprints["authority_record"].startswith("sha256:")
+
+    # Rebuild once more from the same DB to ensure all logical/source fingerprints remain stable.
+    output_path_alt = tmp_path / "knowledge_tree_export_alt.json"
+    rerun = run_cli(
+        "--db",
+        str(db_path),
+        "--output",
+        str(output_path_alt),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+    )
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    payload_alt = load_export(output_path_alt)
+    assert payload_alt["notes"]["builder"]["canonical_store_fingerprint"] == source["fingerprint"]
+    assert payload_alt["notes"]["builder"]["canonical_store_storage_fingerprint"] == builder_notes["canonical_store_storage_fingerprint"]
+    assert payload_alt["notes"]["builder"]["canonical_store_table_fingerprints"] == table_fingerprints

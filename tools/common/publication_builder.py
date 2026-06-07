@@ -160,11 +160,58 @@ def connect_read_only(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _normalize_fingerprint_value(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return "0x" + bytes(value).hex()
+    if isinstance(value, (str, int, bool)):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise PublicationBuildError("non-finite numeric value cannot be included in publication fingerprint")
+        return value
+    return str(value)
+
+
+def _row_to_fingerprint_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return {key: _normalize_fingerprint_value(row[key]) for key in row.keys()}
+
+
 def actual_tables(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ).fetchall()
     return {str(row["name"]) for row in rows}
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def table_fingerprint(conn: sqlite3.Connection, table: str) -> str:
+    table_schema_rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not table_schema_rows:
+        raise PublicationBuildError(f"unknown table for fingerprinting: {table}")
+    columns = [str(item["name"]) for item in table_schema_rows]
+    primary_key_columns = [
+        column for column in columns if any(item["name"] == column and item["pk"] for item in table_schema_rows)
+    ]
+    order_by_columns = primary_key_columns or columns
+    row_query = f"SELECT * FROM {table}"
+    if order_by_columns:
+        row_query += " ORDER BY " + ", ".join(f'"{column}"' for column in order_by_columns)
+    rows = conn.execute(row_query).fetchall()
+    payload = {
+        "table": table,
+        "columns": columns,
+        "rows": [_row_to_fingerprint_payload(row) for row in rows],
+    }
+    return database_fingerprint(payload)
 
 
 def database_fingerprint(payload: dict[str, Any]) -> str:
@@ -376,9 +423,12 @@ def read_publication_snapshot(
     except sqlite3.DatabaseError as exc:
         raise PublicationBuildError(f"database could not be opened read-only as SQLite: {db_path}") from exc
     try:
-        ensure_required_publication_tables(conn)
+        required_tables = ensure_required_publication_tables(conn)
         workspace_id = first_workspace_id(conn) or slugify_identifier(db_path.stem, fallback="canonical_workspace")
         schema_version = schema_version_from_store(conn)
+        publication_table_fingerprints = {
+            table_name: table_fingerprint(conn, table_name) for table_name in sorted(required_tables)
+        }
 
         authority_rows = conn.execute(
             """
@@ -691,6 +741,8 @@ def read_publication_snapshot(
     return {
         "db_path": db_path,
         "db_fingerprint": database_fingerprint(fingerprint_source),
+        "db_storage_fingerprint": hash_file(db_path),
+        "publication_table_fingerprints": publication_table_fingerprints,
         "schema_version": schema_version,
         "workspace_id": slugify_identifier(workspace_id, fallback="canonical_workspace"),
         "display_name": display_name_from_workspace_id(workspace_id, fallback="Knowledge Tree"),
@@ -1213,6 +1265,8 @@ def build_knowledge_tree_export_payload(
                 "canonical_store_name": db_path.name,
                 "canonical_store_schema_version": snapshot["schema_version"],
                 "canonical_store_fingerprint": snapshot["db_fingerprint"],
+                "canonical_store_storage_fingerprint": snapshot["db_storage_fingerprint"],
+                "canonical_store_table_fingerprints": snapshot["publication_table_fingerprints"],
             },
             "page_inventory_hints": page_inventory_hints,
             "validation_summary": snapshot["validation_summary"],
