@@ -597,11 +597,6 @@ def write_static_tree(
     )
     manifest_path = stage_root / "build-manifest.json"
     atomic_write_json(manifest_path, manifest_payload)
-    report, exit_code = validate_build_manifest(manifest_path)
-    if exit_code != EXIT_BUILD_MANIFEST_PASS:
-        first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
-        raise StaticKnowledgeTreeBuildError(f"generated build manifest failed validation: {first_error}")
-
     return {
         "manifest_path": manifest_path,
         "manifest": manifest_payload,
@@ -690,8 +685,6 @@ def build_static_knowledge_tree(
             build_id=effective_build_id,
             built_at=effective_built_at,
         )
-        publish_stage_dir(stage_site, resolved_publish_root, after_backup_hook=after_backup_hook)
-        final_manifest_path = resolved_publish_root / BUILD_MANIFEST_FILENAME
         final_manifest_payload = dict(stage_result["manifest"])
         final_manifest_payload["export_path"] = relative_manifest_path(
             resolved_export, anchor=resolved_publish_root
@@ -699,7 +692,15 @@ def build_static_knowledge_tree(
         final_manifest_payload["presentation_path"] = relative_manifest_path(
             resolved_presentation, anchor=resolved_publish_root
         )
+        publish_stage_dir(stage_site, resolved_publish_root, after_backup_hook=after_backup_hook)
+        final_manifest_path = resolved_publish_root / BUILD_MANIFEST_FILENAME
         atomic_write_json(final_manifest_path, final_manifest_payload)
+        report, exit_code = validate_build_manifest(final_manifest_path)
+        if exit_code != EXIT_BUILD_MANIFEST_PASS:
+            first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
+            raise StaticKnowledgeTreeBuildError(
+                f"generated build manifest failed validation: {first_error}"
+            )
     finally:
         if stage_site.exists():
             shutil.rmtree(stage_site, ignore_errors=True)

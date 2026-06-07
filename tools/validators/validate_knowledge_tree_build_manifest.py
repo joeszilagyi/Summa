@@ -204,6 +204,30 @@ def validate_nonblank_string(payload: dict[str, Any], field: str, errors: list[d
         add_error(errors, code=code, message=f"{field} must be a non-blank string")
 
 
+def is_manifest_relative_path(value: str) -> bool:
+    path = PurePosixPath(value)
+    return bool(value.strip()) and "\\" not in value and not path.is_absolute()
+
+
+def validate_manifest_relative_path(
+    payload: dict[str, Any],
+    field: str,
+    errors: list[dict[str, Any]],
+    *,
+    code: str,
+) -> str | None:
+    if field not in payload:
+        return None
+    value = payload[field]
+    if not isinstance(value, str) or not value.strip():
+        add_error(errors, code=code, message=f"{field} must be a non-blank string")
+        return None
+    if not is_manifest_relative_path(value):
+        add_error(errors, code=code, message=f"{field} must be a relative path")
+        return None
+    return value
+
+
 def validate_string_array(
     payload: dict[str, Any],
     field: str,
@@ -331,8 +355,24 @@ def validate_build_manifest(
         if field in payload and (not isinstance(value, str) or not ID_PATTERN.fullmatch(value)):
             add_error(errors, code="INVALID_IDENTIFIER", message=f"{field} must match ^[a-z0-9][a-z0-9._-]*$")
 
-    for field in ("export_path", "presentation_path", "output_root"):
-        validate_nonblank_string(payload, field, errors, code="INVALID_STRING")
+    export_path_value = validate_manifest_relative_path(
+        payload,
+        "export_path",
+        errors,
+        code="INVALID_INPUT_PATH",
+    )
+    presentation_path_value = validate_manifest_relative_path(
+        payload,
+        "presentation_path",
+        errors,
+        code="INVALID_INPUT_PATH",
+    )
+    output_root_value = validate_manifest_relative_path(
+        payload,
+        "output_root",
+        errors,
+        code="INVALID_OUTPUT_ROOT",
+    )
     validate_timestamp(payload, "built_at", errors)
     validate_string_array(payload, "notes", errors, code="INVALID_NOTES")
 
@@ -475,9 +515,8 @@ def validate_build_manifest(
             if related_page_id not in seen_page_ids:
                 add_error(errors, code="BROKEN_PAGE_LINK", message=f"page {page_id} references unknown related_page_id: {related_page_id}")
 
-    output_root_value = payload.get("output_root")
     output_root_path: Path | None = None
-    if isinstance(output_root_value, str) and output_root_value.strip():
+    if output_root_value is not None:
         output_root_path = resolve_path(output_root_value, target.parent)
         if output_root_path.exists() and not output_root_path.is_dir():
             add_error(errors, code="OUTPUT_ROOT_NOT_DIRECTORY", message="output_root path is not a directory")
@@ -501,8 +540,8 @@ def validate_build_manifest(
     resolved_export_path: Path | None = None
     if export_path is not None:
         resolved_export_path = export_path.resolve()
-    elif isinstance(payload.get("export_path"), str) and str(payload.get("export_path")).strip():
-        resolved_export_path = resolve_path(str(payload.get("export_path")), target.parent)
+    elif export_path_value is not None:
+        resolved_export_path = resolve_path(export_path_value, target.parent)
 
     if resolved_export_path is not None:
         export_result, export_exit = validate_knowledge_tree_export.validate_knowledge_tree_export(resolved_export_path)
@@ -611,8 +650,8 @@ def validate_build_manifest(
                         add_error(errors, code="PAGE_RELATED_IDS_MISMATCH", message=f"related_page_ids mismatch for page_id: {page_id}")
 
     resolved_presentation_path: Path | None = None
-    if isinstance(payload.get("presentation_path"), str) and str(payload.get("presentation_path")).strip():
-        resolved_presentation_path = resolve_path(str(payload.get("presentation_path")), target.parent)
+    if presentation_path_value is not None:
+        resolved_presentation_path = resolve_path(presentation_path_value, target.parent)
 
     if resolved_presentation_path is not None:
         presentation_result, presentation_exit = (
