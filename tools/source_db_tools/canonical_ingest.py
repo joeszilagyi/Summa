@@ -963,10 +963,14 @@ def ingest_execution_artifacts(
         capture_id_map[str(record["capture_id"])] = result.row_id
         _bump(report, "inserted" if result.created else "updated", "capture_event")
 
+    capture_ids: set[str] | None = None
+    if dry_run:
+        capture_ids = {str(item.get("capture_id")) for item in capture_events}
     for record in extraction_records:
         capture_key = str(record.get("capture_id") or "")
         if dry_run:
-            if capture_key not in {str(item.get("capture_id")) for item in capture_events}:
+            assert capture_ids is not None
+            if capture_key not in capture_ids:
                 if strict:
                     raise CanonicalIngestError(
                         f"extraction record references unknown capture_id: {capture_key}"
