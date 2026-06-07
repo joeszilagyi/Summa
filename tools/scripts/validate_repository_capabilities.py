@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import tomllib
 from pathlib import Path
@@ -100,6 +101,49 @@ def add_warning(
     warnings.append(warning)
 
 
+def validate_command_importability(command: str, target: str, errors: list[dict[str, str]], *, capability_id: str) -> None:
+    module_name, separator, function_path = target.partition(":")
+    if not separator:
+        add_error(
+            errors,
+            code="invalid_command_target",
+            message=f"invalid console script target for {command}: expected module:path format",
+            capability_id=capability_id,
+        )
+        return
+
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, ValueError) as exc:
+        add_error(
+            errors,
+            code="invalid_command_target",
+            message=f"cannot import console script target for {command}: {module_name}: {exc}",
+            capability_id=capability_id,
+        )
+        return
+
+    target_obj = module
+    for part in function_path.split("."):
+        if not hasattr(target_obj, part):
+            add_error(
+                errors,
+                code="invalid_command_target",
+                message=f"console script target for {command} is missing attribute: {target}:{part}",
+                capability_id=capability_id,
+            )
+            return
+        target_obj = getattr(target_obj, part)
+
+    if not callable(target_obj):
+        add_error(
+            errors,
+            code="invalid_command_target",
+            message=f"console script target for {command} is not callable: {target}",
+            capability_id=capability_id,
+        )
+
+
 def validate_index(index: dict[str, Any]) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -166,13 +210,24 @@ def validate_index(index: dict[str, Any]) -> dict[str, Any]:
         command = entry.get("package_command")
         if isinstance(command, str) and command:
             indexed_console_commands.add(command)
-            if command not in package_scripts:
+        if command not in package_scripts:
+            add_error(
+                errors,
+                code="missing_package_command",
+                message=f"package command is not declared in pyproject.toml: {command}",
+                capability_id=capability_id,
+            )
+        else:
+            target = package_scripts[command]
+            if not isinstance(target, str):
                 add_error(
                     errors,
-                    code="missing_package_command",
-                    message=f"package command is not declared in pyproject.toml: {command}",
+                    code="invalid_command_target",
+                    message=f"package command target must be a string: {command}",
                     capability_id=capability_id,
                 )
+            else:
+                validate_command_importability(command, target, errors, capability_id=capability_id)
 
         wrapper_path = entry.get("wrapper_path")
         if isinstance(wrapper_path, str) and wrapper_path:

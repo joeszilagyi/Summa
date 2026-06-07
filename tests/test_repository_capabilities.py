@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 import sys
@@ -168,6 +169,58 @@ def test_validator_cli_help_exits_zero() -> None:
 
     assert proc.returncode == 0
     assert "usage:" in (proc.stdout + proc.stderr).lower()
+
+
+def test_validator_detects_non_callable_console_script_targets(monkeypatch) -> None:
+    index = {
+        "capabilities": [
+            {
+                "id": "x",
+                "status": "live",
+                "kind": "console_script",
+                "package_command": "bad-cmd",
+                "path": "tools/scripts/validate_repository_capabilities.py",
+                "docs_path": "docs/project/REPOSITORY_CAPABILITIES.md",
+                "test_refs": [],
+            }
+        ]
+    }
+
+    def fake_package_scripts() -> dict[str, Any]:
+        return {"bad-cmd": "tools.scripts.validate_repository_capabilities:missing_attr"}
+
+    monkeypatch.setattr("tools.scripts.validate_repository_capabilities.load_package_scripts", fake_package_scripts)
+
+    validator = importlib.import_module("tools.scripts.validate_repository_capabilities")
+    loaded = validator.validate_index(index)
+
+    assert loaded["status"] == "fail"
+    assert any(error["code"] == "invalid_command_target" for error in loaded["errors"])
+
+
+def test_validator_accepts_importable_console_script_targets(monkeypatch) -> None:
+    index = {
+        "capabilities": [
+            {
+                "id": "x",
+                "status": "live",
+                "kind": "console_script",
+                "package_command": "good-cmd",
+                "path": "tools/scripts/validate_repository_capabilities.py",
+                "docs_path": "docs/project/REPOSITORY_CAPABILITIES.md",
+                "test_refs": [],
+            }
+        ]
+    }
+
+    def fake_package_scripts() -> dict[str, Any]:
+        return {"good-cmd": "tools.scripts.validate_repository_capabilities:main"}
+
+    monkeypatch.setattr("tools.scripts.validate_repository_capabilities.load_package_scripts", fake_package_scripts)
+
+    validator = importlib.import_module("tools.scripts.validate_repository_capabilities")
+    loaded = validator.validate_index(index)
+    assert not any(error["code"] == "invalid_command_target" for error in loaded["errors"])
 
 
 def test_validator_report_passes_for_checked_in_index() -> None:
