@@ -570,6 +570,7 @@ def build_remote_url_manifest_handoff_record(
     entry: dict[str, Any],
     sequence: int,
     line_number: int,
+    manifest_url: str | None = None,
 ) -> dict[str, Any]:
     handoff = adapter_payload["normalized_handoff"]
     provenance = adapter_payload["provenance"]
@@ -579,7 +580,7 @@ def build_remote_url_manifest_handoff_record(
 
     preserved_candidates: dict[str, Any] = {
         "original_locator": {
-            "manifest_url": locator.get("manifest_url"),
+            "manifest_url": manifest_url or locator.get("manifest_url"),
             "entry_url": entry.get("url"),
             "manifest_input_path": str(manifest_input_path),
             "line_number": line_number,
@@ -617,7 +618,7 @@ def build_remote_url_manifest_handoff_record(
     }
     manifest_snapshot_hash = _sha256_file(manifest_input_path)
     source_identity = {
-        "manifest_url": locator.get("manifest_url"),
+        "manifest_url": manifest_url or locator.get("manifest_url"),
         "manifest_snapshot": {
             "path": str(manifest_input_path),
             "sha256": manifest_snapshot_hash,
@@ -626,7 +627,7 @@ def build_remote_url_manifest_handoff_record(
         "entry_url": entry.get("url"),
     }
     source_specific_candidates = {
-        "manifest_url": locator.get("manifest_url"),
+        "manifest_url": manifest_url or locator.get("manifest_url"),
     }
     source_specific = {
         field: source_specific_candidates[field]

@@ -103,3 +103,49 @@ def test_remote_url_manifest_rejects_invalid_row_urls_and_reports_blockers(tmp_p
         {"line_number": 1, "reason": "url must be an absolute http or https URL"},
         {"line_number": 2, "reason": "url must be an absolute http or https URL"},
     ]
+
+
+def test_remote_url_manifest_normalizes_entry_urls(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "manifest.jsonl"
+    manifest_jsonl.write_text('{"url":"HTTPS://Archives.Example.Gov:443/sample/path?x=1"}\n', encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 1
+    assert payload["accepted_entries"][0]["url"] == "https://archives.example.gov/sample/path?x=1"
+
+
+def test_remote_url_manifest_rejects_entry_urls_with_spaces(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "invalid.jsonl"
+    manifest_jsonl.write_text('{"url":"https://exa mple.com/unsafe"}\n', encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 0
+    assert payload["rejected_entries"] == [
+        {"line_number": 1, "reason": "url must be an absolute http or https URL"}
+    ]

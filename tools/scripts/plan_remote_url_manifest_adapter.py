@@ -23,6 +23,7 @@ from tools.common.source_adapter_handoff import (  # noqa: E402
     build_remote_url_manifest_handoff_record,
     validate_source_adapter_handoff_record,
 )
+from tools.common.network_safety_gate import normalized_allowlist_url
 
 import validate_source_adapter  # noqa: E402
 
@@ -69,6 +70,17 @@ def is_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def normalize_http_url(raw_url: str) -> str | None:
+    if any(ch.isspace() for ch in raw_url):
+        return None
+    if not is_http_url(raw_url):
+        return None
+    parsed = urlparse(raw_url)
+    if not (parsed.hostname or ""):
+        return None
+    return normalized_allowlist_url(raw_url)
+
+
 def validate_manifest_entry(entry: Any, *, line_number: int) -> list[str]:
     errors: list[str] = []
     if not isinstance(entry, dict):
@@ -77,8 +89,14 @@ def validate_manifest_entry(entry: Any, *, line_number: int) -> list[str]:
     if unknown_keys:
         return [f"unexpected manifest entry field: {unknown_keys[0]}"]
     url = entry.get("url")
-    if not isinstance(url, str) or not url.strip() or not is_http_url(url):
+    if not isinstance(url, str) or not url.strip():
         errors.append("url must be an absolute http or https URL")
+        return errors
+    normalized_url = normalize_http_url(url)
+    if normalized_url is None:
+        errors.append("url must be an absolute http or https URL")
+    elif url != normalized_url:
+        entry["url"] = normalized_url
     for key in ("title", "notes", "source_id"):
         value = entry.get(key)
         if value is not None and (not isinstance(value, str) or not value.strip()):
@@ -116,6 +134,12 @@ def load_manifest_entries(manifest_path: Path) -> tuple[list[dict[str, Any]], li
 
 
 def build_plan(adapter_path: Path, manifest_path: Path, adapter_payload: dict[str, Any]) -> dict[str, Any]:
+    adapter_manifest_url = adapter_payload.get("locator", {}).get("manifest_url")
+    if not isinstance(adapter_manifest_url, str):
+        raise RemoteUrlManifestAdapterError("manifest_url must be a non-blank string")
+    normalized_manifest_url = normalize_http_url(adapter_manifest_url)
+    if normalized_manifest_url is None:
+        raise RemoteUrlManifestAdapterError("manifest_url must be an absolute http or https URL")
     accepted, rejected, blockers = load_manifest_entries(manifest_path)
     handoff_records = [
         build_remote_url_manifest_handoff_record(
@@ -125,6 +149,7 @@ def build_plan(adapter_path: Path, manifest_path: Path, adapter_payload: dict[st
             entry=item["entry"],
             sequence=index + 1,
             line_number=item["line_number"],
+            manifest_url=normalized_manifest_url,
         )
         for index, item in enumerate(accepted)
     ]
