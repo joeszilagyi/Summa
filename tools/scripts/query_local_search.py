@@ -225,30 +225,35 @@ def load_matching_rows(
     offset: int,
 ) -> tuple[list[sqlite3.Row], int]:
     scope_clause, scope_params = build_scope_clause(scope)
-    total_row = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM search_projection_fts
-        JOIN search_projection AS sp USING (projection_id)
-        WHERE search_projection_fts MATCH ?{scope_clause}
-        """,
-        [fts_query, *scope_params],
-    ).fetchone()
-    score_expression = sql_score_expression()
-    rows = conn.execute(
+    score_expression = sql_score_expression().replace(
+        "bm25(search_projection_fts)",
+        "matches.score",
+    )
+    rows: list[sqlite3.Row] = conn.execute(
         f"""
         SELECT
           sp.*,
-          bm25(search_projection_fts) AS score
-        FROM search_projection_fts
+          matches.score,
+          (
+            SELECT COUNT(*)
+            FROM search_projection_fts
+            JOIN search_projection AS sf_match USING (projection_id)
+            WHERE search_projection_fts MATCH ?{scope_clause}
+          ) AS total_matches
+        FROM (
+          SELECT
+            projection_id,
+            bm25(search_projection_fts) AS score
+          FROM search_projection_fts
+          WHERE search_projection_fts MATCH ?{scope_clause}
+        ) AS matches
         JOIN search_projection AS sp USING (projection_id)
-        WHERE search_projection_fts MATCH ?{scope_clause}
         ORDER BY {score_expression} ASC, sp.object_type ASC, sp.object_pk ASC
         LIMIT ? OFFSET ?
         """,
-        [fts_query, *scope_params, limit, offset],
+        [fts_query, *scope_params, fts_query, *scope_params, limit, offset],
     ).fetchall()
-    total = 0 if total_row is None else int(total_row[0])
+    total = 0 if not rows else int(rows[0]["total_matches"])
     return rows, total
 
 
