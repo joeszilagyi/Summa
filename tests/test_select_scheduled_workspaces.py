@@ -273,6 +273,32 @@ def test_selector_loads_registry_json_once_during_validation_and_resolution(
     assert payload["selected_workspaces"][0]["workspace_id"] == "selected_workspace"
 
 
+def test_selector_rejects_invalid_subject_manifest_json_by_default(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "bad-manifest.json"
+    manifest_path.write_text(
+        '{"schema_version":"subject-manifest.v1","subject_id":"one","subject_id":"two"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(selector.SelectionError, match="default subject manifest"):
+        selector.load_subject_id_from_manifest(str(manifest_path))
+
+
+def test_selector_can_allow_unresolved_subject_manifest_when_explicitly_enabled(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "bad-manifest.json"
+    manifest_path.write_text(
+        '{"schema_version":"subject-manifest.v1","subject_id":"one","subject_id":"two"}',
+        encoding="utf-8",
+    )
+
+    assert selector.load_subject_id_from_manifest(
+        str(manifest_path),
+        allow_unresolved=True,
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("initial_text", "expected_first_line"),
     [

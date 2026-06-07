@@ -165,6 +165,39 @@ def test_execution_validation_rejects_extraction_hash_and_count_mismatches(tmp_p
     assert "EXTRACTION_BYTE_COUNT_MISMATCH" in codes
 
 
+def test_execution_validation_rejects_invalid_manifest_json(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+    (run_dir / "manifest.json").write_text(
+        '{"schema_version":"source-acquisition-run-manifest.v1","run_id":"fixture-exec","run_id":"duplicate"}',
+        encoding="utf-8",
+    )
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "DUPLICATE_JSON_KEY" for error in report.get("errors", []))
+
+
+def test_execution_validation_rejects_missing_transient_payload_artifact(
+    tmp_path: Path,
+) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+    capture_events = [
+        json.loads(line)
+        for line in (run_dir / "capture-events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    capture_events[0]["transient_payload_path"] = "payloads/capture-0001.bin"
+    write_json_lines(run_dir / "capture-events.jsonl", capture_events)
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(
+        error["code"] == "TRANSIENT_PAYLOAD_ARTIFACT_MISSING" for error in report.get("errors", [])
+    )
+
+
 def test_execution_validation_rejects_invalid_execution_status(tmp_path: Path) -> None:
     run_dir = copy_execution_fixture(tmp_path)
 
