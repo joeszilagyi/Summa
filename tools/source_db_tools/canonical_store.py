@@ -964,8 +964,14 @@ def _lookup_row(
     return conn.execute(query, tuple(params)).fetchone()
 
 
-def _require_provenance_event(conn: sqlite3.Connection, provenance_event_ref: str) -> int:
+def _require_provenance_event(
+    conn: sqlite3.Connection,
+    provenance_event_ref: str,
+    provenance_event_id: int | None = None,
+) -> int:
     key = _require_nonblank(provenance_event_ref, "provenance_event_ref")
+    if provenance_event_id is not None:
+        return int(provenance_event_id)
     row = conn.execute(
         """
         SELECT provenance_event_id
@@ -1174,6 +1180,7 @@ def upsert_work(
     *,
     work_key_v1: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     work_type: str | None = None,
     title: str | None = None,
     rights_posture: str | None = None,
@@ -1191,7 +1198,7 @@ def upsert_work(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     work_key = _require_nonblank(work_key_v1, "work_key_v1")
     review_state_value = _normalize_review_state(review_state, default=DEFAULT_WORK_REVIEW_STATE)
     timestamp = _normalize_timestamp(
@@ -1358,6 +1365,7 @@ def record_source_access(
     *,
     original_locator: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     work_id: int | None = None,
     source_locus_id: str | None = None,
     source_lead_id: str | None = None,
@@ -1375,7 +1383,7 @@ def record_source_access(
     last_seen_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     locator = _require_nonblank(original_locator, "original_locator")
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_SOURCE_ACCESS_REVIEW_STATE
@@ -1579,6 +1587,7 @@ def record_source_claim(
     *,
     claim_text: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     source_claim_key_v1: str | None = None,
     about_object_ref: str | None = None,
     public_summary: str | None = None,
@@ -1595,7 +1604,7 @@ def record_source_claim(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_type_value = _optional_nonblank(claim_type, "claim_type")
     claim_key = source_claim_key_v1 or stable_write_key(
@@ -1761,6 +1770,7 @@ def record_capture_event(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     original_locator: str,
     captured_at: str,
     capture_method: str,
@@ -1780,7 +1790,7 @@ def record_capture_event(
     public_blocker: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     locator = _require_nonblank(original_locator, "original_locator")
     captured_at_value = _normalize_timestamp(captured_at, field_name="captured_at")
     timestamp = _normalize_timestamp(
@@ -1913,6 +1923,7 @@ def record_extraction_record(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     capture_event_id: int,
     extraction_method: str,
     extraction_status: str,
@@ -1933,7 +1944,7 @@ def record_extraction_record(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     extraction_method_value = _require_nonblank(extraction_method, "extraction_method")
     extraction_status_value = _require_nonblank(extraction_status, "extraction_status")
     review_state_value = _normalize_review_state(
@@ -2071,6 +2082,7 @@ def record_extraction_detected_entity(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     entity_label: str,
     extraction_id: int | None = None,
     capture_event_id: int | None = None,
@@ -2084,7 +2096,7 @@ def record_extraction_detected_entity(
     workspace_id: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     entity_label_value = _require_nonblank(entity_label, "entity_label")
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_DETECTED_ENTITY_REVIEW_STATE
@@ -2179,6 +2191,7 @@ def record_source_relationship(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     from_object_ref: str,
     predicate: str,
     to_object_ref: str | None = None,
@@ -2194,7 +2207,7 @@ def record_source_relationship(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     from_ref = _require_nonblank(from_object_ref, "from_object_ref")
     predicate_value = _require_nonblank(predicate, "predicate")
     review_state_value = _normalize_review_state(

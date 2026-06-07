@@ -518,6 +518,7 @@ def ingest_candidate_batch(
             provenance_event_key_v1=f"prov:gather-ingest:{batch_hash}",
         )
         provenance_event_key = provenance_event.event_key
+        provenance_event_id = provenance_event.event_id
         report["provenance_event"] = {
             "event_id": provenance_event.event_id,
             "event_key": provenance_event.event_key,
@@ -550,6 +551,7 @@ def ingest_candidate_batch(
                 result = canonical_store.record_source_relationship(
                     conn,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     from_object_ref=str(structured["from_object_ref"]),
                     predicate=str(structured["predicate"]),
                     to_object_ref=structured.get("to_object_ref"),
@@ -612,6 +614,7 @@ def ingest_candidate_batch(
                     conn,
                     work_key_v1=work_key,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     work_type=work_type,
                     title=title,
                     rights_posture=structured.get("rights_posture") if structured else None,
@@ -677,6 +680,7 @@ def ingest_candidate_batch(
                     access_result = canonical_store.record_source_access(
                         conn,
                         provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
                         work_id=work_result.row_id,
                         source_lead_id=_source_lead_key_for_candidate(
                             candidate,
@@ -714,6 +718,7 @@ def ingest_candidate_batch(
                     claim_result = canonical_store.record_source_claim(
                         conn,
                         provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
                         source_claim_key_v1=_claim_key_for_candidate(
                             candidate,
                             workspace_id=workspace_id,
@@ -721,6 +726,7 @@ def ingest_candidate_batch(
                             claim_type=work_claim_type,
                             about_object_ref=work_refs[candidate_id],
                         ),
+                        about_object_ref=work_refs[candidate_id],
                         claim_text=claim_text,
                         claim_type=work_claim_type,
                         workspace_id=workspace_id,
@@ -751,6 +757,7 @@ def ingest_candidate_batch(
                 result = canonical_store.record_source_access(
                     conn,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     source_lead_id=source_lead_id,
                     original_locator=str(
                         structured.get("original_locator")
@@ -786,6 +793,7 @@ def ingest_candidate_batch(
                 result = canonical_store.record_extraction_detected_entity(
                     conn,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     entity_label=entity_label,
                     normalized_label=structured.get("normalized_label") if structured else None,
                     entity_type=structured.get("entity_type") if structured else candidate_type,
@@ -822,6 +830,7 @@ def ingest_candidate_batch(
                 result = canonical_store.record_source_claim(
                     conn,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     source_claim_key_v1=_claim_key_for_candidate(
                         candidate,
                         workspace_id=workspace_id,
@@ -943,6 +952,7 @@ def ingest_execution_artifacts(
             provenance_event_key_v1=f"prov:execution-ingest:{input_hashes['execution_record']}",
         )
         provenance_event_key = provenance_event.event_key
+        provenance_event_id = provenance_event.event_id
         report["provenance_event"] = {
             "event_id": provenance_event.event_id,
             "event_key": provenance_event.event_key,
@@ -972,6 +982,7 @@ def ingest_execution_artifacts(
         result = canonical_store.record_capture_event(
             conn,
             provenance_event_ref=provenance_event_key,
+            provenance_event_id=provenance_event_id,
             original_locator=locator_text,
             captured_at=str(record.get("captured_at") or created_at),
             capture_method=str(record.get("capture_method") or "captured"),
@@ -1014,6 +1025,7 @@ def ingest_execution_artifacts(
         result = canonical_store.record_extraction_record(
             conn,
             provenance_event_ref=provenance_event_key,
+            provenance_event_id=provenance_event_id,
             capture_event_id=canonical_capture_id,
             extractor_name=str(
                 execution_record.get("executor_name") or "execute_source_adapter.py"
@@ -1047,6 +1059,7 @@ def ingest_execution_artifacts(
                 entity_result = canonical_store.record_extraction_detected_entity(
                     conn,
                     provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
                     extraction_id=result.row_id,
                     capture_event_id=canonical_capture_id,
                     entity_label=str(entity.get("entity_label") or entity.get("label") or ""),

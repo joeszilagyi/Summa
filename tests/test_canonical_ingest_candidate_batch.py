@@ -72,6 +72,29 @@ def build_batch_payload() -> dict[str, object]:
     }
 
 
+class ProvenanceLookupCountingProxy:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.provenance_lookup_count = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+    def __enter__(self) -> ProvenanceLookupCountingProxy:
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> object:
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def execute(self, sql: str, params: object = ()) -> object:
+        if isinstance(sql, str):
+            normalized_sql = " ".join(sql.split()).upper()
+            if normalized_sql.startswith("SELECT PROVENANCE_EVENT_ID FROM PROVENANCE_EVENT"):
+                self.provenance_lookup_count += 1
+        return self._conn.execute(sql, params)
+
+
 def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
@@ -155,6 +178,27 @@ def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: 
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert output_path.is_file()
+
+
+def test_candidate_batch_ingest_resolves_provenance_event_once(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch, batch_hash = load_fixture_batch()
+    conn = canonical_store.connect_canonical_store(db_path)
+    proxy = ProvenanceLookupCountingProxy(conn)
+    try:
+        with proxy:
+            report = canonical_ingest.ingest_candidate_batch(
+                proxy,
+                batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert proxy.provenance_lookup_count == 1
 
 
 def test_candidate_batch_ingest_passes_incremental_reconciliation_work_items(
