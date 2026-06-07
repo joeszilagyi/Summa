@@ -141,6 +141,13 @@ def test_backup_planner_emits_valid_manifest_for_fixture_repo(tmp_path: Path) ->
     assert exit_code == backup_validator.EXIT_PASS, result
 
 
+def test_backup_manifest_validator_accepts_payload_objects() -> None:
+    result, exit_code = backup_validator.validate_crown_jewel_backup_manifest_payload(sample_manifest_payload())
+
+    assert exit_code == backup_validator.EXIT_PASS, result
+    assert result["counts"]["accepted"] == 1
+
+
 def test_backup_planner_reuses_cached_glob_matches(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     policy_path = repo_root / "config" / "durability_policies" / "local_first_crown_jewels.v1.json"

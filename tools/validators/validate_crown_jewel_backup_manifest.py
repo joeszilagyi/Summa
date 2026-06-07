@@ -110,50 +110,14 @@ def load_json_object(target: Path) -> tuple[dict[str, Any] | None, list[dict[str
     return payload, errors, EXIT_PASS
 
 
-def is_nonblank_string(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def is_relative_path(value: str) -> bool:
-    path = Path(value)
-    return bool(value.strip()) and not path.is_absolute() and ".." not in path.parts
-
-
-def validate_string_array(
-    value: Any,
-    *,
-    field_name: str,
-    errors: list[dict[str, Any]],
-    min_items: int = 0,
-    require_relative_path: bool = False,
-) -> list[str]:
-    if not isinstance(value, list) or len(value) < min_items:
-        add_error(errors, code="INVALID_ARRAY", message=f"{field_name} must be an array with at least {min_items} item(s)")
-        return []
-    accepted: list[str] = []
-    seen: set[str] = set()
-    for index, item in enumerate(value):
-        if not is_nonblank_string(item):
-            add_error(errors, code="INVALID_ARRAY_ITEM", message=f"{field_name}[{index}] must be a non-blank string")
-            continue
-        if item in seen:
-            add_error(errors, code="DUPLICATE_ARRAY_ITEM", message=f"{field_name} contains duplicate value: {item}")
-            continue
-        if require_relative_path and not is_relative_path(item):
-            add_error(errors, code="INVALID_RELATIVE_PATH", message=f"{field_name}[{index}] must be a relative repo path or glob")
-            continue
-        seen.add(item)
-        accepted.append(item)
-    return accepted
-
-
-def validate_crown_jewel_backup_manifest(target: Path) -> tuple[dict[str, Any], int]:
+def validate_crown_jewel_backup_manifest_payload(payload: Any) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
-    payload, errors, load_exit = load_json_object(target)
-    if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, load_exit
+    if not isinstance(payload, dict):
+        add_error(errors, code="OBJECT_REQUIRED", message="top-level JSON value must be an object")
+        return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_VALIDATION_FAILED
 
     counts["inspected"] = 1
 
@@ -319,6 +283,52 @@ def validate_crown_jewel_backup_manifest(target: Path) -> tuple[dict[str, Any], 
     exit_code = EXIT_PASS if not errors else EXIT_VALIDATION_FAILED
     counts["accepted" if exit_code == EXIT_PASS else "rejected"] = 1
     return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
+
+
+def is_nonblank_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def is_relative_path(value: str) -> bool:
+    path = Path(value)
+    return bool(value.strip()) and not path.is_absolute() and ".." not in path.parts
+
+
+def validate_string_array(
+    value: Any,
+    *,
+    field_name: str,
+    errors: list[dict[str, Any]],
+    min_items: int = 0,
+    require_relative_path: bool = False,
+) -> list[str]:
+    if not isinstance(value, list) or len(value) < min_items:
+        add_error(errors, code="INVALID_ARRAY", message=f"{field_name} must be an array with at least {min_items} item(s)")
+        return []
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not is_nonblank_string(item):
+            add_error(errors, code="INVALID_ARRAY_ITEM", message=f"{field_name}[{index}] must be a non-blank string")
+            continue
+        if item in seen:
+            add_error(errors, code="DUPLICATE_ARRAY_ITEM", message=f"{field_name} contains duplicate value: {item}")
+            continue
+        if require_relative_path and not is_relative_path(item):
+            add_error(errors, code="INVALID_RELATIVE_PATH", message=f"{field_name}[{index}] must be a relative repo path or glob")
+            continue
+        seen.add(item)
+        accepted.append(item)
+    return accepted
+
+
+def validate_crown_jewel_backup_manifest(target: Path) -> tuple[dict[str, Any], int]:
+    payload, errors, load_exit = load_json_object(target)
+    if payload is None:
+        counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
+        warnings: list[dict[str, Any]] = []
+        return {"counts": counts, "errors": errors, "warnings": warnings}, load_exit
+    return validate_crown_jewel_backup_manifest_payload(payload)
 
 
 def main() -> int:
