@@ -476,3 +476,296 @@ def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Pa
         "repeated_low_yield",
     ]
     assert [bool(row["retryable"]) for row in rows] == [True, False]
+
+
+def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monkeypatch) -> None:
+    class FakeCursor:
+        def __init__(self, row: dict[str, int]) -> None:
+            self._row = row
+
+        def fetchone(self) -> dict[str, int]:
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeCursor:
+            self.sql.append(sql)
+            assert params == ("cycle:test",) * 6 or params == ("cycle:test",)
+            if "cycle_stage_event" in sql and "cycle_operator_override" in sql:
+                return FakeCursor(
+                    {
+                        "stages": 3,
+                        "artifacts": 2,
+                        "candidates_considered": 4,
+                        "candidates_excluded": 5,
+                        "tool_failures": 1,
+                        "operator_overrides": 2,
+                    }
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    conn = FakeConnection()
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "load_cycle_event",
+        lambda _conn, _event_id: {"cycle_event_id": "cycle:test", "status": "completed"},
+    )
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "list_cycle_stage_events",
+        lambda _conn, _event_id: [{"stage_name": "run_gather"}],
+    )
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "list_cycle_artifacts",
+        lambda _conn, _event_id: [{"artifact_type": "candidate_batch"}],
+    )
+
+    summary = cycle_evidence_ledger.summarize_cycle_evidence(conn, "cycle:test")
+
+    assert summary["counts"] == {
+        "stages": 3,
+        "artifacts": 2,
+        "candidates_considered": 4,
+        "candidates_excluded": 5,
+        "tool_failures": 1,
+        "operator_overrides": 2,
+    }
+    count_queries = [sql for sql in conn.sql if "SELECT COUNT(*) FROM" in sql]
+    assert len(count_queries) == 1
+
+
+def test_record_stage_artifacts_streams_hash_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_path = tmp_path / "candidate-batch.json"
+    artifact_path.write_text('{"schema_version":"gather-candidate-batch.v1"}\n', encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def fail_read_bytes(self: Path) -> bytes:
+        raise AssertionError("artifact hashing should stream bytes instead of read_bytes")
+
+    def fake_record_cycle_artifact_ref(conn, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return "artifact:fixture"
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes, raising=False)
+    monkeypatch.setattr(cycle_evidence_ledger, "record_cycle_artifact_ref", fake_record_cycle_artifact_ref)
+
+    cycle_evidence_ledger._record_stage_artifacts(  # type: ignore[attr-defined]
+        object(),
+        cycle_event_id="cycle:test",
+        stage_event_id="stage:test",
+        stage={"artifacts": {"candidate_batch": str(artifact_path)}},
+    )
+
+    assert str(seen["artifact_hash"]).startswith("sha256:")
+    assert seen["schema_id"] is None
+
+
+def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        manifest_path = tmp_path / "topic-cycle-run.json"
+        manifest_path.write_text('{"schema_version":"topic-cycle-run.v1"}\n', encoding="utf-8")
+        candidate_batch_path = tmp_path / "gather-candidate-batch.json"
+        candidate_batch_path.write_text("candidate-batch\n", encoding="utf-8")
+        feedback_plan_path = tmp_path / "candidate-feedback-plan.json"
+        feedback_plan_path.write_text("feedback-plan\n", encoding="utf-8")
+        execution_record_path = tmp_path / "execution-record.json"
+        execution_record_path.write_text("execution-record\n", encoding="utf-8")
+        capture_events_path = tmp_path / "capture-events.jsonl"
+        capture_events_path.write_text("capture-events\n", encoding="utf-8")
+        extraction_records_path = tmp_path / "extraction-records.jsonl"
+        extraction_records_path.write_text("extraction-records\n", encoding="utf-8")
+
+        candidate_batch_payload = {
+            "schema_version": "gather-candidate-batch.v1",
+            "facet": {"name": "sources"},
+            "candidates": [
+                {
+                    "candidate_id": "candidate-1",
+                    "candidate_type": "source_lead",
+                    "review_status": "proposed",
+                    "persistence_status": "workspace_only",
+                    "origin": {"source": "fixture"},
+                }
+            ],
+        }
+        feedback_plan_payload = {
+            "schema_version": "candidate-feedback-plan.v1",
+            "selection_explanation": {
+                "explanation_id": "explanation:fixture",
+                "policy": {"policy_id": "policy:fixture"},
+                "considered_candidates": [
+                    {
+                        "candidate_id": "candidate-1",
+                        "candidate_type": "feedback_candidate",
+                        "label": "keep",
+                        "score": 1.0,
+                        "rationale": "kept",
+                        "reason_codes": ["selected"],
+                        "eligibility_status": "eligible",
+                        "selected": True,
+                    },
+                    {
+                        "candidate_id": "candidate-2",
+                        "candidate_type": "feedback_candidate",
+                        "label": "skip",
+                        "score": 0.0,
+                        "rationale": "defer",
+                        "reason_codes": ["deferred"],
+                        "eligibility_status": "eligible",
+                        "selected": False,
+                    },
+                ],
+                "excluded_candidates": [
+                    {
+                        "candidate_id": "candidate-3",
+                        "candidate_type": "feedback_candidate",
+                        "label": "excluded",
+                        "reason": "deferred_by_feedback_plan",
+                        "retryable": False,
+                    }
+                ],
+            },
+        }
+        manifest = {
+            "schema_version": "topic-cycle-run.v1",
+            "run_id": "cycle-evidence-fixture",
+            "workspace": {"path": str(tmp_path / "workspace"), "workspace_id": "fixture-workspace"},
+            "subject": {"subject_id": "fixture-subject"},
+            "domain_pack": {"domain_pack_id": "general.v1"},
+            "status": "completed",
+            "mode": "local",
+            "started_at": FIXED_TIMESTAMP,
+            "ended_at": FIXED_TIMESTAMP,
+            "cycle_depth": 1,
+            "previous_run_ids": [],
+            "warnings": [],
+            "operator_overrides": [],
+            "stages": [
+                {
+                    "name": "run_gather",
+                    "status": "passed",
+                    "artifacts": {"candidate_batch": str(candidate_batch_path)},
+                },
+                {
+                    "name": "ingest_candidate_batch",
+                    "status": "passed",
+                    "artifacts": {},
+                    "evidence": {
+                        "artifact_schema_ids": {
+                            "candidate_batch": "gather-candidate-batch.v1",
+                        },
+                        "candidate_batch": {
+                            "schema_version": "gather-candidate-batch.v1",
+                            "facet": {"name": "sources"},
+                            "candidates": candidate_batch_payload["candidates"],
+                            "artifact_path": str(candidate_batch_path),
+                        },
+                    },
+                },
+                {
+                    "name": "load_feedback_plan",
+                    "status": "passed",
+                    "artifacts": {"feedback_plan": str(feedback_plan_path)},
+                    "evidence": {
+                        "artifact_schema_ids": {
+                            "feedback_plan": "candidate-feedback-plan.v1",
+                        },
+                        "feedback_plan": {
+                            "schema_version": "candidate-feedback-plan.v1",
+                            "selection_explanation": feedback_plan_payload["selection_explanation"],
+                            "next_action": None,
+                            "deferred": [],
+                            "artifact_path": str(feedback_plan_path),
+                        },
+                    },
+                },
+                {
+                    "name": "execute_source_adapter",
+                    "status": "passed",
+                    "artifacts": {
+                        "execution_record": str(execution_record_path),
+                        "capture_events": str(capture_events_path),
+                        "extraction_records": str(extraction_records_path),
+                    },
+                    "evidence": {
+                        "artifact_schema_ids": {
+                            "execution_record": "source-acquisition-execution.v1",
+                            "capture_events": "source-capture-event.v1",
+                            "extraction_records": "source-extraction-record.v1",
+                        }
+                    },
+                },
+            ],
+            "cycle_evidence_ledger": {"status": "pending"},
+        }
+
+        def fail_read_json_object(*_args, **_kwargs):
+            raise AssertionError("record_topic_cycle_manifest should reuse stage evidence")
+
+        monkeypatch.setattr(cycle_evidence_ledger, "_read_json_object", fail_read_json_object)
+
+        event_id = cycle_evidence_ledger.record_topic_cycle_manifest(
+            conn,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            manifest_hash="manifest-hash",
+            canonical_db_ref=str(db_path),
+        )
+
+        artifact_rows = conn.execute(
+            """
+            SELECT artifact_type, artifact_path, schema_id
+            FROM cycle_artifact_ref
+            WHERE cycle_event_id=?
+            ORDER BY artifact_type, artifact_path
+            """,
+            (event_id,),
+        ).fetchall()
+        artifact_schema_ids = {
+            (row["artifact_type"], row["artifact_path"]): row["schema_id"] for row in artifact_rows
+        }
+        considered_rows = conn.execute(
+            """
+            SELECT candidate_ref_id, candidate_kind, candidate_label, reason_json
+            FROM cycle_candidate_considered
+            WHERE cycle_event_id=?
+            ORDER BY candidate_ref_id
+            """,
+            (event_id,),
+        ).fetchall()
+        excluded_rows = conn.execute(
+            """
+            SELECT candidate_ref_id, candidate_kind, candidate_label, exclusion_reason
+            FROM cycle_candidate_excluded
+            WHERE cycle_event_id=?
+            ORDER BY candidate_ref_id
+            """,
+            (event_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert artifact_schema_ids[("candidate_batch", str(candidate_batch_path))] == "gather-candidate-batch.v1"
+    assert artifact_schema_ids[("feedback_plan", str(feedback_plan_path))] == "candidate-feedback-plan.v1"
+    assert artifact_schema_ids[("execution_record", str(execution_record_path))] == "source-acquisition-execution.v1"
+    assert artifact_schema_ids[("capture_events", str(capture_events_path))] == "source-capture-event.v1"
+    assert artifact_schema_ids[("extraction_records", str(extraction_records_path))] == "source-extraction-record.v1"
+    assert {
+        (row["candidate_ref_id"], row["candidate_kind"])
+        for row in considered_rows
+    } == {
+        ("candidate-1", "source_lead"),
+        ("candidate-1", "feedback_candidate"),
+        ("candidate-2", "feedback_candidate"),
+    }
+    assert [row["candidate_ref_id"] for row in excluded_rows] == ["candidate-3"]
+    assert excluded_rows[0]["candidate_kind"] == "feedback_candidate"
