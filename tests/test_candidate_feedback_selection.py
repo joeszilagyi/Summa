@@ -734,6 +734,189 @@ def test_candidate_feedback_includes_entity_leads_without_extraction_records(tmp
     )
 
 
+def test_feedback_plan_deferred_facet_list_excludes_selected_facet_for_lead(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+
+    selected_facet = str(payload["next_action"]["selected_facet"])
+    selected_facet_candidate_id = f"facet:{selected_facet}"
+    deferred_facet_ids = [
+        item["candidate_id"]
+        for item in payload["deferred"]
+        if item["candidate_kind"] == "facet"
+    ]
+    assert selected_facet_candidate_id not in deferred_facet_ids
+
+
+def test_feedback_plan_selected_lead_marks_selection_explanation_consistently(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+
+    next_action = payload["next_action"]
+    selected_object_ref = next_action["selected_object_ref"]
+    selected_facet = str(next_action["selected_facet"])
+    facet_selected = [
+        item["selected"]
+        for item in payload["facet_scores"]
+        if item["facet"] == selected_facet
+    ]
+    assert selected_object_ref is not None
+    assert facet_selected == [True]
+    selected_leads = [
+        item["selected"]
+        for item in payload["lead_scores"]
+        if item.get("object_ref") == selected_object_ref
+    ]
+    assert selected_leads == [False]
+    selected_candidate = payload["selection_explanation"]["selected_candidate"]
+    assert selected_candidate["candidate_type"].startswith("lead:")
+    assert selected_candidate["metadata"]["object_ref"] == selected_object_ref
+
+
+def test_entity_type_to_facet_mapping_keeps_non_person_place_entities_visible(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            prov = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="detected-work-entity",
+                event_type="feedback_test",
+                actor_type="pytest",
+                actor_id="pytest.candidate_feedback_selection",
+                tool_name="tests.test_candidate_feedback_selection",
+                run_id="detected-work-entity",
+                event_timestamp=FIXED_CREATED_AT,
+                note_text="candidate visibility fixture",
+                provenance_event_key_v1="prov:feedback:entity-type-mapping",
+            )
+            entity = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=prov.event_key,
+                entity_label="Work Entity",
+                normalized_label="work entity",
+                entity_type="work",
+                review_state="proposed",
+                confidence_score=0.81,
+                workspace_id=subject_id,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+    finally:
+        conn.close()
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+    lead = next(
+        item
+        for item in payload["lead_scores"]
+        if item["object_ref"] == f"detected_entity:{entity.row_id}"
+    )
+    assert lead["lead_kind"] == "detected_entity"
+    assert lead["facet"] == "works"
+    assert lead["reason_codes"] == ["open_lead_yield", "works_candidate"]
+
+
+def test_work_leads_preserve_related_run_ids_from_provenance(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    with canonical_store.connect_canonical_store(db_path) as conn:
+        work_gather_note = gather_note(
+            subject_id=subject_id,
+            facet="works",
+            run_id="work-run-one",
+            cycle_depth=1,
+            prompt_bundle_id="general.gather.works.v1",
+        )
+        workspace_run = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="candidate-feedback-tests",
+            object_id="work-lead-related-run",
+            event_type="gather_candidate_batch_ingest",
+            actor_type="pytest",
+            actor_id="pytest.candidate_feedback_selection",
+            tool_name="tests.test_candidate_feedback_selection",
+            run_id="work-run-one",
+            event_timestamp=FIXED_CREATED_AT,
+            note_text=work_gather_note,
+            provenance_event_key_v1="prov:feedback:work-lead",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:feedback_subject:needs-review",
+            provenance_event_ref=workspace_run.event_key,
+            work_type="article",
+            title="Needs-Review Work",
+            review_state="needs_review",
+            confidence_score=0.77,
+            workspace_id=subject_id,
+            first_seen_at=FIXED_CREATED_AT,
+            last_seen_at=FIXED_CREATED_AT,
+            record_last_updated=FIXED_CREATED_AT,
+        )
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+    work_leads = [item for item in payload["lead_scores"] if item["lead_kind"] == "work"]
+    assert work_leads
+    assert any("work-run-one" in item["related_run_ids"] for item in work_leads)
+
+
+def test_feedback_plan_ledger_records_warning_and_error_counts(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        with conn:
+            conn.execute(
+                "UPDATE extraction_record SET extraction_status=? WHERE summary_short IN (?, ?)",
+                ("mystery", "Useful low-yield extraction failed.", "Useful high-yield extraction."),
+            )
+    finally:
+        conn.close()
+
+    _result, _output_path, payload = build_plan(
+        tmp_path,
+        db_path,
+        manifest_path,
+        extra_args=["--record-selection-ledger"],
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        event = conn.execute(
+            "SELECT warning_count, error_count FROM cycle_event ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert event is not None
+    assert event["warning_count"] == len(payload["warnings"])
+    assert event["error_count"] == len(payload["errors"])
+
+
 def test_candidate_feedback_planner_can_record_selection_explanation_to_ledger(
     tmp_path: Path,
 ) -> None:

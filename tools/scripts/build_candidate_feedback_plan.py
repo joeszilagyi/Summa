@@ -39,6 +39,18 @@ from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
 
 SUCCESS_EXTRACTION_STATUSES = frozenset({"completed", "ok", "recorded", "success"})
 FAILED_EXTRACTION_STATUSES = frozenset({"bad_utf8", "error", "failed", "hostile_replay", "invalid"})
+ENTITY_FACET_PREFIXES = {
+    "person": "people",
+    "person_or_group": "people",
+    "place": "places",
+    "organization": "organizations",
+    "org": "organizations",
+    "work": "works",
+    "event": "events",
+    "concept": "concepts",
+    "topic": "topics",
+    "product": "products",
+}
 
 
 def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
@@ -50,6 +62,29 @@ def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
     if not status:
         return 0, 0, None
     return 0, 0, status
+
+
+def _pick_facet_for_entity_type(entity_type: str, enabled_facets: list[str]) -> str:
+    normalized = str(entity_type or "").strip().casefold().replace(" ", "_")
+    if normalized in ENTITY_FACET_PREFIXES:
+        candidate = ENTITY_FACET_PREFIXES[normalized]
+    elif normalized.endswith("s"):
+        candidate = normalized[:-1]
+        if candidate in ENTITY_FACET_PREFIXES:
+            candidate = ENTITY_FACET_PREFIXES[candidate]
+    else:
+        candidate = normalized
+    if candidate in {"", None}:
+        candidate = normalized
+    if candidate in enabled_facets:
+        return candidate
+    if candidate and candidate + "s" in enabled_facets:
+        return candidate + "s"
+    if candidate.endswith("s") and candidate[:-1] in enabled_facets:
+        return candidate[:-1]
+    if "sources" in enabled_facets:
+        return "sources"
+    return enabled_facets[0] if enabled_facets else candidate
 
 
 class CandidateFeedbackError(RuntimeError):
@@ -668,6 +703,7 @@ def load_entity_leads(
     conn: sqlite3.Connection,
     *,
     subject_id: str,
+    enabled_facets: list[str],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
     warnings: list[str] | None = None,
@@ -690,13 +726,8 @@ def load_entity_leads(
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
-        entity_type = str(row["entity_type"] or "").casefold()
-        if entity_type == "person":
-            facet = "people"
-        elif entity_type == "place":
-            facet = "places"
-        else:
-            continue
+        entity_type = str(row["entity_type"] or "")
+        facet = _pick_facet_for_entity_type(entity_type, enabled_facets)
         success, failed, unknown_status = classify_extraction_status(row["extraction_status"])
         if unknown_status is not None and warnings is not None:
             warnings.append(
@@ -747,6 +778,7 @@ def load_work_leads(
     conn: sqlite3.Connection,
     *,
     subject_id: str,
+    history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
 ) -> list[dict[str, Any]]:
     work_ids = scope_work_ids(conn, subject_id)
@@ -756,7 +788,7 @@ def load_work_leads(
     review_placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
         f"""
-        SELECT work_id, title, review_state
+        SELECT work_id, title, review_state, provenance_event_ref
         FROM work
         WHERE work_id IN ({placeholders})
           AND review_state IN ({review_placeholders})
@@ -766,6 +798,7 @@ def load_work_leads(
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
+        provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
         score = weights["open_lead"] + weights["work_yield"]
         leads.append(
             {
@@ -790,7 +823,12 @@ def load_work_leads(
                 },
                 "source_locus_id": None,
                 "source_lead_id": None,
-                "related_run_ids": [],
+                "related_run_ids": sorted(
+                    {
+                        provenance["run_id"] if provenance and provenance.get("run_id") else None,
+                    }
+                    - {None}
+                ),
             }
         )
     return leads
@@ -959,7 +997,6 @@ def select_next_action(
     productive_leads = [item for item in lead_scores if float(item["score"]) > 0.0]
     if productive_leads:
         selected = productive_leads[0]
-        selected["selected"] = True
         action_kind = "facet_lead"
         selected_object_ref = selected["object_ref"]
         selected_lead_kind = selected["lead_kind"]
@@ -1032,7 +1069,11 @@ def build_deferred_candidates(
     max_deferred: int,
 ) -> list[dict[str, Any]]:
     deferred: list[dict[str, Any]] = []
-    for item in facet_scores[1:]:
+    selected_facet = selected_next_action.get("selected_facet")
+    selected_facet_id = f"facet:{selected_facet}" if isinstance(selected_facet, str) else None
+    for item in facet_scores:
+        if selected_facet_id is not None and item.get("candidate_id") == selected_facet_id:
+            continue
         deferred.append(
             {
                 "candidate_id": item["candidate_id"],
@@ -1091,6 +1132,7 @@ def build_plan(
     entity_leads = load_entity_leads(
         conn,
         subject_id=subject["subject_id"],
+        enabled_facets=list(subject["enabled_facets"]),
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
         warnings=warnings,
@@ -1098,6 +1140,7 @@ def build_plan(
     work_leads = load_work_leads(
         conn,
         subject_id=subject["subject_id"],
+        history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
@@ -1121,8 +1164,12 @@ def build_plan(
         previous_run_ids=previous_run_ids,
         cycle_depth=cycle_depth,
     )
+    selected_object_ref = next_action.get("selected_object_ref")
+    selected_facet = next_action.get("selected_facet")
     for item in facet_scores:
-        item["selected"] = item["facet"] == next_action["selected_facet"]
+        item["selected"] = item["facet"] == selected_facet
+    for item in lead_scores:
+        item["selected"] = False
     deferred = build_deferred_candidates(
         selected_next_action=next_action,
         facet_scores=facet_scores,
@@ -1191,6 +1238,10 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
     explanation = payload.get("selection_explanation")
     if not isinstance(explanation, dict):
         raise CandidateFeedbackError("selection_explanation is missing")
+    warning_count = (
+        len(payload["warnings"]) if isinstance(payload.get("warnings"), list) else 0
+    )
+    error_count = len(payload["errors"]) if isinstance(payload.get("errors"), list) else 0
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
@@ -1214,8 +1265,8 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
                 started_at=str(payload["generated_at"]),
                 status="completed",
                 final_feedback_plan_ref=None,
-                warning_count=0,
-                error_count=0,
+                warning_count=warning_count,
+                error_count=error_count,
                 metadata={
                     "selection_explanation_id": explanation["explanation_id"],
                     "selection_kind": explanation["selection_kind"],
