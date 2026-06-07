@@ -15,6 +15,8 @@ import pytest
 
 from tools.scripts import execute_source_adapter as source_executor
 
+pytestmark = pytest.mark.network_fixture
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
