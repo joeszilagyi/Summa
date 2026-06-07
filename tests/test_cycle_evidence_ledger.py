@@ -239,6 +239,42 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
         conn.close()
 
 
+def test_skipped_cycle_stages_preserve_null_execution_timestamps(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        cycle_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-skipped-stage",
+            started_at=FIXED_TIMESTAMP,
+        )
+        stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=cycle_id,
+            run_id="run-skipped-stage",
+            stage_name="build_publication",
+            stage_order=1,
+            status="skipped",
+            skipped_reason="not requested",
+        )
+        cycle_evidence_ledger.record_cycle_stage_finish(
+            conn,
+            stage_event_id=stage_id,
+            status="skipped",
+        )
+
+        row = conn.execute(
+            "SELECT started_at, ended_at, skipped_reason FROM cycle_stage_event WHERE stage_event_id=?",
+            (stage_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["started_at"] is None
+        assert row["ended_at"] is None
+        assert row["skipped_reason"] == "not requested"
+    finally:
+        conn.close()
+
+
 def test_cycle_evidence_rejects_non_finite_json_values(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
