@@ -135,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         help="Deterministic scoring policy identifier.",
     )
     parser.add_argument(
+        "--feedback-plan-stage",
+        default="build_candidate_feedback_plan",
+        help="Stage label used in selection-explanation IDs and manifest evidence.",
+    )
+    parser.add_argument(
         "--record-selection-ledger",
         action="store_true",
         help=(
@@ -166,6 +171,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise CandidateFeedbackError(f"--{field_name.replace('_', '-')} must be at least 1")
     if args.max_deferred_candidates < 0:
         raise CandidateFeedbackError("--max-deferred-candidates must be non-negative")
+    if not isinstance(args.feedback_plan_stage, str) or not args.feedback_plan_stage.strip():
+        raise CandidateFeedbackError("--feedback-plan-stage must be a non-empty string")
 
 
 def load_runtime(
@@ -931,6 +938,7 @@ def aggregate_facet_scores(
                 "prompt_bundle_id": bundles[facet]["bundle_id"],
                 "score": round(score, 4),
                 "selected": False,
+                "supporting_facet": False,
                 "reason_codes": reason_codes,
                 "rationale": rationale,
                 "signals": signal_bucket,
@@ -1167,7 +1175,9 @@ def build_plan(
     selected_object_ref = next_action.get("selected_object_ref")
     selected_facet = next_action.get("selected_facet")
     for item in facet_scores:
-        item["selected"] = item["facet"] == selected_facet
+        is_selected_facet = item["facet"] == selected_facet
+        item["selected"] = selected_object_ref is None and is_selected_facet
+        item["supporting_facet"] = selected_object_ref is not None and is_selected_facet
     for item in lead_scores:
         item["selected"] = False
     deferred = build_deferred_candidates(
@@ -1198,6 +1208,7 @@ def build_plan(
         lead_scores=lead_scores,
         next_action=next_action,
         deferred=deferred,
+        stage_name=args.feedback_plan_stage,
     )
 
     return {
@@ -1277,7 +1288,7 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
                 conn,
                 cycle_event_id=event_id,
                 run_id=str(explanation["explanation_id"]),
-                stage_name="build_candidate_feedback_plan",
+                stage_name=str(explanation.get("stage_name") or "build_candidate_feedback_plan"),
                 stage_order=1,
                 started_at=str(payload["generated_at"]),
                 status="completed",

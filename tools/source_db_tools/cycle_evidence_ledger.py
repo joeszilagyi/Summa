@@ -10,6 +10,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from tools.common.candidate_feedback_contract import deferred_candidate_retryable
+
 SCHEMA_VERSION = "cycle-evidence-ledger.v1"
 DEFAULT_PRIVACY_CLASSIFICATION = "local_operator"
 _ID_PREFIXES = {
@@ -940,17 +942,24 @@ def _record_feedback_candidates(
         for index, item in enumerate(deferred, start=1):
             if not isinstance(item, dict):
                 continue
+            candidate_id = _optional_text(item.get("candidate_id")) or f"deferred:{index}"
+            candidate_kind = _optional_text(item.get("candidate_kind")) or _optional_text(
+                item.get("proposal_kind")
+            ) or "feedback_candidate"
+            reason = _optional_text(item.get("reason")) or "deferred_by_feedback_plan"
             record_cycle_candidate_excluded(
                 conn,
                 cycle_event_id=cycle_event_id,
                 stage_event_id=stage_event_id,
-                candidate_kind=_optional_text(item.get("proposal_kind")) or "feedback_candidate",
-                candidate_ref_type=_optional_text(item.get("object_family")) or "feedback_plan",
-                candidate_ref_id=_optional_text(item.get("object_ref")) or f"deferred:{index}",
-                candidate_label=_optional_text(item.get("label")),
-                exclusion_reason=_optional_text(item.get("reason")) or "deferred_by_feedback_plan",
+                candidate_kind=candidate_kind,
+                candidate_ref_type="candidate_feedback_plan",
+                candidate_ref_id=candidate_id,
+                candidate_label=_optional_text(item.get("label")) or candidate_id,
+                exclusion_reason=reason,
                 policy_id=_optional_text(item.get("policy_id")),
-                retryable=True,
+                retryable=bool(item.get("retryable"))
+                if isinstance(item.get("retryable"), bool)
+                else deferred_candidate_retryable(reason),
             )
 
 
@@ -987,9 +996,13 @@ def record_topic_cycle_manifest(
         else {}
     )
     cycle_event_id = _optional_text(ledger.get("cycle_event_id"))
-    final_feedback_plan = (
-        manifest.get("feedback_plan") if isinstance(manifest.get("feedback_plan"), dict) else {}
-    )
+    final_feedback_plan: Mapping[str, Any] = {}
+    if isinstance(manifest.get("active_feedback_plan_for_gather"), dict):
+        final_feedback_plan = manifest["active_feedback_plan_for_gather"]
+    elif isinstance(manifest.get("feedback_plan_pre"), dict):
+        final_feedback_plan = manifest["feedback_plan_pre"]
+    elif isinstance(manifest.get("feedback_plan"), dict):
+        final_feedback_plan = manifest["feedback_plan"]
     final_feedback_plan_ref = _optional_text(final_feedback_plan.get("path"))
     stages = manifest.get("stages") if isinstance(manifest.get("stages"), list) else []
     status = _require_nonblank(manifest.get("status"), "manifest.status")
@@ -1116,7 +1129,7 @@ def record_topic_cycle_manifest(
                 batch_path=Path(batch_path),
             )
 
-    for stage_name in ("feedback_plan_pre", "build_feedback_plan_post"):
+    for stage_name in ("load_feedback_plan", "build_feedback_plan_pre", "build_feedback_plan_post"):
         stage = _stage_by_name(stages, stage_name)
         if stage is None or not isinstance(stage.get("artifacts"), dict):
             continue

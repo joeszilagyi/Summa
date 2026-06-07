@@ -6,6 +6,8 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from tools.common.candidate_feedback_contract import deferred_candidate_retryable
+
 SCHEMA_VERSION = "selection-explanation.v1"
 
 
@@ -19,6 +21,7 @@ def stable_explanation_id(
     subject_id: str | None = None,
     workspace_id: str | None = None,
     run_id: str | None = None,
+    stage_name: str | None = None,
     selected_candidate_id: str | None = None,
     policy_id: str | None = None,
 ) -> str:
@@ -28,6 +31,7 @@ def stable_explanation_id(
             subject_id or "",
             workspace_id or "",
             run_id or "",
+            stage_name or "",
             selected_candidate_id or "",
             policy_id or "",
         ]
@@ -176,7 +180,9 @@ def feedback_excluded_records(
                 score=item.get("score") if isinstance(item.get("score"), (int, float)) else None,
                 reason=reason,
                 policy_id=policy_id,
-                retryable=True,
+                retryable=bool(item.get("retryable"))
+                if isinstance(item.get("retryable"), bool)
+                else deferred_candidate_retryable(reason),
                 metadata={"source": "candidate_feedback_plan.deferred"},
             )
         )
@@ -213,6 +219,7 @@ def build_feedback_selection_explanation(
     lead_scores: Sequence[Mapping[str, Any]],
     next_action: Mapping[str, Any],
     deferred: Sequence[Mapping[str, Any]],
+    stage_name: str | None = None,
     workspace_id: str | None = None,
     run_id: str | None = None,
     cycle_event_id: str | None = None,
@@ -235,8 +242,8 @@ def build_feedback_selection_explanation(
         subject_id=subject_id,
         workspace_id=workspace_id,
         run_id=run_id,
+        stage_name=stage_name,
         cycle_event_id=cycle_event_id,
-        stage_name="build_candidate_feedback_plan",
         created_at=generated_at,
         selected_candidate=selected,
         considered_candidates=considered,
@@ -454,6 +461,7 @@ def build_selection_explanation(
         subject_id=subject_id,
         workspace_id=workspace_id,
         run_id=run_id,
+        stage_name=stage_name,
         selected_candidate_id=selected_id,
         policy_id=str(policy_id) if policy_id is not None else None,
     )

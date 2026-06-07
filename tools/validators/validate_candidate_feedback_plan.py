@@ -107,6 +107,7 @@ FACET_SCORE_REQUIRED_KEYS = {
     "prompt_bundle_id",
     "score",
     "selected",
+    "supporting_facet",
     "reason_codes",
     "rationale",
     "signals",
@@ -402,6 +403,7 @@ def validate_facet_scores(payload: dict[str, Any], enabled_facets: list[str], er
         add_error(errors, code="FACET_SCORES_NOT_ARRAY", message="facet_scores must be an array")
         return
     selected_count = 0
+    supporting_count = 0
     previous_score: float | None = None
     expected_rank = 1
     seen_facets: set[str] = set()
@@ -440,11 +442,23 @@ def validate_facet_scores(payload: dict[str, Any], enabled_facets: list[str], er
             add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.selected must be a boolean")
         elif item.get("selected") is True:
             selected_count += 1
+        if not isinstance(item.get("supporting_facet"), bool):
+            add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.supporting_facet must be a boolean")
+        elif item.get("supporting_facet") is True:
+            supporting_count += 1
+        if item.get("selected") is True and item.get("supporting_facet") is True:
+            add_error(
+                errors,
+                code="INVALID_FACET_SCORE",
+                message=f"{label}.selected and {label}.supporting_facet must not both be true",
+            )
         validate_reason_codes(item.get("reason_codes"), field_name=f"{label}.reason_codes", errors=errors)
         validate_nonblank_string(item.get("rationale"), field_name=f"{label}.rationale", errors=errors, code="INVALID_FACET_SCORE")
         validate_numeric_bucket(item.get("signals"), field_name=f"{label}.signals", required_keys=SIGNAL_BUCKET_KEYS, errors=errors)
-    if selected_count != 1:
-        add_error(errors, code="INVALID_FACET_SELECTION", message="facet_scores must mark exactly one selected facet")
+    if selected_count > 1:
+        add_error(errors, code="INVALID_FACET_SELECTION", message="facet_scores must not mark more than one selected facet")
+    if supporting_count > 1:
+        add_error(errors, code="INVALID_FACET_SELECTION", message="facet_scores must not mark more than one supporting facet")
 
 
 def validate_lead_scores(payload: dict[str, Any], enabled_facets: list[str], errors: list[dict[str, Any]]) -> None:
@@ -566,6 +580,8 @@ def validate_next_action(payload: dict[str, Any], enabled_facets: list[str], pre
         add_error(errors, code="INVALID_NEXT_ACTION", message="facet_lead next actions must include selected_object_ref")
     if next_action.get("action_kind") != "facet_lead" and next_action.get("selected_lead_kind") is not None:
         add_error(errors, code="INVALID_NEXT_ACTION", message="non-lead next actions must not include selected_lead_kind")
+    if next_action.get("action_kind") != "facet_lead" and next_action.get("selected_object_ref") is not None:
+        add_error(errors, code="INVALID_NEXT_ACTION", message="non-lead next actions must not include selected_object_ref")
 
 
 def validate_deferred(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
@@ -673,10 +689,44 @@ def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]
     facet_scores = payload.get("facet_scores")
     if isinstance(next_action, dict) and isinstance(facet_scores, list):
         selected_facets = [item for item in facet_scores if isinstance(item, dict) and item.get("selected") is True]
-        if len(selected_facets) == 1:
-            selected_facet = selected_facets[0].get("facet")
-            if next_action.get("selected_facet") != selected_facet:
-                add_error(errors, code="NEXT_ACTION_MISMATCH", message="next_action.selected_facet must match the selected facet_scores entry")
+        supporting_facets = [
+            item for item in facet_scores if isinstance(item, dict) and item.get("supporting_facet") is True
+        ]
+        selected_object_ref = next_action.get("selected_object_ref")
+        if selected_object_ref is None:
+            if len(selected_facets) != 1:
+                add_error(
+                    errors,
+                    code="NEXT_ACTION_MISMATCH",
+                    message="next_action.selected_facet must correspond to exactly one selected facet_scores entry",
+                )
+            if supporting_facets:
+                add_error(
+                    errors,
+                    code="NEXT_ACTION_MISMATCH",
+                    message="facet-only next actions must not mark supporting facet_scores entries",
+                )
+            if len(selected_facets) == 1:
+                selected_facet = selected_facets[0].get("facet")
+                if next_action.get("selected_facet") != selected_facet:
+                    add_error(errors, code="NEXT_ACTION_MISMATCH", message="next_action.selected_facet must match the selected facet_scores entry")
+        else:
+            if selected_facets:
+                add_error(
+                    errors,
+                    code="NEXT_ACTION_MISMATCH",
+                    message="facet-lead next actions must not mark selected facet_scores entries",
+                )
+            if len(supporting_facets) != 1:
+                add_error(
+                    errors,
+                    code="NEXT_ACTION_MISMATCH",
+                    message="facet-lead next actions must mark exactly one supporting facet_scores entry",
+                )
+            if len(supporting_facets) == 1:
+                supporting_facet = supporting_facets[0].get("facet")
+                if next_action.get("selected_facet") != supporting_facet:
+                    add_error(errors, code="NEXT_ACTION_MISMATCH", message="next_action.selected_facet must match the supporting facet_scores entry")
         if next_action.get("action_kind") == "facet_bootstrap" and payload.get("counts", {}).get("gather_runs_considered") not in (0, None):
             add_error(errors, code="NEXT_ACTION_MISMATCH", message="facet_bootstrap next actions require zero prior gather runs")
 
