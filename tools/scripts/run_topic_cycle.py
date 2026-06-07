@@ -40,6 +40,7 @@ from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     validate_gather_candidate_batch,
 )
+from tools.validators import validate_source_acquisition_execution as execution_validator  # noqa: E402
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     EXIT_PASS as EXIT_EXECUTION_PASS,
 )
@@ -78,6 +79,7 @@ class StageRecord:
     counts: dict[str, Any] | None = None
     skipped_reason: str | None = None
     error_message: str | None = None
+    evidence: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -95,6 +97,8 @@ class StageRecord:
             payload["validation"] = self.validation
         if self.counts is not None:
             payload["counts"] = self.counts
+        if self.evidence is not None:
+            payload["evidence"] = self.evidence
         if self.skipped_reason is not None:
             payload["skipped_reason"] = self.skipped_reason
         if self.error_message is not None:
@@ -688,6 +692,18 @@ def build_feedback_plan_stage(
         }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "candidate feedback plan failed validation")
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "feedback_plan": payload.get("schema_version"),
+            },
+            "feedback_plan": {
+                "schema_version": payload.get("schema_version"),
+                "selection_explanation": payload.get("selection_explanation"),
+                "next_action": payload.get("next_action"),
+                "deferred": payload.get("deferred"),
+                "artifact_path": str(output),
+            },
+        }
         stage.artifacts = {
             "feedback_plan": str(output),
             "feedback_plan_sha256": hash_file(output),
@@ -743,6 +759,18 @@ def resolve_feedback_plan(
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "feedback plan failed validation")
         payload = read_json(path, label="candidate feedback plan")
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "feedback_plan": payload.get("schema_version"),
+            },
+            "feedback_plan": {
+                "schema_version": payload.get("schema_version"),
+                "selection_explanation": payload.get("selection_explanation"),
+                "next_action": payload.get("next_action"),
+                "deferred": payload.get("deferred"),
+                "artifact_path": str(path),
+            },
+        }
         record_feedback_plan_reference(manifest, path=path, when="pre")
         manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
@@ -912,6 +940,18 @@ def candidate_ingest_stage(
             conn.close()
         report_path = run_dir / "candidate-ingest" / "canonical-ingest-report.json"
         write_json(report_path, report)
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "candidate_batch": batch.get("schema_version"),
+                "ingest_report": report.get("schema_version"),
+            },
+            "candidate_batch": {
+                "schema_version": batch.get("schema_version"),
+                "facet": batch.get("facet"),
+                "candidates": batch.get("candidates"),
+                "artifact_path": str(ingest_batch_path),
+            },
+        }
         stage.counts = report.get("counts")
         stage.artifacts = {
             "ingest_report": str(report_path),
@@ -938,6 +978,18 @@ def candidate_ingest_stage(
             conn.close()
         report_path = run_dir / "candidate-ingest" / "canonical-ingest-report.json"
         write_json(report_path, report)
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "candidate_batch": batch.get("schema_version"),
+                "ingest_report": report.get("schema_version"),
+            },
+            "candidate_batch": {
+                "schema_version": batch.get("schema_version"),
+                "facet": batch.get("facet"),
+                "candidates": batch.get("candidates"),
+                "artifact_path": str(ingest_batch_path),
+            },
+        }
         stage.counts = report.get("counts")
         stage.artifacts = {
             "ingest_report": str(report_path),
@@ -1063,6 +1115,13 @@ def acquisition_stage(
         }
         if exit_code != EXIT_EXECUTION_PASS:
             fail_stage(stage, "execution artifacts failed validation")
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "execution_record": receipt.execution_record.get("schema_version"),
+                "capture_events": execution_validator.CAPTURE_SCHEMA_VERSION,
+                "extraction_records": execution_validator.EXTRACTION_SCHEMA_VERSION,
+            }
+        }
         stage.artifacts = {
             "execution_run_dir": str(output_dir),
             "execution_record": str(output_dir / "execution-record.json"),
@@ -1146,6 +1205,11 @@ def execution_ingest_stage(
                     )
         finally:
             conn.close()
+        stage.evidence = {
+            "artifact_schema_ids": {
+                "ingest_report": report.get("schema_version"),
+            }
+        }
         if args.mode == "dry-run":
             report_path = run_dir / "execution-ingest" / "canonical-ingest-report.json"
             write_json(report_path, report)
@@ -1327,6 +1391,11 @@ def graph_closure_stage(
         fail_stage(stage, str(exc))
 
     summary = report.get("summary", {})
+    stage.evidence = {
+        "artifact_schema_ids": {
+            "graph_closure_report": report.get("schema_version"),
+        }
+    }
     graph.update(
         {
             "enabled": True,

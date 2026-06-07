@@ -798,12 +798,36 @@ def _stage_artifact_schema_id(stage: Mapping[str, Any], artifact_key: str) -> st
     return value if isinstance(value, str) and value else None
 
 
+def _collect_artifact_schema_ids(stages: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    artifact_schema_ids: dict[str, str] = {}
+    for stage in stages:
+        evidence = stage.get("evidence")
+        if not isinstance(evidence, dict):
+            continue
+        stage_schema_ids = evidence.get("artifact_schema_ids")
+        if not isinstance(stage_schema_ids, dict):
+            continue
+        for artifact_key, schema_id in stage_schema_ids.items():
+            if isinstance(artifact_key, str) and isinstance(schema_id, str) and schema_id:
+                artifact_schema_ids.setdefault(artifact_key, schema_id)
+    return artifact_schema_ids
+
+
+def _stage_evidence_payload(stage: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    evidence = stage.get("evidence")
+    if not isinstance(evidence, dict):
+        return None
+    payload = evidence.get(key)
+    return payload if isinstance(payload, dict) else None
+
+
 def _record_stage_artifacts(
     conn: sqlite3.Connection,
     *,
     cycle_event_id: str,
     stage_event_id: str,
     stage: Mapping[str, Any],
+    artifact_schema_ids: Mapping[str, str] | None = None,
 ) -> None:
     artifacts = stage.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -818,6 +842,9 @@ def _record_stage_artifacts(
         artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
         if artifact_hash is None:
             artifact_hash = _file_hash(path)
+        schema_id = _stage_artifact_schema_id(stage, key)
+        if schema_id is None and artifact_schema_ids is not None:
+            schema_id = artifact_schema_ids.get(key)
         record_cycle_artifact_ref(
             conn,
             cycle_event_id=cycle_event_id,
@@ -827,24 +854,22 @@ def _record_stage_artifacts(
             artifact_hash=artifact_hash,
             byte_count=_file_size(path),
             public_safe=False,
-            schema_id=_stage_artifact_schema_id(stage, key),
+            schema_id=schema_id,
             validation_status=_optional_text((stage.get("validation") or {}).get("status"))
             if isinstance(stage.get("validation"), dict)
             else None,
         )
 
 
-def _record_candidate_batch(
+def _record_candidate_batch_payload(
     conn: sqlite3.Connection,
     *,
     cycle_event_id: str,
     stage_event_id: str | None,
-    batch_path: Path,
+    batch: Mapping[str, Any],
+    source_artifact_path: str | None = None,
 ) -> None:
-    payload = _read_json_object(batch_path)
-    if payload is None:
-        return
-    candidates = payload.get("candidates")
+    candidates = batch.get("candidates")
     if not isinstance(candidates, list):
         return
     for index, candidate in enumerate(candidates, start=1):
@@ -869,23 +894,40 @@ def _record_candidate_batch(
             candidate_label=label,
             reason={
                 "origin": origin,
-                "facet": payload.get("facet"),
-                "source_artifact": str(batch_path),
+                "facet": batch.get("facet"),
+                "source_artifact": source_artifact_path,
             },
             selected=False,
         )
 
 
-def _record_feedback_candidates(
+def _record_candidate_batch(
     conn: sqlite3.Connection,
     *,
     cycle_event_id: str,
     stage_event_id: str | None,
-    feedback_plan_path: Path,
+    batch_path: Path,
 ) -> None:
-    payload = _read_json_object(feedback_plan_path)
+    payload = _read_json_object(batch_path)
     if payload is None:
         return
+    _record_candidate_batch_payload(
+        conn,
+        cycle_event_id=cycle_event_id,
+        stage_event_id=stage_event_id,
+        batch=payload,
+        source_artifact_path=str(batch_path),
+    )
+
+
+def _record_feedback_candidates_payload(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    stage_event_id: str | None,
+    payload: Mapping[str, Any],
+    source_artifact_path: str | None = None,
+) -> None:
     explanation = payload.get("selection_explanation")
     if isinstance(explanation, dict):
         policy = explanation.get("policy") if isinstance(explanation.get("policy"), dict) else {}
@@ -914,6 +956,7 @@ def _record_feedback_candidates(
                     "selection_explanation_id": explanation.get("explanation_id"),
                     "reason_codes": candidate.get("reason_codes", []),
                     "eligibility_status": candidate.get("eligibility_status"),
+                    "source_artifact": source_artifact_path,
                 },
                 selected=bool(candidate.get("selected")),
             )
@@ -982,6 +1025,25 @@ def _record_feedback_candidates(
                 if isinstance(item.get("retryable"), bool)
                 else deferred_candidate_retryable(reason),
             )
+
+
+def _record_feedback_candidates(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    stage_event_id: str | None,
+    feedback_plan_path: Path,
+) -> None:
+    payload = _read_json_object(feedback_plan_path)
+    if payload is None:
+        return
+    _record_feedback_candidates_payload(
+        conn,
+        cycle_event_id=cycle_event_id,
+        stage_event_id=stage_event_id,
+        payload=payload,
+        source_artifact_path=str(feedback_plan_path),
+    )
 
 
 def _stage_by_name(stages: Iterable[Mapping[str, Any]], name: str) -> Mapping[str, Any] | None:
@@ -1056,6 +1118,7 @@ def record_topic_cycle_manifest(
         metadata={"schema_version": manifest.get("schema_version")},
         cycle_event_id=cycle_event_id,
     )
+    artifact_schema_ids = _collect_artifact_schema_ids(stages)
     stage_ids: dict[str, str] = {}
     for index, raw_stage in enumerate(stages, start=1):
         if not isinstance(raw_stage, dict):
@@ -1087,8 +1150,30 @@ def record_topic_cycle_manifest(
         )
         stage_ids[name] = stage_id
         _record_stage_artifacts(
-            conn, cycle_event_id=event_id, stage_event_id=stage_id, stage=raw_stage
+            conn,
+            cycle_event_id=event_id,
+            stage_event_id=stage_id,
+            stage=raw_stage,
+            artifact_schema_ids=artifact_schema_ids,
         )
+        candidate_batch_payload = _stage_evidence_payload(raw_stage, "candidate_batch")
+        if candidate_batch_payload is not None:
+            _record_candidate_batch_payload(
+                conn,
+                cycle_event_id=event_id,
+                stage_event_id=stage_id,
+                batch=candidate_batch_payload,
+                source_artifact_path=_optional_text(candidate_batch_payload.get("artifact_path")),
+            )
+        feedback_plan_payload = _stage_evidence_payload(raw_stage, "feedback_plan")
+        if feedback_plan_payload is not None:
+            _record_feedback_candidates_payload(
+                conn,
+                cycle_event_id=event_id,
+                stage_event_id=stage_id,
+                payload=feedback_plan_payload,
+                source_artifact_path=_optional_text(feedback_plan_payload.get("artifact_path")),
+            )
         if raw_stage.get("status") == "failed":
             record_cycle_tool_failure(
                 conn,
@@ -1137,31 +1222,6 @@ def record_topic_cycle_manifest(
         warning_count=warning_count,
         error_count=error_count,
     )
-
-    for raw_stage in stages:
-        if not isinstance(raw_stage, dict) or not isinstance(raw_stage.get("artifacts"), dict):
-            continue
-        batch_path = raw_stage["artifacts"].get("candidate_batch")
-        if isinstance(batch_path, str):
-            _record_candidate_batch(
-                conn,
-                cycle_event_id=event_id,
-                stage_event_id=stage_ids.get(str(raw_stage.get("name"))),
-                batch_path=Path(batch_path),
-            )
-
-    for stage_name in ("load_feedback_plan", "build_feedback_plan_pre", "build_feedback_plan_post"):
-        stage = _stage_by_name(stages, stage_name)
-        if stage is None or not isinstance(stage.get("artifacts"), dict):
-            continue
-        plan_path = stage["artifacts"].get("feedback_plan")
-        if isinstance(plan_path, str):
-            _record_feedback_candidates(
-                conn,
-                cycle_event_id=event_id,
-                stage_event_id=stage_ids.get(stage_name),
-                feedback_plan_path=Path(plan_path),
-            )
 
     for item in manifest.get("operator_overrides", []):
         if not isinstance(item, dict):

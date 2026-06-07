@@ -545,6 +545,9 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert stages["graph_closure_audit"]["status"] in {"passed", "warning", "skipped"}
+    assert stages["ingest_candidate_batch"]["evidence"]["candidate_batch"]["schema_version"] == "gather-candidate-batch.v1"  # type: ignore[index]
+    assert stages["build_feedback_plan_post"]["evidence"]["feedback_plan"]["schema_version"] == "candidate-feedback-plan.v1"  # type: ignore[index]
+    assert stages["ingest_execution_artifacts"]["evidence"]["artifact_schema_ids"]["ingest_report"] == "canonical-ingest-report.v1"  # type: ignore[index]
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
     assert manifest["feedback_plan_pre"] is None
     assert manifest["feedback_plan"] is None
