@@ -341,6 +341,7 @@ def validate_capture_events(
     records: list[dict[str, Any]],
     *,
     expected_run_id: str,
+    expected_input_handoff_hash: str,
     errors: list[dict[str, Any]],
 ) -> None:
     for index, record in enumerate(records):
@@ -376,6 +377,13 @@ def validate_capture_events(
                 code="CAPTURE_RUN_ID_MISMATCH",
                 message="capture event run_id does not match execution-record.json",
                 path=f"{base}.run_id",
+            )
+        if record.get("handoff_hash") != expected_input_handoff_hash:
+            add_error(
+                errors,
+                code="CAPTURE_HANDOFF_HASH_MISMATCH",
+                message="capture handoff_hash does not match execution input_handoff_hash",
+                path=f"{base}.handoff_hash",
             )
         _require_rfc3339(
             record.get("captured_at"),
@@ -634,7 +642,15 @@ def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any],
         errors=errors,
     )
     expected_run_id = execution_record.get("run_id") if isinstance(execution_record.get("run_id"), str) else ""
-    validate_capture_events(capture_events, expected_run_id=expected_run_id, errors=errors)
+    expected_input_handoff_hash = execution_record.get("input_handoff_hash")
+    if not isinstance(expected_input_handoff_hash, str):
+        expected_input_handoff_hash = ""
+    validate_capture_events(
+        capture_events,
+        expected_run_id=expected_run_id,
+        expected_input_handoff_hash=expected_input_handoff_hash,
+        errors=errors,
+    )
     capture_ids = {
         record["capture_id"]
         for record in capture_events
