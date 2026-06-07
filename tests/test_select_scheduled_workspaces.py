@@ -304,6 +304,61 @@ def test_selector_appends_planned_runs_without_merging_existing_terminal_line(
     assert appended["planned_run_id"] == "planner-fixture:selected_workspace"
 
 
+def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+    planned_runs = tmp_path / "planned-runs.jsonl"
+
+    first_run = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-idempotent",
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--planned-runs-jsonl",
+            str(planned_runs),
+            "--format",
+            "json",
+        ]
+    )
+    assert first_run.returncode == 0, first_run.stdout + first_run.stderr
+
+    second_run = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-idempotent",
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--planned-runs-jsonl",
+            str(planned_runs),
+            "--format",
+            "json",
+        ]
+    )
+    assert second_run.returncode == 0, second_run.stdout + second_run.stderr
+
+    lines = [line for line in planned_runs.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["planner_run_id"] == "planner-idempotent"
+    assert record["planned_run_id"] == "planner-idempotent:selected_workspace"
+
+
 def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspaces" / "manual"
     workspace_root.mkdir(parents=True)
