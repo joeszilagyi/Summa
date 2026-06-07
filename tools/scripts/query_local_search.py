@@ -203,6 +203,7 @@ def load_matching_rows(
         SELECT
           sp.*,
           matches.score,
+          matches.match_snippet,
           (
             SELECT COUNT(*)
             FROM search_projection_fts
@@ -212,7 +213,8 @@ def load_matching_rows(
         FROM (
           SELECT
             projection_id,
-            bm25(search_projection_fts) AS score
+            bm25(search_projection_fts) AS score,
+            snippet(search_projection_fts, 4, '', '', '...', 120) AS match_snippet
           FROM search_projection_fts
           WHERE search_projection_fts MATCH ?{scope_clause}
         ) AS matches
@@ -224,11 +226,6 @@ def load_matching_rows(
     ).fetchall()
     total = 0 if not rows else int(rows[0]["total_matches"])
     return rows, total
-
-
-def field_matches_terms(text: str, terms: list[str]) -> bool:
-    lowered = text.lower()
-    return all(term in lowered for term in terms)
 
 
 def render_snippet_text(text: str, terms: list[str], *, max_length: int = 120) -> str:
@@ -246,33 +243,87 @@ def render_snippet_text(text: str, terms: list[str], *, max_length: int = 120) -
     return snippet
 
 
-def build_result(row: sqlite3.Row, *, terms: list[str], rank: int) -> dict[str, Any]:
-    indexed_fields = json.loads(row["indexed_fields_json"])
-    matched_fields: list[str] = []
+def render_snippets(row: sqlite3.Row, terms: list[str]) -> list[dict[str, Any]]:
     snippets: list[dict[str, Any]] = []
-    for field in indexed_fields:
-        field_name = field.get("field")
-        field_text = field.get("text")
-        display_policy = field.get("display_policy")
-        if not isinstance(field_name, str) or not isinstance(field_text, str) or not isinstance(display_policy, str):
-            continue
-        if not field_matches_terms(field_text, terms):
-            continue
-        matched_fields.append(field_name)
-        if looks_like_private_path(field_text):
-            snippets.append({"field": field_name, "text": "[suppressed private path]", "locator": None, "display_policy": "suppressed"})
-            continue
+    private_field_snippets: list[dict[str, Any]] = []
+    indexed_fields_json = row["indexed_fields_json"]
+    if isinstance(indexed_fields_json, str):
+        try:
+            indexed_fields = json.loads(indexed_fields_json)
+        except json.JSONDecodeError:
+            indexed_fields = []
+    else:
+        indexed_fields = []
+    if isinstance(indexed_fields, list):
+        for field in indexed_fields:
+            if not isinstance(field, dict):
+                continue
+            field_name = field.get("field")
+            field_text = field.get("text")
+            if not isinstance(field_name, str) or not isinstance(field_text, str):
+                continue
+            if looks_like_private_path(field_text):
+                private_field_snippets.append(
+                    {
+                        "field": field_name,
+                        "text": "[suppressed private path]",
+                        "locator": None,
+                        "display_policy": "suppressed",
+                    }
+                )
+    match_snippet = row["match_snippet"]
+    if isinstance(match_snippet, str) and match_snippet.strip():
         snippets.append(
             {
-                "field": field_name,
-                "text": render_snippet_text(field_text, terms),
+                "field": "indexed_text",
+                "text": render_snippet_text(match_snippet, terms),
                 "locator": None,
-                "display_policy": display_policy,
+                "display_policy": "public",
+            }
+        )
+    title = row["title"]
+    if isinstance(title, str) and title.strip():
+        snippets.append(
+            {
+                "field": "title",
+                "text": render_snippet_text(title, terms),
+                "locator": None,
+                "display_policy": "public",
             }
         )
 
+    subtitle = row["subtitle"]
+    if isinstance(subtitle, str) and subtitle.strip() and subtitle != title:
+        snippets.append(
+            {
+                "field": "subtitle",
+                "text": render_snippet_text(subtitle, terms),
+                "locator": None,
+                "display_policy": "public",
+            }
+        )
     if not snippets:
-        snippets.append({"field": "title", "text": render_snippet_text(row["title"], terms), "locator": None, "display_policy": "public"})
+        title_text = "" if not isinstance(title, str) else title
+        snippets.append(
+            {
+                "field": "title",
+                "text": title_text[:120],
+                "locator": None,
+                "display_policy": "public",
+            }
+        )
+    snippets = private_field_snippets + snippets
+    for snippet in snippets:
+        if looks_like_private_path(snippet["text"]):
+            snippet["text"] = "[suppressed private path]"
+            snippet["locator"] = None
+            snippet["display_policy"] = "suppressed"
+    return snippets
+
+
+def build_result(row: sqlite3.Row, *, terms: list[str], rank: int) -> dict[str, Any]:
+    matched_fields: list[str] = []
+    snippets = render_snippets(row, terms)
 
     object_type = row["object_type"]
     return {
