@@ -40,7 +40,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
 
-
 VALIDATOR_NAME = "gather_candidate_batch"
 CONTRACT_VERSION = "1"
 SCHEMA_PATH = REPO_ROOT / "config" / "gather_candidate_batch.schema.json"
@@ -115,8 +114,8 @@ def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
     candidate_path = candidate_path.expanduser().resolve()
     try:
         candidate_path.relative_to(batch_dir)
-    except ValueError:
-        raise ValueError("rendered_prompt_path must remain inside the batch directory")
+    except ValueError as exc:
+        raise ValueError("rendered_prompt_path must remain inside the batch directory") from exc
     return candidate_path
 
 
@@ -522,10 +521,12 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
         rendered_prompt = prompt.get("rendered_prompt")
         rendered_prompt_hash = prompt.get("rendered_prompt_hash")
         rendered_prompt_path = prompt.get("rendered_prompt_path")
-        prompt_path_text: str | None = None
+        rendered_prompt_byte_count: int | None = None
         if isinstance(rendered_prompt, str):
             prompt_text = rendered_prompt
-            actual_hash = hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
+            rendered_prompt_bytes = rendered_prompt.encode("utf-8")
+            rendered_prompt_byte_count = len(rendered_prompt_bytes)
+            actual_hash = hashlib.sha256(rendered_prompt_bytes).hexdigest()
             if rendered_prompt_hash != actual_hash:
                 add_error(
                     errors,
@@ -563,25 +564,36 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path="$.prompt.rendered_prompt_path",
                     )
                 else:
-                    prompt_path_text = file_text
                     if prompt_text is None:
                         prompt_text = file_text
-                    if isinstance(rendered_prompt, str) and file_text != rendered_prompt:
+                    file_bytes = file_text.encode("utf-8")
+                    actual_hash = hashlib.sha256(file_bytes).hexdigest()
+                    actual_byte_count = len(file_bytes)
+                    if isinstance(rendered_prompt, str):
+                        if rendered_prompt_hash != actual_hash:
+                            add_error(
+                                errors,
+                                code="PROMPT_HASH_MISMATCH",
+                                message="rendered_prompt_hash does not match rendered_prompt_path content",
+                                path="$.prompt.rendered_prompt_hash",
+                            )
+                        if (
+                            rendered_prompt_byte_count is not None
+                            and actual_byte_count != rendered_prompt_byte_count
+                        ):
+                            add_error(
+                                errors,
+                                code="PROMPT_BYTE_COUNT_MISMATCH",
+                                message="rendered_prompt_path byte count does not match inline rendered_prompt",
+                                path="$.prompt.rendered_prompt_path",
+                            )
+                    elif rendered_prompt_hash != actual_hash:
                         add_error(
                             errors,
                             code="PROMPT_PATH_CONTENT_MISMATCH",
-                            message="rendered_prompt_path content does not match inline rendered_prompt",
+                            message="rendered_prompt_hash does not match rendered_prompt_path content",
                             path="$.prompt.rendered_prompt_path",
                         )
-        if isinstance(prompt_path_text, str) and not isinstance(rendered_prompt, str):
-            actual_hash = hashlib.sha256(prompt_path_text.encode("utf-8")).hexdigest()
-            if rendered_prompt_hash != actual_hash:
-                add_error(
-                    errors,
-                    code="PROMPT_HASH_MISMATCH",
-                    message="rendered_prompt_hash does not match rendered_prompt_path content",
-                    path="$.prompt.rendered_prompt_hash",
-                )
 
     iteration_mode = payload.get("iteration_mode")
     cycle_depth = payload.get("cycle_depth")

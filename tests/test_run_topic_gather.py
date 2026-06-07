@@ -954,6 +954,59 @@ def test_gather_candidate_batch_validator_rejects_prompt_path_outside_batch(tmp_
     )
 
 
+def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "prompt-path-inside"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    prompt_path = prompt_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    payload["prompt"]["rendered_prompt_path"] = "rendered-prompt.txt"
+    batch_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    class GuardedPromptText(str):
+        def __eq__(self, other: object) -> bool:  # pragma: no cover - exercised on regression
+            raise AssertionError("validator must not compare full prompt strings")
+
+    original_read_text = validator.Path.read_text
+
+    def read_text_guard(self: Path, *args: object, **kwargs: object) -> str:
+        text = original_read_text(self, *args, **kwargs)
+        if self == prompt_path:
+            return GuardedPromptText(text)
+        return text
+
+    monkeypatch.setattr(validator.Path, "read_text", read_text_guard)
+
+    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
+    assert exit_code == validator.EXIT_PASS, report
+
+
 
 
 def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp_path: Path) -> None:
