@@ -298,6 +298,51 @@ def test_validate_profile_mappings_caches_table_columns_for_repeated_tables() ->
     assert fake_conn.queries.count(f"PRAGMA table_info({table_name})") == 1
 
 
+def test_public_conditions_for_table_reuses_schema_cache() -> None:
+    table_name = "work"
+
+    class FakeResult:
+        def __init__(self, rows: list[dict[str, str]]) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list[dict[str, str]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeResult:
+            del params
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            if normalized == f"PRAGMA table_info({table_name})":
+                return FakeResult(
+                    [
+                        {"name": "public_blocker"},
+                        {"name": "publication_state"},
+                    ]
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    fake_conn = FakeConnection()
+    schema_cache: dict[str, set[str]] = {}
+
+    first = standards_profiles.public_conditions_for_table(
+        fake_conn, table_name, alias="w", schema_cache=schema_cache
+    )
+    second = standards_profiles.public_conditions_for_table(
+        fake_conn, table_name, alias="w", schema_cache=schema_cache
+    )
+
+    assert first == second
+    assert fake_conn.queries.count(f"PRAGMA table_info({table_name})") == 1
+    assert first == [
+        "COALESCE(w.public_blocker, '') = ''",
+        "COALESCE(w.publication_state, 'public_safe') NOT IN ('blocked', 'draft', 'local_only', 'private', 'private_working', 'restricted')",
+    ]
+
+
 def test_invalid_profile_payload_is_rejected() -> None:
     profile = standards_profiles.load_profile("dcmi.v1")
     del profile["field_mappings"][0]["external_target"]
