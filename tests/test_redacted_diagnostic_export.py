@@ -14,7 +14,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional test dependency in this environment
     validators = None
 
-from tools.source_db_tools import canonical_store, canonical_write_spool, cycle_evidence_ledger
+from tools.source_db_tools import (
+    canonical_graph_closure,
+    canonical_store,
+    canonical_write_spool,
+    cycle_evidence_ledger,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "scripts"))
 import export_redacted_diagnostics as support_builder  # noqa: E402
@@ -259,6 +264,12 @@ def build_fixture_store(tmp_path: Path) -> tuple[Path, Path]:
         conn.commit()
     finally:
         conn.close()
+    graph_closure_report_path = workspace / "graph-closure-report.json"
+    canonical_graph_closure.audit_canonical_graph_closure(
+        db_path,
+        generated_at=FIXED_TIMESTAMP,
+        report_path=graph_closure_report_path,
+    )
     return db_path, workspace
 
 
@@ -439,10 +450,258 @@ def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
     assert canonical_summary["table_row_counts"]["work"] == 1
     assert canonical_summary["table_row_counts"]["source_claim"] == 1
     assert graph_shape["edge_counts_by_predicate"]["mentions"] == 1
+    assert graph_shape["degree_distribution"]["1"] == 2
+    assert graph_shape["component_summary"]["status"] == "skipped"
     assert review_summary["tables"]["source_claim"]["proposed"] == 1
     assert relationship_summary["predicate_counts"]["mentions"] == 1
     assert graph_closure["schema_version"] == "canonical-graph-closure-report.v1"
     assert leak_report["status"] == "pass"
+
+
+def test_source_access_summary_caps_detail_rows_and_aggregates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, _workspace = build_fixture_store(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance_key = conn.execute(
+            "SELECT provenance_event_key_v1 FROM provenance_event LIMIT 1"
+        ).fetchone()["provenance_event_key_v1"]
+        work_id = conn.execute("SELECT work_id FROM work LIMIT 1").fetchone()["work_id"]
+        with conn:
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance_key,
+                work_id=work_id,
+                source_locus_id="locus-alpha",
+                original_locator="https://alpha.example.test/one",
+                canonical_url="https://alpha.example.test/one",
+                refetchability_status="refetchable",
+                review_state="needs_review",
+                publication_state="private_working",
+                workspace_id="redacted_workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance_key,
+                work_id=work_id,
+                source_locus_id="locus-beta",
+                original_locator="https://beta.example.test/two",
+                canonical_url="https://beta.example.test/two",
+                refetchability_status="blocked",
+                review_state="needs_review",
+                publication_state="private_working",
+                workspace_id="redacted_workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(support_builder, "MAX_SOURCE_ACCESS_RECORD_DETAILS", 1)
+    redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+    conn = canonical_store.connect_existing_read_only(db_path)
+    try:
+        summary = support_builder.build_source_access_summary(conn, redactor)
+    finally:
+        conn.close()
+
+    assert summary["count"] == 3
+    assert summary["records_truncated"] is True
+    assert len(summary["records"]) == 1
+    assert summary["aggregate_counts"]["by_domain"]["alpha.example.test"] == 1
+    assert summary["aggregate_counts"]["by_domain"]["beta.example.test"] == 1
+    assert summary["aggregate_counts"]["by_domain"]["sensitive.example.test"] == 1
+    assert summary["aggregate_counts"]["by_source_locus_id"][redactor.token("source-locus", "locus-alpha")] == 1
+    assert summary["aggregate_counts"]["by_source_locus_id"][redactor.token("source-locus", "locus-beta")] == 1
+    assert summary["aggregate_counts"]["by_source_locus_id"]["[missing]"] == 1
+    assert summary["aggregate_counts"]["by_status"]["review_state"]["needs_review"] == 3
+    assert summary["aggregate_counts"]["by_status"]["publication_state"]["private_working"] == 3
+    assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["[blank]"] == 1
+    assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["refetchable"] == 1
+    assert summary["aggregate_counts"]["by_status"]["refetchability_status"]["blocked"] == 1
+
+
+def test_export_uses_cached_graph_closure_report_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "diagnostics"
+
+    def fail_live_audit(*args: object, **kwargs: object) -> dict[str, Any]:
+        raise AssertionError("live graph closure audit should not run by default")
+
+    monkeypatch.setattr(support_builder.canonical_graph_closure, "audit_canonical_graph_closure", fail_live_audit)
+
+    args = support_builder.parse_args(
+        [
+            "--db",
+            str(db_path),
+            "--workspace",
+            str(workspace),
+            "--output-dir",
+            str(output_dir),
+            "--path-redaction",
+            "hmac",
+            "--url-redaction",
+            "domain_only",
+            "--redaction-key",
+            "fixed-test-redaction-key",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+            "--overwrite",
+        ]
+    )
+    report = support_builder.export_bundle(args)
+
+    assert report["status"] == "pass"
+    graph_closure = load_json(output_dir / "graph-closure-summary.json")
+    assert graph_closure["schema_version"] == "canonical-graph-closure-report.v1"
+
+
+def test_export_can_opt_in_to_live_graph_closure_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "live-diagnostics"
+    live_calls = 0
+    original_live_audit = support_builder.canonical_graph_closure.audit_canonical_graph_closure
+
+    def counting_live_audit(*args: object, **kwargs: object) -> dict[str, Any]:
+        nonlocal live_calls
+        live_calls += 1
+        return original_live_audit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        support_builder.canonical_graph_closure,
+        "audit_canonical_graph_closure",
+        counting_live_audit,
+    )
+
+    args = support_builder.parse_args(
+        [
+            "--db",
+            str(db_path),
+            "--workspace",
+            str(workspace),
+            "--output-dir",
+            str(output_dir),
+            "--path-redaction",
+            "hmac",
+            "--url-redaction",
+            "domain_only",
+            "--redaction-key",
+            "fixed-test-redaction-key",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+            "--overwrite",
+            "--live-graph-closure",
+        ]
+    )
+    report = support_builder.export_bundle(args)
+
+    assert report["status"] == "pass"
+    assert live_calls == 1
+    graph_closure = load_json(output_dir / "graph-closure-summary.json")
+    assert graph_closure["schema_version"] == "canonical-graph-closure-report.v1"
+
+
+def test_export_skips_connected_component_analysis_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "diagnostics"
+
+    def fail_components(*args: object, **kwargs: object) -> list[int]:
+        raise AssertionError("connected-component analysis should be optional")
+
+    monkeypatch.setattr(support_builder, "component_sizes", fail_components)
+
+    args = support_builder.parse_args(
+        [
+            "--db",
+            str(db_path),
+            "--workspace",
+            str(workspace),
+            "--output-dir",
+            str(output_dir),
+            "--path-redaction",
+            "hmac",
+            "--url-redaction",
+            "domain_only",
+            "--redaction-key",
+            "fixed-test-redaction-key",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+            "--overwrite",
+        ]
+    )
+    report = support_builder.export_bundle(args)
+
+    assert report["status"] == "pass"
+    graph_shape = load_json(output_dir / "graph-shape.json")
+    assert graph_shape["component_summary"]["status"] == "skipped"
+
+
+def test_workspace_artifact_summary_streams_recursive_scan_and_stops_at_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _db_path, workspace = build_fixture_store(tmp_path)
+    nested = workspace / "nested" / "deeper"
+    nested.mkdir(parents=True)
+    (nested / "alpha.json").write_text(json.dumps({"schema_version": "fixture"}) + "\n", encoding="utf-8")
+    (nested / "beta.log").write_text("beta", encoding="utf-8")
+
+    monkeypatch.setattr(support_builder, "MAX_WORKSPACE_ARTIFACTS", 1)
+
+    def fail_rglob(*args: object, **kwargs: object):  # pragma: no cover - exercised by failure
+        raise AssertionError("workspace artifact summary should not use Path.rglob")
+
+    monkeypatch.setattr(Path, "rglob", fail_rglob)
+
+    hash_calls = 0
+    original_hash_file = support_builder.hash_file
+
+    def counting_hash_file(path: Path) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_hash_file(path)
+
+    monkeypatch.setattr(support_builder, "hash_file", counting_hash_file)
+    redactor = Redactor(
+        path_mode="hmac",
+        url_mode="domain_only",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=False,
+    )
+
+    summary = support_builder.summarize_workspace_artifacts(workspace, redactor)
+
+    assert summary["artifact_count"] == 1
+    assert summary["truncated"] is True
+    assert hash_calls == 1
+
+
+def test_schema_cache_reuses_table_metadata_queries(tmp_path: Path) -> None:
+    db_path, _workspace = build_fixture_store(tmp_path)
+    conn = canonical_store.connect_existing_read_only(db_path)
+    try:
+        cache = support_builder.SchemaIntrospectionCache.from_connection(conn)
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            support_builder.count_by(conn, "capture_event", "review_state", cache)
+            support_builder.count_by(conn, "capture_event", "mime_type", cache)
+            support_builder.count_table(conn, "capture_event", cache)
+        finally:
+            conn.set_trace_callback(None)
+    finally:
+        conn.close()
+
+    pragma_queries = [stmt for stmt in statements if stmt.startswith("PRAGMA table_info")]
+    assert pragma_queries == ["PRAGMA table_info(capture_event)"]
+    assert not any("sqlite_master" in stmt.lower() for stmt in statements)
 
 
 def test_cycle_manifest_summary_uses_targeted_manifest_probes(
