@@ -319,64 +319,25 @@ def safe_source_access_label(row: sqlite3.Row) -> str:
 
 
 def canonical_family_yields_for_event(conn: sqlite3.Connection, event_key: str) -> dict[str, int]:
-    counts = {
-        "work": int(
-            conn.execute(
-                "SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?",
-                (event_key,),
-            ).fetchone()["count"]
-        ),
-        "source_claim": int(
-            conn.execute(
-                "SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?",
-                (event_key,),
-            ).fetchone()["count"]
-        ),
-        "extraction_detected_entity": int(
-            conn.execute(
-                "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?",
-                (event_key,),
-            ).fetchone()["count"]
-        ),
-        "source_relationship": int(
-            conn.execute(
-                "SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?",
-                (event_key,),
-            ).fetchone()["count"]
-        ),
-    }
-
     note_row = conn.execute(
         "SELECT note_text FROM provenance_event WHERE provenance_event_key_v1=?",
         (event_key,),
     ).fetchone()
     note_payload = parse_note_text(note_row["note_text"]) if note_row is not None else {}
     artifact_hash = note_payload.get("artifact_hash")
-
-    source_access_ids: set[int] = set()
-    for row in conn.execute(
-        """
-        SELECT access.source_access_id
-        FROM source_access AS access
-        INNER JOIN work ON work.work_id = access.work_id
-        WHERE work.provenance_event_ref=?
-        """,
-        (event_key,),
-    ).fetchall():
-        source_access_ids.add(int(row["source_access_id"]))
-    if isinstance(artifact_hash, str) and artifact_hash:
-        like_pattern = f"source-lead:{artifact_hash}:%"
-        for row in conn.execute(
-            """
-            SELECT source_access_id
-            FROM source_access
-            WHERE source_lead_id LIKE ?
-            """,
-            (like_pattern,),
-        ).fetchall():
-            source_access_ids.add(int(row["source_access_id"]))
-    counts["source_access"] = len(source_access_ids)
-    return counts
+    if not isinstance(artifact_hash, str):
+        artifact_hash = None
+    yield_summaries = _family_yields_for_events(conn, [(event_key, artifact_hash)])
+    return yield_summaries.get(
+        event_key,
+        {
+            "work": 0,
+            "source_claim": 0,
+            "extraction_detected_entity": 0,
+            "source_relationship": 0,
+            "source_access": 0,
+        },
+    )
 
 
 def _family_yields_for_events(

@@ -1050,6 +1050,74 @@ def test_load_gather_history_batches_yield_summaries_per_event(tmp_path: Path) -
     )
 
 
+def test_canonical_family_yields_for_event_uses_grouped_summary_query(
+    tmp_path: Path,
+) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    db_path = bootstrap_db(tmp_path)
+    seed_feedback_state(db_path, subject_id="feedback_subject")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        event_row = conn.execute(
+            "SELECT provenance_event_key_v1 FROM provenance_event WHERE run_id=?",
+            ("cycle-one-sources-high",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert event_row is not None
+    event_key = str(event_row["provenance_event_key_v1"])
+
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        yields = planner.canonical_family_yields_for_event(conn, event_key)
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        conn.close()
+
+    assert yields == {
+        "work": 1,
+        "source_claim": 1,
+        "extraction_detected_entity": 0,
+        "source_relationship": 0,
+        "source_access": 1,
+    }
+    assert any("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql)
+    assert sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql) == 1
+    assert any(
+        "SELECT note_text FROM provenance_event WHERE provenance_event_key_v1=?" in sql
+        for sql in executed_sql
+    )
+    assert not any("SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql for sql in executed_sql)
+    assert not any(
+        "SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql
+        for sql in executed_sql
+    )
+    assert not any(
+        "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?"
+        in sql
+        for sql in executed_sql
+    )
+    assert not any(
+        "SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?" in sql
+        for sql in executed_sql
+    )
+    assert not any(
+        "SELECT source_access_id" in sql and "source_lead_id LIKE ?" in sql
+        for sql in executed_sql
+    )
+
+
 def test_candidate_feedback_includes_entity_leads_without_extraction_records(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
