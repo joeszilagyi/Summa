@@ -122,7 +122,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--facet",
-        help="One enabled gather facet from the resolved subject runtime. Optional when --feedback-plan supplies the next action.",
+        help=(
+            "One enabled gather facet from the resolved subject runtime, or a "
+            "comma-separated batch such as sources,timeline. Optional when "
+            "--feedback-plan supplies the next action."
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -132,9 +136,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--phase",
-        choices=resolve_subject_runtime.PHASE_KEYS,
         default=DEFAULT_PHASE,
-        help="Prompt phase within the selected bundle (default: 01a).",
+        help=(
+            "Prompt phase within the selected bundle (default: 01a). "
+            "Use a comma-separated batch such as 01a,01r to fan out one process across phases."
+        ),
     )
     parser.add_argument(
         "--engine",
@@ -305,6 +311,16 @@ def detect_hazard_flags(source_text: str) -> list[str]:
     return flags
 
 
+def split_cli_values(raw_value: str | None, *, field_name: str, default: list[str] | None = None) -> list[str]:
+    if raw_value is None:
+        values = list(default or [])
+    else:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not values:
+        raise GatherDriverError(f"{field_name} must contain at least one non-blank value")
+    return values
+
+
 def iter_source_text_chunks(path: Path, *, byte_cap: int = SOURCE_TEXT_BLOCK_BYTE_CAP) -> Iterator[str]:
     if byte_cap <= 0:
         raise GatherDriverError("source text byte cap must be greater than zero")
@@ -428,18 +444,24 @@ def resolve_gather_inputs(
     runtime: dict[str, Any],
     facet: str,
     phase: str,
+    pack: dict[str, Any] | None = None,
+    resolved_bundles: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     subject = runtime["subject"]
     if facet not in subject["enabled_facets"]:
         raise GatherDriverError(f"facet not enabled in subject manifest: {facet}")
 
-    pack = resolve_gather_domain_pack.load_domain_pack(subject["domain_pack"])
+    if pack is None:
+        pack = resolve_gather_domain_pack.load_domain_pack(subject["domain_pack"])
     enabled_facets = pack.get("enabled_facets")
     if not isinstance(enabled_facets, list) or facet not in enabled_facets:
         raise GatherDriverError(f"facet not enabled by domain pack: {facet}")
 
     try:
-        bundle = resolve_subject_runtime.resolve_prompt_bundles(pack, [facet])[facet]
+        if resolved_bundles is None:
+            bundle = resolve_subject_runtime.resolve_prompt_bundles(pack, [facet])[facet]
+        else:
+            bundle = resolved_bundles[facet]
     except resolve_subject_runtime.ResolutionError as exc:
         raise GatherDriverError(str(exc)) from exc
 
@@ -504,6 +526,33 @@ def validate_iteration_args(args: argparse.Namespace) -> None:
             raise GatherDriverError("--previous-run-id requires --use-prior-state")
         if args.cycle_depth != DEFAULT_CYCLE_DEPTH:
             raise GatherDriverError("--cycle-depth > 1 requires --use-prior-state")
+
+
+def resolve_batch_targets(
+    args: argparse.Namespace,
+    *,
+    next_action: dict[str, Any] | None,
+) -> tuple[list[str], list[str]]:
+    if args.facet is None:
+        if next_action is None:
+            raise GatherDriverError(
+                "--facet is required unless --feedback-plan supplies the next action"
+            )
+        selected_facet = next_action.get("selected_facet")
+        if not isinstance(selected_facet, str) or not selected_facet.strip():
+            raise GatherDriverError("feedback plan next_action.selected_facet is required")
+        facet_values = [selected_facet.strip()]
+    else:
+        facet_values = split_cli_values(args.facet, field_name="--facet")
+
+    phase_values = split_cli_values(args.phase, field_name="--phase", default=[DEFAULT_PHASE])
+    invalid_phases = [phase for phase in phase_values if phase not in resolve_subject_runtime.PHASE_KEYS]
+    if invalid_phases:
+        valid = ", ".join(resolve_subject_runtime.PHASE_KEYS)
+        raise GatherDriverError(f"--phase must be one of: {valid}")
+    if next_action is not None and (len(facet_values) > 1 or len(phase_values) > 1):
+        raise GatherDriverError("batch mode is not supported when a feedback plan supplies next_action")
+    return facet_values, phase_values
 
 
 def load_feedback_plan(raw_path: str) -> dict[str, Any]:
@@ -578,6 +627,159 @@ def apply_feedback_plan_defaults(
         args.use_prior_state = True
 
     return next_action
+
+
+def execute_gather_run(
+    *,
+    args: argparse.Namespace,
+    created_at: str,
+    runtime: dict[str, Any],
+    pack: dict[str, Any],
+    resolved_bundles: dict[str, dict[str, Any]],
+    facet: str,
+    phase: str,
+    command_timeout_seconds: float,
+    prior_state: dict[str, Any] | None,
+    feedback_plan: dict[str, Any] | None,
+    next_action: dict[str, Any] | None,
+    batch_run_count: int,
+) -> dict[str, Any]:
+    gather_inputs = resolve_gather_inputs(
+        runtime=runtime,
+        facet=facet,
+        phase=phase,
+        pack=pack,
+        resolved_bundles=resolved_bundles,
+    )
+    if next_action is not None:
+        selected_bundle_id = next_action.get("selected_prompt_bundle_id")
+        if (
+            isinstance(selected_bundle_id, str)
+            and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]
+        ):
+            raise GatherDriverError(
+                "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
+            )
+    run_id = args.run_id or build_run_id(
+        gather_inputs["subject"]["subject_id"],
+        gather_inputs["facet"],
+        gather_inputs["phase"],
+        created_at,
+    )
+    if args.run_id and batch_run_count > 1:
+        run_id = ".".join(
+            (
+                args.run_id.strip(),
+                slugify_run_component(facet),
+                slugify_run_component(phase),
+            )
+        )
+
+    workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
+    run_dir = workspace_root / RUNS_ROOT / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
+    prior_state_context = prior_state
+    source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
+        args.source_text_file,
+        template=gather_inputs["wrapper_template"],
+    )
+    rendered_prompt = render_prompt_text(
+        prompt_body=prompt_body,
+        subject=gather_inputs["subject"],
+        facet=gather_inputs["facet"],
+        phase=gather_inputs["phase"],
+        bundle=gather_inputs["bundle"],
+        wrapped_blocks=rendered_blocks,
+        next_action=next_action,
+        prior_state=prior_state_context,
+        template=gather_inputs["wrapper_template"],
+    )
+    parsed_blocks = parse_wrapped_blocks(rendered_prompt, template=gather_inputs["wrapper_template"])
+    rendered_source_blocks = [
+        block for block in parsed_blocks if block.source_ref.startswith("file:")
+    ]
+    if len(rendered_source_blocks) != len(source_wrapping_blocks):
+        raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
+
+    rendered_prompt_path = run_dir / "rendered-prompt.txt"
+    write_text(rendered_prompt_path, rendered_prompt, sync=False)
+
+    live_result: dict[str, Any] | None = None
+    should_call_llm = True
+    if isinstance(next_action, dict):
+        should_call_llm = bool(next_action.get("should_call_llm", True))
+    if args.mode == "live" and should_call_llm:
+        live_result = run_live_engine(
+            run_dir=run_dir,
+            rendered_prompt_path=rendered_prompt_path,
+            subject_id=gather_inputs["subject"]["subject_id"],
+            facet=gather_inputs["facet"],
+            phase=gather_inputs["phase"],
+            engine=args.engine,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+
+    batch = build_candidate_batch(
+        args=args,
+        created_at=created_at,
+        run_id=run_id,
+        run_dir=run_dir,
+        gather_inputs=gather_inputs,
+        prompt_body=prompt_body,
+        rendered_prompt=rendered_prompt,
+        rendered_prompt_path=rendered_prompt_path,
+        source_wrapping_blocks=source_wrapping_blocks,
+        live_result=live_result,
+        prior_state=prior_state_context,
+        feedback_plan=feedback_plan,
+        next_action=next_action,
+        debug_rendered_prompt=args.debug_rendered_prompt,
+    )
+    batch_path = run_dir / "gather-candidate-batch.json"
+    if args.debug_rendered_prompt:
+        findings = scan_text(
+            rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle"
+        )
+        if findings:
+            sample = "; ".join(
+                f"{finding['code']}@{finding['path']}" for finding in findings[:5]
+            )
+            raise GatherDriverError(f"debug rendered prompt failed leak scan: {sample}")
+    write_json(batch_path, batch, sync=False)
+
+    validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
+    if validation_exit_code != 0:
+        messages = "; ".join(
+            f"{error['code']}: {error['message']}" for error in validation_result["errors"]
+        )
+        raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
+
+    if args.mode != "dry-run":
+        sync_paths([rendered_prompt_path, batch_path])
+
+    summary_json = render_summary_json(
+        batch_path=batch_path,
+        rendered_prompt_path=rendered_prompt_path,
+        batch=batch,
+        rendered_prompt_sha256=sha256_text(rendered_prompt),
+        candidate_batch_sha256=hash_file(batch_path),
+        live_result=live_result,
+    )
+    summary_text = render_summary_text(
+        batch_path=batch_path,
+        rendered_prompt_path=rendered_prompt_path,
+        batch=batch,
+        live_result=live_result,
+    )
+    return {
+        "batch_path": batch_path,
+        "batch": batch,
+        "summary_json": summary_json,
+        "summary_text": summary_text,
+        "rendered_prompt_path": rendered_prompt_path,
+    }
 
 
 def resolve_prior_state_context(
@@ -1124,138 +1326,54 @@ def main() -> int:
         if args.cycle_depth is None:
             args.cycle_depth = DEFAULT_CYCLE_DEPTH
         validate_iteration_args(args)
-        gather_inputs = resolve_gather_inputs(
-            runtime=runtime,
-            facet=args.facet.strip(),
-            phase=args.phase,
-        )
-        if next_action is not None:
-            selected_bundle_id = next_action.get("selected_prompt_bundle_id")
-            if (
-                isinstance(selected_bundle_id, str)
-                and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]
-            ):
-                raise GatherDriverError(
-                    "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
-                )
-        run_id = args.run_id or build_run_id(
-            gather_inputs["subject"]["subject_id"],
-            gather_inputs["facet"],
-            gather_inputs["phase"],
-            created_at,
-        )
-
-        workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
-        run_dir = workspace_root / RUNS_ROOT / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
+        facet_values, phase_values = resolve_batch_targets(args, next_action=next_action)
+        pack = resolve_gather_domain_pack.load_domain_pack(runtime["subject"]["domain_pack"])
+        resolved_bundles = resolve_subject_runtime.resolve_prompt_bundles(pack, facet_values)
         prior_state = resolve_prior_state_context(
             args,
-            subject_id=gather_inputs["subject"]["subject_id"],
+            subject_id=runtime["subject"]["subject_id"],
         )
-        source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
-            args.source_text_file,
-            template=gather_inputs["wrapper_template"],
-        )
-        rendered_prompt = render_prompt_text(
-            prompt_body=prompt_body,
-            subject=gather_inputs["subject"],
-            facet=gather_inputs["facet"],
-            phase=gather_inputs["phase"],
-            bundle=gather_inputs["bundle"],
-            wrapped_blocks=rendered_blocks,
-            next_action=next_action,
-            prior_state=prior_state,
-            template=gather_inputs["wrapper_template"],
-        )
-        parsed_blocks = parse_wrapped_blocks(
-            rendered_prompt, template=gather_inputs["wrapper_template"]
-        )
-        rendered_source_blocks = [
-            block for block in parsed_blocks if block.source_ref.startswith("file:")
-        ]
-        if len(rendered_source_blocks) != len(source_wrapping_blocks):
-            raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
-
-        rendered_prompt_path = run_dir / "rendered-prompt.txt"
-        write_text(rendered_prompt_path, rendered_prompt, sync=False)
-
-        live_result: dict[str, Any] | None = None
-        should_call_llm = True
-        if isinstance(next_action, dict):
-            should_call_llm = bool(next_action.get("should_call_llm", True))
-        if args.mode == "live" and should_call_llm:
-            live_result = run_live_engine(
-                run_dir=run_dir,
-                rendered_prompt_path=rendered_prompt_path,
-                subject_id=gather_inputs["subject"]["subject_id"],
-                facet=gather_inputs["facet"],
-                phase=gather_inputs["phase"],
-                engine=args.engine,
-                command_timeout_seconds=command_timeout_seconds,
-            )
-
-        batch = build_candidate_batch(
-            args=args,
-            created_at=created_at,
-            run_id=run_id,
-            run_dir=run_dir,
-            gather_inputs=gather_inputs,
-            prompt_body=prompt_body,
-            rendered_prompt=rendered_prompt,
-            rendered_prompt_path=rendered_prompt_path,
-            source_wrapping_blocks=source_wrapping_blocks,
-            live_result=live_result,
-            prior_state=prior_state,
-            feedback_plan=feedback_plan,
-            next_action=next_action,
-            debug_rendered_prompt=args.debug_rendered_prompt,
-        )
-        batch_path = run_dir / "gather-candidate-batch.json"
-        if args.debug_rendered_prompt:
-            findings = scan_text(
-                rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle"
-            )
-            if findings:
-                sample = "; ".join(
-                    f"{finding['code']}@{finding['path']}" for finding in findings[:5]
+        results: list[dict[str, Any]] = []
+        batch_run_count = len(facet_values) * len(phase_values)
+        for facet in facet_values:
+            for phase in phase_values:
+                results.append(
+                    execute_gather_run(
+                        args=args,
+                        created_at=created_at,
+                        runtime=runtime,
+                        pack=pack,
+                        resolved_bundles=resolved_bundles,
+                        facet=facet,
+                        phase=phase,
+                        command_timeout_seconds=command_timeout_seconds,
+                        prior_state=prior_state,
+                        feedback_plan=feedback_plan,
+                        next_action=next_action,
+                        batch_run_count=batch_run_count,
+                    )
                 )
-                raise GatherDriverError(f"debug rendered prompt failed leak scan: {sample}")
-        write_json(batch_path, batch, sync=False)
 
-        validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
-        if validation_exit_code != 0:
-            messages = "; ".join(
-                f"{error['code']}: {error['message']}" for error in validation_result["errors"]
-            )
-            raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
-
-        if args.mode != "dry-run":
-            sync_paths([rendered_prompt_path, batch_path])
-
-        if args.format == "json":
-            candidate_batch_sha256 = hash_file(batch_path)
-            rendered_prompt_sha256 = sha256_text(rendered_prompt)
-            sys.stdout.write(
-                render_summary_json(
-                    batch_path=batch_path,
-                    rendered_prompt_path=rendered_prompt_path,
-                    batch=batch,
-                    rendered_prompt_sha256=rendered_prompt_sha256,
-                    candidate_batch_sha256=candidate_batch_sha256,
-                    live_result=live_result,
-                )
-            )
+        if len(results) == 1:
+            result = results[0]
+            if args.format == "json":
+                sys.stdout.write(result["summary_json"])
+            else:
+                sys.stdout.write(result["summary_text"])
         else:
-            sys.stdout.write(
-                render_summary_text(
-                    batch_path=batch_path,
-                    rendered_prompt_path=rendered_prompt_path,
-                    batch=batch,
-                    live_result=live_result,
-                )
-            )
+            if args.format == "json":
+                payload = {
+                    "batch_mode": True,
+                    "run_count": len(results),
+                    "runs": [json.loads(result["summary_json"]) for result in results],
+                }
+                sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            else:
+                lines = ["batch_mode=true", f"run_count={len(results)}"]
+                for result in results:
+                    lines.append("---")
+                    lines.append(result["summary_text"].rstrip())
+                sys.stdout.write("\n".join(lines) + "\n")
         return 0
     except (
         GatherDriverError,

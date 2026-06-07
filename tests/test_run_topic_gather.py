@@ -678,6 +678,75 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     assert prompt_path.stat().st_size > large_source_path.stat().st_size
 
 
+def test_run_topic_gather_batches_facets_and_phases_in_one_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources", "timeline"])
+
+    runtime_calls = 0
+    prior_state_calls = 0
+    real_resolve_runtime_inputs = driver.resolve_runtime_inputs
+
+    def fake_resolve_runtime_inputs(args) -> dict[str, object]:
+        nonlocal runtime_calls
+        runtime_calls += 1
+        return real_resolve_runtime_inputs(args)
+
+    def fake_resolve_prior_state_context(args, *, subject_id: str):
+        nonlocal prior_state_calls
+        prior_state_calls += 1
+        return None
+
+    monkeypatch.setattr(driver, "resolve_runtime_inputs", fake_resolve_runtime_inputs)
+    monkeypatch.setattr(driver, "resolve_prior_state_context", fake_resolve_prior_state_context)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(DRIVER_PATH),
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources,timeline",
+            "--phase",
+            "01a,01r",
+            "--mode",
+            "dry-run",
+            "--format",
+            "json",
+            "--created-at",
+            FIXED_CREATED_AT,
+        ],
+    )
+
+    exit_code = driver.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["batch_mode"] is True
+    assert payload["run_count"] == 4
+    assert runtime_calls == 1
+    assert prior_state_calls == 1
+    assert {
+        (run["facet"], run["phase"]) for run in payload["runs"]
+    } == {
+        ("sources", "01a"),
+        ("sources", "01r"),
+        ("timeline", "01a"),
+        ("timeline", "01r"),
+    }
+    for run in payload["runs"]:
+        assert Path(run["candidate_batch_path"]).is_file()
+        assert Path(run["rendered_prompt_path"]).is_file()
+
+
 def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
