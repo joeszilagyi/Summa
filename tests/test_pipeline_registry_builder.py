@@ -84,3 +84,19 @@ def test_collect_current_files_requires_inventory_file_without_git(tmp_path: Pat
 
     with pytest.raises(SystemExit, match="inventory-file"):
         builder.collect_current_files(repo_root)
+
+
+def test_glob_matches_caches_compiled_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    builder.compile_glob_regex.cache_clear()
+    compile_calls: list[str] = []
+    real_compile = builder.re.compile
+
+    def tracking_compile(pattern: str, flags: int = 0):
+        compile_calls.append(pattern)
+        return real_compile(pattern, flags)
+
+    monkeypatch.setattr(builder.re, "compile", tracking_compile)
+
+    assert builder.glob_matches("tools/scripts/build_pipeline_registry.py", "tools/scripts/*.py")
+    assert builder.glob_matches("tools/scripts/build_release_readiness_bundle.py", "tools/scripts/*.py")
+    assert compile_calls == [r"tools/scripts/[^/]*\.py"]
