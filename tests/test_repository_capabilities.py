@@ -223,6 +223,34 @@ def test_validator_accepts_importable_console_script_targets(monkeypatch) -> Non
     assert not any(error["code"] == "invalid_command_target" for error in loaded["errors"])
 
 
+def test_validator_rejects_unimportable_console_script_targets(monkeypatch) -> None:
+    index = {
+        "capabilities": [
+            {
+                "id": "x",
+                "status": "live",
+                "kind": "console_script",
+                "package_command": "bad-cmd",
+                "path": "tools/scripts/validate_repository_capabilities.py",
+                "docs_path": "docs/project/REPOSITORY_CAPABILITIES.md",
+                "test_refs": [],
+            }
+        ]
+    }
+
+    def fake_package_scripts() -> dict[str, Any]:
+        return {"bad-cmd": "does_not_exist.module:main"}
+
+    monkeypatch.setattr("tools.scripts.validate_repository_capabilities.load_package_scripts", fake_package_scripts)
+
+    validator = importlib.import_module("tools.scripts.validate_repository_capabilities")
+    loaded = validator.validate_index(index)
+
+    assert loaded["status"] == "fail"
+    assert any(error["code"] == "invalid_command_target" for error in loaded["errors"])
+    assert any("cannot import console script target" in error["message"] for error in loaded["errors"])
+
+
 def test_validator_report_passes_for_checked_in_index() -> None:
     proc = subprocess.run(
         [sys.executable, str(VALIDATOR_PATH), "--index", str(INDEX_PATH), "--format", "json"],
