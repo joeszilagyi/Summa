@@ -141,6 +141,15 @@ def test_serialize_structured_value_rejects_nonstandard_floats() -> None:
         source_executor.serialize_structured_value({"value": float("nan")})
 
 
+def test_structured_record_map_cache_key_includes_record_path() -> None:
+    left = source_executor.structured_record_map_cache_key("/tmp/input.json", "json", None)
+    right = source_executor.structured_record_map_cache_key("/tmp/input.json", "json", "records")
+
+    assert left != right
+    assert left == ("/tmp/input.json", "json", "")
+    assert right == ("/tmp/input.json", "json", "records")
+
+
 @pytest.mark.parametrize(
     ("mode", "variant", "message"),
     [

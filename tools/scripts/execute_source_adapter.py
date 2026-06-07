@@ -492,6 +492,12 @@ def load_structured_record_map(
     ]
 
 
+def structured_record_map_cache_key(
+    source_path_value: str, structured_format: str, record_path: str | None
+) -> tuple[str, str, str]:
+    return source_path_value, structured_format, record_path or ""
+
+
 def serialize_structured_value(value: Any) -> str:
     if isinstance(value, ET.Element):
         body = ET.tostring(value, encoding="unicode")
@@ -1075,7 +1081,7 @@ def execute_structured_data(
             }
         )
         structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = (source_path_value, structured_format)
+        cache_key = structured_record_map_cache_key(source_path_value, structured_format, record_path)
         record_map, parse_errors = load_structured_record_map(
             source_path, structured_format=structured_format, record_path=record_path
         )
@@ -1088,7 +1094,7 @@ def execute_structured_data(
         structured_format = record["source_specific"]["structured_format"]
         record_locator = record["source_specific"]["record_locator"]
         record_map, parse_errors = record_map_cache[
-            (record["resolved_source_path"], structured_format)
+            structured_record_map_cache_key(record["resolved_source_path"], structured_format, record_path)
         ]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         value = record_map.get(record_locator)
