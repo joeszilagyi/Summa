@@ -867,10 +867,12 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if args.format == "json":
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    else:
+    if args.format == "text":
         sys.stdout.write(render_text(payload))
+    elif args.output_json:
+        return 0
+    else:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return 0
 
 

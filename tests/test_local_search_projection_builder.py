@@ -467,6 +467,31 @@ def test_projection_is_deterministic_when_rows_are_inserted_in_different_orders(
     ]
 
 
+def test_builder_with_output_json_does_not_duplicate_json_stdout(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    output_json = tmp_path / "local_projection.json"
+    index_db = tmp_path / "local_projection.sqlite"
+
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert output_json.is_file()
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "local-search-projection.v1"
+
+
 def test_public_projection_builder_blocks_secret_like_leaks(tmp_path: Path) -> None:
     db = tmp_path / "search.sqlite"
     conn = sqlite3.connect(db)
