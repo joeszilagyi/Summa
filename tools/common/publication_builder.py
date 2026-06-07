@@ -763,10 +763,17 @@ def read_publication_snapshot(
         "workspace_id": slugify_identifier(workspace_id, fallback="canonical_workspace"),
     }
 
+    logical_fingerprint = database_fingerprint(fingerprint_source)
+
     return {
         "db_path": db_path,
-        "db_fingerprint": database_fingerprint(fingerprint_source),
-        "db_storage_fingerprint": hash_file(db_path),
+        "db_fingerprint": logical_fingerprint,
+        "db_storage_fingerprint": database_fingerprint(
+            {
+                "db_name": db_path.name,
+                "db_fingerprint": logical_fingerprint,
+            }
+        ),
         "publication_table_fingerprints": publication_table_fingerprints,
         "schema_version": schema_version,
         "workspace_id": slugify_identifier(workspace_id, fallback="canonical_workspace"),

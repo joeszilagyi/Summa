@@ -117,37 +117,73 @@ def _reviewable(state: Any) -> bool:
     return (_text(state) or "") in REVIEWABLE_STATES
 
 
+class GraphClosureLookup:
+    """Read-only cache of provenance and object-reference existence checks."""
+
+    __slots__ = ("conn", "_object_ref_cache", "_provenance_keys")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self._object_ref_cache: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+        self._provenance_keys: set[str] | None = None
+
+    def provenance_exists(self, key: Any) -> bool:
+        text = _text(key)
+        if text is None:
+            return False
+        if self._provenance_keys is None:
+            self._provenance_keys = {
+                _text(row[0])
+                for row in self.conn.execute(
+                    "SELECT provenance_event_key_v1 FROM provenance_event"
+                )
+                if _text(row[0]) is not None
+            }
+        return text in self._provenance_keys
+
+    def object_ref_exists(self, object_ref: str | None) -> bool:
+        text = _text(object_ref)
+        if text is None or ":" not in text:
+            return False
+        namespace, raw_id = text.split(":", 1)
+        if namespace not in OBJECT_REF_TABLES or not raw_id.strip():
+            return False
+        table, columns = OBJECT_REF_TABLES[namespace]
+        if not SQL_IDENTIFIER_RE.fullmatch(table):
+            raise GraphClosureError(f"invalid SQL identifier: {table}")
+        for column in columns:
+            if not SQL_IDENTIFIER_RE.fullmatch(column):
+                raise GraphClosureError(f"invalid SQL identifier: {column}")
+        cache_key = (table, columns)
+        refs = self._object_ref_cache.get(cache_key)
+        if refs is None:
+            select_columns = ", ".join(f"CAST({column} AS TEXT)" for column in columns)
+            where_clause = " OR ".join(f"{column} IS NOT NULL" for column in columns)
+            refs = set()
+            for row in self.conn.execute(
+                f"SELECT {select_columns} FROM {table} WHERE {where_clause}"
+            ):
+                for value in row:
+                    text_value = _text(value)
+                    if text_value is not None:
+                        refs.add(text_value)
+            self._object_ref_cache[cache_key] = refs
+        return raw_id.strip() in refs
+
+
+def _provenance_resolution(
+    lookup: GraphClosureLookup, provenance_ref: Any
+) -> tuple[str | None, bool]:
+    provenance_key = _text(provenance_ref)
+    return provenance_key, provenance_key is not None and lookup.provenance_exists(provenance_key)
+
+
 def _provenance_exists(conn: sqlite3.Connection, key: Any) -> bool:
-    text = _text(key)
-    if text is None:
-        return False
-    row = conn.execute(
-        "SELECT 1 FROM provenance_event WHERE provenance_event_key_v1=?",
-        (text,),
-    ).fetchone()
-    return row is not None
+    return GraphClosureLookup(conn).provenance_exists(key)
 
 
 def object_ref_exists(conn: sqlite3.Connection, object_ref: str | None) -> bool:
-    text = _text(object_ref)
-    if text is None or ":" not in text:
-        return False
-    namespace, raw_id = text.split(":", 1)
-    if namespace not in OBJECT_REF_TABLES or not raw_id.strip():
-        return False
-    table, columns = OBJECT_REF_TABLES[namespace]
-    if not SQL_IDENTIFIER_RE.fullmatch(table):
-        raise GraphClosureError(f"invalid SQL identifier: {table}")
-    for column in columns:
-        if not SQL_IDENTIFIER_RE.fullmatch(column):
-            raise GraphClosureError(f"invalid SQL identifier: {column}")
-        row = conn.execute(
-            f"SELECT 1 FROM {table} WHERE CAST({column} AS TEXT)=? LIMIT 1",
-            (raw_id.strip(),),
-        ).fetchone()
-        if row is not None:
-            return True
-    return False
+    return GraphClosureLookup(conn).object_ref_exists(object_ref)
 
 
 def issue(
@@ -219,15 +255,20 @@ def exempt_issue(table: str, primary_key: Any, message: str) -> dict[str, Any]:
     )
 
 
-def _invalid_provenance_issue(
-    conn: sqlite3.Connection, row: sqlite3.Row, table: str, pk: str
-) -> dict[str, Any] | None:
-    provenance_key = _text(row["provenance_event_ref"])
+def _provenance_issue(
+    lookup: GraphClosureLookup, row: sqlite3.Row, table: str, pk: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    provenance_key, has_provenance = _provenance_resolution(lookup, row["provenance_event_ref"])
     if provenance_key is None:
-        return None
-    if _provenance_exists(conn, provenance_key):
-        return None
-    return orphan_issue(
+        return None, orphan_issue(
+            table,
+            row[pk],
+            f"{table} row lacks resolvable provenance_event_ref",
+            policy="provenance_event_ref_must_resolve",
+        )
+    if has_provenance:
+        return provenance_key, None
+    return provenance_key, orphan_issue(
         table,
         row[pk],
         f"{table}.{pk} references missing provenance_event_ref {provenance_key!r}",
@@ -235,27 +276,23 @@ def _invalid_provenance_issue(
     )
 
 
-def audit_work(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_work(conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM work ORDER BY work_id"):
-        invalid = _invalid_provenance_issue(conn, row, "work", "work_id")
+        _provenance_key, invalid = _provenance_issue(lookup, row, "work", "work_id")
         if invalid is not None:
             issues.append(invalid)
-        elif not _provenance_exists(conn, row["provenance_event_ref"]):
-            issues.append(
-                orphan_issue(
-                    "work",
-                    row["work_id"],
-                    "work row lacks resolvable provenance_event_ref",
-                )
-            )
     return issues
 
 
-def audit_source_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_source_access(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM source_access ORDER BY source_access_id"):
-        if row["work_id"] is not None and not object_ref_exists(conn, f"work:{row['work_id']}"):
+        if row["work_id"] is not None and not lookup.object_ref_exists(f"work:{row['work_id']}"):
             issues.append(
                 orphan_issue(
                     "source_access",
@@ -282,14 +319,17 @@ def audit_source_access(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return issues
 
 
-def audit_capture_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_capture_event(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM capture_event ORDER BY capture_event_id"):
-        invalid = _invalid_provenance_issue(conn, row, "capture_event", "capture_event_id")
+        provenance_key, invalid = _provenance_issue(lookup, row, "capture_event", "capture_event_id")
         if invalid is not None:
             issues.append(invalid)
             continue
-        if row["work_id"] is not None and not object_ref_exists(conn, f"work:{row['work_id']}"):
+        if row["work_id"] is not None and not lookup.object_ref_exists(f"work:{row['work_id']}"):
             issues.append(
                 orphan_issue(
                     "capture_event",
@@ -299,7 +339,7 @@ def audit_capture_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 )
             )
             continue
-        if row["work_id"] is not None or _provenance_exists(conn, row["provenance_event_ref"]):
+        if row["work_id"] is not None or provenance_key is not None:
             continue
         if _reviewable(row["review_state"]) and _text(row["source_locus_ref"]) is not None:
             issues.append(
@@ -320,7 +360,10 @@ def audit_capture_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return issues
 
 
-def audit_extraction_record(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_extraction_record(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute(
         """
@@ -330,7 +373,9 @@ def audit_extraction_record(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         ORDER BY extraction_record.extraction_id
         """
     ):
-        invalid = _invalid_provenance_issue(conn, row, "extraction_record", "extraction_id")
+        _provenance_key, invalid = _provenance_issue(
+            lookup, row, "extraction_record", "extraction_id"
+        )
         if invalid is not None:
             issues.append(invalid)
         elif row["linked_capture_id"] is None:
@@ -345,26 +390,27 @@ def audit_extraction_record(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return issues
 
 
-def audit_extraction_detected_entity(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_extraction_detected_entity(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM extraction_detected_entity ORDER BY detected_entity_id"):
-        invalid = _invalid_provenance_issue(
-            conn, row, "extraction_detected_entity", "detected_entity_id"
+        provenance_key, invalid = _provenance_issue(
+            lookup, row, "extraction_detected_entity", "detected_entity_id"
         )
         if invalid is not None:
             issues.append(invalid)
             continue
-        extraction_ok = row["extraction_id"] is not None and object_ref_exists(
-            conn, f"extraction_record:{row['extraction_id']}"
+        extraction_ok = row["extraction_id"] is not None and lookup.object_ref_exists(
+            f"extraction_record:{row['extraction_id']}"
         )
-        capture_ok = row["capture_event_id"] is not None and object_ref_exists(
-            conn, f"capture_event:{row['capture_event_id']}"
+        capture_ok = row["capture_event_id"] is not None and lookup.object_ref_exists(
+            f"capture_event:{row['capture_event_id']}"
         )
         if extraction_ok or capture_ok:
             continue
-        if _reviewable(row["review_state"]) and _provenance_exists(
-            conn, row["provenance_event_ref"]
-        ):
+        if _reviewable(row["review_state"]) and provenance_key is not None:
             issues.append(
                 unresolved_issue(
                     "extraction_detected_entity",
@@ -383,26 +429,28 @@ def audit_extraction_detected_entity(conn: sqlite3.Connection) -> list[dict[str,
     return issues
 
 
-def audit_source_claim(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_source_claim(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM source_claim ORDER BY source_claim_id"):
-        invalid = _invalid_provenance_issue(conn, row, "source_claim", "source_claim_id")
+        provenance_key, invalid = _provenance_issue(lookup, row, "source_claim", "source_claim_id")
         if invalid is not None:
             issues.append(invalid)
             continue
         attached = any(
             (
                 row["capture_event_id"] is not None
-                and object_ref_exists(conn, f"capture_event:{row['capture_event_id']}"),
+                and lookup.object_ref_exists(f"capture_event:{row['capture_event_id']}"),
                 row["extraction_id"] is not None
-                and object_ref_exists(conn, f"extraction_record:{row['extraction_id']}"),
-                object_ref_exists(conn, _text(row["about_object_ref"])),
+                and lookup.object_ref_exists(f"extraction_record:{row['extraction_id']}"),
+                lookup.object_ref_exists(_text(row["about_object_ref"])),
             )
         )
         if attached:
             continue
-        has_provenance = _provenance_exists(conn, row["provenance_event_ref"])
-        if has_provenance and _reviewable(row["review_state"]):
+        if provenance_key is not None and _reviewable(row["review_state"]):
             issues.append(
                 unresolved_issue(
                     "source_claim",
@@ -421,23 +469,27 @@ def audit_source_claim(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return issues
 
 
-def audit_source_relationship(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_source_relationship(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM source_relationship ORDER BY source_relationship_id"):
-        invalid = _invalid_provenance_issue(
-            conn, row, "source_relationship", "source_relationship_id"
+        provenance_key, invalid = _provenance_issue(
+            lookup, row, "source_relationship", "source_relationship_id"
         )
         if invalid is not None:
             issues.append(invalid)
             continue
-        from_ok = object_ref_exists(conn, _text(row["from_object_ref"]))
+        from_ok = lookup.object_ref_exists(_text(row["from_object_ref"]))
         to_ref = _text(row["to_object_ref"])
-        to_ok = to_ref is None or object_ref_exists(conn, to_ref)
+        to_ok = to_ref is None or lookup.object_ref_exists(to_ref)
         if from_ok and to_ok:
             continue
         has_target_label = _text(row["target_label"]) is not None
-        has_provenance = _provenance_exists(conn, row["provenance_event_ref"])
-        if has_provenance and _reviewable(row["review_state"]) and (from_ok or has_target_label):
+        if provenance_key is not None and _reviewable(row["review_state"]) and (
+            from_ok or has_target_label
+        ):
             issues.append(
                 unresolved_issue(
                     "source_relationship",
@@ -458,15 +510,18 @@ def audit_source_relationship(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return issues
 
 
-def audit_authority_reconciliation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_authority_reconciliation(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute(
         "SELECT * FROM authority_reconciliation ORDER BY authority_reconciliation_id"
     ):
-        detected_ok = row["detected_entity_id"] is not None and object_ref_exists(
-            conn, f"extraction_detected_entity:{row['detected_entity_id']}"
+        detected_ok = row["detected_entity_id"] is not None and lookup.object_ref_exists(
+            f"extraction_detected_entity:{row['detected_entity_id']}"
         )
-        target_ok = object_ref_exists(conn, f"{row['target_namespace']}:{row['target_id']}")
+        target_ok = lookup.object_ref_exists(f"{row['target_namespace']}:{row['target_id']}")
         if detected_ok or target_ok:
             continue
         if _reviewable(row["review_state"]) and _text(row["raw_label"]) is not None:
@@ -488,12 +543,19 @@ def audit_authority_reconciliation(conn: sqlite3.Connection) -> list[dict[str, A
     return issues
 
 
-def audit_review_state_history(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_review_state_history(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute(
-        "SELECT * FROM review_state_history ORDER BY changed_at, target_namespace, target_id"
+        """
+        SELECT *
+        FROM review_state_history
+        ORDER BY changed_at, target_namespace, target_id, review_state_history_key_v1
+        """
     ):
-        if object_ref_exists(conn, f"{row['target_namespace']}:{row['target_id']}"):
+        if lookup.object_ref_exists(f"{row['target_namespace']}:{row['target_id']}"):
             continue
         issues.append(
             orphan_issue(
@@ -506,13 +568,16 @@ def audit_review_state_history(conn: sqlite3.Connection) -> list[dict[str, Any]]
     return issues
 
 
-def audit_provenance_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_provenance_event(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM provenance_event ORDER BY provenance_event_id"):
         namespace = _text(row["object_namespace"])
         object_id = _text(row["object_id"])
         if namespace in OBJECT_REF_TABLES:
-            if object_ref_exists(conn, f"{namespace}:{object_id}"):
+            if lookup.object_ref_exists(f"{namespace}:{object_id}"):
                 continue
             if namespace in {"source_access"}:
                 issues.append(
@@ -549,7 +614,9 @@ def audit_simple_fk_table(
     pk_column: str,
     fk_column: str,
     target_namespace: str,
+    lookup: GraphClosureLookup | None = None,
 ) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     if not SQL_IDENTIFIER_RE.fullmatch(table):
         raise GraphClosureError(f"invalid SQL identifier: {table}")
@@ -558,7 +625,7 @@ def audit_simple_fk_table(
     if not SQL_IDENTIFIER_RE.fullmatch(fk_column):
         raise GraphClosureError(f"invalid SQL identifier: {fk_column}")
     for row in conn.execute(f"SELECT * FROM {table} ORDER BY {pk_column}"):
-        if object_ref_exists(conn, f"{target_namespace}:{row[fk_column]}"):
+        if lookup.object_ref_exists(f"{target_namespace}:{row[fk_column]}"):
             continue
         issues.append(
             orphan_issue(
@@ -571,13 +638,16 @@ def audit_simple_fk_table(
     return issues
 
 
-def audit_authority_merge_event(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def audit_authority_merge_event(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute(
         "SELECT * FROM authority_merge_event ORDER BY authority_merge_event_id"
     ):
-        from_ok = object_ref_exists(conn, f"authority_record:{row['from_authority_record_id']}")
-        into_ok = object_ref_exists(conn, f"authority_record:{row['into_authority_record_id']}")
+        from_ok = lookup.object_ref_exists(f"authority_record:{row['from_authority_record_id']}")
+        into_ok = lookup.object_ref_exists(f"authority_record:{row['into_authority_record_id']}")
         if from_ok and into_ok:
             continue
         issues.append(
@@ -592,18 +662,19 @@ def audit_authority_merge_event(conn: sqlite3.Connection) -> list[dict[str, Any]
 
 
 def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    lookup = GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
-    issues.extend(audit_provenance_event(conn))
-    issues.extend(audit_work(conn))
-    issues.extend(audit_source_access(conn))
-    issues.extend(audit_capture_event(conn))
-    issues.extend(audit_extraction_record(conn))
-    issues.extend(audit_extraction_detected_entity(conn))
-    issues.extend(audit_source_claim(conn))
-    issues.extend(audit_source_relationship(conn))
-    issues.extend(audit_authority_reconciliation(conn))
-    issues.extend(audit_authority_merge_event(conn))
-    issues.extend(audit_review_state_history(conn))
+    issues.extend(audit_provenance_event(conn, lookup=lookup))
+    issues.extend(audit_work(conn, lookup=lookup))
+    issues.extend(audit_source_access(conn, lookup=lookup))
+    issues.extend(audit_capture_event(conn, lookup=lookup))
+    issues.extend(audit_extraction_record(conn, lookup=lookup))
+    issues.extend(audit_extraction_detected_entity(conn, lookup=lookup))
+    issues.extend(audit_source_claim(conn, lookup=lookup))
+    issues.extend(audit_source_relationship(conn, lookup=lookup))
+    issues.extend(audit_authority_reconciliation(conn, lookup=lookup))
+    issues.extend(audit_authority_merge_event(conn, lookup=lookup))
+    issues.extend(audit_review_state_history(conn, lookup=lookup))
     issues.extend(
         audit_simple_fk_table(
             conn,
@@ -611,6 +682,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pk_column="work_subject_id",
             fk_column="work_id",
             target_namespace="work",
+            lookup=lookup,
         )
     )
     issues.extend(
@@ -620,6 +692,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pk_column="authority_identifier_id",
             fk_column="authority_record_id",
             target_namespace="authority_record",
+            lookup=lookup,
         )
     )
     issues.extend(
@@ -629,6 +702,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pk_column="work_identifier_id",
             fk_column="work_id",
             target_namespace="work",
+            lookup=lookup,
         )
     )
     issues.extend(
@@ -638,6 +712,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pk_column="work_metadata_id",
             fk_column="work_id",
             target_namespace="work",
+            lookup=lookup,
         )
     )
     issues.extend(
@@ -647,11 +722,10 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             pk_column="work_url_id",
             fk_column="work_id",
             target_namespace="work",
+            lookup=lookup,
         )
     )
-    return sorted(
-        issues, key=lambda item: (str(item["table"]), str(item["primary_key"]), str(item["code"]))
-    )
+    return issues
 
 
 def status_from_counts(summary: dict[str, int]) -> str:
