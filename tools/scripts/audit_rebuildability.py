@@ -494,30 +494,61 @@ def row_count_summary(db_path: Path) -> dict[str, int]:
         conn.close()
 
 
-def key_hash_summary(db_path: Path) -> dict[str, str]:
+def table_content_hash_summary(db_path: Path) -> dict[str, str]:
     conn = canonical_store.connect_existing_read_only(db_path)
     try:
-        specs = {
-            "work": "work_key_v1",
-            "source_claim": "source_claim_key_v1",
-            "provenance_event": "provenance_event_key_v1",
-            "authority_record": "authority_key_v1",
-            "authority_reconciliation": "reconciliation_key_v1",
+        key_hash_tables = {
+            "authority_record",
+            "authority_reconciliation",
+            "provenance_event",
+        }
+        ignored_tables = {
+            "schema_migration_history",
+            "schema_version",
         }
         result: dict[str, str] = {}
-        for table, column in specs.items():
-            if not canonical_store.table_exists(conn, table):
+        for table in sorted(canonical_store.actual_tables(conn)):
+            if table in ignored_tables:
                 continue
-            columns = {
-                row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            if column not in columns:
+            if table in key_hash_tables:
+                key_column = {
+                    "authority_record": "authority_key_v1",
+                    "authority_reconciliation": "reconciliation_key_v1",
+                    "provenance_event": "provenance_event_key_v1",
+                }[table]
+                columns = {
+                    row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                if key_column not in columns:
+                    continue
+                rows = conn.execute(
+                    f"SELECT {key_column} AS value FROM {table} WHERE {key_column} IS NOT NULL ORDER BY {key_column}"
+                ).fetchall()
+                payload = "\n".join(str(row["value"]) for row in rows)
+                result[table] = hashlib.sha256(payload.encode()).hexdigest()
                 continue
-            rows = conn.execute(
-                f"SELECT {column} AS value FROM {table} WHERE {column} IS NOT NULL ORDER BY {column}"
-            ).fetchall()
-            payload = "\n".join(str(row["value"]) for row in rows)
-            result[table] = hashlib.sha256(payload.encode()).hexdigest()
+
+            columns = [
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                if row["name"] != "record_last_updated"
+            ]
+            if not columns:
+                result[table] = hashlib.sha256(b"").hexdigest()
+                continue
+            rows = conn.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
+            row_hashes: list[str] = []
+            for row in rows:
+                payload = {column: row[column] for column in columns}
+                encoded = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                row_hashes.append(hashlib.sha256(encoded.encode()).hexdigest())
+            result[table] = hashlib.sha256("\n".join(sorted(row_hashes)).encode()).hexdigest()
         return result
     finally:
         conn.close()
@@ -530,7 +561,7 @@ def db_summary(db_path: Path) -> dict[str, Any]:
         "schema_version": check.schema_version,
         "current_migration_id": check.current_migration_id,
         "row_counts": row_count_summary(db_path),
-        "key_hashes": key_hash_summary(db_path),
+        "key_hashes": table_content_hash_summary(db_path),
     }
 
 

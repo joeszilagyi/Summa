@@ -480,11 +480,54 @@ def test_compare_existing_reports_matching_meaningful_state(tmp_path: Path) -> N
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     report = load_json(report_path)
-    assert report["final_status"] in {"rebuildable", "rebuildable_with_warnings"}
+    assert report["final_status"] == "incomplete_support"
     assert report["row_count_comparison"]["status"] == "match"
     assert report["key_hash_comparison"]["status"] == "match"
     assert table_count(existing_db, "work") == before["work"]
     assert table_count(existing_db, "capture_event") == before["capture_event"]
+
+
+def test_compare_existing_detects_mutated_row_content(tmp_path: Path) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    existing_db = tmp_path / "existing.sqlite"
+    rebuilt_db = tmp_path / "rebuilt.sqlite"
+    bootstrap_db(existing_db)
+    ingest_fixture_artifacts(existing_db, runs_dir)
+    conn = canonical_store.connect_canonical_store(existing_db)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE work SET title = title || ' (mutated)' "
+                "WHERE work_id = (SELECT work_id FROM work ORDER BY work_id LIMIT 1)"
+            )
+    finally:
+        conn.close()
+    report_path = tmp_path / "report.json"
+
+    proc = run_audit(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--canonical-db",
+            str(existing_db),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "compare_existing",
+            "--temp-rebuild-db",
+            str(rebuilt_db),
+            "--keep-temp-db",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    report = load_json(report_path)
+    assert report["final_status"] == "incomplete_support"
+    assert report["row_count_comparison"]["differences"] == {}
+    assert report["key_hash_comparison"]["status"] == "different"
+    assert "work" in report["key_hash_comparison"]["differences"]
 
 
 def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path) -> None:
