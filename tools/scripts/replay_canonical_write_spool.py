@@ -138,6 +138,7 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         record,
                         db_path=db_path,
                         dry_run=True,
+                        record_path=record_path,
                     )
                 else:
                     with conn:
