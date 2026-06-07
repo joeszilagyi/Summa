@@ -149,3 +149,47 @@ def test_remote_url_manifest_rejects_entry_urls_with_spaces(tmp_path: Path) -> N
     assert payload["rejected_entries"] == [
         {"line_number": 1, "reason": "url must be an absolute http or https URL"}
     ]
+
+
+def test_remote_url_manifest_rejects_duplicate_manifest_entry_keys(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "invalid.jsonl"
+    manifest_jsonl.write_text('{"url":"https://example.com","url":"https://example.org"}\n', encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 0
+    assert payload["rejected_entries"] == [{"line_number": 1, "reason": "duplicate JSON object key: url"}]
+
+
+def test_remote_url_manifest_rejects_manifest_entry_non_standard_json_constants(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "invalid.jsonl"
+    manifest_jsonl.write_text('{"url":"https://example.com","title":NaN}\n', encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 0
+    assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: NaN"}]

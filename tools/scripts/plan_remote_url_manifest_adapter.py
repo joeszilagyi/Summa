@@ -31,6 +31,38 @@ import validate_source_adapter  # noqa: E402
 ALLOWED_MANIFEST_ENTRY_KEYS = {"url", "title", "notes", "source_id"}
 
 
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
+
+
+class NonStandardJsonConstantError(ValueError):
+    """Raised for NaN, Infinity, and -Infinity JSON constants."""
+
+
+def reject_json_constant(value: str) -> None:
+    raise NonStandardJsonConstantError(f"non-standard JSON constant: {value}")
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
+def parse_manifest_entry(raw_line: str) -> dict[str, Any] | None:
+    parsed = json.loads(
+        raw_line,
+        object_pairs_hook=no_duplicate_object_pairs,
+        parse_constant=reject_json_constant,
+    )
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
 class RemoteUrlManifestAdapterError(RuntimeError):
     """Raised when URL-manifest planning inputs are invalid."""
 
@@ -118,9 +150,18 @@ def load_manifest_entries(manifest_path: Path) -> tuple[list[dict[str, Any]], li
         if not raw_line.strip():
             continue
         try:
-            entry = json.loads(raw_line)
+            entry = parse_manifest_entry(raw_line)
         except json.JSONDecodeError:
             rejected.append({"line_number": line_number, "reason": "invalid_json"})
+            continue
+        except DuplicateJsonKeyError as exc:
+            rejected.append({"line_number": line_number, "reason": str(exc)})
+            continue
+        except NonStandardJsonConstantError as exc:
+            rejected.append({"line_number": line_number, "reason": str(exc)})
+            continue
+        if entry is None:
+            rejected.append({"line_number": line_number, "reason": "invalid JSON object"})
             continue
         errors = validate_manifest_entry(entry, line_number=line_number)
         if errors:
