@@ -237,6 +237,46 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return {key: row[key] for key in row_keys}
 
 
+def _row_is_public(row: sqlite3.Row) -> bool:
+    row_keys = set(row.keys())
+    if "public_blocker" in row_keys:
+        blocker = row["public_blocker"]
+        if isinstance(blocker, str) and blocker.strip():
+            return False
+    if "publication_state" in row_keys:
+        state = row["publication_state"]
+        if isinstance(state, str):
+            state = state.strip()
+            if state and state in PRIVATE_PUBLICATION_STATES:
+                return False
+    return True
+
+
+def _split_public_rows(
+    rows: list[sqlite3.Row], *, include_private: bool
+) -> tuple[list[sqlite3.Row], int]:
+    if include_private:
+        return rows, 0
+    public_rows: list[sqlite3.Row] = []
+    excluded_count = 0
+    for row in rows:
+        if _row_is_public(row):
+            public_rows.append(row)
+        else:
+            excluded_count += 1
+    return public_rows, excluded_count
+
+
+def record_privacy_exclusion(report_bits: dict[str, Any], table: str, excluded_count: int) -> None:
+    if excluded_count <= 0:
+        return
+    for entry in report_bits["privacy_exclusions"]:
+        if entry["table"] == table:
+            entry["excluded_count"] += excluded_count
+            return
+    report_bits["privacy_exclusions"].append({"table": table, "excluded_count": excluded_count})
+
+
 def parse_record_id(value: str | int | None, *, label: str) -> int | None:
     if value is None:
         return None
@@ -271,10 +311,26 @@ def privacy_exclusions_for_table(conn: sqlite3.Connection, table: str) -> int:
     )
 
 
+def _iter_text_fragments(payload: Any):
+    if isinstance(payload, str):
+        yield payload
+        return
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield from _iter_text_fragments(key)
+            yield from _iter_text_fragments(value)
+        return
+    if isinstance(payload, (list, tuple, set)):
+        for item in payload:
+            yield from _iter_text_fragments(item)
+
+
 def has_private_sentinel(payload: Any) -> bool:
-    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    lowered = text.lower()
-    return any(pattern.lower() in lowered for pattern in PRIVATE_SENTINEL_PATTERNS)
+    for text in _iter_text_fragments(payload):
+        lowered = text.lower()
+        if any(pattern.lower() in lowered for pattern in PRIVATE_SENTINEL_PATTERNS):
+            return True
+    return False
 
 
 def safe_base_uri(base_uri: str | None) -> str:
@@ -293,7 +349,7 @@ def node_uri(base_uri: str, *parts: Any) -> str:
 
 def work_rows(
     conn: sqlite3.Connection, *, work_id: int | None, subject_id: str | None, include_private: bool
-) -> list[sqlite3.Row]:
+) -> tuple[list[sqlite3.Row], int]:
     where = []
     params: list[Any] = []
     if work_id is not None:
@@ -302,19 +358,18 @@ def work_rows(
     if subject_id is not None:
         where.append("workspace_id=?")
         params.append(subject_id)
-    if not include_private:
-        where.extend(public_conditions_for_table(conn, "work"))
     sql = (
         "SELECT * FROM work"
         + (" WHERE " + " AND ".join(where) if where else "")
         + " ORDER BY work_id"
     )
     rows = conn.execute(sql, tuple(params)).fetchall()
-    if work_id is not None and not rows:
+    public_rows, excluded_count = _split_public_rows(rows, include_private=include_private)
+    if work_id is not None and not public_rows:
         raise StandardsProfileError(
             f"work not found or not public under current export policy: {work_id}"
         )
-    return rows
+    return public_rows, excluded_count
 
 
 def capture_rows(
@@ -323,7 +378,7 @@ def capture_rows(
     capture_id: int | None,
     subject_id: str | None,
     include_private: bool,
-) -> list[sqlite3.Row]:
+) -> tuple[list[sqlite3.Row], int]:
     where = []
     params: list[Any] = []
     if capture_id is not None:
@@ -332,19 +387,18 @@ def capture_rows(
     if subject_id is not None:
         where.append("workspace_id=?")
         params.append(subject_id)
-    if not include_private:
-        where.extend(public_conditions_for_table(conn, "capture_event"))
     sql = (
         "SELECT * FROM capture_event"
         + (" WHERE " + " AND ".join(where) if where else "")
         + " ORDER BY capture_event_id"
     )
     rows = conn.execute(sql, tuple(params)).fetchall()
-    if capture_id is not None and not rows:
+    public_rows, excluded_count = _split_public_rows(rows, include_private=include_private)
+    if capture_id is not None and not public_rows:
         raise StandardsProfileError(
             f"capture event not found or not public under current export policy: {capture_id}"
         )
-    return rows
+    return public_rows, excluded_count
 
 
 def provenance_summary(conn: sqlite3.Connection, event_key: str | None) -> dict[str, Any] | None:
@@ -371,50 +425,56 @@ def provenance_summary(conn: sqlite3.Connection, event_key: str | None) -> dict[
 
 def source_urls_for_work(
     conn: sqlite3.Connection, work_id: int, *, include_private: bool
-) -> list[str]:
+) -> tuple[list[str], int]:
     where = ["work_id=?"]
-    if not include_private:
-        where.extend(public_conditions_for_table(conn, "source_access"))
     rows = conn.execute(
-        "SELECT canonical_url, original_locator FROM source_access WHERE "
+        "SELECT canonical_url, original_locator, public_blocker, publication_state FROM source_access WHERE "
         + " AND ".join(where)
         + " ORDER BY source_access_id",
         (work_id,),
     ).fetchall()
     values: list[str] = []
+    excluded_count = 0
     for row in rows:
+        if not include_private and not _row_is_public(row):
+            excluded_count += 1
+            continue
         value = nonblank(row["canonical_url"]) or nonblank(row["original_locator"])
         if value and value.startswith(("http://", "https://")):
             values.append(value)
-    return values
+    return values, excluded_count
 
 
 def descriptions_for_work(
     conn: sqlite3.Connection, work_id: int, *, include_private: bool
-) -> list[str]:
+) -> tuple[list[str], int]:
     where = ["about_object_ref=?"]
     params: list[Any] = [f"work:{work_id}"]
-    if not include_private:
-        where.extend(public_conditions_for_table(conn, "source_claim"))
     rows = conn.execute(
-        "SELECT public_summary FROM source_claim WHERE "
+        "SELECT public_summary, public_blocker, publication_state FROM source_claim WHERE "
         + " AND ".join(where)
         + " ORDER BY source_claim_id",
         tuple(params),
     ).fetchall()
-    return [value for row in rows if (value := nonblank(row["public_summary"]))]
+    values: list[str] = []
+    excluded_count = 0
+    for row in rows:
+        if not include_private and not _row_is_public(row):
+            excluded_count += 1
+            continue
+        if value := nonblank(row["public_summary"]):
+            values.append(value)
+    return values, excluded_count
 
 
 def subjects_for_work(
     conn: sqlite3.Connection, work_id: int, *, include_private: bool
-) -> list[str]:
+) -> tuple[list[str], int]:
     where = ["from_object_ref=?"]
     params: list[Any] = [f"work:{work_id}"]
-    if not include_private:
-        where.extend(public_conditions_for_table(conn, "source_relationship"))
     rows = conn.execute(
         """
-        SELECT target_label, predicate
+        SELECT target_label, predicate, public_blocker, publication_state
         FROM source_relationship
         WHERE {}
         ORDER BY source_relationship_id
@@ -422,11 +482,15 @@ def subjects_for_work(
         tuple(params),
     ).fetchall()
     values: list[str] = []
+    excluded_count = 0
     for row in rows:
+        if not include_private and not _row_is_public(row):
+            excluded_count += 1
+            continue
         label = nonblank(row["target_label"])
         if label:
             values.append(label)
-    return values
+    return values, excluded_count
 
 
 def build_dcmi_export(
@@ -438,9 +502,12 @@ def build_dcmi_export(
     include_private: bool,
     generated_at: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    rows = work_rows(conn, work_id=work_id, subject_id=subject_id, include_private=include_private)
+    rows, excluded_count = work_rows(
+        conn, work_id=work_id, subject_id=subject_id, include_private=include_private
+    )
     records: list[dict[str, Any]] = []
     report_bits = new_report_bits(profile)
+    record_privacy_exclusion(report_bits, "work", excluded_count)
     for row in rows:
         metadata: dict[str, Any] = {}
         title = nonblank(row["title"])
@@ -460,20 +527,27 @@ def build_dcmi_export(
         if value := nonblank(row["work_type"]):
             metadata["dcterms:type"] = value
             optional(report_bits, "dcmi.type")
-        urls = source_urls_for_work(conn, int(row["work_id"]), include_private=include_private)
+        urls, excluded_count = source_urls_for_work(
+            conn, int(row["work_id"]), include_private=include_private
+        )
+        record_privacy_exclusion(report_bits, "source_access", excluded_count)
         if urls:
             metadata["dcterms:source"] = urls
             optional(report_bits, "dcmi.source.url")
         if value := nonblank(row["first_seen_at"]):
             metadata["dcterms:date"] = value
             optional(report_bits, "dcmi.date")
-        descriptions = descriptions_for_work(
+        descriptions, excluded_count = descriptions_for_work(
             conn, int(row["work_id"]), include_private=include_private
         )
+        record_privacy_exclusion(report_bits, "source_claim", excluded_count)
         if descriptions:
             metadata["dcterms:description"] = descriptions
             optional(report_bits, "dcmi.description")
-        subjects = subjects_for_work(conn, int(row["work_id"]), include_private=include_private)
+        subjects, excluded_count = subjects_for_work(
+            conn, int(row["work_id"]), include_private=include_private
+        )
+        record_privacy_exclusion(report_bits, "source_relationship", excluded_count)
         if subjects:
             metadata["dcterms:subject"] = subjects
             optional(report_bits, "dcmi.subject")
@@ -502,10 +576,11 @@ def build_premis_export(
     include_private: bool,
     generated_at: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    captures = capture_rows(
+    captures, excluded_count = capture_rows(
         conn, capture_id=capture_id, subject_id=subject_id, include_private=include_private
     )
     report_bits = new_report_bits(profile)
+    record_privacy_exclusion(report_bits, "capture_event", excluded_count)
     objects: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     agents: dict[str, dict[str, Any]] = {}
@@ -587,8 +662,11 @@ def build_rico_export(
     generated_at: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     base = safe_base_uri(base_uri)
-    rows = work_rows(conn, work_id=work_id, subject_id=subject_id, include_private=include_private)
+    rows, excluded_count = work_rows(
+        conn, work_id=work_id, subject_id=subject_id, include_private=include_private
+    )
     report_bits = new_report_bits(profile)
+    record_privacy_exclusion(report_bits, "work", excluded_count)
     nodes: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
     for row in rows:
@@ -607,20 +685,11 @@ def build_rico_export(
             satisfy(report_bits, "rico.record_title")
         else:
             missing(report_bits, "rico.record_title", f"{work_ref} missing title")
-    auth_rows = (
-        conn.execute(
-            """
-        SELECT authority_record_id, preferred_label, authority_type
-        FROM authority_record
-        WHERE COALESCE(public_blocker, '') = ''
-        ORDER BY authority_record_id
-        """
-        ).fetchall()
-        if not include_private
-        else conn.execute(
-            "SELECT authority_record_id, preferred_label, authority_type FROM authority_record ORDER BY authority_record_id"
-        ).fetchall()
-    )
+    auth_rows = conn.execute(
+        "SELECT * FROM authority_record ORDER BY authority_record_id"
+    ).fetchall()
+    auth_rows, excluded_count = _split_public_rows(auth_rows, include_private=include_private)
+    record_privacy_exclusion(report_bits, "authority_record", excluded_count)
     for row in auth_rows:
         nodes.append(
             {
@@ -632,13 +701,12 @@ def build_rico_export(
             }
         )
         optional(report_bits, "rico.agent")
-    rel_where = [] if include_private else public_conditions_for_table(conn, "source_relationship")
-    rel_sql = (
-        "SELECT * FROM source_relationship"
-        + (" WHERE " + " AND ".join(rel_where) if rel_where else "")
-        + " ORDER BY source_relationship_id"
-    )
-    for row in conn.execute(rel_sql).fetchall():
+    rel_rows = conn.execute(
+        "SELECT * FROM source_relationship ORDER BY source_relationship_id"
+    ).fetchall()
+    rel_rows, excluded_count = _split_public_rows(rel_rows, include_private=include_private)
+    record_privacy_exclusion(report_bits, "source_relationship", excluded_count)
+    for row in rel_rows:
         relations.append(
             {
                 "id": node_uri(base, "relationship", row["source_relationship_id"]),
@@ -1068,17 +1136,6 @@ def export_profile(
             )
         else:  # pragma: no cover - guarded by load_profile
             raise StandardsProfileError(f"unsupported profile id: {profile_id}")
-        for table in (
-            "work",
-            "source_access",
-            "source_claim",
-            "source_relationship",
-            "capture_event",
-            "extraction_record",
-        ):
-            count = privacy_exclusions_for_table(conn, table)
-            if count:
-                report_bits["privacy_exclusions"].append({"table": table, "excluded_count": count})
     finally:
         conn.close()
 

@@ -41,6 +41,19 @@ def test_validator_write_json_rejects_nonstandard_json_constants(tmp_path) -> No
     assert not output.exists()
 
 
+def test_atomic_write_json_streams_payload_without_prebuilding_text(monkeypatch, tmp_path) -> None:
+    output = tmp_path / "artifact.json"
+
+    def fail_dumps(*_args, **_kwargs):
+        raise AssertionError("json.dumps should not be used by atomic_write_json")
+
+    monkeypatch.setattr("tools.common.atomic_write.json.dumps", fail_dumps)
+
+    atomic_write_json(output, {"b": 2, "a": 1})
+
+    assert output.read_text(encoding="utf-8") == '{\n  "a": 1,\n  "b": 2\n}\n'
+
+
 def test_fsync_directory_is_best_effort_on_fsync_failure(monkeypatch, tmp_path) -> None:
     opened_fds: list[int] = []
 

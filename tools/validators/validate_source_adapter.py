@@ -504,13 +504,10 @@ def validate_automation_rules(payload: dict[str, Any], errors: list[dict[str, An
                 return
 
 
-def validate_source_adapter(target: Path) -> tuple[dict[str, Any], int]:
+def validate_source_adapter_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
-
-    payload, errors, exit_code = load_json_object(target)
-    if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
+    errors: list[dict[str, Any]] = []
 
     counts["inspected"] = 1
 
@@ -546,6 +543,14 @@ def validate_source_adapter(target: Path) -> tuple[dict[str, Any], int]:
 
     counts["accepted"] = 1
     return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
+
+
+def validate_source_adapter(target: Path) -> tuple[dict[str, Any], int]:
+    payload, errors, exit_code = load_json_object(target)
+    if payload is None:
+        return {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": errors, "warnings": []}, exit_code
+
+    return validate_source_adapter_payload(payload)
 
 
 def main() -> int:

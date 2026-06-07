@@ -271,6 +271,122 @@ def test_source_intake_status_view_round_trips_valid_and_invalid_adapters(tmp_pa
     assert invalid_entry["validation"]["error_count"] == 1
 
 
+def test_discover_root_adapters_uses_single_rglob_pass(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "adapter-root"
+    root.mkdir()
+    scanned = [
+        root / "nested" / "source_adapter.json",
+        root / "nested" / "notes.json",
+        root / "other-source_adapter.json",
+        root / "ignored.txt",
+        root / "nested" / "source_adapter.json",
+    ]
+
+    def fail_glob(*_args, **_kwargs):
+        raise AssertionError("Path.glob should not be used for adapter discovery")
+
+    rglob_calls: list[tuple[Path, str]] = []
+
+    def record_rglob(self: Path, pattern: str):
+        rglob_calls.append((self.resolve(), pattern))
+        return iter(scanned)
+
+    monkeypatch.setattr(Path, "glob", fail_glob)
+    monkeypatch.setattr(Path, "rglob", record_rglob)
+
+    found = source_intake_status_view.discover_root_adapters(str(root))
+
+    assert rglob_calls == [(root.resolve(), "*.json")]
+    assert found == [root.resolve() / "nested" / "source_adapter.json", root.resolve() / "other-source_adapter.json"]
+
+
+def test_source_intake_status_view_parses_each_adapter_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    adapter_paths = []
+    payloads: dict[Path, dict[str, object]] = {}
+    for workspace_id in ("alpha", "beta"):
+        path = tmp_path / f"{workspace_id}.json"
+        adapter_paths.append(path)
+        payloads[path.resolve()] = {
+            "schema_version": "source-adapter.v1",
+            "adapter_id": f"{workspace_id}_adapter",
+            "display_name": workspace_id.title(),
+            "workspace_id": workspace_id,
+            "input_family": "remote_url_manifest",
+            "locator": {"manifest_url": f"https://example.invalid/{workspace_id}.jsonl"},
+            "content_profile": {"content_kinds": ["url_observation"], "hazard_flags": []},
+            "provenance": {
+                "discovery_provenance": "test",
+                "acquisition_method": "manual_list",
+                "source_description": "fixture",
+            },
+            "rights_and_storage": {
+                "payload_storage_policy_class": "external_later",
+                "metadata_storage_policy_class": "tracked_derived",
+                "rights_posture": "quote_limited",
+            },
+            "automation_posture": "operator_review_required",
+            "normalized_handoff": {
+                "record_family": "url_observation",
+                "batch_unit": "per_reference",
+                "preserve_fields": ["original_locator"],
+                "source_specific_fields": ["manifest_url"],
+            },
+            "transform_lineage": [
+                {
+                    "step_id": "handoff",
+                    "step_kind": "emit_handoff",
+                    "description": "Emit handoff.",
+                    "deterministic": True,
+                    "review_required": True,
+                }
+            ],
+        }
+        path.write_text(json.dumps(payloads[path.resolve()], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    parse_calls: list[Path] = []
+    validation_calls: list[str] = []
+
+    def fake_load_json_object(path: Path):
+        resolved = path.resolve()
+        parse_calls.append(resolved)
+        return "ok", payloads[resolved], None
+
+    def fake_validate_source_adapter_payload(payload: dict[str, object]):
+        validation_calls.append(str(payload["workspace_id"]))
+        return (
+            {
+                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
+                "errors": [],
+                "warnings": [],
+            },
+            source_intake_status_view.validate_source_adapter.EXIT_PASS,
+        )
+
+    monkeypatch.setattr(source_intake_status_view, "load_json_object", fake_load_json_object)
+    monkeypatch.setattr(
+        source_intake_status_view.validate_source_adapter,
+        "validate_source_adapter_payload",
+        fake_validate_source_adapter_payload,
+    )
+
+    payload = source_intake_status_view.build_source_intake_status_payload(
+        argparse.Namespace(
+            adapter=[str(adapter_paths[0]), str(adapter_paths[1])],
+            root=[],
+            workspace_ids=["beta"],
+            limit=0,
+            format="json",
+        )
+    )
+
+    assert parse_calls == [path.resolve() for path in adapter_paths]
+    assert validation_calls == ["beta"]
+    assert payload["counts"]["total_adapters"] == 1
+    assert payload["adapters"][0]["workspace_id"] == "beta"
+
+
 def test_source_intake_status_view_filters_workspace_ids_before_validation(tmp_path: Path, monkeypatch) -> None:
     adapter_paths = []
     for workspace_id in ("alpha", "beta", "gamma"):
@@ -322,17 +438,17 @@ def test_source_intake_status_view_filters_workspace_ids_before_validation(tmp_p
 
     calls: list[Path] = []
 
-    def fake_adapter_entry(path: Path) -> dict[str, object]:
-        calls.append(path)
+    def fake_adapter_entry(candidate) -> dict[str, object]:
+        calls.append(candidate.path)
         return {
-            "adapter_path": str(path),
+            "adapter_path": str(candidate.path),
             "adapter_status": "ok",
             "contract_status": "pass",
             "intake_state": "configured",
             "status_detail": None,
-            "adapter_id": f"{path.stem}_adapter",
-            "display_name": path.stem.title(),
-            "workspace_id": "beta",
+            "adapter_id": candidate.adapter_id,
+            "display_name": candidate.path.stem.title(),
+            "workspace_id": candidate.workspace_id,
             "input_family": "remote_url_manifest",
             "locator": {"locator_status": "configured_remote"},
             "content_profile": {"content_kinds": [], "hazard_flags": []},
