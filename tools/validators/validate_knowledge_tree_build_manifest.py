@@ -365,13 +365,13 @@ def validate_build_manifest_receipt(
         if field in payload and (not isinstance(value, str) or not ID_PATTERN.fullmatch(value)):
             add_error(errors, code="INVALID_IDENTIFIER", message=f"{field} must match ^[a-z0-9][a-z0-9._-]*$")
 
-    export_path_value = validate_manifest_relative_path(
+    validate_manifest_relative_path(
         payload,
         "export_path",
         errors,
         code="INVALID_INPUT_PATH",
     )
-    presentation_path_value = validate_manifest_relative_path(
+    validate_manifest_relative_path(
         payload,
         "presentation_path",
         errors,
