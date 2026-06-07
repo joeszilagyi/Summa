@@ -801,3 +801,38 @@ def test_projection_records_digest_uses_sorted_stable_projection_payload() -> No
     ).hexdigest()
 
     assert builder.projection_records_digest(records) == expected
+
+
+def test_projection_validator_rejects_unknown_nested_fields(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    output_json = tmp_path / "projection.json"
+
+    result = run_builder(
+        "--db",
+        str(db),
+        "--profile",
+        "local",
+        "--index-db",
+        str(index_db),
+        "--output-json",
+        str(output_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    payload["source"]["unexpected_root"] = "secret"
+    payload["policy"]["unexpected_policy_flag"] = True
+    payload["counts"]["unexpected_count"] = 7
+    if payload["excluded_records"]:
+        payload["excluded_records"][0]["unexpected"] = "bad"
+    payload["records"][0]["unexpected"] = "bad"
+    payload["records"][0]["indexed_fields"][0]["unexpected"] = "bad"
+    output_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    report, exit_code = validate_projection(output_json)
+    assert exit_code != validator.EXIT_PASS
+    assert report["status"] == "fail"
+    assert any(item.get("code") == "UNKNOWN_FIELD" for item in report["errors"])

@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/subject-index/local_search_results.schema.json",
   "title": "local-search-results.v1",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema_version",
     "generated_at",
@@ -30,6 +30,7 @@
         "projection_version",
         "schema_version"
       ],
+      "additionalProperties": false,
       "properties": {
         "database_name": {
           "type": "string"
@@ -59,6 +60,7 @@
         "limit",
         "visibility_profile"
       ],
+      "additionalProperties": false,
       "properties": {
         "raw_query": {
           "type": "string"
@@ -110,6 +112,7 @@
         "returned",
         "truncated"
       ],
+      "additionalProperties": false,
       "properties": {
         "returned": {
           "type": "integer",
@@ -135,6 +138,7 @@
         "private_paths_exposed",
         "excluded_families"
       ],
+      "additionalProperties": false,
       "properties": {
         "raw_payload_indexed": {
           "type": "boolean",
@@ -173,6 +177,7 @@
           "publication_state",
           "visibility"
         ],
+        "additionalProperties": false,
         "properties": {
           "rank": {
             "type": "integer",
@@ -233,6 +238,7 @@
                 "text",
                 "display_policy"
               ],
+              "additionalProperties": false,
               "properties": {
                 "field": {
                   "type": "string"
@@ -280,6 +286,7 @@
               "profile",
               "suppressed_fields"
             ],
+            "additionalProperties": false,
             "properties": {
               "profile": {
                 "type": "string"
@@ -293,6 +300,12 @@
             }
           },
           "score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "confidence_score": {
             "type": [
               "number",
               "null"

@@ -67,6 +67,7 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
 def record_checksum(record: Mapping[str, Any]) -> str:
     payload = dict(record)
     payload.pop("spool_record_checksum", None)
+    payload.pop("spool_path", None)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -194,8 +195,14 @@ def spool_record_path(spool_dir: Path, record: Mapping[str, Any]) -> Path:
     return spool_dir / "canonical-unavailable" / safe_run / f"{record_id}.json"
 
 
-def write_spool_record(spool_dir: Path, record: Mapping[str, Any]) -> Path:
-    path = spool_record_path(spool_dir, record)
+def write_spool_record(spool_path: Path, record: Mapping[str, Any]) -> Path:
+    spool_path = Path(spool_path)
+    if spool_path.is_dir():
+        path = spool_record_path(spool_path, record)
+    elif spool_path.suffix == ".json":
+        path = spool_path
+    else:
+        path = spool_record_path(spool_path, record)
     payload = dict(record)
     payload["spool_path"] = str(path)
     payload["spool_record_checksum"] = record_checksum(payload)
@@ -221,10 +228,6 @@ def load_spool_record(path: Path) -> dict[str, Any]:
     stored_spool_path = payload.get("spool_path")
     if not isinstance(stored_spool_path, str):
         raise CanonicalWriteSpoolError(f"spool record missing spool_path: {path}")
-    if Path(stored_spool_path).resolve() != path.resolve():
-        raise CanonicalWriteSpoolError(
-            f"spool record path mismatch: stored={stored_spool_path} actual={path}"
-        )
     return payload
 
 
@@ -305,7 +308,7 @@ def mark_spool_record_replayed(
     payload["replayed_at"] = replayed_at
     payload["replay_result_refs"] = dict(replay_result_refs)
     payload["spool_record_checksum"] = record_checksum(payload)
-    return write_spool_record(path.parent.parent.parent, payload)
+    return write_spool_record(path, payload)
 
 
 def mark_spool_record_failed(
@@ -320,7 +323,34 @@ def mark_spool_record_failed(
     payload["replayed_at"] = replayed_at
     payload["replay_result_refs"] = {"failure_message": failure_message}
     payload["spool_record_checksum"] = record_checksum(payload)
-    return write_spool_record(path.parent.parent.parent, payload)
+    return write_spool_record(path, payload)
+
+
+def _recipe_anchor_path(recipe: Mapping[str, Any], *, record_path: Path, key: str, default: Path) -> Path:
+    raw_root = recipe.get(key)
+    if not isinstance(raw_root, str) or not raw_root.strip():
+        return default
+    root = Path(raw_root).expanduser()
+    if root.is_absolute():
+        return root
+    return (record_path.parent / root).resolve()
+
+
+def _resolve_recipe_path(
+    recipe: Mapping[str, Any],
+    *,
+    path_key: str,
+    record_path: Path,
+    default_root: Path,
+) -> Path:
+    raw_value = recipe.get(path_key)
+    if not isinstance(raw_value, str):
+        raise CanonicalWriteSpoolError(f"replay recipe missing required path for {path_key}")
+    path_value = Path(str(raw_value))
+    if path_value.is_absolute():
+        return path_value
+    root = _recipe_anchor_path(recipe, record_path=record_path, key="artifact_root", default=default_root)
+    return (root / path_value).resolve()
 
 
 def artifact_ref(path: Path, *, artifact_type: str) -> dict[str, Any]:
@@ -338,6 +368,7 @@ def replay_spool_record(
     db_path: Path,
     dry_run: bool,
     strict: bool = True,
+    record_path: Path | None = None,
 ) -> dict[str, Any]:
     validate_spool_record(record)
     check = canonical_store.check_canonical_store(db_path)
@@ -350,8 +381,22 @@ def replay_spool_record(
     recipe = record["replay_recipe"]
     if not isinstance(recipe, Mapping):
         raise CanonicalWriteSpoolError("replay_recipe must be an object")
+    if record_path is None:
+        spool_path = record.get("spool_path")
+        if not isinstance(spool_path, str):
+            raise CanonicalWriteSpoolError("replay record missing spool_path")
+        record_path = Path(str(spool_path))
+        if not record_path.is_absolute():
+            record_path = Path.cwd() / record_path
+    else:
+        record_path = Path(record_path).expanduser().resolve()
     if operation == "candidate_batch_ingest":
-        batch_path = Path(str(recipe["batch_path"]))
+        batch_path = _resolve_recipe_path(
+            recipe,
+            path_key="batch_path",
+            record_path=record_path,
+            default_root=Path.cwd(),
+        )
         batch, batch_hash = canonical_ingest.load_validated_candidate_batch(batch_path)
         expected_hash = recipe.get("batch_hash")
         if expected_hash and expected_hash != batch_hash:
@@ -366,7 +411,12 @@ def replay_spool_record(
             db_path=db_path,
         )
     if operation == "execution_artifact_ingest":
-        run_dir = Path(str(recipe["run_dir"]))
+        run_dir = _resolve_recipe_path(
+            recipe,
+            path_key="run_dir",
+            record_path=record_path,
+            default_root=Path.cwd(),
+        )
         execution_record, capture_events, extraction_records, paths, input_hashes = (
             canonical_ingest.load_validated_execution_artifacts(run_dir)
         )
@@ -403,7 +453,12 @@ def replay_spool_record(
             run_id=recipe.get("run_id") if isinstance(recipe.get("run_id"), str) else None,
         )
     if operation == "cycle_evidence_write":
-        manifest_path = Path(str(recipe["manifest_path"]))
+        manifest_path = _resolve_recipe_path(
+            recipe,
+            path_key="manifest_path",
+            record_path=record_path,
+            default_root=Path.cwd(),
+        )
         manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         if not isinstance(manifest_payload, dict):
             raise CanonicalWriteSpoolError("cycle manifest must be a JSON object")

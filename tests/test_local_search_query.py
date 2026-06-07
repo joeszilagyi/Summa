@@ -435,3 +435,35 @@ def test_query_ranking_prefers_higher_confidence_for_equal_authority(tmp_path: P
     payload = json.loads(result.stdout)
     assert payload["counts"]["returned"] == 2
     assert payload["results"][0]["object_id"] == "work:4"
+
+
+def test_results_validator_rejects_unknown_nested_fields(tmp_path: Path) -> None:
+    index_db = build_local_index(tmp_path)
+    results_json = tmp_path / "unknown-fields-results.json"
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "Supplemental",
+        "--output-json",
+        str(results_json),
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    payload = json.loads(results_json.read_text(encoding="utf-8"))
+    payload["source"]["unknown_source"] = "bad"
+    payload["query"]["unexpected_query_field"] = "bad"
+    payload["counts"]["unexpected_count"] = 7
+    payload["policy"]["unexpected_policy_field"] = "bad"
+    payload["results"][0]["unexpected_row_field"] = "bad"
+    payload["results"][0]["snippets"][0]["unknown_snippet_field"] = "bad"
+    payload["results"][0]["visibility"]["unknown_visibility_field"] = "bad"
+    results_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report, exit_code = validate_results(results_json)
+
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert any(item.get("code") == "UNKNOWN_FIELD" for item in report["errors"])

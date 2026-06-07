@@ -47,10 +47,54 @@ def run_script(script: Path, args: list[str]) -> subprocess.CompletedProcess[str
     )
 
 
+def run_script_with_cwd(
+    script: Path,
+    args: list[str],
+    *,
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(script), *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def first_spool_record(spool_dir: Path) -> tuple[Path, dict[str, object]]:
     records = list(canonical_write_spool.iter_spool_records(spool_dir))
     assert len(records) == 1
     return records[0]
+
+
+def _normalize_batch_paths_to_repo_root(batch_record: dict[str, object]) -> None:
+    def _as_absolute(relative_path: str) -> str:
+        candidate = Path(relative_path)
+        if candidate.is_absolute():
+            return relative_path
+        return str((REPO_ROOT / candidate).resolve())
+
+    if isinstance(batch_record.get("engine"), dict):
+        engine = batch_record["engine"]
+        assert isinstance(engine, dict)
+        runner_path = engine.get("runner_path")
+        bridge_path = engine.get("bridge_path")
+        if isinstance(runner_path, str):
+            engine["runner_path"] = _as_absolute(runner_path)
+        if isinstance(bridge_path, str):
+            engine["bridge_path"] = _as_absolute(bridge_path)
+
+    if isinstance(batch_record.get("provenance"), dict):
+        provenance = batch_record["provenance"]
+        assert isinstance(provenance, dict)
+        llm_runner_bridge_path = provenance.get("llm_runner_bridge_path")
+        llm_runner_path = provenance.get("llm_runner_path")
+        if isinstance(llm_runner_bridge_path, str):
+            provenance["llm_runner_bridge_path"] = _as_absolute(llm_runner_bridge_path)
+        if isinstance(llm_runner_path, str):
+            provenance["llm_runner_path"] = _as_absolute(llm_runner_path)
+
 
 
 def test_spool_record_validation() -> None:
@@ -269,6 +313,122 @@ def test_replay_candidate_batch_and_idempotence(tmp_path: Path) -> None:
     assert second_report["records_skipped"] == 1
 
 
+def test_replay_candidate_batch_from_single_record_file(tmp_path: Path) -> None:
+    missing_db = tmp_path / "missing.sqlite"
+    spool_root = tmp_path / "spool_root"
+    nested = spool_root / "one" / "two"
+    nested.mkdir(parents=True)
+
+    spool_proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(missing_db),
+            "--batch",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+            "--spool-dir",
+            str(tmp_path / "spool"),
+        ],
+    )
+    assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
+    record_path, record = first_spool_record(tmp_path / "spool")
+
+    single_record = nested / "single-spool-record.json"
+    single_record.write_text(
+        json.dumps({**record, "spool_path": str(single_record), "spool_record_checksum": ""}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    single_payload = json.loads(single_record.read_text(encoding="utf-8"))
+    single_payload["spool_record_checksum"] = canonical_write_spool.record_checksum(single_payload)
+    single_record.write_text(json.dumps(single_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    record_path.unlink()
+
+    db_path = bootstrap_db(tmp_path)
+    replay_proc = run_script(
+        REPLAY,
+        ["--db", str(db_path), "--spool-path", str(single_record), "--started-at", FIXED_TIMESTAMP],
+    )
+    assert replay_proc.returncode == 0, replay_proc.stdout + replay_proc.stderr
+    report = json.loads(replay_proc.stdout)
+    assert report["records_replayed"] == 1
+
+    updated = json.loads(single_record.read_text(encoding="utf-8"))
+    assert updated["replay_status"] == "replayed"
+    assert not (tmp_path / "canonical-unavailable").exists()
+
+
+def test_replay_candidate_batch_uses_spool_anchor_for_relative_paths(tmp_path: Path) -> None:
+    missing_db = tmp_path / "missing.sqlite"
+    spool_dir = tmp_path / "spool_dir"
+    candidate_batch = tmp_path / "gather-candidate-batch.json"
+    shutil.copy(CANDIDATE_BATCH, candidate_batch)
+    shutil.copy(CANDIDATE_BATCH.parent / "rendered-prompt.txt", tmp_path / "rendered-prompt.txt")
+    batch_payload = json.loads(candidate_batch.read_text(encoding="utf-8"))
+    _normalize_batch_paths_to_repo_root(batch_payload)
+    candidate_batch.write_text(
+        json.dumps(batch_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    spool_proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(missing_db),
+            "--batch",
+            str(candidate_batch),
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ],
+    )
+    assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
+
+    batch_path, batch_record = first_spool_record(spool_dir)
+    candidate_batch_path = Path(batch_record["replay_recipe"]["batch_path"])
+    artifact_root = Path(batch_record["replay_recipe"].get("artifact_root", str(batch_path.parent)))
+    if not artifact_root.is_absolute():
+        artifact_root = (batch_path.parent / artifact_root).resolve()
+    if not candidate_batch_path.is_absolute():
+        candidate_batch_path = (artifact_root / candidate_batch_path).resolve()
+    batch_payload = json.loads(candidate_batch_path.read_text(encoding="utf-8"))
+    _normalize_batch_paths_to_repo_root(batch_payload)
+    candidate_batch_path.write_text(json.dumps(batch_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    batch_record["replay_recipe"]["batch_path"] = str(Path(batch_record["replay_recipe"]["batch_path"]).name)
+    batch_record["replay_recipe"]["artifact_root"] = str(
+        Path(batch_record["replay_recipe"].get("artifact_root", str(batch_path.parent))).resolve()
+    )
+    batch_record["spool_record_checksum"] = canonical_write_spool.record_checksum(batch_record)
+    batch_path.write_text(
+        json.dumps(batch_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    cwd = tmp_path / "run-cwd"
+    cwd.mkdir()
+    db_path = bootstrap_db(tmp_path)
+
+    replay_proc = run_script_with_cwd(
+        REPLAY,
+        [
+            "--db",
+            str(db_path),
+            "--spool-path",
+            str(batch_path),
+            "--started-at",
+            FIXED_TIMESTAMP,
+        ],
+        cwd=cwd,
+    )
+
+    assert replay_proc.returncode == 0, replay_proc.stdout + replay_proc.stderr
+    report = json.loads(replay_proc.stdout)
+    assert report["records_replayed"] == 1
+    updated = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert updated["replay_status"] == "replayed"
+
+
 def test_replay_reports_sqlite_connect_failure_as_structured_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -473,7 +633,7 @@ def test_spool_record_does_not_embed_raw_payload_text(tmp_path: Path) -> None:
     assert record["raw_payload_policy"] == "artifact_references_only"
 
 
-def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
+def test_moved_spool_record_remains_loadable(tmp_path: Path) -> None:
     spool_dir = tmp_path / "spool"
     proc = run_script(
         INGEST_BATCH,
@@ -492,8 +652,8 @@ def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
     moved_path = tmp_path / "moved.json"
     record_path.replace(moved_path)
 
-    with pytest.raises(canonical_write_spool.CanonicalWriteSpoolError, match="path mismatch"):
-        canonical_write_spool.load_spool_record(moved_path)
+    loaded = canonical_write_spool.load_spool_record(moved_path)
+    assert loaded["spool_path"] == str(record_path)
 
 
 def test_replay_main_writes_report_with_atomic_json_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

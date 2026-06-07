@@ -567,6 +567,7 @@ def replay_spool_record(
         db_path=db_path,
         dry_run=False,
         strict=True,
+        record_path=artifact.path,
     )
 
 

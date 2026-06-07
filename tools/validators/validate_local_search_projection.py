@@ -99,7 +99,41 @@ RECORD_REQUIRED_KEYS = {
     "suppressed_fields",
     "indexed_fields",
 }
+RECORD_ALLOWED_KEYS = set(RECORD_REQUIRED_KEYS) | {"confidence_score"}
 FIELD_REQUIRED_KEYS = {"field", "text", "display_policy"}
+SOURCE_ALLOWED_KEYS = {
+    "database_name",
+    "schema_version",
+    "database_fingerprint",
+    "correction_ledger_applied",
+}
+POLICY_ALLOWED_KEYS = {
+    "raw_payload_indexed",
+    "full_text_indexed",
+    "private_paths_exposed",
+    "superseded_records_included",
+    "blocked_records_included",
+}
+COUNT_ALLOWED_KEYS = {
+    "candidate_records",
+    "projected_records",
+    "excluded_records",
+    "indexed_rows",
+}
+TOP_LEVEL_ALLOWED_KEYS = {
+    "schema_version",
+    "generated_at",
+    "source",
+    "profile",
+    "policy",
+    "counts",
+    "excluded_records",
+    "records",
+    "warnings",
+    "errors",
+    "_projection_records_digest",
+}
+INDEXED_FIELD_ALLOWED_KEYS = set(FIELD_REQUIRED_KEYS)
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -221,6 +255,8 @@ def validate_indexed_fields(
         if not isinstance(item, dict):
             add_error(errors, code="INDEXED_FIELD_NOT_OBJECT", message=f"{field_label} must be an object")
             continue
+        for key in sorted(set(item) - INDEXED_FIELD_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"{field_label} contains unexpected key: {key}")
         for key in sorted(FIELD_REQUIRED_KEYS - set(item)):
             add_error(errors, code="MISSING_INDEXED_FIELD_KEY", message=f"missing required {field_label} key: {key}")
         field_name = validate_nonblank_string(item.get("field"), f"{field_label}.field", errors, code="INVALID_INDEXED_FIELD")
@@ -291,6 +327,8 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
     if not isinstance(record, dict):
         add_error(errors, code="RECORD_NOT_OBJECT", message=f"{label} must be an object")
         return None, False
+    for key in sorted(set(record) - RECORD_ALLOWED_KEYS):
+        add_error(errors, code="UNKNOWN_FIELD", message=f"{label} contains unexpected key: {key}")
     for key in sorted(RECORD_REQUIRED_KEYS - set(record)):
         add_error(errors, code="MISSING_RECORD_KEY", message=f"missing required {label} key: {key}")
 
@@ -306,6 +344,9 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
         add_error(errors, code="INVALID_OBJECT_PK", message=f"{label}.object_pk must be an integer >= 1")
     title = validate_nonblank_string(record.get("title"), f"{label}.title", errors, code="INVALID_TITLE")
     subtitle = record.get("subtitle")
+    confidence_score = record.get("confidence_score")
+    if confidence_score is not None and not isinstance(confidence_score, (int, float)):
+        add_error(errors, code="INVALID_CONFIDENCE_SCORE", message=f"{label}.confidence_score must be a number")
     if subtitle is not None and (not isinstance(subtitle, str) or not subtitle.strip()):
         add_error(errors, code="INVALID_SUBTITLE", message=f"{label}.subtitle must be null or a non-blank string")
     if title is not None and contains_secret_marker(title):
@@ -393,6 +434,8 @@ def validate_record(record: Any, *, profile: str, errors: list[dict[str, Any]], 
 
 def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
+    for key in sorted(set(payload) - TOP_LEVEL_ALLOWED_KEYS):
+        add_error(errors, code="UNKNOWN_FIELD", message=f"top-level contains unexpected key: {key}")
     for key in sorted(REQUIRED_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required key: {key}")
 
@@ -411,6 +454,8 @@ def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[di
     if not isinstance(source, dict):
         add_error(errors, code="SOURCE_NOT_OBJECT", message="source must be an object")
     else:
+        for key in sorted(set(source) - SOURCE_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"source contains unexpected key: {key}")
         for key in sorted(SOURCE_REQUIRED_KEYS - set(source)):
             add_error(errors, code="MISSING_SOURCE_KEY", message=f"missing required source key: {key}")
         validate_nonblank_string(source.get("database_name"), "source.database_name", errors, code="INVALID_SOURCE_FIELD")
@@ -422,6 +467,8 @@ def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[di
     if not isinstance(policy, dict):
         add_error(errors, code="POLICY_NOT_OBJECT", message="policy must be an object")
     else:
+        for key in sorted(set(policy) - POLICY_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"policy contains unexpected key: {key}")
         for key in sorted(POLICY_REQUIRED_KEYS - set(policy)):
             add_error(errors, code="MISSING_POLICY_KEY", message=f"missing required policy key: {key}")
         for field_name in sorted(POLICY_REQUIRED_KEYS):
@@ -436,6 +483,8 @@ def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[di
     if not isinstance(counts, dict):
         add_error(errors, code="COUNTS_NOT_OBJECT", message="counts must be an object")
     else:
+        for key in sorted(set(counts) - COUNT_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"counts contains unexpected key: {key}")
         for key in sorted(COUNT_REQUIRED_KEYS - set(counts)):
             add_error(errors, code="MISSING_COUNT_KEY", message=f"missing required counts key: {key}")
         for key in sorted(COUNT_REQUIRED_KEYS):
@@ -454,6 +503,8 @@ def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[di
             if not isinstance(record, dict):
                 add_error(errors, code="EXCLUDED_NOT_OBJECT", message=f"{label} must be an object")
                 continue
+            for key in sorted(set(record) - {"object_ref", "reason"}):
+                add_error(errors, code="UNKNOWN_FIELD", message=f"{label} contains unexpected key: {key}")
             validate_nonblank_string(record.get("object_ref"), f"{label}.object_ref", errors, code="INVALID_EXCLUDED_RECORD")
             validate_nonblank_string(record.get("reason"), f"{label}.reason", errors, code="INVALID_EXCLUDED_RECORD")
 
