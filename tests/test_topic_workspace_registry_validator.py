@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
@@ -104,6 +106,36 @@ def test_validator_accepts_scheduler_policy_fields(tmp_path: Path) -> None:
 
     assert exit_code == validate_topic_workspace_registry.EXIT_PASS, result
     assert result["errors"] == []
+
+
+def test_validator_reads_default_subject_manifest_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.validator")
+    registry_path = write_registry(
+        tmp_path,
+        workspace_record(
+            workspace_root=workspace_root,
+            manifest_path=manifest_path,
+        ),
+    )
+
+    read_counts = {"manifest": 0}
+    original_read_text = Path.read_text
+
+    def counting_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == manifest_path:
+            read_counts["manifest"] += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
+        registry_path
+    )
+
+    assert exit_code == validate_topic_workspace_registry.EXIT_PASS, result
+    assert read_counts["manifest"] == 1
 
 
 def test_validator_rejects_invalid_scheduler_policy_shape(tmp_path: Path) -> None:
