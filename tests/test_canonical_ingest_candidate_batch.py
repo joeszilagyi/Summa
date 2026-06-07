@@ -394,3 +394,34 @@ def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> 
 
     assert identifier is not None
     assert identifier["confidence_score"] is None
+
+
+def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    valid_payload = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))
+    valid_payload["run_id"] = "run-id-valid"
+    valid_text = json.dumps(valid_payload, ensure_ascii=False, sort_keys=True) + "\n"
+
+    mutated_payload = json.loads(valid_text)
+    mutated_payload["run_id"] = "run-id-mutated"
+    mutated_text = json.dumps(mutated_payload, ensure_ascii=False, sort_keys=True) + "\n"
+
+    batch_path = tmp_path / "gather-candidate-batch.json"
+    batch_path.write_text(valid_text, encoding="utf-8")
+
+    original_read_text = canonical_ingest.Path.read_text
+    calls = {"count": 0}
+
+    def read_text_side_effect(self: Path, *args: object, **kwargs: object) -> str:
+        if self == batch_path:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return valid_text
+            return mutated_text
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(canonical_ingest.Path, "read_text", read_text_side_effect)
+
+    batch, batch_hash = canonical_ingest.load_validated_candidate_batch(batch_path)
+
+    assert batch["run_id"] == "run-id-valid"
+    assert batch_hash == hashlib.sha256(valid_text.encode("utf-8")).hexdigest()

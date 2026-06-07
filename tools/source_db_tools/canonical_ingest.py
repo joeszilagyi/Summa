@@ -10,11 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from tools.source_db_tools import canonical_reconciliation, canonical_store
+from tools.validators import validate_gather_candidate_batch as validate_gather_candidate_batch_validator
 from tools.validators.validate_gather_candidate_batch import (
     EXIT_PASS as EXIT_GATHER_BATCH_PASS,
-)
-from tools.validators.validate_gather_candidate_batch import (
-    validate_gather_candidate_batch,
 )
 from tools.validators.validate_source_acquisition_execution import (
     EXIT_PASS as EXIT_EXECUTION_PASS,
@@ -42,20 +40,51 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
+
+
+class NonStandardJsonConstantError(ValueError):
+    """Raised for NaN, Infinity, and -Infinity JSON constants."""
+
+
+def _reject_json_constant(value: str) -> None:
+    raise NonStandardJsonConstantError(f"non-standard JSON constant: {value}")
+
+
+def _no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise CanonicalIngestError(f"{label} path does not exist: {path}") from exc
     except OSError as exc:
         raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
+    try:
+        payload = json.loads(
+            raw_text,
+            object_pairs_hook=_no_duplicate_object_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except DuplicateJsonKeyError as exc:
+        raise CanonicalIngestError(f"{label} is not valid JSON: {exc}") from exc
+    except NonStandardJsonConstantError as exc:
+        raise CanonicalIngestError(f"{label} is not valid JSON: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise CanonicalIngestError(
             f"{label} is not valid JSON: {path} (line {exc.lineno})"
         ) from exc
     if not isinstance(payload, dict):
         raise CanonicalIngestError(f"{label} must be a JSON object: {path}")
-    return payload
+    return payload, raw_text
 
 
 def _load_jsonl(path: Path, *, label: str) -> list[dict[str, Any]]:
@@ -82,7 +111,11 @@ def _load_jsonl(path: Path, *, label: str) -> list[dict[str, Any]]:
 
 
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
-    result, exit_code = validate_gather_candidate_batch(batch_path)
+    payload, batch_text = _load_json_object(batch_path, label="candidate batch")
+    result, exit_code = validate_gather_candidate_batch_validator.validate_gather_candidate_batch_payload(
+        payload,
+        target=batch_path,
+    )
     if exit_code != EXIT_GATHER_BATCH_PASS:
         message = "; ".join(
             f"{error['code']}: {error['message']}" for error in result.get("errors", [])
@@ -90,7 +123,7 @@ def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], st
         raise CanonicalIngestError(
             f"gather candidate batch validation failed: {message or batch_path}"
         )
-    return _load_json_object(batch_path, label="candidate batch"), hash_file(batch_path)
+    return payload, hashlib.sha256(batch_text.encode("utf-8")).hexdigest()
 
 
 def load_validated_execution_artifacts(

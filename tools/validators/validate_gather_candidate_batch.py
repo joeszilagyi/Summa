@@ -931,15 +931,15 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
         )
 
 
-def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
-    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
+def validate_gather_candidate_batch_payload(
+    payload: dict[str, Any],
+    *,
+    target: Path,
+) -> tuple[dict[str, Any], int]:
+    counts = {"inspected": 1, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
-    payload, errors, exit_code = load_json_object(target, label="gather candidate batch")
-    if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
-
-    counts["inspected"] = 1
     schema, schema_errors, schema_exit = load_json_object(SCHEMA_PATH, label="gather candidate batch schema")
     errors.extend(schema_errors)
     if schema is None:
@@ -961,6 +961,15 @@ def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
 
     counts["accepted"] = 1
     return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
+
+
+def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
+    payload, errors, exit_code = load_json_object(target, label="gather candidate batch")
+    if payload is None:
+        return {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": errors, "warnings": []}, exit_code
+
+    report, report_exit_code = validate_gather_candidate_batch_payload(payload, target=target)
+    return report, report_exit_code
 
 
 def main() -> int:
