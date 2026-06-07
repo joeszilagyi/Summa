@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -705,3 +706,73 @@ def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: P
 
     assert row is not None
     assert row[0] == "Public Work"
+
+
+def test_projection_records_digest_uses_sorted_stable_projection_payload() -> None:
+    records = [
+        {
+            "authority_level": "primary",
+            "confidence_score": 0.95,
+            "indexed_fields": [],
+            "lineage_state": "active",
+            "object_pk": 7,
+            "object_ref": "work:7",
+            "object_type": "work",
+            "projection_id": "proj-7",
+            "public_blocker": None,
+            "publication_state": "public_preview",
+            "review_state": "reviewed",
+            "subtitle": None,
+            "suppressed_fields": [],
+            "title": "Another",
+            "visible_profiles": ["local", "public_preview"],
+        },
+        {
+            "authority_level": "secondary",
+            "confidence_score": 0.83,
+            "indexed_fields": [{"field": "title", "text": "Local Work", "display_policy": "always"}],
+            "lineage_state": "active",
+            "object_pk": 8,
+            "object_ref": "work:8",
+            "object_type": "work",
+            "projection_id": "proj-8",
+            "public_blocker": None,
+            "publication_state": "public_preview",
+            "review_state": "reviewed",
+            "subtitle": None,
+            "suppressed_fields": ["subtitle"],
+            "title": "Local Work",
+            "visible_profiles": ["local"],
+        },
+    ]
+
+    expected = hashlib.sha256(
+        json.dumps(
+            [
+                {
+                    "authority_level": record["authority_level"],
+                    "confidence_score": record["confidence_score"],
+                    "indexed_fields": record["indexed_fields"],
+                    "lineage_state": record["lineage_state"],
+                    "object_pk": record["object_pk"],
+                    "object_ref": record["object_ref"],
+                    "object_type": record["object_type"],
+                    "projection_id": record["projection_id"],
+                    "public_blocker": record["public_blocker"],
+                    "publication_state": record["publication_state"],
+                    "review_state": record["review_state"],
+                    "subtitle": record["subtitle"],
+                    "suppressed_fields": record["suppressed_fields"],
+                    "title": record["title"],
+                    "visible_profiles": record["visible_profiles"],
+                }
+                for record in records
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert builder.projection_records_digest(records) == expected

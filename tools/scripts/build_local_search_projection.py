@@ -394,8 +394,12 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
 
 
 def projection_records_digest(records: list[dict[str, Any]]) -> str:
-    canonical_records = [
-        {
+    hasher = hashlib.sha256()
+    hasher.update(b"[")
+    for index, record in enumerate(records):
+        if index:
+            hasher.update(b",")
+        canonical_record = {
             "authority_level": record["authority_level"],
             "confidence_score": record["confidence_score"],
             "indexed_fields": record["indexed_fields"],
@@ -412,16 +416,16 @@ def projection_records_digest(records: list[dict[str, Any]]) -> str:
             "title": record["title"],
             "visible_profiles": record["visible_profiles"],
         }
-        for record in records
-    ]
-    canonical_json = json.dumps(
-        canonical_records,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    )
-    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+        canonical_json = json.dumps(
+            canonical_record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+        hasher.update(canonical_json.encode("utf-8"))
+    hasher.update(b"]")
+    return hasher.hexdigest()
 
 
 def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
