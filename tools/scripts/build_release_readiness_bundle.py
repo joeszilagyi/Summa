@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -355,33 +356,30 @@ def report_path_for_key(args: argparse.Namespace, key: str) -> str | None:
 
 
 def stage_reports(args: argparse.Namespace, *, output_dir: Path) -> list[StagedReport]:
-    staged: list[StagedReport] = []
-    for key in REQUIRED_REPORTS:
+    def stage_one(key: str) -> StagedReport:
         raw_report_path = report_path_for_key(args, key)
         if args.mode == "collect":
             if not raw_report_path:
                 raise ReleaseReadinessBundleError(
                     f"--{key.replace('_', '-')}-report is required in collect mode"
                 )
-            staged.append(
-                copy_report(key=key, source=resolve_path(raw_report_path), output_dir=output_dir)
-            )
-        elif args.mode == "run":
+            return copy_report(key=key, source=resolve_path(raw_report_path), output_dir=output_dir)
+        if args.mode == "run":
             if raw_report_path:
                 raise ReleaseReadinessBundleError(
                     f"prebuilt report path supplied for {key}, but mode is run"
                 )
-            staged.append(generate_report(key=key, args=args, output_dir=output_dir))
-        else:
-            if raw_report_path:
-                staged.append(
-                    copy_report(
-                        key=key, source=resolve_path(raw_report_path), output_dir=output_dir
-                    )
-                )
-            else:
-                staged.append(generate_report(key=key, args=args, output_dir=output_dir))
-    return staged
+            return generate_report(key=key, args=args, output_dir=output_dir)
+        if raw_report_path:
+            return copy_report(key=key, source=resolve_path(raw_report_path), output_dir=output_dir)
+        return generate_report(key=key, args=args, output_dir=output_dir)
+
+    staged: dict[str, StagedReport] = {}
+    with ThreadPoolExecutor(max_workers=len(REQUIRED_REPORTS)) as executor:
+        futures = {key: executor.submit(stage_one, key) for key in REQUIRED_REPORTS}
+        for key in REQUIRED_REPORTS:
+            staged[key] = futures[key].result()
+    return [staged[key] for key in REQUIRED_REPORTS]
 
 
 def stage_graph_closure_report(
