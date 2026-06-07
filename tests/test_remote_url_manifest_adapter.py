@@ -42,7 +42,7 @@ def test_remote_url_manifest_plans_entries_without_network_access(tmp_path: Path
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     assert {path: path.stat().st_mtime_ns for path in input_paths} == mtimes_before
     payload = json.loads(proc.stdout)
     assert payload["schema_version"] == "remote-url-manifest-plan.v1"
@@ -94,7 +94,7 @@ def test_remote_url_manifest_rejects_invalid_row_urls_and_reports_blockers(tmp_p
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entry_count"] == 2
@@ -143,7 +143,7 @@ def test_remote_url_manifest_rejects_entry_urls_with_spaces(tmp_path: Path) -> N
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [
@@ -167,7 +167,7 @@ def test_remote_url_manifest_rejects_entry_urls_with_control_characters(tmp_path
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [
@@ -191,7 +191,7 @@ def test_remote_url_manifest_rejects_entry_urls_with_invalid_hostnames(tmp_path:
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [
@@ -215,7 +215,7 @@ def test_remote_url_manifest_rejects_duplicate_manifest_entry_keys(tmp_path: Pat
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "duplicate JSON object key: url"}]
@@ -237,7 +237,7 @@ def test_remote_url_manifest_rejects_manifest_entry_non_standard_json_constants(
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: NaN"}]
@@ -259,7 +259,7 @@ def test_remote_url_manifest_rejects_manifest_entry_infinity_constants(tmp_path:
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: Infinity"}]

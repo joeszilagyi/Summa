@@ -271,7 +271,13 @@ def main() -> int:
         sys.stdout.write(stable_json_text(payload))
     else:
         sys.stdout.write(render_text(payload))
-    return 1 if not payload["handoff_validation"]["ok"] else 0
+    return (
+        1
+        if payload["blocker_count"] > 0
+        or payload["accepted_entry_count"] == 0
+        or not payload["handoff_validation"]["ok"]
+        else 0
+    )
 
 
 if __name__ == "__main__":
