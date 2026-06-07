@@ -169,3 +169,39 @@ def test_invalid_instance_payload_is_rejected() -> None:
             instance_path=Path("inline-instance.json"),
             schema_path=Path("inline.schema.json"),
         )
+
+
+def test_schema_rejects_unknown_saturation_state_fields() -> None:
+    registry_path = CONFIG_ROOT / "topic_workspace_registry.schema.json"
+    schema = load_json(registry_path)
+
+    invalid_instance = {
+        "schema_version": "topic-workspace-registry.v1",
+        "workspaces": [
+            {
+                "workspace_id": "synthetic-workspace",
+                "topic_label": "Synthetic Workspace",
+                "workspace_root": "/tmp/synthetic-workspace",
+                "domain_pack": "general.v1",
+                "lifecycle_state": "active",
+                "schedule_posture": "scheduled",
+                "workspace_policy_class": "private_local",
+                "scheduler_policy": {
+                    "saturation_state": {
+                        "state": "active",
+                        "reason_codes": [],
+                        "scheduler_action": "run",
+                        "unexpected_field": "should-fail",
+                    }
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(AssertionError, match="Additional properties are not allowed"):
+        validate_instance_payload(
+            invalid_instance,
+            schema,
+            instance_path=Path("synthetic-topic-workspace-registry.json"),
+            schema_path=registry_path.relative_to(REPO_ROOT),
+        )

@@ -111,8 +111,7 @@
           "$ref": "#/$defs/saturation_state"
         },
         "extensions": {
-          "type": "object",
-          "additionalProperties": true
+          "$ref": "#/$defs/extension_object"
         }
       }
     },
@@ -252,10 +251,13 @@
           "type": "object"
         },
         "extensions": {
-          "type": "object",
-          "additionalProperties": true
+          "$ref": "#/$defs/extension_object"
         }
       }
+    },
+    "extension_object": {
+      "type": "object",
+      "additionalProperties": true
     },
     "string_array": {
       "type": "array",
