@@ -270,7 +270,7 @@ def test_pytest_config_moved_into_pyproject() -> None:
     pyproject = load_pyproject()
 
     pytest_options = pyproject["tool"]["pytest"]["ini_options"]
-    assert pytest_options["addopts"] == "--import-mode=importlib"
+    assert pytest_options["addopts"] == "--import-mode=importlib --timeout=300"
     assert pytest_options["testpaths"] == ["tests", "tools/source_db_tools/tests"]
     assert "tools/source_db_tools/tests" in pytest_options["pythonpath"]
 
@@ -307,13 +307,12 @@ def test_coverage_tooling_is_configured_in_pyproject_and_ci() -> None:
 
     coverage_report = pyproject["tool"]["coverage"]["report"]
     assert coverage_report["show_missing"] is True
-    assert coverage_report["fail_under"] == 60
+    assert coverage_report["fail_under"] == 70
 
     workflow = HYGIENE_WORKFLOW.read_text(encoding="utf-8")
     assert 'python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"' in workflow
     assert (
-        "python -m pytest -q --cov=tools/validators --cov=tools/common "
-        "--cov-report=term-missing --cov-report=xml"
+        "python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml"
     ) in workflow
 
 
