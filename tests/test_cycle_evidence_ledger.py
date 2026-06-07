@@ -476,3 +476,90 @@ def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Pa
         "repeated_low_yield",
     ]
     assert [bool(row["retryable"]) for row in rows] == [True, False]
+
+
+def test_summarize_cycle_evidence_uses_grouped_counts_query(tmp_path: Path, monkeypatch) -> None:
+    class FakeCursor:
+        def __init__(self, row: dict[str, int]) -> None:
+            self._row = row
+
+        def fetchone(self) -> dict[str, int]:
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeCursor:
+            self.sql.append(sql)
+            assert params == ("cycle:test",) * 6 or params == ("cycle:test",)
+            if "cycle_stage_event" in sql and "cycle_operator_override" in sql:
+                return FakeCursor(
+                    {
+                        "stages": 3,
+                        "artifacts": 2,
+                        "candidates_considered": 4,
+                        "candidates_excluded": 5,
+                        "tool_failures": 1,
+                        "operator_overrides": 2,
+                    }
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    conn = FakeConnection()
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "load_cycle_event",
+        lambda _conn, _event_id: {"cycle_event_id": "cycle:test", "status": "completed"},
+    )
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "list_cycle_stage_events",
+        lambda _conn, _event_id: [{"stage_name": "run_gather"}],
+    )
+    monkeypatch.setattr(
+        cycle_evidence_ledger,
+        "list_cycle_artifacts",
+        lambda _conn, _event_id: [{"artifact_type": "candidate_batch"}],
+    )
+
+    summary = cycle_evidence_ledger.summarize_cycle_evidence(conn, "cycle:test")
+
+    assert summary["counts"] == {
+        "stages": 3,
+        "artifacts": 2,
+        "candidates_considered": 4,
+        "candidates_excluded": 5,
+        "tool_failures": 1,
+        "operator_overrides": 2,
+    }
+    count_queries = [sql for sql in conn.sql if "SELECT COUNT(*) FROM" in sql]
+    assert len(count_queries) == 1
+
+
+def test_record_stage_artifacts_streams_hash_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_path = tmp_path / "candidate-batch.json"
+    artifact_path.write_text('{"schema_version":"gather-candidate-batch.v1"}\n', encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def fail_read_bytes(self: Path) -> bytes:
+        raise AssertionError("artifact hashing should stream bytes instead of read_bytes")
+
+    def fake_record_cycle_artifact_ref(conn, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return "artifact:fixture"
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes, raising=False)
+    monkeypatch.setattr(cycle_evidence_ledger, "record_cycle_artifact_ref", fake_record_cycle_artifact_ref)
+
+    cycle_evidence_ledger._record_stage_artifacts(  # type: ignore[attr-defined]
+        object(),
+        cycle_event_id="cycle:test",
+        stage_event_id="stage:test",
+        stage={"artifacts": {"candidate_batch": str(artifact_path)}},
+    )
+
+    assert str(seen["artifact_hash"]).startswith("sha256:")
+    assert seen["schema_id"] is None

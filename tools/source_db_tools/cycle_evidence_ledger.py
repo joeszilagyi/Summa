@@ -118,6 +118,19 @@ def _file_size(path: Path) -> int | None:
         return None
 
 
+def _file_hash(path: Path) -> str | None:
+    try:
+        if not path.is_file():
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    except OSError:
+        return None
+
+
 def _read_json_object(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -738,22 +751,25 @@ def summarize_cycle_evidence(conn: sqlite3.Connection, cycle_event_id: str) -> d
     event = load_cycle_event(conn, event_id)
     if event is None:
         raise CycleEvidenceLedgerError(f"cycle event not found: {event_id}")
-    sections = {
-        "stages": "cycle_stage_event",
-        "artifacts": "cycle_artifact_ref",
-        "candidates_considered": "cycle_candidate_considered",
-        "candidates_excluded": "cycle_candidate_excluded",
-        "tool_failures": "cycle_tool_failure",
-        "operator_overrides": "cycle_operator_override",
-    }
+    counts_row = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM cycle_stage_event WHERE cycle_event_id=?) AS stages,
+            (SELECT COUNT(*) FROM cycle_artifact_ref WHERE cycle_event_id=?) AS artifacts,
+            (SELECT COUNT(*) FROM cycle_candidate_considered WHERE cycle_event_id=?) AS candidates_considered,
+            (SELECT COUNT(*) FROM cycle_candidate_excluded WHERE cycle_event_id=?) AS candidates_excluded,
+            (SELECT COUNT(*) FROM cycle_tool_failure WHERE cycle_event_id=?) AS tool_failures,
+            (SELECT COUNT(*) FROM cycle_operator_override WHERE cycle_event_id=?) AS operator_overrides
+        """,
+        (event_id, event_id, event_id, event_id, event_id, event_id),
+    ).fetchone()
     counts = {
-        name: int(
-            conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE cycle_event_id=?",
-                (event_id,),
-            ).fetchone()[0]
-        )
-        for name, table in sections.items()
+        "stages": int(counts_row["stages"]),
+        "artifacts": int(counts_row["artifacts"]),
+        "candidates_considered": int(counts_row["candidates_considered"]),
+        "candidates_excluded": int(counts_row["candidates_excluded"]),
+        "tool_failures": int(counts_row["tool_failures"]),
+        "operator_overrides": int(counts_row["operator_overrides"]),
     }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -771,9 +787,14 @@ def _command_name(command: object) -> str | None:
     return Path(str(first)).name if first is not None else None
 
 
-def _artifact_schema_id(path: Path) -> str | None:
-    payload = _read_json_object(path)
-    value = payload.get("schema_version") if payload is not None else None
+def _stage_artifact_schema_id(stage: Mapping[str, Any], artifact_key: str) -> str | None:
+    evidence = stage.get("evidence")
+    if not isinstance(evidence, dict):
+        return None
+    artifact_schema_ids = evidence.get("artifact_schema_ids")
+    if not isinstance(artifact_schema_ids, dict):
+        return None
+    value = artifact_schema_ids.get(artifact_key)
     return value if isinstance(value, str) and value else None
 
 
@@ -795,8 +816,8 @@ def _record_stage_artifacts(
         path = Path(value)
         hash_value = artifacts.get(f"{key}_sha256")
         artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
-        if artifact_hash is None and path.is_file():
-            artifact_hash = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        if artifact_hash is None:
+            artifact_hash = _file_hash(path)
         record_cycle_artifact_ref(
             conn,
             cycle_event_id=cycle_event_id,
@@ -806,7 +827,7 @@ def _record_stage_artifacts(
             artifact_hash=artifact_hash,
             byte_count=_file_size(path),
             public_safe=False,
-            schema_id=_artifact_schema_id(path),
+            schema_id=_stage_artifact_schema_id(stage, key),
             validation_status=_optional_text((stage.get("validation") or {}).get("status"))
             if isinstance(stage.get("validation"), dict)
             else None,
