@@ -533,8 +533,6 @@ def render_prompt_text(
         "display_name": subject["display_name"],
         "domain_pack": subject["domain_pack"],
         "scope_statement": subject["scope_statement"],
-        "enabled_facets": subject["enabled_facets"],
-        "query_families": subject["query_families"],
     }
     source_block_section = "\n\n".join(wrapped_blocks) if wrapped_blocks else "(none supplied)"
     subject_block = render_untrusted_json_block(

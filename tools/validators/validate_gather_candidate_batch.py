@@ -882,8 +882,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     "display_name": subject_payload.get("display_name"),
                     "domain_pack": subject_payload.get("domain_pack"),
                     "scope_statement": subject_payload.get("scope_statement"),
-                    "enabled_facets": subject_payload.get("enabled_facets"),
-                    "query_families": subject_payload.get("query_families"),
                 }
                 expected_subject_text = render_json_payload(expected_subject)
                 actual_subject_block = parsed_metadata_blocks.get("metadata:subject")
