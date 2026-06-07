@@ -111,6 +111,18 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
     assert (output_dir / "search" / "local_search_projection.json").is_file()
     assert (output_dir / "search" / "local_search_results.json").is_file()
     assert (output_dir / "search" / "local_search.sqlite").is_file()
+    assert report["output_dir"] == "."
+    assert report["export_path"] == "knowledge_tree_export.json"
+    assert report["presentation_path"] == "public_presentation.json"
+    assert report["publish_root"] == "static"
+    assert report["search_projection_path"] == "search/local_search_projection.json"
+    assert report["search_results_path"] == "search/local_search_results.json"
+    assert report["search_index_db"] == "search/local_search.sqlite"
+    assert report["leak_report_path"] == "leak-scan-report.json"
+    assert report["static_build"]["export_path"] == "knowledge_tree_export.json"
+    assert report["static_build"]["presentation_path"] == "public_presentation.json"
+    assert report["static_build"]["publish_root"] == "static"
+    assert report["static_build"]["manifest_path"] == "static/build-manifest.json"
 
     export_report, export_exit = validate_knowledge_tree_export(export_path)
     presentation_report, presentation_exit = validate_public_knowledge_tree_presentation(

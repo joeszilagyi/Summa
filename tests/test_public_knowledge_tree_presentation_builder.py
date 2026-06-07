@@ -61,9 +61,12 @@ def test_populated_export_builds_valid_presentation(tmp_path: Path) -> None:
     result = run_presentation("--export", str(export_path), "--output", str(output_path))
 
     assert result.returncode == 0, result.stdout + result.stderr
+    stdout_report = json.loads(result.stdout)
     payload = load_presentation(output_path)
     report, exit_code = validate_public_knowledge_tree_presentation(output_path)
     assert exit_code == EXIT_PRESENTATION_PASS, report
+    assert stdout_report["export_path"] == export_path.name
+    assert stdout_report["output_path"] == output_path.name
     families = [page["page_family"] for page in payload["page_inventory"]]
     assert families == [
         "home",
@@ -113,4 +116,3 @@ def test_presentation_builder_rejects_invalid_export_before_rendering(tmp_path: 
     assert result.returncode != 0
     assert "schema_version must equal knowledge-tree-export.v1" in result.stderr
     assert not output_path.exists()
-

@@ -92,6 +92,13 @@ def render_text(payload: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def report_path(path: Path, *, base_dir: Path) -> str:
+    try:
+        return path.relative_to(base_dir).as_posix()
+    except ValueError:
+        return path.name
+
+
 def stage_public_scan_root(publish_root: Path) -> Path:
     stage_parent = Path(tempfile.mkdtemp(prefix=".publication-leak-scan.", dir=publish_root.parent))
     stage_root = stage_parent / "public-site"
@@ -150,6 +157,13 @@ def main() -> int:
             build_id=args.build_id,
             built_at=args.built_at,
         )
+        static_report = {
+            **static_report,
+            "export_path": report_path(export_path, base_dir=output_dir),
+            "presentation_path": report_path(presentation_path, base_dir=output_dir),
+            "publish_root": report_path(publish_root, base_dir=output_dir),
+            "manifest_path": report_path(publish_root / "build-manifest.json", base_dir=output_dir),
+        }
         leak_stage_root = stage_public_scan_root(publish_root)
         try:
             leak_report = scan_directory(leak_stage_root, profile="public_bundle")
@@ -176,14 +190,14 @@ def main() -> int:
     report = {
         "status": "published",
         "writer_surface": SCRIPT_PATH,
-        "output_dir": str(output_dir),
-        "export_path": str(export_path),
-        "presentation_path": str(presentation_path),
-        "publish_root": str(publish_root),
-        "search_projection_path": str(search_output_dir / "local_search_projection.json"),
-        "search_results_path": str(search_output_dir / "local_search_results.json"),
-        "search_index_db": str(search_output_dir / "local_search.sqlite"),
-        "leak_report_path": str(leak_report_path),
+        "output_dir": ".",
+        "export_path": report_path(export_path, base_dir=output_dir),
+        "presentation_path": report_path(presentation_path, base_dir=output_dir),
+        "publish_root": report_path(publish_root, base_dir=output_dir),
+        "search_projection_path": report_path(search_output_dir / "local_search_projection.json", base_dir=output_dir),
+        "search_results_path": report_path(search_output_dir / "local_search_results.json", base_dir=output_dir),
+        "search_index_db": report_path(search_output_dir / "local_search.sqlite", base_dir=output_dir),
+        "leak_report_path": report_path(leak_report_path, base_dir=output_dir),
         "leak_scan": {
             "status": leak_report["status"],
             "finding_count": leak_report["counts"]["findings"],
@@ -193,7 +207,9 @@ def main() -> int:
             "enabled": bool(args.graph_closure_preflight),
             "strict": bool(args.graph_closure_strict),
             "status": None if graph_closure_report is None else graph_closure_report.get("status"),
-            "report_path": None if graph_closure_report is None else str(graph_closure_report_path),
+            "report_path": None
+            if graph_closure_report is None
+            else report_path(graph_closure_report_path, base_dir=output_dir),
             "orphan_error_count": 0
             if graph_closure_report is None
             else graph_closure_report.get("summary", {}).get("true_orphan_error_count"),

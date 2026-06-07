@@ -53,9 +53,14 @@ def test_populated_fixture_store_builds_valid_export(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    stdout_report = json.loads(result.stdout)
     payload = load_export(output_path)
-    report, exit_code = validate_knowledge_tree_export(output_path)
-    assert exit_code == EXIT_EXPORT_PASS, report
+    validator_report, exit_code = validate_knowledge_tree_export(output_path)
+    assert exit_code == EXIT_EXPORT_PASS, validator_report
+    assert stdout_report["db_path"] == db_path.name or not Path(stdout_report["db_path"]).is_absolute()
+    assert stdout_report["output_path"] == output_path.name
+    assert stdout_report["search_projection_path"] == "search/local_search_projection.json"
+    assert stdout_report["search_results_path"] == "search/local_search_results.json"
     assert payload["page_families"] == [
         "home",
         "facet",

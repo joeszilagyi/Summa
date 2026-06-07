@@ -53,6 +53,13 @@ def render_text(payload: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def report_path(path: Path, *, base_dir: Path) -> str:
+    try:
+        return path.relative_to(base_dir).as_posix()
+    except ValueError:
+        return path.name
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -69,8 +76,8 @@ def main() -> int:
     report = {
         "status": "built",
         "writer_surface": SCRIPT_PATH,
-        "export_path": str(export_path),
-        "output_path": str(output_path),
+        "export_path": report_path(export_path, base_dir=output_path.parent),
+        "output_path": report_path(output_path, base_dir=output_path.parent),
         "page_count": len(presentation_payload["page_inventory"]),
         "page_families": [page["page_family"] for page in presentation_payload["page_inventory"]],
     }

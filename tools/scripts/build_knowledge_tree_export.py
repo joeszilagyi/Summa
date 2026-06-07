@@ -61,6 +61,13 @@ def render_text(payload: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def report_path(path: Path, *, base_dir: Path) -> str:
+    try:
+        return path.relative_to(base_dir).as_posix()
+    except ValueError:
+        return path.name
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -83,15 +90,19 @@ def main() -> int:
     report = {
         "status": "built",
         "writer_surface": SCRIPT_PATH,
-        "db_path": str(db_path),
-        "output_path": str(output_path),
+        "db_path": report_path(db_path, base_dir=output_path.parent),
+        "output_path": report_path(output_path, base_dir=output_path.parent),
         "page_count": len(result.payload["pages"]),
         "page_families": result.payload["page_families"],
         "generated_at": result.payload["generated_at"],
         "search_indexed": result.search_artifacts.projection_payload["counts"]["projected_records"],
         "search_returned": result.search_artifacts.results_payload["counts"]["returned"],
-        "search_projection_path": None if result.search_artifacts.projection_json_path is None else str(result.search_artifacts.projection_json_path),
-        "search_results_path": None if result.search_artifacts.results_json_path is None else str(result.search_artifacts.results_json_path),
+        "search_projection_path": None
+        if result.search_artifacts.projection_json_path is None
+        else report_path(result.search_artifacts.projection_json_path, base_dir=output_path.parent),
+        "search_results_path": None
+        if result.search_artifacts.results_json_path is None
+        else report_path(result.search_artifacts.results_json_path, base_dir=output_path.parent),
     }
     if args.format == "json":
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
