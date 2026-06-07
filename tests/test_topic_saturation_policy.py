@@ -600,3 +600,24 @@ def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_pat
     assert any("source_object_namespace" in statement for statement in traces)
     assert any("source_object_id" in statement for statement in traces)
     assert not any("LIKE" in statement for statement in traces)
+
+
+def test_load_recent_gather_events_uses_sql_json_extraction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            add_cycle(conn, subject_id="json_extract_subject", run_id="run-1", cycle_depth=7, event_index=1, artifact_hash="artifact-hash")
+        monkeypatch.setattr(
+            topic_saturation,
+            "parse_note_text",
+            lambda _: (_ for _ in ()).throw(AssertionError("parse_note_text should not be called")),
+        )
+        events = topic_saturation.load_recent_gather_events(conn, subject_id="json_extract_subject", limit=1)
+    finally:
+        conn.close()
+
+    assert len(events) == 1
+    assert events[0]["facet"] == "sources"
+    assert events[0]["cycle_depth"] == 7
+    assert events[0]["_artifact_hash"] == "artifact-hash"

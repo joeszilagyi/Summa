@@ -130,7 +130,14 @@ def parse_note_text(note_text: Any) -> dict[str, Any]:
 def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
+        SELECT
+          provenance_event_id,
+          provenance_event_key_v1,
+          run_id,
+          event_timestamp,
+          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.facet') END AS facet,
+          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.cycle_depth') END AS cycle_depth,
+          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.artifact_hash') END AS artifact_hash
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
           AND source_object_namespace=?
@@ -142,16 +149,17 @@ def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limi
     ).fetchall()
     events: list[dict[str, Any]] = []
     for row in rows:
-        note = parse_note_text(row["note_text"])
-        artifact_hash = note.get("artifact_hash")
+        facet = row["facet"]
+        cycle_depth = row["cycle_depth"]
+        artifact_hash = row["artifact_hash"]
         events.append(
             {
                 "provenance_event_id": int(row["provenance_event_id"]),
                 "event_key": str(row["provenance_event_key_v1"]),
                 "run_id": None if row["run_id"] is None else str(row["run_id"]),
                 "event_timestamp": str(row["event_timestamp"]),
-                "facet": note.get("facet"),
-                "cycle_depth": note.get("cycle_depth"),
+                "facet": None if facet is None else str(facet),
+                "cycle_depth": None if cycle_depth is None else int(cycle_depth),
                 "_artifact_hash": artifact_hash if isinstance(artifact_hash, str) else None,
             }
         )
