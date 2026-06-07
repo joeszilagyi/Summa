@@ -29,6 +29,27 @@ class CapabilityValidationError(RuntimeError):
     """Raised when the capability index cannot be loaded."""
 
 
+class DuplicateJsonKeyError(ValueError):
+    """Raised when a JSON object contains duplicate keys."""
+
+
+class NonStandardJsonConstantError(ValueError):
+    """Raised when non-standard JSON constants are encountered."""
+
+
+def reject_json_constant(value: str) -> None:
+    raise NonStandardJsonConstantError(f"non-standard JSON constant: {value}")
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -49,8 +70,12 @@ def load_json_object(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise CapabilityValidationError(f"missing capability index: {path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError) as exc:
         raise CapabilityValidationError(f"invalid JSON in capability index: {path}") from exc
     if not isinstance(payload, dict):
         raise CapabilityValidationError(f"capability index must be a JSON object: {path}")
