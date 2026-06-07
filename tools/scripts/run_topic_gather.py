@@ -343,6 +343,7 @@ def resolve_source_text_blocks(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     blocks: list[dict[str, Any]] = []
     rendered_blocks: list[str] = []
+    rendered_block_cursor = 0
     for index, raw_path in enumerate(paths, start=1):
         source_path = Path(raw_path).expanduser()
         if not source_path.is_absolute():
@@ -374,10 +375,13 @@ def resolve_source_text_blocks(
                     "source_ref": source_ref,
                     "provenance": provenance,
                     "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": byte_count,
                     "sha256": sha256,
                 }
             )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
             continue
 
         chunk_count = 0
@@ -406,10 +410,13 @@ def resolve_source_text_blocks(
                     "source_ref": chunk_source_ref,
                     "provenance": chunk_provenance,
                     "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": len(chunk_bytes),
                     "sha256": digest.hexdigest(),
                 }
             )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
         if chunk_count == 0:
             source_text = ""
             hazard_flags = detect_hazard_flags(source_text)
@@ -428,10 +435,13 @@ def resolve_source_text_blocks(
                     "source_ref": source_ref,
                     "provenance": provenance,
                     "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": 0,
                     "sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
                 }
             )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
     return blocks, rendered_blocks
 
 

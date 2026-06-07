@@ -709,6 +709,8 @@
         "source_ref",
         "provenance",
         "hazard_flags",
+        "start_offset",
+        "end_offset",
         "byte_count",
         "sha256"
       ],
@@ -731,6 +733,14 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "start_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_offset": {
+          "type": "integer",
+          "minimum": 0
         },
         "byte_count": {
           "type": "integer",

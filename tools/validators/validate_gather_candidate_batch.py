@@ -820,12 +820,27 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="source_text_wrapping.end_delimiter must match the checked-in template",
                     path="$.source_text_wrapping.end_delimiter",
                 )
+            source_section_marker = "\nWrapped source text blocks:\n"
+            source_section_start = prompt_text.find(source_section_marker)
+            if source_section_start == -1:
+                add_error(
+                    errors,
+                    code="PROMPT_SOURCE_SECTION_MISSING",
+                    message="rendered prompt must include wrapped source text blocks",
+                    path="$.prompt.rendered_prompt",
+                )
+                metadata_prompt_text = prompt_text
+                source_section_text = ""
+            else:
+                metadata_prompt_text = prompt_text[:source_section_start]
+                source_section_text = prompt_text[source_section_start + len(source_section_marker) :]
+                if source_section_text.endswith("\n"):
+                    source_section_text = source_section_text[:-1]
 
-            parsed_blocks = parse_wrapped_blocks(prompt_text, template=template)
+            parsed_blocks = parse_wrapped_blocks(metadata_prompt_text, template=template)
             recorded_blocks = wrapping.get("blocks")
             if not isinstance(recorded_blocks, list):
                 return
-            file_blocks = [block for block in parsed_blocks if block.source_ref.startswith("file:")]
             if wrapping.get("source_block_count") != len(recorded_blocks):
                 add_error(
                     errors,
@@ -833,19 +848,40 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="source_block_count must equal the number of recorded blocks",
                     path="$.source_text_wrapping.source_block_count",
                 )
-            if len(file_blocks) != len(recorded_blocks):
-                add_error(
-                    errors,
-                    code="PROMPT_WRAPPER_BLOCK_COUNT_MISMATCH",
-                    message="rendered prompt wrapped block count must equal source_text_wrapping.blocks length",
-                    path="$.source_text_wrapping.blocks",
-                )
-            for index, actual in enumerate(file_blocks):
-                if index >= len(recorded_blocks):
-                    break
-                expected = recorded_blocks[index]
+
+            for index, expected in enumerate(recorded_blocks):
                 if not isinstance(expected, dict):
                     continue
+                start_offset = expected.get("start_offset")
+                end_offset = expected.get("end_offset")
+                if not isinstance(start_offset, int) or not isinstance(end_offset, int):
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_OFFSET_MISSING",
+                        message="recorded block offsets are required",
+                        path=f"$.source_text_wrapping.blocks[{index}]",
+                    )
+                    continue
+                if start_offset < 0 or end_offset < start_offset or end_offset > len(source_section_text):
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_OFFSET_MISMATCH",
+                        message="recorded block offsets do not match the rendered prompt source section",
+                        path=f"$.source_text_wrapping.blocks[{index}]",
+                    )
+                    continue
+                actual_blocks = parse_wrapped_blocks(
+                    source_section_text[start_offset:end_offset], template=template
+                )
+                if len(actual_blocks) != 1:
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_PARSE_FAILED",
+                        message="recorded block offsets do not delimit a wrapped source block",
+                        path=f"$.source_text_wrapping.blocks[{index}]",
+                    )
+                    continue
+                actual = actual_blocks[0]
                 if expected.get("source_ref") != actual.source_ref:
                     add_error(
                         errors,
@@ -885,7 +921,9 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     )
 
             parsed_metadata_blocks = {
-                block.source_ref: block for block in parsed_blocks if block.source_ref.startswith("metadata:")
+                block.source_ref: block
+                for block in parsed_blocks
+                if block.source_ref.startswith("metadata:")
             }
             subject_payload = payload.get("subject")
             if isinstance(subject_payload, dict):

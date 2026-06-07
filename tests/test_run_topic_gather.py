@@ -675,6 +675,9 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     assert payload["source_text_wrapping"]["source_block_count"] > 1
     assert len(payload["source_text_wrapping"]["blocks"]) == payload["source_text_wrapping"]["source_block_count"]
     assert payload["source_text_wrapping"]["blocks"][0]["source_ref"].endswith("#chunk-0001")
+    assert payload["source_text_wrapping"]["blocks"][0]["start_offset"] == 0
+    assert payload["source_text_wrapping"]["blocks"][0]["end_offset"] > 0
+    assert payload["source_text_wrapping"]["blocks"][1]["start_offset"] > payload["source_text_wrapping"]["blocks"][0]["end_offset"]
     assert prompt_path.stat().st_size > large_source_path.stat().st_size
 
 
@@ -994,6 +997,8 @@ def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
             raise AssertionError("validator must not compare full prompt strings")
 
     original_read_text = validator.Path.read_text
+    real_parse_wrapped_blocks = validator.parse_wrapped_blocks
+    parse_calls: list[str] = []
 
     def read_text_guard(self: Path, *args: object, **kwargs: object) -> str:
         text = original_read_text(self, *args, **kwargs)
@@ -1001,10 +1006,17 @@ def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
             return GuardedPromptText(text)
         return text
 
+    def parse_wrapped_blocks_guard(prompt_text: str, *, template: object | None = None):
+        parse_calls.append(prompt_text)
+        assert "Wrapped source text blocks:" not in prompt_text
+        return real_parse_wrapped_blocks(prompt_text, template=template)
+
     monkeypatch.setattr(validator.Path, "read_text", read_text_guard)
+    monkeypatch.setattr(validator, "parse_wrapped_blocks", parse_wrapped_blocks_guard)
 
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
+    assert parse_calls
 
 
 
