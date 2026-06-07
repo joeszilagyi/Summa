@@ -41,7 +41,6 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     parse_wrapped_blocks,
 )
 
-
 VALIDATOR_NAME = "llm_prompt_fixture"
 CONTRACT_VERSION = "1"
 FIXTURE_SCHEMA_VERSION = "llm-prompt-fixture.v1"
