@@ -131,14 +131,6 @@ def _file_hash(path: Path) -> str | None:
         return None
 
 
-def _read_json_object(path: Path) -> dict[str, Any] | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def record_cycle_event_start(
     conn: sqlite3.Connection,
     *,
@@ -746,6 +738,140 @@ def list_cycle_artifacts(conn: sqlite3.Connection, cycle_event_id: str) -> list[
     return [_row_to_dict(row) for row in rows]
 
 
+def _load_cycle_evidence_details(
+    conn: sqlite3.Connection, cycle_event_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
+    rows = conn.execute(
+        """
+        WITH combined AS (
+          SELECT
+            0 AS sort_group,
+            stage_order AS sort_primary,
+            stage_name AS sort_secondary,
+            stage_event_id AS sort_tertiary,
+            'stage' AS row_kind,
+            stage_event_id,
+            cycle_event_id,
+            run_id,
+            stage_name,
+            stage_order,
+            started_at,
+            ended_at,
+            status,
+            required_stage,
+            skipped_reason,
+            command_name,
+            helper_name,
+            input_artifact_ref_id,
+            output_artifact_ref_id,
+            validation_status,
+            error_summary,
+            metadata_json,
+            created_at,
+            record_last_updated,
+            NULL AS artifact_ref_id,
+            NULL AS artifact_type,
+            NULL AS artifact_path,
+            NULL AS artifact_hash,
+            NULL AS byte_count,
+            NULL AS privacy_classification,
+            NULL AS public_safe,
+            NULL AS schema_id
+          FROM cycle_stage_event
+          WHERE cycle_event_id=?
+          UNION ALL
+          SELECT
+            1 AS sort_group,
+            0 AS sort_primary,
+            artifact_type AS sort_secondary,
+            artifact_ref_id AS sort_tertiary,
+            'artifact' AS row_kind,
+            NULL AS stage_event_id,
+            cycle_event_id,
+            NULL AS run_id,
+            NULL AS stage_name,
+            NULL AS stage_order,
+            NULL AS started_at,
+            NULL AS ended_at,
+            NULL AS status,
+            NULL AS required_stage,
+            NULL AS skipped_reason,
+            NULL AS command_name,
+            NULL AS helper_name,
+            NULL AS input_artifact_ref_id,
+            NULL AS output_artifact_ref_id,
+            validation_status,
+            NULL AS error_summary,
+            metadata_json,
+            created_at,
+            record_last_updated,
+            artifact_ref_id,
+            artifact_type,
+            artifact_path,
+            artifact_hash,
+            byte_count,
+            privacy_classification,
+            public_safe,
+            schema_id
+          FROM cycle_artifact_ref
+          WHERE cycle_event_id=?
+        )
+        SELECT *
+        FROM combined
+        ORDER BY sort_group, sort_primary, sort_secondary, sort_tertiary
+        """,
+        (event_id, event_id),
+    ).fetchall()
+    stages: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    for row in rows:
+        if row["row_kind"] == "stage":
+            stages.append(
+                {
+                    "stage_event_id": row["stage_event_id"],
+                    "cycle_event_id": row["cycle_event_id"],
+                    "run_id": row["run_id"],
+                    "stage_name": row["stage_name"],
+                    "stage_order": row["stage_order"],
+                    "started_at": row["started_at"],
+                    "ended_at": row["ended_at"],
+                    "status": row["status"],
+                    "required_stage": row["required_stage"],
+                    "skipped_reason": row["skipped_reason"],
+                    "command_name": row["command_name"],
+                    "helper_name": row["helper_name"],
+                    "input_artifact_ref_id": row["input_artifact_ref_id"],
+                    "output_artifact_ref_id": row["output_artifact_ref_id"],
+                    "validation_status": row["validation_status"],
+                    "error_summary": row["error_summary"],
+                    "metadata_json": row["metadata_json"],
+                    "created_at": row["created_at"],
+                    "record_last_updated": row["record_last_updated"],
+                }
+            )
+        elif row["row_kind"] == "artifact":
+            artifacts.append(
+                {
+                    "artifact_ref_id": row["artifact_ref_id"],
+                    "cycle_event_id": row["cycle_event_id"],
+                    "stage_event_id": row["stage_event_id"],
+                    "artifact_type": row["artifact_type"],
+                    "artifact_path": row["artifact_path"],
+                    "artifact_hash": row["artifact_hash"],
+                    "byte_count": row["byte_count"],
+                    "privacy_classification": row["privacy_classification"],
+                    "public_safe": row["public_safe"],
+                    "schema_id": row["schema_id"],
+                    "validation_status": row["validation_status"],
+                    "created_at": row["created_at"],
+                    "metadata_json": row["metadata_json"],
+                    "record_last_updated": row["record_last_updated"],
+                }
+            )
+    return stages, artifacts
+
+
 def summarize_cycle_evidence(conn: sqlite3.Connection, cycle_event_id: str) -> dict[str, Any]:
     event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
     event = load_cycle_event(conn, event_id)
@@ -771,12 +897,13 @@ def summarize_cycle_evidence(conn: sqlite3.Connection, cycle_event_id: str) -> d
         "tool_failures": int(counts_row["tool_failures"]),
         "operator_overrides": int(counts_row["operator_overrides"]),
     }
+    stages, artifacts = _load_cycle_evidence_details(conn, event_id)
     return {
         "schema_version": SCHEMA_VERSION,
         "cycle_event": event,
         "counts": counts,
-        "stages": list_cycle_stage_events(conn, event_id),
-        "artifacts": list_cycle_artifacts(conn, event_id),
+        "stages": stages,
+        "artifacts": artifacts,
     }
 
 
@@ -901,25 +1028,6 @@ def _record_candidate_batch_payload(
         )
 
 
-def _record_candidate_batch(
-    conn: sqlite3.Connection,
-    *,
-    cycle_event_id: str,
-    stage_event_id: str | None,
-    batch_path: Path,
-) -> None:
-    payload = _read_json_object(batch_path)
-    if payload is None:
-        return
-    _record_candidate_batch_payload(
-        conn,
-        cycle_event_id=cycle_event_id,
-        stage_event_id=stage_event_id,
-        batch=payload,
-        source_artifact_path=str(batch_path),
-    )
-
-
 def _record_feedback_candidates_payload(
     conn: sqlite3.Connection,
     *,
@@ -1025,25 +1133,6 @@ def _record_feedback_candidates_payload(
                 if isinstance(item.get("retryable"), bool)
                 else deferred_candidate_retryable(reason),
             )
-
-
-def _record_feedback_candidates(
-    conn: sqlite3.Connection,
-    *,
-    cycle_event_id: str,
-    stage_event_id: str | None,
-    feedback_plan_path: Path,
-) -> None:
-    payload = _read_json_object(feedback_plan_path)
-    if payload is None:
-        return
-    _record_feedback_candidates_payload(
-        conn,
-        cycle_event_id=cycle_event_id,
-        stage_event_id=stage_event_id,
-        payload=payload,
-        source_artifact_path=str(feedback_plan_path),
-    )
 
 
 def _stage_by_name(stages: Iterable[Mapping[str, Any]], name: str) -> Mapping[str, Any] | None:
