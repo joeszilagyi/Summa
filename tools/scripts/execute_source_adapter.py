@@ -74,6 +74,10 @@ class DuplicateJsonKeyError(ValueError):
     """Raised when JSON object parsing sees a duplicate key."""
 
 
+def reject_json_constant(value: str) -> None:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -394,6 +398,7 @@ def load_json_record_map(
         payload = json.loads(
             path.read_text(encoding="utf-8"),
             object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
         )
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
@@ -401,6 +406,8 @@ def load_json_record_map(
         return {}, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
         return {}, [{"context": f"line:{exc.lineno},column:{exc.colno}", "reason": exc.msg}]
+    except ValueError as exc:
+        return {}, [{"context": "line:1", "reason": str(exc)}]
 
     selected, record_path_error = resolve_json_record_path(payload, record_path)
     if record_path_error is not None:
@@ -421,12 +428,19 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
         if not raw_line.strip():
             continue
         try:
-            value = json.loads(raw_line, object_pairs_hook=no_duplicate_object_pairs)
+            value = json.loads(
+                raw_line,
+                object_pairs_hook=no_duplicate_object_pairs,
+                parse_constant=reject_json_constant,
+            )
         except DuplicateJsonKeyError as exc:
             errors.append({"context": f"line:{line_number}", "reason": str(exc)})
             continue
         except json.JSONDecodeError as exc:
             errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
+            continue
+        except ValueError as exc:
+            errors.append({"context": f"line:{line_number}", "reason": str(exc)})
             continue
         record_map[f"line:{line_number}"] = value
     return record_map, errors
@@ -482,7 +496,7 @@ def serialize_structured_value(value: Any) -> str:
     if isinstance(value, ET.Element):
         body = ET.tostring(value, encoding="unicode")
         return body if body.endswith("\n") else body + "\n"
-    body = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    body = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
     return body if body.endswith("\n") else body + "\n"
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tools.common.source_adapter_handoff import validate_source_adapter_handoff_record
+from tools.scripts import execute_source_adapter as source_executor
 from tools.scripts.execute_source_adapter import (
     SourceAcquisitionError,
     determine_executor_mode,
@@ -118,6 +119,26 @@ def test_determine_variant_rejects_mixed_handoff_variants() -> None:
 def test_validate_handoff_sequence_rejects_bad_sequences(records: list[dict[str, object]], message: str) -> None:
     with pytest.raises(SourceAcquisitionError, match=message):
         validate_handoff_sequence(records)
+
+
+def test_structured_json_loaders_reject_nonstandard_constants(tmp_path: Path) -> None:
+    json_path = tmp_path / "bad.json"
+    json_path.write_text('{"value": NaN}\n', encoding="utf-8")
+    jsonl_path = tmp_path / "bad.jsonl"
+    jsonl_path.write_text('{"value": Infinity}\n{"value": -Infinity}\n', encoding="utf-8")
+
+    json_records, json_errors = source_executor.load_json_record_map(json_path, record_path=None)
+    jsonl_records, jsonl_errors = source_executor.load_jsonl_record_map(jsonl_path)
+
+    assert json_records == {}
+    assert json_errors == [{"context": "line:1", "reason": "unsupported JSON constant: NaN"}]
+    assert jsonl_records == {}
+    assert jsonl_errors == [{"context": "line:1", "reason": "unsupported JSON constant: Infinity"}, {"context": "line:2", "reason": "unsupported JSON constant: -Infinity"}]
+
+
+def test_serialize_structured_value_rejects_nonstandard_floats() -> None:
+    with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
+        source_executor.serialize_structured_value({"value": float("nan")})
 
 
 @pytest.mark.parametrize(
