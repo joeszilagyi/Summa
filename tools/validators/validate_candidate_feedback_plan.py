@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -40,6 +41,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
+    CANDIDATE_FEEDBACK_SCORE_MAX,
+    CANDIDATE_FEEDBACK_SCORE_MIN,
     DEFAULT_SCORING_WEIGHTS,
     DEFERRED_CANDIDATE_KINDS,
     LEAD_KINDS,
@@ -290,6 +293,30 @@ def validate_numeric_bucket(
             add_error(errors, code="INVALID_SIGNAL_VALUE", message=f"{field_name}.{key} must be a non-negative integer")
 
 
+def validate_score_field(
+    value: Any,
+    *,
+    field_name: str,
+    errors: list[dict[str, Any]],
+    code: str,
+) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        add_error(errors, code=code, message=f"{field_name} must be numeric")
+        return None
+    score = float(value)
+    if not math.isfinite(score) or score < CANDIDATE_FEEDBACK_SCORE_MIN or score > CANDIDATE_FEEDBACK_SCORE_MAX:
+        add_error(
+            errors,
+            code=code,
+            message=(
+                f"{field_name} must be a finite number between "
+                f"{CANDIDATE_FEEDBACK_SCORE_MIN:.1f} and {CANDIDATE_FEEDBACK_SCORE_MAX:.1f}"
+            ),
+        )
+        return None
+    return score
+
+
 def validate_subject(payload: dict[str, Any], errors: list[dict[str, Any]]) -> list[str]:
     subject = validate_required_object(
         payload,
@@ -431,11 +458,13 @@ def validate_facet_scores(payload: dict[str, Any], enabled_facets: list[str], er
                 add_error(errors, code="DUPLICATE_FACET_SCORE", message=f"duplicate facet score entry: {facet}")
             seen_facets.add(facet)
         validate_nonblank_string(item.get("prompt_bundle_id"), field_name=f"{label}.prompt_bundle_id", errors=errors, code="INVALID_FACET_SCORE")
-        score = item.get("score")
-        if not isinstance(score, (int, float)) or isinstance(score, bool):
-            add_error(errors, code="INVALID_FACET_SCORE", message=f"{label}.score must be numeric")
-        else:
-            score_value = float(score)
+        score_value = validate_score_field(
+            item.get("score"),
+            field_name=f"{label}.score",
+            errors=errors,
+            code="INVALID_FACET_SCORE",
+        )
+        if score_value is not None:
             if previous_score is not None and score_value > previous_score + 1e-9:
                 add_error(errors, code="FACET_SCORES_NOT_SORTED", message="facet_scores must be sorted in descending score order")
             previous_score = score_value
@@ -497,11 +526,13 @@ def validate_lead_scores(payload: dict[str, Any], enabled_facets: list[str], err
             add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.facet is not enabled for the subject: {facet}")
         validate_nonblank_string(item.get("review_state"), field_name=f"{label}.review_state", errors=errors, code="INVALID_LEAD_SCORE")
         validate_nonblank_string(item.get("label"), field_name=f"{label}.label", errors=errors, code="INVALID_LEAD_SCORE")
-        score = item.get("score")
-        if not isinstance(score, (int, float)) or isinstance(score, bool):
-            add_error(errors, code="INVALID_LEAD_SCORE", message=f"{label}.score must be numeric")
-        else:
-            score_value = float(score)
+        score_value = validate_score_field(
+            item.get("score"),
+            field_name=f"{label}.score",
+            errors=errors,
+            code="INVALID_LEAD_SCORE",
+        )
+        if score_value is not None:
             if previous_score is not None and score_value > previous_score + 1e-9:
                 add_error(errors, code="LEAD_SCORES_NOT_SORTED", message="lead_scores must be sorted in descending score order")
             previous_score = score_value
@@ -553,9 +584,12 @@ def validate_next_action(payload: dict[str, Any], enabled_facets: list[str], pre
         value = next_action.get(field)
         if value is not None and not isinstance(value, str):
             add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.{field} must be null or a string")
-    score = next_action.get("selection_score")
-    if not isinstance(score, (int, float)) or isinstance(score, bool):
-        add_error(errors, code="INVALID_NEXT_ACTION", message="next_action.selection_score must be numeric")
+    validate_score_field(
+        next_action.get("selection_score"),
+        field_name="next_action.selection_score",
+        errors=errors,
+        code="INVALID_NEXT_ACTION",
+    )
     if next_action.get("scoring_policy_id") != SCORING_POLICY_ID:
         add_error(errors, code="INVALID_NEXT_ACTION", message=f"next_action.scoring_policy_id must equal {SCORING_POLICY_ID}")
     validate_nonblank_string(next_action.get("rationale"), field_name="next_action.rationale", errors=errors, code="INVALID_NEXT_ACTION")
@@ -619,9 +653,12 @@ def validate_deferred(payload: dict[str, Any], errors: list[dict[str, Any]]) -> 
             seen_ids.add(candidate_id)
         if item.get("candidate_kind") not in DEFERRED_CANDIDATE_KINDS:
             add_error(errors, code="INVALID_DEFERRED", message=f"{label}.candidate_kind must be one of {sorted(DEFERRED_CANDIDATE_KINDS)}")
-        score = item.get("score")
-        if not isinstance(score, (int, float)) or isinstance(score, bool):
-            add_error(errors, code="INVALID_DEFERRED", message=f"{label}.score must be numeric")
+        validate_score_field(
+            item.get("score"),
+            field_name=f"{label}.score",
+            errors=errors,
+            code="INVALID_DEFERRED",
+        )
         validate_nonblank_string(item.get("reason"), field_name=f"{label}.reason", errors=errors, code="INVALID_DEFERRED")
 
 

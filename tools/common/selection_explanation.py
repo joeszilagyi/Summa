@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from tools.common.candidate_feedback_contract import deferred_candidate_retryable
+from tools.common.candidate_feedback_contract import (
+    CANDIDATE_FEEDBACK_SCORE_MAX,
+    CANDIDATE_FEEDBACK_SCORE_MIN,
+    deferred_candidate_retryable,
+)
 
 SCHEMA_VERSION = "selection-explanation.v1"
 
@@ -100,6 +105,29 @@ def excluded_candidate_record(
     payload["policy_id"] = policy_id
     payload["retryable"] = bool(retryable)
     return payload
+
+
+def _validate_candidate_score(
+    *,
+    label: str,
+    score: Any,
+    errors: list[str],
+) -> None:
+    if score is None:
+        return
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        errors.append(f"{label} must be numeric")
+        return
+    score_value = float(score)
+    if not math.isfinite(score_value):
+        errors.append(
+            f"{label} must be a finite number between {CANDIDATE_FEEDBACK_SCORE_MIN:.1f} and {CANDIDATE_FEEDBACK_SCORE_MAX:.1f}"
+        )
+        return
+    if score_value < CANDIDATE_FEEDBACK_SCORE_MIN or score_value > CANDIDATE_FEEDBACK_SCORE_MAX:
+        errors.append(
+            f"{label} must be a finite number between {CANDIDATE_FEEDBACK_SCORE_MIN:.1f} and {CANDIDATE_FEEDBACK_SCORE_MAX:.1f}"
+        )
 
 
 def feedback_candidate_records(
@@ -393,6 +421,11 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
             errors.append("selected_candidate.candidate_id must be a non-blank string")
         if not isinstance(selected.get("rationale"), str) or not selected.get("rationale"):
             errors.append("selected_candidate.rationale must be a non-blank string")
+        _validate_candidate_score(
+            label="selected_candidate.score",
+            score=selected.get("score"),
+            errors=errors,
+        )
     considered = payload.get("considered_candidates")
     if not isinstance(considered, list) or not considered:
         errors.append("considered_candidates must be a non-empty array")
@@ -412,6 +445,11 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
             for key in ("candidate_id", "candidate_type", "selected", "eligibility_status"):
                 if key not in item:
                     errors.append(f"missing required considered_candidates[{index}] key: {key}")
+            _validate_candidate_score(
+                label=f"considered_candidates[{index}].score",
+                score=item.get("score"),
+                errors=errors,
+            )
     overrides = payload.get("operator_overrides")
     has_override = isinstance(overrides, list) and bool(overrides)
     if selected_id and selected_id not in considered_ids and not has_override:
@@ -428,6 +466,11 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
                 continue
             if not isinstance(item.get("reason"), str) or not item.get("reason"):
                 errors.append(f"excluded_candidates[{index}].reason must be a non-blank string")
+            _validate_candidate_score(
+                label=f"excluded_candidates[{index}].score",
+                score=item.get("score"),
+                errors=errors,
+            )
     policy = payload.get("policy")
     if not isinstance(policy, Mapping):
         errors.append("policy must be an object")
