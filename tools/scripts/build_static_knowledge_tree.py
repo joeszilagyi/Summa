@@ -759,6 +759,8 @@ def build_static_knowledge_tree(
             presentation_payload=presentation_payload,
             export_sha256=export_sha256,
             presentation_sha256=presentation_sha256,
+            asset_records=final_manifest_payload["assets"],
+            page_records=final_manifest_payload["pages"],
         )
         report, exit_code = validate_build_manifest_receipt(receipt)
         if exit_code != EXIT_BUILD_MANIFEST_PASS:

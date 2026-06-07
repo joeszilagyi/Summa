@@ -87,12 +87,15 @@ def test_build_manifest_receipt_validation_uses_in_memory_artifacts(tmp_path: Pa
     )
 
     manifest_path = publish_root / "build-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     receipt = manifest_validator.BuildManifestReceipt(
-        manifest=json.loads(manifest_path.read_text(encoding="utf-8")),
+        manifest=manifest,
         export_payload=json.loads(export_fixture().read_text(encoding="utf-8")),
         presentation_payload=json.loads(presentation_fixture().read_text(encoding="utf-8")),
         export_sha256=sha256_of(export_fixture()),
         presentation_sha256=sha256_of(presentation_fixture()),
+        asset_records=manifest["assets"],
+        page_records=manifest["pages"],
     )
 
     def fail_validate_export(*_args: object, **_kwargs: object) -> tuple[dict[str, object], int]:
@@ -120,6 +123,43 @@ def test_build_manifest_receipt_validation_uses_in_memory_artifacts(tmp_path: Pa
 
     assert exit_code == manifest_validator.EXIT_PASS, report
     assert report["counts"]["accepted"] == 1
+
+
+def test_build_manifest_receipt_validation_rejects_tampered_artifact_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    publish_root = tmp_path / "public-site"
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T180002Z",
+        built_at="2026-06-02T18:00:02Z",
+    )
+
+    manifest = json.loads((publish_root / "build-manifest.json").read_text(encoding="utf-8"))
+    receipt = manifest_validator.BuildManifestReceipt(
+        manifest=manifest,
+        export_payload=json.loads(export_fixture().read_text(encoding="utf-8")),
+        presentation_payload=json.loads(presentation_fixture().read_text(encoding="utf-8")),
+        export_sha256=sha256_of(export_fixture()),
+        presentation_sha256=sha256_of(presentation_fixture()),
+        asset_records=json.loads(json.dumps(manifest["assets"])),
+        page_records=json.loads(json.dumps(manifest["pages"])),
+    )
+    receipt.asset_records[0]["sha256"] = "sha256:" + "0" * 64
+    receipt.page_records[0]["sha256"] = "sha256:" + "f" * 64
+
+    def fail_hash_file(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("receipt validation should not hash files")
+
+    monkeypatch.setattr(manifest_validator, "hash_file", fail_hash_file)
+
+    report, exit_code = manifest_validator.validate_build_manifest_receipt(receipt)
+
+    assert exit_code == manifest_validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "ASSET_RECORD_MISMATCH" for error in report["errors"])
+    assert any(error["code"] == "PAGE_RECORD_MISMATCH" for error in report["errors"])
 
 
 def test_build_manifest_validation_uses_export_report_payload(

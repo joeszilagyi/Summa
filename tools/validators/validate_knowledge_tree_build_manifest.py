@@ -109,6 +109,8 @@ class BuildManifestReceipt:
     presentation_payload: dict[str, Any]
     export_sha256: str
     presentation_sha256: str
+    asset_records: list[dict[str, Any]]
+    page_records: list[dict[str, Any]]
 
 
 def parse_args() -> argparse.Namespace:
@@ -460,6 +462,18 @@ def validate_build_manifest_receipt(
     page_count = validate_positive_int(payload, "page_count", errors, code="INVALID_PAGE_COUNT")
     if page_count is not None and page_count != len(pages):
         add_error(errors, code="PAGE_COUNT_MISMATCH", message="page_count does not match pages length")
+
+    receipt_assets = receipt.asset_records
+    if not isinstance(receipt_assets, list):
+        add_error(errors, code="ASSET_RECORDS_MISSING", message="receipt asset records must be a list")
+    elif assets != receipt_assets:
+        add_error(errors, code="ASSET_RECORD_MISMATCH", message="receipt asset records do not match manifest assets")
+
+    receipt_pages = receipt.page_records
+    if not isinstance(receipt_pages, list):
+        add_error(errors, code="PAGE_RECORDS_MISSING", message="receipt page records must be a list")
+    elif pages != receipt_pages:
+        add_error(errors, code="PAGE_RECORD_MISMATCH", message="receipt page records do not match manifest pages")
 
     seen_asset_paths: set[str] = set()
     for asset in assets:
