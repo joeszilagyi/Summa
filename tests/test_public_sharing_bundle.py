@@ -180,6 +180,19 @@ def test_public_sharing_bundle_builder_rejects_manifest_paths_that_escape_bundle
         sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle")
 
 
+def test_public_sharing_bundle_builder_revalidates_manifest_paths_before_copy(tmp_path: Path, monkeypatch) -> None:
+    build_manifest = build_site(tmp_path)
+
+    monkeypatch.setattr(
+        sharing_builder,
+        "included_site_entries",
+        lambda _build_manifest: ["../escape.html"],
+    )
+
+    with pytest.raises(sharing_builder.PublicSharingBundleError, match="path traversal"):
+        sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle")
+
+
 def test_public_sharing_bundle_builder_excludes_private_fields_from_export_metadata(
     tmp_path: Path,
 ) -> None:
