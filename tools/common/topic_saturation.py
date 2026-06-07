@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = "topic-saturation.v1"
 POLICY_SCHEMA_VERSION = "topic-saturation-policy.v1"
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "topic_saturation_policy.v1.json"
+GATHER_EVENT_SOURCE_NAMESPACE = "topic_subject"
 USEFUL_FAMILY_TABLES = (
     "work",
     "source_claim",
@@ -127,28 +127,22 @@ def parse_note_text(note_text: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def escape_like_literal(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limit: int) -> list[dict[str, Any]]:
-    pattern = f'%\"subject_id\": \"{escape_like_literal(subject_id)}\"%'
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ? ESCAPE '\\'
+          AND source_object_namespace=?
+          AND source_object_id=?
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         LIMIT ?
         """,
-        (pattern, limit),
+        (GATHER_EVENT_SOURCE_NAMESPACE, subject_id, limit),
     ).fetchall()
     events: list[dict[str, Any]] = []
     for row in rows:
         note = parse_note_text(row["note_text"])
-        if note.get("subject_id") != subject_id:
-            continue
         events.append(
             {
                 "provenance_event_id": int(row["provenance_event_id"]),
