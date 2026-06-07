@@ -143,6 +143,8 @@ def validate_source_adapter_handoff_record(
         errors.append("source_specific must be an object")
 
     if isinstance(preserved, dict):
+        if "original_locator" not in preserved:
+            errors.append("preserved.original_locator is required")
         validate_preserved_fields(preserved, variant=variant, errors=errors)
         if isinstance(handoff, dict):
             requested_preserve = set(handoff.get("preserve_fields", []))

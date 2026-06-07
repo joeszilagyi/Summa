@@ -324,6 +324,12 @@ def test_handoff_validator_rejects_incomplete_original_locator_fields(tmp_path: 
     assert local_proc.returncode == 0, local_proc.stdout + local_proc.stderr
     local_record = first_handoff_record(local_handoff)
     local_adapter_payload = json.loads(local_adapter.read_text(encoding="utf-8"))
+
+    local_missing_locator = copy.deepcopy(local_record)
+    local_missing_locator["preserved"].pop("original_locator", None)
+    local_errors = validate_source_adapter_handoff_record(local_missing_locator, local_adapter_payload)
+    assert "preserved.original_locator is required" in local_errors
+
     local_mutated = copy.deepcopy(local_record)
     local_mutated["preserved"]["original_locator"].pop("adapter_local_path", None)
     local_errors = validate_source_adapter_handoff_record(local_mutated, local_adapter_payload)
