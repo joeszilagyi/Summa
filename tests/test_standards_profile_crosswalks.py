@@ -372,6 +372,35 @@ def test_private_sentinel_is_excluded_from_public_exports(tmp_path: Path) -> Non
         assert PRIVATE_SENTINEL not in json.dumps(result.export_payload, sort_keys=True)
 
 
+def test_export_profile_does_not_recount_privacy_tables_after_build(tmp_path: Path, monkeypatch) -> None:
+    fixture = build_fixture_store(tmp_path)
+
+    def fail_privacy_exclusions_for_table(*_args, **_kwargs):
+        raise AssertionError("privacy_exclusions_for_table should not be called after export build")
+
+    monkeypatch.setattr(standards_profiles, "privacy_exclusions_for_table", fail_privacy_exclusions_for_table)
+
+    result = standards_profiles.export_profile(
+        db_path=fixture["db_path"],
+        profile_id="dcmi.v1",
+        subject_id="standards_subject",
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    assert result.conformance_report["privacy_exclusions"]
+
+
+def test_has_private_sentinel_detects_nested_strings_without_json_serialization(monkeypatch) -> None:
+    def fail_dumps(*_args, **_kwargs):
+        raise AssertionError("json.dumps should not be used by has_private_sentinel")
+
+    monkeypatch.setattr(standards_profiles.json, "dumps", fail_dumps)
+
+    payload = {"outer": [{"inner": {"leaf": PRIVATE_SENTINEL}}]}
+
+    assert standards_profiles.has_private_sentinel(payload) is True
+
+
 def test_lossy_and_unsupported_mappings_are_reported(tmp_path: Path) -> None:
     fixture = build_fixture_store(tmp_path)
     result = standards_profiles.export_profile(
