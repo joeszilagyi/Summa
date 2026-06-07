@@ -232,6 +232,11 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def source_text_fingerprint(source_text: str) -> tuple[int, str]:
+    encoded_text = source_text.encode("utf-8")
+    return len(encoded_text), hashlib.sha256(encoded_text).hexdigest()
+
+
 def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -287,14 +292,15 @@ def resolve_source_text_blocks(
                 template=template,
             )
         )
+        byte_count, sha256 = source_text_fingerprint(source_text)
         blocks.append(
             {
                 "block_id": f"source-block-{index:04d}",
                 "source_ref": source_ref,
                 "provenance": provenance,
                 "hazard_flags": hazard_flags,
-                "byte_count": len(source_text.encode("utf-8")),
-                "sha256": sha256_text(source_text),
+                "byte_count": byte_count,
+                "sha256": sha256,
             }
         )
     return blocks, rendered_blocks
