@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from tools.common.publication_builder import PAGE_FAMILIES, build_knowledge_tree_export_payload, build_public_presentation_payload
-
-from tests.publication_fixture_store import FIXED_TIMESTAMP, PRIVATE_SENTINEL, create_populated_canonical_store, create_sparse_canonical_store
+from tests.publication_fixture_store import (
+    FIXED_TIMESTAMP,
+    PRIVATE_SENTINEL,
+    create_populated_canonical_store,
+    create_sparse_canonical_store,
+)
+from tools.common.publication_builder import (
+    PAGE_FAMILIES,
+    build_knowledge_tree_export_payload,
+    build_public_presentation_payload,
+)
 
 
 def build_payloads(tmp_path: Path, *, sparse: bool) -> tuple[dict[str, object], dict[str, object]]:
@@ -22,11 +30,23 @@ def test_page_family_builders_emit_populated_family_models(tmp_path: Path, famil
     export_payload, presentation_payload = build_payloads(tmp_path, sparse=False)
     export_page = next(page for page in export_payload["pages"] if page["page_family"] == family)
     presentation_page = next(page for page in presentation_payload["page_inventory"] if page["page_family"] == family)
+    expected_state = {
+        "home": "sparse",
+        "facet": "empty",
+        "entity": "empty",
+        "source": "empty",
+        "collection": "empty",
+        "timeline": "empty",
+        "validation": "ready",
+        "search_results": "ready",
+    }[family]
 
     assert export_page["route"] == presentation_page["route"]
     assert export_page["sections"]
     assert export_page["summary_cards"]
-    assert presentation_page["reader_state"] == "ready"
+    assert presentation_page["reader_state"] == expected_state
+    if expected_state != "ready":
+        assert presentation_page["empty_state"]
     assert PRIVATE_SENTINEL not in json.dumps(export_page, ensure_ascii=False, sort_keys=True)
     assert PRIVATE_SENTINEL not in json.dumps(presentation_page, ensure_ascii=False, sort_keys=True)
 
@@ -57,4 +77,3 @@ def test_page_family_builders_emit_sparse_family_models(tmp_path: Path, family: 
         assert presentation_page["empty_state"]
     assert PRIVATE_SENTINEL not in json.dumps(export_page, ensure_ascii=False, sort_keys=True)
     assert PRIVATE_SENTINEL not in json.dumps(presentation_page, ensure_ascii=False, sort_keys=True)
-
