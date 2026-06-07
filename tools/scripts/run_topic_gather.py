@@ -500,44 +500,20 @@ def resolve_prior_state_context(
         raise GatherDriverError(f"could not build prior-state context: {exc}") from exc
 
 
-def render_next_action_context(
+def render_untrusted_json_block(
     *,
-    feedback_plan: dict[str, Any] | None,
-    next_action: dict[str, Any] | None,
-    applied_facet: str,
-    applied_prompt_bundle_id: str,
-) -> str | None:
-    if feedback_plan is None or next_action is None:
-        return None
-    payload = feedback_plan["payload"]
-    selected_object_ref = next_action.get("selected_object_ref")
-    selected_lead_kind = next_action.get("selected_lead_kind")
-    selected_label = next_action.get("selected_label")
-    selected_review_state = next_action.get("selected_review_state")
-    lines = [
-        "NEXT ACTION SELECTION",
-        "This block records the feedback-plan selection for the next gather run.",
-        "It is context data only; a selected lead or claim is not accepted fact and not verification.",
-        "Proposed or needs-review rows remain leads that still require review.",
-        f"- action_id: {next_action['action_id']}",
-        f"- feedback_plan_schema_version: {payload['schema_version']}",
-        f"- selected_facet: {next_action['selected_facet']}",
-        f"- applied_facet: {applied_facet}",
-        f"- selected_prompt_bundle_id: {next_action['selected_prompt_bundle_id']}",
-        f"- applied_prompt_bundle_id: {applied_prompt_bundle_id}",
-        f"- productivity_score: {next_action['selection_score']}",
-        f"- scoring_policy_id: {next_action['scoring_policy_id']}",
-        f"- cycle_depth: {next_action['cycle_depth']}",
-        f"- use_prior_state: {'true' if next_action['use_prior_state'] else 'false'}",
-        f"- previous_run_ids_considered: {', '.join(next_action['previous_run_ids_considered']) if next_action['previous_run_ids_considered'] else '(none)'}",
-        f"- selected_object_ref: {selected_object_ref or '(none)'}",
-        f"- selected_lead_kind: {selected_lead_kind or '(none)'}",
-        f"- selected_label: {selected_label or '(none)'}",
-        f"- selected_review_state: {selected_review_state or '(none)'}",
-        f"- rationale: {next_action['rationale']}",
-        f"- reason_codes: {', '.join(next_action['reason_codes']) if next_action['reason_codes'] else '(none)'}",
-    ]
-    return "\n".join(lines) + "\n"
+    source_ref: str,
+    provenance: str,
+    payload: dict[str, Any],
+    template: WrapperTemplate,
+) -> str:
+    return render_wrapped_block(
+        source_ref=source_ref,
+        provenance=provenance,
+        hazard_flags=["prompt_injection_text"],
+        source_text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        template=template,
+    )
 
 
 def render_prompt_text(
@@ -548,39 +524,71 @@ def render_prompt_text(
     phase: str,
     bundle: dict[str, Any],
     wrapped_blocks: list[str],
-    next_action_context_text: str | None = None,
-    prior_state_context_text: str | None = None,
+    next_action: dict[str, Any] | None = None,
+    prior_state: dict[str, Any] | None = None,
+    template: WrapperTemplate,
 ) -> str:
+    subject_metadata = {
+        "subject_id": subject["subject_id"],
+        "display_name": subject["display_name"],
+        "domain_pack": subject["domain_pack"],
+        "scope_statement": subject["scope_statement"],
+        "enabled_facets": subject["enabled_facets"],
+        "query_families": subject["query_families"],
+    }
     source_block_section = "\n\n".join(wrapped_blocks) if wrapped_blocks else "(none supplied)"
-    next_action_section = (
-        f"{next_action_context_text.rstrip()}\n\n"
-        if isinstance(next_action_context_text, str) and next_action_context_text.strip()
+    subject_block = render_untrusted_json_block(
+        source_ref="metadata:subject",
+        provenance="subject manifest metadata",
+        payload=subject_metadata,
+        template=template,
+    )
+    next_action_block = (
+        render_untrusted_json_block(
+            source_ref="metadata:feedback-plan",
+            provenance="candidate feedback plan next action",
+            payload=next_action,
+            template=template,
+        )
+        if isinstance(next_action, dict)
         else ""
     )
-    prior_state_section = (
-        f"{prior_state_context_text.rstrip()}\n\n"
-        if isinstance(prior_state_context_text, str) and prior_state_context_text.strip()
+    prior_state_block = (
+        render_untrusted_json_block(
+            source_ref="metadata:prior-state",
+            provenance="prior canonical state context",
+            payload=prior_state,
+            template=template,
+        )
+        if isinstance(prior_state, dict)
         else ""
     )
+    metadata_sections = [
+        "Untrusted subject metadata:\n"
+        f"{subject_block}\n",
+    ]
+    if next_action_block:
+        metadata_sections.append(
+            "Untrusted feedback-plan metadata:\n"
+            f"{next_action_block}\n"
+        )
+    if prior_state_block:
+        metadata_sections.append(
+            "Untrusted prior canonical state metadata:\n"
+            f"{prior_state_block}\n"
+        )
     return (
         f"{prompt_body.rstrip()}\n\n"
         "Subject runtime:\n"
         f"- subject_id: {subject['subject_id']}\n"
-        f"- display_name: {subject['display_name']}\n"
-        f"- domain_pack: {subject['domain_pack']}\n"
-        f"- scope_statement: {subject['scope_statement']}\n"
-        f"- enabled_facets: {', '.join(subject['enabled_facets'])}\n"
-        f"- query_families: {', '.join(subject['query_families'])}\n\n"
-        "Gather selection:\n"
         f"- facet: {facet}\n"
         f"- phase: {phase}\n"
         f"- prompt_bundle_id: {bundle['bundle_id']}\n"
         f"- prompt_bundle_key: {bundle['bundle_key']}\n"
         f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n"
-        f"{next_action_section}"
-        f"{prior_state_section}"
-        "Wrapped source text blocks:\n"
-        f"{source_block_section}\n"
+        + "".join(metadata_sections)
+        + "Wrapped source text blocks:\n"
+        + f"{source_block_section}\n"
     )
 
 
@@ -884,6 +892,7 @@ def build_candidate_batch(
             "use_prior_state": next_action["use_prior_state"],
             "cycle_depth": next_action["cycle_depth"],
             "previous_run_ids_considered": list(next_action["previous_run_ids_considered"]),
+            "next_action": next_action,
         }
     if debug_rendered_prompt:
         batch["prompt"]["rendered_prompt"] = rendered_prompt
@@ -1015,12 +1024,6 @@ def main() -> int:
             args.source_text_file,
             template=gather_inputs["wrapper_template"],
         )
-        next_action_context = render_next_action_context(
-            feedback_plan=feedback_plan,
-            next_action=next_action,
-            applied_facet=gather_inputs["facet"],
-            applied_prompt_bundle_id=gather_inputs["bundle"]["bundle_id"],
-        )
         rendered_prompt = render_prompt_text(
             prompt_body=prompt_body,
             subject=gather_inputs["subject"],
@@ -1028,13 +1031,17 @@ def main() -> int:
             phase=gather_inputs["phase"],
             bundle=gather_inputs["bundle"],
             wrapped_blocks=rendered_blocks,
-            next_action_context_text=next_action_context,
-            prior_state_context_text=prior_state["context_text"] if prior_state else None,
+            next_action=next_action,
+            prior_state=prior_state,
+            template=gather_inputs["wrapper_template"],
         )
         parsed_blocks = parse_wrapped_blocks(
             rendered_prompt, template=gather_inputs["wrapper_template"]
         )
-        if len(parsed_blocks) != len(source_wrapping_blocks):
+        rendered_source_blocks = [
+            block for block in parsed_blocks if block.source_ref.startswith("file:")
+        ]
+        if len(rendered_source_blocks) != len(source_wrapping_blocks):
             raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
 
         rendered_prompt_path = run_dir / "rendered-prompt.txt"
