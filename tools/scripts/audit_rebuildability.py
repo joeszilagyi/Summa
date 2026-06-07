@@ -758,8 +758,6 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "reason": "reference artifact lacks a complete canonical replay recipe",
             }
             for artifact in reference_only
-            if artifact.artifact_type
-            in {"review_decision_apply_result", "publication_artifact", "release_readiness_report"}
         ],
         "warnings": [],
         "errors": [artifact.failure_reason for artifact in invalid if artifact.failure_reason],

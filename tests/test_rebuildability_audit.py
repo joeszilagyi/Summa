@@ -673,6 +673,12 @@ def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -
     assert discovered["network_safety_gate_report"]["schema_id"] == "network-safety-gate-report.v0"
     assert discovered["rebuildability_report"]["schema_id"] == "canonical-rebuildability-report.v0"
     assert report["artifacts_validated"] == len(report["artifacts_discovered"])
+    expected_missing = {
+        artifact_type
+        for artifact_type, item in discovered.items()
+        if item["replay_status"] == "reference_only"
+    }
+    assert {item["artifact_type"] for item in report["missing_replay_support"]} == expected_missing
 
 
 def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path) -> None:
