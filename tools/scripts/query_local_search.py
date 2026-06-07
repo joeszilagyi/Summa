@@ -440,7 +440,9 @@ def main() -> int:
         return 1
 
     if args.format == "json":
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+        )
     else:
         sys.stdout.write(render_text(payload))
     return 0
