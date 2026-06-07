@@ -267,6 +267,51 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert not any(path.suffix == ".lock" for path in workspace.rglob("*"))
 
 
+def test_topic_cycle_graph_closure_is_disabled_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-graph-closure-default-off"
+
+    def fail_live_graph_closure(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("graph closure audit should not run by default")
+
+    monkeypatch.setattr(
+        module.canonical_graph_closure,
+        "audit_canonical_graph_closure",
+        fail_live_graph_closure,
+    )
+
+    args = module.parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-graph-closure-default-off",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+        ]
+    )
+
+    manifest, exit_code = module.run_topic_cycle(args)
+
+    assert exit_code == 0
+    assert manifest["graph_closure"]["status"] == "disabled"  # type: ignore[index]
+    assert manifest["graph_closure"]["disabled_reason"] == "disabled_by_operator_flag"  # type: ignore[index]
+    persisted = load_manifest(run_dir)
+    assert persisted["graph_closure"]["status"] == "disabled"  # type: ignore[index]
+    assert persisted["graph_closure"]["disabled_reason"] == "disabled_by_operator_flag"  # type: ignore[index]
+
+
 def test_topic_cycle_rejects_resume_on_fresh_run_dir(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
