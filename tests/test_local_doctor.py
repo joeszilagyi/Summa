@@ -314,3 +314,48 @@ def test_local_doctor_reports_populated_canonical_store_and_last_ingest(tmp_path
     assert report["canonical_store"]["last_ingest_at"] is not None
     assert report["checks"]["canonical_store_population"] == "pass"
     assert report["graph_closure"]["status"] in {"pass", "pass_with_unresolved"}
+
+
+def test_local_doctor_database_integrity_defaults_to_metadata_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "fixture.sqlite"
+    db_path.write_bytes(b"sqlite placeholder")
+    quick_check_calls = 0
+
+    class FakeCursor:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def fetchone(self) -> object:
+            return self.value
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("ok",)]
+
+    class FakeConnection:
+        def execute(self, query: str) -> FakeCursor:
+            nonlocal quick_check_calls
+            if query == "PRAGMA user_version":
+                return FakeCursor((7,))
+            if query == "SELECT version FROM schema_info LIMIT 1":
+                return FakeCursor(("schema.v1",))
+            if query == "PRAGMA quick_check":
+                quick_check_calls += 1
+                return FakeCursor([("ok",)])
+            raise AssertionError(f"unexpected query: {query}")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(local_doctor.sqlite3, "connect", lambda *args, **kwargs: FakeConnection())
+
+    metadata_report = local_doctor.sqlite_integrity_for_path(db_path)
+    quick_check_report = local_doctor.sqlite_integrity_for_path(db_path, quick_check=True)
+
+    assert metadata_report["integrity_mode"] == "metadata"
+    assert metadata_report["status"] == "pass"
+    assert metadata_report["integrity_result"] == ["metadata_only"]
+    assert quick_check_report["integrity_mode"] == "quick_check"
+    assert quick_check_report["status"] == "pass"
+    assert quick_check_calls == 1

@@ -233,13 +233,14 @@ def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
+def sqlite_integrity_for_path(path: Path, *, quick_check: bool = False) -> dict[str, Any]:
     result = {
         "path": str(path),
         "status": "unknown",
         "integrity_result": None,
         "schema_version": None,
         "user_version": None,
+        "integrity_mode": "quick_check" if quick_check else "metadata",
     }
     uri = f"file:{path.resolve()}?mode=ro"
     try:
@@ -258,10 +259,14 @@ def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
             result["schema_version"] = row[0] if row else None
         except sqlite3.DatabaseError:
             result["schema_version"] = None
-        rows = conn.execute("PRAGMA quick_check").fetchall()
-        values = [row[0] for row in rows]
-        result["integrity_result"] = values
-        result["status"] = "pass" if values == ["ok"] else "fail"
+        if quick_check:
+            rows = conn.execute("PRAGMA quick_check").fetchall()
+            values = [row[0] for row in rows]
+            result["integrity_result"] = values
+            result["status"] = "pass" if values == ["ok"] else "fail"
+        else:
+            result["integrity_result"] = ["metadata_only"]
+            result["status"] = "pass"
     except sqlite3.DatabaseError as exc:
         result["status"] = "fail"
         result["integrity_result"] = f"quick_check_failed: {exc}"
@@ -270,7 +275,12 @@ def sqlite_integrity_for_path(path: Path) -> dict[str, Any]:
     return result
 
 
-def inspect_databases(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def inspect_databases(
+    repo_root: Path,
+    *,
+    quick_check: bool = False,
+    quick_check_sample: int = 0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     paths = sorted(
         {
             *repo_root.glob("dbs/**/*.sqlite"),
@@ -279,7 +289,11 @@ def inspect_databases(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[
             *repo_root.glob("index/Topics/**/*.sqlite3"),
         }
     )
-    databases = [sqlite_integrity_for_path(path) for path in paths]
+    sampled_quick_check_paths = set(paths if quick_check else paths[: max(0, quick_check_sample)])
+    databases = [
+        sqlite_integrity_for_path(path, quick_check=quick_check or path in sampled_quick_check_paths)
+        for path in paths
+    ]
     findings = []
     for database in databases:
         if database["status"] != "pass":
@@ -836,6 +850,8 @@ def build_report(
     *,
     registry: str | Path | None = None,
     canonical_db: str | Path | None = None,
+    database_quick_check: bool = False,
+    database_quick_check_sample: int = 0,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     status, status_detail = git_status(repo_root)
@@ -882,7 +898,11 @@ def build_report(
         inspect_workspaces(registry_path) if registry_status == "pass" else ([], [])
     )
     findings.extend(workspace_findings)
-    databases, database_findings = inspect_databases(repo_root)
+    databases, database_findings = inspect_databases(
+        repo_root,
+        quick_check=database_quick_check,
+        quick_check_sample=database_quick_check_sample,
+    )
     findings.extend(database_findings)
     canonical_store_summary, canonical_store_findings = inspect_canonical_store(
         repo_root,
@@ -1063,11 +1083,30 @@ def main(argv: list[str] | None = None) -> int:
         "--canonical-db",
         help="Optional canonical SQLite path to summarize read-only. Defaults to <repo-root>/canonical.sqlite.",
     )
+    database_mode = parser.add_mutually_exclusive_group()
+    database_mode.add_argument("--fast", action="store_true", help="Use metadata-only database checks (default).")
+    database_mode.add_argument(
+        "--database-quick-check",
+        action="store_true",
+        help="Run PRAGMA quick_check against every discovered database.",
+    )
+    parser.add_argument(
+        "--database-quick-check-sample",
+        type=int,
+        default=0,
+        help="Run PRAGMA quick_check against the first N discovered databases while keeping the rest on metadata-only checks.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
 
-    report = build_report(args.repo_root, registry=args.registry, canonical_db=args.canonical_db)
+    report = build_report(
+        args.repo_root,
+        registry=args.registry,
+        canonical_db=args.canonical_db,
+        database_quick_check=args.database_quick_check,
+        database_quick_check_sample=max(0, args.database_quick_check_sample),
+    )
     body = (
         json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.format == "json"
