@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/subject-index/local_search_projection.schema.json",
   "title": "local-search-projection.v1",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema_version",
     "generated_at",
@@ -31,6 +31,7 @@
         "schema_version",
         "correction_ledger_applied"
       ],
+      "additionalProperties": false,
       "properties": {
         "database_name": {
           "type": "string"
@@ -53,6 +54,12 @@
         }
       }
     },
+    "_projection_records_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "profile": {
       "type": "string",
       "enum": [
@@ -70,6 +77,7 @@
         "superseded_records_included",
         "blocked_records_included"
       ],
+      "additionalProperties": false,
       "properties": {
         "raw_payload_indexed": {
           "type": "boolean",
@@ -98,6 +106,7 @@
         "excluded_records",
         "indexed_rows"
       ],
+      "additionalProperties": false,
       "properties": {
         "candidate_records": {
           "type": "integer",
@@ -125,6 +134,7 @@
           "object_ref",
           "reason"
         ],
+        "additionalProperties": false,
         "properties": {
           "object_ref": {
             "type": "string"
@@ -155,6 +165,7 @@
           "suppressed_fields",
           "indexed_fields"
         ],
+        "additionalProperties": false,
         "properties": {
           "projection_id": {
             "type": "string"
@@ -238,6 +249,9 @@
               "type": "string"
             }
           },
+          "confidence_score": {
+            "type": "number"
+          },
           "indexed_fields": {
             "type": "array",
             "items": {
@@ -247,6 +261,7 @@
                 "text",
                 "display_policy"
               ],
+              "additionalProperties": false,
               "properties": {
                 "field": {
                   "type": "string"
