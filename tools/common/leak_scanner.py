@@ -117,6 +117,101 @@ def _regex_findings(body: str, *, rel_path: str, pattern: re.Pattern[str], code:
     return findings
 
 
+def _regex_findings_for_line(
+    line: str,
+    *,
+    rel_path: str,
+    pattern: re.Pattern[str],
+    code: str,
+    message: str,
+    line_number: int,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for match in pattern.finditer(line):
+        findings.append(
+            _finding(
+                path=rel_path,
+                code=code,
+                message=message,
+                line=line_number,
+                excerpt=match.group(0),
+            )
+        )
+    return findings
+
+
+def _scan_line(line: str, *, rel_path: str, profile: str, line_number: int) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    profile_config = PROFILES[profile]
+    if profile_config["scan_secret_markers"] and contains_secret_marker(line):
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"),
+                code="SECRET_MARKER",
+                message="secret-looking token remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    if profile_config["scan_private_path_markers"] and contains_private_path(line):
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=re.compile(r"(?i)(?:^|[\s'\"(])(?:/home/|/Users/|/tmp/|file://|~/|[A-Za-z]:\\\\)[^\s'\"()]+"),
+                code="PRIVATE_PATH",
+                message="private absolute path remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    if profile_config["scan_prompt_output_markers"]:
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=PROMPT_OUTPUT_BODY_RE,
+                code="PROMPT_OUTPUT_MARKER",
+                message="prompt-output marker remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    if profile_config["scan_raw_payload_markers"]:
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=RAW_PAYLOAD_BODY_RE,
+                code="RAW_PAYLOAD_MARKER",
+                message="raw payload or full-text marker remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    if profile_config["scan_private_note_markers"]:
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=PRIVATE_NOTE_BODY_RE,
+                code="PRIVATE_NOTE_MARKER",
+                message="private-note marker remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    if profile_config["scan_restricted_evidence_markers"]:
+        findings.extend(
+            _regex_findings_for_line(
+                line,
+                rel_path=rel_path,
+                pattern=RESTRICTED_EVIDENCE_BODY_RE,
+                code="RESTRICTED_EVIDENCE_MARKER",
+                message="restricted evidence marker remains in scanned output",
+                line_number=line_number,
+            )
+        )
+    return findings
+
+
 def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]:
     if profile not in PROFILES:
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
@@ -258,10 +353,13 @@ def scan_directory(
         if path.suffix.lower() not in TEXT_SUFFIXES:
             continue
         try:
-            body = path.read_text(encoding="utf-8")
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    raw_findings.extend(
+                        _scan_line(line, rel_path=rel_path, profile=profile, line_number=line_number)
+                    )
         except (OSError, UnicodeDecodeError):
             continue
-        raw_findings.extend(scan_text(body, rel_path=rel_path, profile=profile))
 
     findings, suppressed = apply_allowlist(raw_findings, normalized_allowlist)
     return {

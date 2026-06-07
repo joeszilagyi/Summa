@@ -96,6 +96,24 @@ def test_scan_directory_counts_files_without_rescanning(tmp_path: Path, monkeypa
     assert call_count == 1
 
 
+def test_scan_directory_streams_text_files_without_read_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "notes.txt").write_text("safe line\nAuthorization: Bearer leak\n", encoding="utf-8")
+
+    def fail_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("scan_directory should stream text files instead of calling read_text")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
+
+
 def test_support_bundle_profile_disables_secret_and_private_path_scans(tmp_path: Path) -> None:
     root = tmp_path / "support-bundle"
     root.mkdir()
