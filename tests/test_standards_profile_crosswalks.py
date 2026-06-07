@@ -479,6 +479,66 @@ def test_nara_readiness_report_distinguishes_present_and_missing_transfer_packag
     assert result.conformance_report["conformance_status"] == "report_only"
 
 
+def test_nara_readiness_report_uses_one_capture_event_aggregate_query() -> None:
+    profile = standards_profiles.load_profile("nara_preservation_readiness.v1")
+
+    class FakeResult:
+        def __init__(self, row: tuple[int, ...]) -> None:
+            self._row = row
+
+        def fetchone(self) -> tuple[int, ...]:
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[object, ...]]] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeResult:
+            normalized = " ".join(sql.split())
+            self.queries.append((normalized, params))
+            if "FROM capture_event" in normalized:
+                assert "SUM(CASE WHEN content_hash IS NOT NULL" in normalized
+                assert "SUM(CASE WHEN captured_at IS NOT NULL" in normalized
+                assert "SUM(CASE WHEN mime_type IS NOT NULL" in normalized
+                assert "SUM(CASE WHEN payload_storage_policy_class IS NOT NULL" in normalized
+                return FakeResult((3, 3, 3, 2, 1))
+            if "FROM provenance_event" in normalized:
+                return FakeResult((4,))
+            if "FROM review_state_history" in normalized:
+                return FakeResult((1,))
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def close(self) -> None:
+            return None
+
+    fake_conn = FakeConnection()
+    payload, report_bits = standards_profiles.build_nara_readiness_report(
+        fake_conn,
+        profile,
+        subject_id="standards_subject",
+        include_private=False,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    capture_queries = [sql for sql, _ in fake_conn.queries if "FROM capture_event" in sql]
+    assert len(capture_queries) == 1
+    assert "SUM(CASE WHEN content_hash IS NOT NULL" in capture_queries[0]
+    assert payload["readiness_report"]["summary"] == {
+        "capture_event_count": 3,
+        "fixity_count": 3,
+        "provenance_event_count": 4,
+        "review_state_history_count": 1,
+        "claim": "readiness report only; not a NARA transfer package",
+    }
+    checks = {item["check_id"]: item for item in payload["readiness_report"]["checks"]}
+    assert checks["fixity_present"]["status"] == "pass"
+    assert checks["capture_timestamps"]["status"] == "pass"
+    assert checks["format_recorded"]["status"] == "pass"
+    assert checks["raw_payload_policy_recorded"]["status"] == "pass"
+    assert checks["actions_recorded"]["status"] == "pass"
+    assert checks["review_audit_present"]["status"] == "pass"
+
+
 def test_private_sentinel_is_excluded_from_public_exports(tmp_path: Path) -> None:
     fixture = build_fixture_store(tmp_path)
     for profile_id in ("dcmi.v1", "premis.v1", "rico.v1", "nara_preservation_readiness.v1"):

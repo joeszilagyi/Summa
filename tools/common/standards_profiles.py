@@ -770,36 +770,25 @@ def build_nara_readiness_report(
     report_bits = new_report_bits(profile)
     subject_filter = "WHERE workspace_id=?" if subject_id else ""
     subject_params = (subject_id,) if subject_id else ()
-    capture_count = int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM capture_event {subject_filter}", subject_params
-        ).fetchone()[0]
-    )
-    fixity_count = int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM capture_event {subject_filter} {'AND' if subject_filter else 'WHERE'} content_hash IS NOT NULL AND TRIM(content_hash) <> ''",
-            subject_params,
-        ).fetchone()[0]
-    )
-    timestamp_count = int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM capture_event {subject_filter} {'AND' if subject_filter else 'WHERE'} captured_at IS NOT NULL AND TRIM(captured_at) <> ''",
-            subject_params,
-        ).fetchone()[0]
-    )
+    capture_metrics = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS capture_count,
+            COALESCE(SUM(CASE WHEN content_hash IS NOT NULL AND TRIM(content_hash) <> '' THEN 1 ELSE 0 END), 0) AS fixity_count,
+            COALESCE(SUM(CASE WHEN captured_at IS NOT NULL AND TRIM(captured_at) <> '' THEN 1 ELSE 0 END), 0) AS timestamp_count,
+            COALESCE(SUM(CASE WHEN mime_type IS NOT NULL AND TRIM(mime_type) <> '' THEN 1 ELSE 0 END), 0) AS format_count,
+            COALESCE(SUM(CASE WHEN payload_storage_policy_class IS NOT NULL AND TRIM(payload_storage_policy_class) <> '' THEN 1 ELSE 0 END), 0) AS payload_policy_count
+        FROM capture_event
+        """
+        + (f" {subject_filter}" if subject_filter else ""),
+        subject_params,
+    ).fetchone()
+    capture_count = int(capture_metrics[0])
+    fixity_count = int(capture_metrics[1])
+    timestamp_count = int(capture_metrics[2])
     provenance_count = int(conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0])
-    format_count = int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM capture_event {subject_filter} {'AND' if subject_filter else 'WHERE'} mime_type IS NOT NULL AND TRIM(mime_type) <> ''",
-            subject_params,
-        ).fetchone()[0]
-    )
-    payload_policy_count = int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM capture_event {subject_filter} {'AND' if subject_filter else 'WHERE'} payload_storage_policy_class IS NOT NULL AND TRIM(payload_storage_policy_class) <> ''",
-            subject_params,
-        ).fetchone()[0]
-    )
+    format_count = int(capture_metrics[3])
+    payload_policy_count = int(capture_metrics[4])
     history_count = int(conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0])
     checks = [
         readiness_check(
