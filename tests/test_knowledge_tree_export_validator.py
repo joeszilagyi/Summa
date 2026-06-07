@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import importlib.util
 import json
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
@@ -32,12 +31,15 @@ def load_fixture(name: str) -> Path:
 
 
 def test_valid_minimal_fixture_passes() -> None:
-    result, exit_code = validate(load_fixture("valid_minimal"))
+    target = load_fixture("valid_minimal")
+    result, exit_code = validate(target)
 
     assert exit_code == validator.EXIT_PASS
     assert result["counts"] == {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}
     assert result["errors"] == []
     assert result["warnings"] == []
+    assert result["payload"] == json.loads(target.read_text(encoding="utf-8"))
+    assert result["payload_sha256"] == validator.hash_file(target)
 
 
 def test_page_family_presence_is_scanned_once_for_all_families() -> None:

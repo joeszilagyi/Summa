@@ -929,27 +929,11 @@ def validate_build_manifest(
         if export_exit != validate_knowledge_tree_export.EXIT_PASS:
             first_error = export_result["errors"][0]["message"] if export_result["errors"] else "validation failed"
             add_error(errors, code="EXPORT_INVALID", message=f"referenced export failed validation: {first_error}")
-        elif resolved_export_path.is_file():
-            actual_export_sha = hash_file(resolved_export_path)
-            if payload.get("export_sha256") != actual_export_sha:
+        else:
+            export_payload = export_result.get("payload")
+            export_sha256 = export_result.get("payload_sha256")
+            if payload.get("export_sha256") != export_sha256:
                 add_error(errors, code="EXPORT_HASH_MISMATCH", message="export_sha256 does not match the export file on disk")
-            try:
-                export_payload = json.loads(resolved_export_path.read_text(encoding="utf-8"))
-            except OSError:
-                add_error(
-                    errors,
-                    code="EXPORT_READ_ERROR",
-                    message="referenced export file could not be read for manifest comparison",
-                )
-                export_payload = None
-            except json.JSONDecodeError:
-                add_error(
-                    errors,
-                    code="EXPORT_JSON_PARSE_ERROR",
-                    message="referenced export file is not valid JSON",
-                )
-                export_payload = None
-
             if isinstance(export_payload, dict):
                 if payload.get("export_id") != export_payload.get("export_id"):
                     add_error(
@@ -1029,6 +1013,12 @@ def validate_build_manifest(
                         add_error(errors, code="PAGE_SOURCE_IDS_MISMATCH", message=f"source_ids mismatch for page_id: {page_id}")
                     if page_related_refs.get(page_id, []) != export_page.get("related_page_ids", []):
                         add_error(errors, code="PAGE_RELATED_IDS_MISMATCH", message=f"related_page_ids mismatch for page_id: {page_id}")
+            else:
+                add_error(
+                    errors,
+                    code="EXPORT_PAYLOAD_MISSING",
+                    message="referenced export validation did not return a parsed payload",
+                )
 
     resolved_presentation_path: Path | None = None
     if presentation_path_value is not None:

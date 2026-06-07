@@ -122,6 +122,67 @@ def test_build_manifest_receipt_validation_uses_in_memory_artifacts(tmp_path: Pa
     assert report["counts"]["accepted"] == 1
 
 
+def test_build_manifest_validation_uses_export_report_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    publish_root = tmp_path / "public-site"
+    builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root,
+        build_id="build-20260602T180005Z",
+        built_at="2026-06-02T18:00:05Z",
+    )
+
+    manifest_path = publish_root / "build-manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["output_root"] = "no-counts"
+    export_payload = json.loads(export_fixture().read_text(encoding="utf-8"))
+    export_path = export_fixture()
+    seen_hash_paths: list[Path] = []
+
+    def fake_load_json_object(_target: Path) -> tuple[dict[str, object], list[dict[str, object]], int]:
+        return manifest_payload, [], manifest_validator.EXIT_PASS
+
+    def fake_validate_export(_target: Path) -> tuple[dict[str, object], int]:
+        return (
+            {
+                "validator": "knowledge_tree_export",
+                "contract_version": "1",
+                "target": str(export_fixture()),
+                "status": "pass",
+                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
+                "errors": [],
+                "warnings": [],
+                "output_artifacts": {},
+                "scenario": None,
+                "payload": export_payload,
+                "payload_sha256": manifest_payload["export_sha256"],
+            },
+            manifest_validator.EXIT_PASS,
+        )
+
+    def fake_hash_file(path: Path) -> str:
+        seen_hash_paths.append(path)
+        if path == export_path:
+            raise AssertionError("build manifest validation should not hash the export again")
+        return sha256_of(path)
+
+    monkeypatch.setattr(manifest_validator, "load_json_object", fake_load_json_object)
+    monkeypatch.setattr(
+        manifest_validator.validate_knowledge_tree_export,
+        "validate_knowledge_tree_export",
+        fake_validate_export,
+    )
+    monkeypatch.setattr(manifest_validator, "hash_file", fake_hash_file)
+
+    report, exit_code = manifest_validator.validate_build_manifest(manifest_path)
+
+    assert exit_code == manifest_validator.EXIT_PASS, report
+    assert report["counts"]["accepted"] == 1
+    assert export_path not in seen_hash_paths
+
+
 def test_build_manifest_payload_uses_precomputed_presentation_hash(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

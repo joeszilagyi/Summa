@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -44,7 +45,6 @@ from tools.common.authority_ladder import (  # noqa: E402
     is_public_export_profile,
     is_visible_publication_state,
 )
-
 
 VALIDATOR_NAME = "knowledge_tree_export"
 CONTRACT_VERSION = "1"
@@ -733,8 +733,18 @@ def validate_knowledge_tree_export(target: Path) -> tuple[dict[str, Any], int]:
         "warnings": [],
         "output_artifacts": {},
         "scenario": None,
+        "payload": payload if exit_code == EXIT_PASS else None,
+        "payload_sha256": hash_file(target) if exit_code == EXIT_PASS else None,
     }
     return report, exit_code
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def main() -> int:
