@@ -259,6 +259,45 @@ def test_profile_configs_validate_and_reference_existing_fields(tmp_path: Path) 
         conn.close()
 
 
+def test_validate_profile_mappings_caches_table_columns_for_repeated_tables() -> None:
+    profile = standards_profiles.load_profile("dcmi.v1")
+    mapping = dict(profile["field_mappings"][0])
+    duplicate = dict(mapping)
+    duplicate["mapping_id"] = f"{mapping['mapping_id']}-duplicate"
+    profile["field_mappings"] = [mapping, duplicate]
+    profile["required_fields"] = []
+    profile["optional_fields"] = []
+
+    table_name = str(mapping["summa_source"]["table"])
+    field_name = str(mapping["summa_source"]["field"])
+
+    class FakeResult:
+        def __init__(self, rows: list[dict[str, str]]) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list[dict[str, str]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeResult:
+            del params
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            if "FROM sqlite_master" in normalized:
+                return FakeResult([{"name": table_name}])
+            if normalized == f"PRAGMA table_info({table_name})":
+                return FakeResult([{"name": field_name}])
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    fake_conn = FakeConnection()
+
+    assert standards_profiles.validate_profile_mappings(fake_conn, profile) == []
+    assert fake_conn.queries.count(f"PRAGMA table_info({table_name})") == 1
+
+
 def test_invalid_profile_payload_is_rejected() -> None:
     profile = standards_profiles.load_profile("dcmi.v1")
     del profile["field_mappings"][0]["external_target"]

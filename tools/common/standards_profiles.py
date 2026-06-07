@@ -167,11 +167,26 @@ def validate_profile_payload(profile: dict[str, Any]) -> None:
         )
 
 
+def table_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    schema_cache: dict[str, set[str]] | None = None,
+) -> set[str]:
+    if schema_cache is not None and table in schema_cache:
+        return schema_cache[table]
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if schema_cache is not None:
+        schema_cache[table] = columns
+    return columns
+
+
 def validate_profile_mappings(
     conn: sqlite3.Connection, profile: dict[str, Any]
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     tables = canonical_store.actual_tables(conn)
+    schema_cache: dict[str, set[str]] = {}
     for mapping in profile["field_mappings"]:
         source = mapping["summa_source"]
         table = str(source["table"])
@@ -186,7 +201,7 @@ def validate_profile_mappings(
                 }
             )
             continue
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        columns = table_columns(conn, table, schema_cache=schema_cache)
         if field not in columns:
             errors.append(
                 {
