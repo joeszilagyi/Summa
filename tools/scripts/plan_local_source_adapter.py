@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import fnmatch
 import json
 import sys
@@ -58,7 +59,14 @@ def load_adapter(adapter_path: Path) -> dict[str, Any]:
         if errors:
             message = errors[0].get("message", message)
         raise LocalSourceAdapterError(message)
-    payload = json.loads(adapter_path.read_text(encoding="utf-8"))
+    before_hash = hashlib.sha256(adapter_path.read_bytes()).hexdigest()
+    payload, parse_errors, parse_exit = validate_source_adapter.load_json_object(adapter_path)
+    if parse_exit != validate_source_adapter.EXIT_PASS:
+        message = parse_errors[0].get("message", "source adapter parsing failed") if parse_errors else "source adapter parsing failed"
+        raise LocalSourceAdapterError(message)
+    after_hash = hashlib.sha256(adapter_path.read_bytes()).hexdigest()
+    if before_hash != after_hash:
+        raise LocalSourceAdapterError("adapter file changed during validation")
     if payload.get("input_family") not in LOCAL_ADAPTER_INPUT_FAMILIES:
         raise LocalSourceAdapterError("input_family must be local_file or local_directory for this planner")
     return payload

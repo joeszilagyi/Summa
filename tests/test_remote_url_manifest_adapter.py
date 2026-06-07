@@ -193,3 +193,29 @@ def test_remote_url_manifest_rejects_manifest_entry_non_standard_json_constants(
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: NaN"}]
+
+
+def test_remote_url_manifest_planner_rejects_duplicate_keys_in_adapter_manifest(tmp_path: Path) -> None:
+    manifest_jsonl = FIXTURE_ROOT / "manifest.jsonl"
+    adapter_contents = (FIXTURE_ROOT / "source_adapter.json").read_text(encoding="utf-8")
+    duplicate_adapter = adapter_contents.replace(
+        '"input_family": "remote_url_manifest",',
+        '"input_family": "remote_url_manifest",\n    "input_family": "remote_url_manifest",',
+        1,
+    )
+    adapter_path = tmp_path / "duplicate_adapter.json"
+    adapter_path.write_text(duplicate_adapter, encoding="utf-8")
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 1
+    assert "duplicate JSON object key: input_family" in proc.stderr
