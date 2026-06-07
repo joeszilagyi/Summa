@@ -272,7 +272,12 @@ def list_review_items(
     return rows[:limit] if limit is not None else rows
 
 
-def fetch_review_object(conn: sqlite3.Connection, object_ref: str) -> dict[str, Any]:
+def fetch_review_object(
+    conn: sqlite3.Connection,
+    object_ref: str,
+    *,
+    full_row: bool = False,
+) -> dict[str, Any]:
     target_type, object_pk = parse_object_ref(object_ref)
     target = TARGETS[target_type]
     if not SQL_IDENTIFIER_RE.fullmatch(target.table):
@@ -281,10 +286,36 @@ def fetch_review_object(conn: sqlite3.Connection, object_ref: str) -> dict[str, 
         raise ValueError(f"invalid review target primary key column: {target.pk_column}")
     if not table_exists(conn, target.table):
         raise ValueError(f"review target table does not exist: {target.table}")
-    row = conn.execute(
-        f"SELECT * FROM {target.table} WHERE {target.pk_column}=?",
-        (object_pk,),
-    ).fetchone()
+    if full_row:
+        row = conn.execute(
+            f"SELECT * FROM {target.table} WHERE {target.pk_column}=?",
+            (object_pk,),
+        ).fetchone()
+    else:
+        columns = table_columns(conn, target.table)
+        confidence_expr = target.confidence_column if target.confidence_column in columns else "NULL"
+        source_type_expr = target.source_type_sql
+        workspace_expr = optional_column_expr(columns, "workspace_id")
+        authority_level_expr = optional_column_expr(columns, "authority_level", "authority_tier", "authority_status")
+        public_blocker_value_expr = public_blocker_expr(columns)
+        row = conn.execute(
+            f"""
+            SELECT
+              ? AS object_type,
+              ? AS object_namespace,
+              {target.pk_column} AS object_pk,
+              COALESCE({target.state_column}, '') AS review_state,
+              {confidence_expr} AS confidence_score,
+              {target.label_sql} AS label,
+              {source_type_expr} AS source_type,
+              {workspace_expr} AS workspace_id,
+              {authority_level_expr} AS authority_level,
+              {public_blocker_value_expr} AS public_blocker
+            FROM {target.table}
+            WHERE {target.pk_column}=?
+            """,
+            (target_type, target.namespace, object_pk),
+        ).fetchone()
     if row is None:
         raise ValueError(f"review object not found: {object_ref}")
     result = dict(row)
@@ -510,6 +541,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     show_p = sub.add_parser("show", help="Show one review object")
     show_p.add_argument("object_id")
+    show_p.add_argument("--full", action="store_true", help="Show the full raw row instead of the lightweight projection.")
     show_p.add_argument("--format", choices=["text", "json"], default="json")
 
     for command, state in (
@@ -554,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
                     render_list_text(rows)
                 return 0
             if args.command == "show":
-                row = fetch_review_object(conn, args.object_id)
+                row = fetch_review_object(conn, args.object_id, full_row=args.full)
                 if args.format == "json":
                     render_json(row)
                 else:

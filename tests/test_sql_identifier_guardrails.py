@@ -111,3 +111,48 @@ def test_local_search_projection_rejects_unsafe_projection_target(monkeypatch: p
 
     with pytest.raises(RuntimeError, match="invalid projection target table"):
         build_local_search_projection.build_projection_payload(args)
+
+
+def test_review_queue_fetch_object_uses_lightweight_projection_by_default() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    executed_sql: list[str] = []
+    conn.set_trace_callback(executed_sql.append)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE work (
+              work_id INTEGER PRIMARY KEY,
+              work_type TEXT,
+              title TEXT,
+              review_state TEXT,
+              confidence_score REAL,
+              workspace_id TEXT,
+              authority_level TEXT,
+              public_blocker TEXT,
+              record_last_updated TEXT
+            );
+            INSERT INTO work (
+              work_id, work_type, title, review_state, confidence_score,
+              workspace_id, authority_level, public_blocker, record_last_updated
+            ) VALUES (
+              1, 'book', 'Projected Work', 'needs_review', 0.5,
+              'alpha_subject', 'primary', '', '2026-06-02T00:00:00Z'
+            );
+            """
+        )
+
+        row = review_queue.fetch_review_object(conn, "work:1")
+        projected_sql = list(executed_sql)
+        executed_sql.clear()
+        raw_row = review_queue.fetch_review_object(conn, "work:1", full_row=True)
+    finally:
+        conn.close()
+
+    assert row["object_ref"] == "work:1"
+    assert row["label"] == "Projected Work"
+    assert row["review_state"] == "needs_review"
+    assert raw_row["work_type"] == "book"
+    assert any("AS object_type" in sql and "AS label" in sql for sql in projected_sql)
+    assert not any("SELECT * FROM work WHERE work_id=1" in sql for sql in projected_sql)
+    assert any("SELECT * FROM work WHERE work_id=1" in sql for sql in executed_sql)
