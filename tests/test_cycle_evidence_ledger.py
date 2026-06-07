@@ -239,6 +239,47 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
         conn.close()
 
 
+def test_cycle_evidence_finish_rejects_reverse_chronology(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        cycle_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-time-reversal",
+            started_at="2026-06-03T12:34:56Z",
+        )
+        stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=cycle_id,
+            run_id="run-time-reversal",
+            stage_name="gather",
+            stage_order=1,
+            started_at="2026-06-03T12:34:56Z",
+        )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="earlier than started_at",
+        ):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn,
+                cycle_event_id=cycle_id,
+                status="failed",
+                ended_at="2026-06-03T12:34:55Z",
+            )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="earlier than started_at",
+        ):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn,
+                stage_event_id=stage_id,
+                status="failed",
+                ended_at="2026-06-03T12:34:55Z",
+            )
+    finally:
+        conn.close()
+
+
 def test_cycle_events_for_subject_returns_latest_when_limited(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
