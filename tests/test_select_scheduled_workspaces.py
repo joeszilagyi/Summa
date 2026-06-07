@@ -222,6 +222,57 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert read_jsonl(planned_runs) == records
 
 
+def test_selector_loads_registry_json_once_during_validation_and_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    load_calls = {"count": 0}
+    original_load_registry_json = selector.load_registry_json
+
+    def counting_load_registry_json(path: Path) -> dict[str, object]:
+        load_calls["count"] += 1
+        return original_load_registry_json(path)
+
+    monkeypatch.setattr(selector, "load_registry_json", counting_load_registry_json)
+
+    payload = selector.build_selection_payload(
+        selector.argparse.Namespace(
+            registry=str(registry_path),
+            workspace_ids=[],
+            include_manual=False,
+            limit=None,
+            format="json",
+            planned_runs_jsonl=None,
+            planner_run_id="planner-fixture",
+            planned_at=None,
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+            db=None,
+            saturation_policy=None,
+            include_saturated=False,
+            ignore_saturation=False,
+        )
+    )
+
+    assert load_calls["count"] == 1
+    assert payload["selected_count"] == 1
+    assert payload["selected_workspaces"][0]["workspace_id"] == "selected_workspace"
+
+
 @pytest.mark.parametrize(
     ("initial_text", "expected_first_line"),
     [

@@ -37,6 +37,7 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
     TopicWorkspaceRegistryError,
     discover_registry_path,
+    load_registry_json,
     resolve_workspaces,
 )
 from tools.source_db_tools import canonical_store  # noqa: E402
@@ -206,9 +207,14 @@ def _derive_planner_run_id(
     return f"planner-{hashlib.sha256(signature).hexdigest()[:16]}"
 
 
-def validate_registry_or_raise(registry_path: Path) -> None:
+def validate_registry_or_raise(registry_path: Path) -> dict[str, Any]:
+    try:
+        registry_payload = load_registry_json(registry_path)
+    except TopicWorkspaceRegistryError as exc:
+        raise SelectionError(str(exc)) from exc
     result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
-        registry_path
+        registry_path,
+        payload=registry_payload,
     )
     if exit_code != validate_topic_workspace_registry.EXIT_PASS:
         errors = result.get("errors", [])
@@ -217,6 +223,7 @@ def validate_registry_or_raise(registry_path: Path) -> None:
                 errors[0].get("message", "topic workspace registry validation failed")
             )
         raise SelectionError("topic workspace registry validation failed")
+    return registry_payload
 
 
 def workspace_output_entry(workspace: dict[str, Any]) -> dict[str, Any]:
@@ -596,11 +603,12 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
     if args.limit is not None and args.limit < 1:
         raise SelectionError("--limit must be at least 1")
 
-    validate_registry_or_raise(registry_path)
+    registry_payload = validate_registry_or_raise(registry_path)
     try:
         resolved_workspaces = resolve_workspaces(
             registry_path=registry_path,
             workspace_ids=args.workspace_ids,
+            registry_payload=registry_payload,
         )
     except TopicWorkspaceRegistryError as exc:
         raise SelectionError(str(exc)) from exc

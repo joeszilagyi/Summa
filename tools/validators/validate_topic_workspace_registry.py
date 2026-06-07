@@ -579,6 +579,7 @@ def validate_default_subject_manifest(
     *,
     target: Path,
     errors: list[dict[str, Any]],
+    manifest_payload_cache: dict[Path, dict[str, Any]],
 ) -> Path | None:
     raw_manifest = workspace.get("default_subject_manifest")
     if raw_manifest is None:
@@ -609,15 +610,37 @@ def validate_default_subject_manifest(
         )
         return None
 
-    result, exit_code = validate_subject_manifest.validate_manifest(resolved_manifest)
-    if exit_code != validate_subject_manifest.EXIT_PASS:
-        manifest_errors = result.get("errors", [])
+    manifest_payload, manifest_errors, _ = validate_subject_manifest.load_json_object(resolved_manifest)
+    if manifest_payload is None:
         if manifest_errors:
             first_error = manifest_errors[0]
             add_error(
                 errors,
                 code="SUBJECT_MANIFEST_INVALID",
-                message=f"default subject manifest failed validation: {first_error.get('message', 'validation failed')}",
+                message=(
+                    "default subject manifest failed validation: "
+                    f"{first_error.get('message', 'validation failed')}"
+                ),
+            )
+        else:
+            add_error(
+                errors,
+                code="SUBJECT_MANIFEST_INVALID",
+                message="default subject manifest failed validation",
+            )
+        return None
+    result, exit_code = validate_subject_manifest.validate_manifest_payload(manifest_payload)
+    if exit_code != validate_subject_manifest.EXIT_PASS:
+        validation_errors = result.get("errors", [])
+        if validation_errors:
+            first_error = validation_errors[0]
+            add_error(
+                errors,
+                code="SUBJECT_MANIFEST_INVALID",
+                message=(
+                    "default subject manifest failed validation: "
+                    f"{first_error.get('message', 'validation failed')}"
+                ),
             )
         else:
             add_error(
@@ -627,6 +650,8 @@ def validate_default_subject_manifest(
             )
         return None
 
+    manifest_payload_cache[resolved_manifest] = manifest_payload
+
     return resolved_manifest
 
 
@@ -635,6 +660,7 @@ def validate_workspace_record(
     *,
     target: Path,
     errors: list[dict[str, Any]],
+    manifest_payload_cache: dict[Path, dict[str, Any]],
 ) -> tuple[str | None, Path | None]:
     workspace_id = workspace.get("workspace_id")
 
@@ -681,28 +707,21 @@ def validate_workspace_record(
         load_domain_pack(domain_pack, errors)
 
     resolved_root = validate_workspace_root(workspace, target=target, errors=errors)
-    resolved_manifest = validate_default_subject_manifest(workspace, target=target, errors=errors)
+    resolved_manifest = validate_default_subject_manifest(
+        workspace,
+        target=target,
+        errors=errors,
+        manifest_payload_cache=manifest_payload_cache,
+    )
 
     if resolved_manifest is not None and isinstance(domain_pack, str) and ID_PATTERN.fullmatch(domain_pack):
-        try:
-            manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        manifest_payload = manifest_payload_cache.get(resolved_manifest)
+        if manifest_payload is None:
             add_error(
                 errors,
                 code="SUBJECT_MANIFEST_INVALID",
                 message=(
-                    "default subject manifest could not be re-read for domain-pack "
-                    f"cross-check: {repo_display(resolved_manifest)}"
-                ),
-            )
-            return workspace_id if isinstance(workspace_id, str) else None, resolved_root
-
-        if not isinstance(manifest_payload, dict):
-            add_error(
-                errors,
-                code="SUBJECT_MANIFEST_INVALID",
-                message=(
-                    "default subject manifest must be a JSON object for domain-pack "
+                    "default subject manifest payload was not cached for domain-pack "
                     f"cross-check: {repo_display(resolved_manifest)}"
                 ),
             )
@@ -722,13 +741,22 @@ def validate_workspace_record(
     return workspace_id if isinstance(workspace_id, str) else None, resolved_root
 
 
-def validate_topic_workspace_registry(target: Path) -> tuple[dict[str, Any], int]:
+def validate_topic_workspace_registry(
+    target: Path,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
+    manifest_payload_cache: dict[Path, dict[str, Any]] = {}
 
-    payload, errors, exit_code = load_json_object(target)
     if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
+        payload, errors, exit_code = load_json_object(target)
+        if payload is None:
+            return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
+    else:
+        errors = []
+        exit_code = EXIT_PASS
 
     counts["inspected"] = 1
 
@@ -771,7 +799,12 @@ def validate_topic_workspace_registry(target: Path) -> tuple[dict[str, Any], int
                 continue
 
             workspace_errors_start = len(errors)
-            workspace_id, resolved_root = validate_workspace_record(workspace, target=target, errors=errors)
+            workspace_id, resolved_root = validate_workspace_record(
+                workspace,
+                target=target,
+                errors=errors,
+                manifest_payload_cache=manifest_payload_cache,
+            )
             if workspace_id:
                 workspace_ids.add(workspace_id)
                 if workspace_id in seen_workspace_ids:

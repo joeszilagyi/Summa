@@ -294,11 +294,12 @@ def resolve_workspace(
     *,
     registry_path: str | Path | None = None,
     workspace_id: str | None = None,
+    registry_payload: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> dict[str, Any]:
     resolved_registry_path = discover_registry_path(registry_path, env=env, cwd=cwd)
-    payload = load_registry_json(resolved_registry_path)
+    payload = registry_payload if registry_payload is not None else load_registry_json(resolved_registry_path)
     _validate_registry_schema(payload)
 
     workspaces = payload.get("workspaces")
@@ -336,11 +337,12 @@ def resolve_workspaces(
     *,
     registry_path: str | Path | None = None,
     workspace_ids: list[str] | tuple[str, ...] | None = None,
+    registry_payload: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> list[dict[str, Any]]:
     resolved_registry_path = discover_registry_path(registry_path, env=env, cwd=cwd)
-    payload = load_registry_json(resolved_registry_path)
+    payload = registry_payload if registry_payload is not None else load_registry_json(resolved_registry_path)
     _validate_registry_schema(payload)
 
     workspaces = payload.get("workspaces")

@@ -297,13 +297,10 @@ def validate_domain_pack_subset(
             )
 
 
-def validate_manifest(target: Path) -> tuple[dict[str, Any], int]:
+def validate_manifest_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
-
-    payload, errors, exit_code = load_json_object(target)
-    if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
+    errors: list[dict[str, Any]] = []
 
     counts["inspected"] = 1
 
@@ -358,6 +355,14 @@ def validate_manifest(target: Path) -> tuple[dict[str, Any], int]:
 
     counts["accepted"] = 1
     return {"counts": counts, "errors": errors, "warnings": warnings}, EXIT_PASS
+
+
+def validate_manifest(target: Path) -> tuple[dict[str, Any], int]:
+    payload, errors, exit_code = load_json_object(target)
+    if payload is None:
+        return {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": errors, "warnings": []}, exit_code
+
+    return validate_manifest_payload(payload)
 
 
 def main() -> int:
