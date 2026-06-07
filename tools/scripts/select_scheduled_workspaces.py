@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -595,45 +596,51 @@ def append_planned_run_records(
     *,
     sync: bool = True,
 ) -> None:
-    def read_existing_ids(path: Path) -> set[str]:
-        existing: set[str] = set()
-        if not path.exists() or path.stat().st_size == 0:
-            return existing
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    parsed = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                planned_run_id = parsed.get("planned_run_id") if isinstance(parsed, dict) else None
-                if isinstance(planned_run_id, str):
-                    existing.add(planned_run_id)
-        return existing
-
-    existing_ids = read_existing_ids(path)
-    seen_ids: set[str] = set()
     path.parent.mkdir(parents=True, exist_ok=True)
-    needs_leading_newline = False
-    if path.exists() and path.stat().st_size > 0:
-        with path.open("rb") as handle:
-            handle.seek(-1, os.SEEK_END)
-            needs_leading_newline = handle.read(1) != b"\n"
-    with path.open("a", encoding="utf-8") as handle:
-        if needs_leading_newline:
-            handle.write("\n")
-        for record in records:
-            planned_run_id = record.get("planned_run_id")
-            if not isinstance(planned_run_id, str):
-                continue
-            if planned_run_id in existing_ids or planned_run_id in seen_ids:
-                continue
-            seen_ids.add(planned_run_id)
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        handle.flush()
-        if sync:
-            os.fsync(handle.fileno())
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            def read_existing_ids(path: Path) -> set[str]:
+                existing: set[str] = set()
+                if not path.exists() or path.stat().st_size == 0:
+                    return existing
+                with path.open("r", encoding="utf-8") as reader:
+                    for line in reader:
+                        if not line.strip():
+                            continue
+                        try:
+                            parsed = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        planned_run_id = (
+                            parsed.get("planned_run_id") if isinstance(parsed, dict) else None
+                        )
+                        if isinstance(planned_run_id, str):
+                            existing.add(planned_run_id)
+                return existing
+
+            existing_ids = read_existing_ids(path)
+            seen_ids: set[str] = set()
+            needs_leading_newline = False
+            if path.exists() and path.stat().st_size > 0:
+                with path.open("rb") as reader:
+                    reader.seek(-1, os.SEEK_END)
+                    needs_leading_newline = reader.read(1) != b"\n"
+            if needs_leading_newline:
+                handle.write("\n")
+            for record in records:
+                planned_run_id = record.get("planned_run_id")
+                if not isinstance(planned_run_id, str):
+                    continue
+                if planned_run_id in existing_ids or planned_run_id in seen_ids:
+                    continue
+                seen_ids.add(planned_run_id)
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            if sync:
+                os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
