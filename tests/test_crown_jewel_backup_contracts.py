@@ -141,6 +141,33 @@ def test_backup_planner_emits_valid_manifest_for_fixture_repo(tmp_path: Path) ->
     assert exit_code == backup_validator.EXIT_PASS, result
 
 
+def test_backup_planner_reuses_cached_glob_matches(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    policy_path = repo_root / "config" / "durability_policies" / "local_first_crown_jewels.v1.json"
+    payload = sample_policy_payload()
+    payload["store_families"][0]["path_globs"] = ["dbs/shared/*.sqlite"]
+    payload["store_families"][1]["path_globs"] = ["dbs/shared/*.sqlite"]
+    write_json(policy_path, payload)
+    (repo_root / "dbs" / "shared").mkdir(parents=True)
+    (repo_root / "dbs" / "shared" / "one.sqlite").write_text("fixture\n", encoding="utf-8")
+
+    planner.cached_glob_matches.cache_clear()
+    glob_calls: list[str] = []
+    original_glob = Path.glob
+
+    def fake_glob(self: Path, pattern: str):
+        if self == repo_root:
+            glob_calls.append(pattern)
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", fake_glob)
+
+    manifest = planner.plan_backup_manifest(policy_path=policy_path, repo_root=repo_root)
+
+    assert manifest["store_entries"][0]["matched_paths"] == ["dbs/shared/one.sqlite"]
+    assert glob_calls == ["dbs/shared/*.sqlite"]
+
+
 def test_backup_manifest_validator_rejects_present_without_matches(tmp_path: Path) -> None:
     payload = sample_manifest_payload()
     payload["store_entries"][0]["match_count"] = 0
