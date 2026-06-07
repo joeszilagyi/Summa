@@ -64,6 +64,43 @@ REQUIRED_TOP_LEVEL_KEYS = {
     "warnings",
     "errors",
 }
+TOP_LEVEL_ALLOWED_KEYS = set(REQUIRED_TOP_LEVEL_KEYS) | {"projection_version"}
+SOURCE_ALLOWED_KEYS = {"database_name", "database_fingerprint", "projection_version", "schema_version"}
+QUERY_ALLOWED_KEYS = {
+    "raw_query",
+    "normalized_query",
+    "terms",
+    "scope",
+    "limit",
+    "offset",
+    "visibility_profile",
+}
+COUNT_ALLOWED_KEYS = {"returned", "total_estimate", "truncated"}
+POLICY_ALLOWED_KEYS = {
+    "raw_payload_indexed",
+    "full_text_indexed",
+    "private_paths_exposed",
+    "excluded_families",
+}
+RESULT_ALLOWED_KEYS = {
+    "rank",
+    "result_class",
+    "result_id",
+    "object_type",
+    "object_id",
+    "title",
+    "subtitle",
+    "matched_fields",
+    "snippets",
+    "review_state",
+    "publication_state",
+    "visibility",
+    "score",
+    "confidence_score",
+    "links",
+}
+VISIBILITY_ALLOWED_KEYS = {"profile", "suppressed_fields"}
+SNIPPET_ALLOWED_KEYS = {"field", "text", "locator", "display_policy"}
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -147,6 +184,8 @@ def validate_nonblank_string(value: Any, *, field_name: str, errors: list[dict[s
 
 def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
+    for key in sorted(set(payload) - TOP_LEVEL_ALLOWED_KEYS):
+        add_error(errors, code="UNKNOWN_FIELD", message=f"top-level contains unexpected key: {key}")
     for key in sorted(REQUIRED_TOP_LEVEL_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required top-level key: {key}")
 
@@ -157,6 +196,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
     if not isinstance(source, dict):
         add_error(errors, code="SOURCE_NOT_OBJECT", message="source must be an object")
     else:
+        for key in sorted(set(source) - SOURCE_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"source contains unexpected key: {key}")
         validate_nonblank_string(source.get("database_name"), field_name="source.database_name", errors=errors, code="INVALID_SOURCE_FIELD")
         validate_nonblank_string(source.get("projection_version"), field_name="source.projection_version", errors=errors, code="INVALID_SOURCE_FIELD")
         schema_field = source.get("schema_version")
@@ -168,6 +209,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
     if not isinstance(query, dict):
         add_error(errors, code="QUERY_NOT_OBJECT", message="query must be an object")
     else:
+        for key in sorted(set(query) - QUERY_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"query contains unexpected key: {key}")
         validate_nonblank_string(query.get("raw_query"), field_name="query.raw_query", errors=errors, code="INVALID_QUERY_FIELD")
         validate_nonblank_string(query.get("normalized_query"), field_name="query.normalized_query", errors=errors, code="INVALID_QUERY_FIELD")
         terms = query.get("terms")
@@ -190,6 +233,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
     if not isinstance(counts, dict):
         add_error(errors, code="COUNTS_NOT_OBJECT", message="counts must be an object")
     else:
+        for key in sorted(set(counts) - COUNT_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"counts contains unexpected key: {key}")
         returned = counts.get("returned")
         total_estimate = counts.get("total_estimate")
         truncated = counts.get("truncated")
@@ -208,6 +253,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
     if not isinstance(policy, dict):
         add_error(errors, code="POLICY_NOT_OBJECT", message="policy must be an object")
     else:
+        for key in sorted(set(policy) - POLICY_ALLOWED_KEYS):
+            add_error(errors, code="UNKNOWN_FIELD", message=f"policy contains unexpected key: {key}")
         for field_name in ("raw_payload_indexed", "full_text_indexed", "private_paths_exposed"):
             if policy.get(field_name) is not False:
                 add_error(errors, code="POLICY_VIOLATION", message=f"policy.{field_name} must be false")
@@ -224,6 +271,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
             if not isinstance(item, dict):
                 add_error(errors, code="RESULT_NOT_OBJECT", message=f"{label} must be an object")
                 continue
+            for key in sorted(set(item) - RESULT_ALLOWED_KEYS):
+                add_error(errors, code="UNKNOWN_FIELD", message=f"{label} contains unexpected key: {key}")
             result_id = validate_nonblank_string(item.get("result_id"), field_name=f"{label}.result_id", errors=errors, code="INVALID_RESULT_FIELD")
             if result_id is not None:
                 if result_id in seen_ids:
@@ -238,6 +287,9 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
             if object_type in RESULT_CLASS_BY_OBJECT_TYPE and item.get("result_class") != RESULT_CLASS_BY_OBJECT_TYPE[object_type]:
                 add_error(errors, code="RESULT_CLASS_MISMATCH", message=f"{label}.result_class does not match object_type")
             validate_nonblank_string(item.get("object_id"), field_name=f"{label}.object_id", errors=errors, code="INVALID_RESULT_FIELD")
+            confidence = item.get("confidence_score")
+            if confidence is not None and not isinstance(confidence, (int, float)):
+                add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.confidence_score must be a number")
             title = validate_nonblank_string(item.get("title"), field_name=f"{label}.title", errors=errors, code="INVALID_RESULT_FIELD")
             subtitle = item.get("subtitle")
             if isinstance(title, str):
@@ -263,11 +315,26 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
                     if not isinstance(snippet, dict):
                         add_error(errors, code="INVALID_RESULT_FIELD", message=f"{snippet_label} must be an object")
                         continue
-                    validate_nonblank_string(snippet.get("field"), field_name=f"{snippet_label}.field", errors=errors, code="INVALID_RESULT_FIELD")
-                    field_name = validate_nonblank_string(snippet.get("field"), field_name=f"{snippet_label}.field", errors=errors, code="INVALID_RESULT_FIELD")
-                    text = validate_nonblank_string(snippet.get("text"), field_name=f"{snippet_label}.text", errors=errors, code="INVALID_RESULT_FIELD")
+                    for key in sorted(set(snippet) - SNIPPET_ALLOWED_KEYS):
+                        add_error(errors, code="UNKNOWN_FIELD", message=f"{snippet_label} contains unexpected key: {key}")
+                    field_name = validate_nonblank_string(
+                        snippet.get("field"),
+                        field_name=f"{snippet_label}.field",
+                        errors=errors,
+                        code="INVALID_RESULT_FIELD",
+                    )
+                    text = validate_nonblank_string(
+                        snippet.get("text"),
+                        field_name=f"{snippet_label}.text",
+                        errors=errors,
+                        code="INVALID_RESULT_FIELD",
+                    )
                     if snippet.get("display_policy") not in {"public", "local_only", "suppressed"}:
-                        add_error(errors, code="INVALID_RESULT_FIELD", message=f"{snippet_label}.display_policy must be public, local_only, or suppressed")
+                        add_error(
+                            errors,
+                            code="INVALID_RESULT_FIELD",
+                            message=f"{snippet_label}.display_policy must be public, local_only, or suppressed",
+                        )
                     if field_name is not None and is_raw_payload_field(field_name):
                         add_error(
                             errors,
@@ -308,6 +375,8 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
             if not isinstance(visibility, dict):
                 add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.visibility must be an object")
             else:
+                for key in sorted(set(visibility) - VISIBILITY_ALLOWED_KEYS):
+                    add_error(errors, code="UNKNOWN_FIELD", message=f"{label}.visibility contains unexpected key: {key}")
                 visibility_profile = visibility.get("profile")
                 if visibility_profile not in VISIBILITY_PROFILES:
                     add_error(errors, code="INVALID_RESULT_FIELD", message=f"{label}.visibility.profile must be a known visibility profile")
