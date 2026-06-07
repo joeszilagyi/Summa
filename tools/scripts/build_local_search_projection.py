@@ -342,7 +342,7 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
                 )
-            indexed_records = conn.execute(
+            indexed_records_cursor = conn.execute(
                 """
                 SELECT projection_id, object_ref, object_type, object_pk, title, subtitle,
                        review_state, publication_state, confidence_score, authority_level,
@@ -351,34 +351,19 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 FROM search_projection
                 ORDER BY object_type ASC, object_pk ASC, projection_id ASC
                 """
-            ).fetchall()
-            actual_records = [
-                {
-                    "projection_id": row["projection_id"],
-                    "object_ref": row["object_ref"],
-                    "object_type": row["object_type"],
-                    "object_pk": int(row["object_pk"]),
-                    "title": row["title"],
-                    "subtitle": row["subtitle"],
-                    "review_state": row["review_state"],
-                    "publication_state": row["publication_state"],
-                    "confidence_score": row["confidence_score"],
-                    "authority_level": row["authority_level"],
-                    "public_blocker": row["public_blocker"],
-                    "lineage_state": row["lineage_state"],
-                    "visible_profiles": json.loads(row["visible_profiles_json"]),
-                    "suppressed_fields": json.loads(row["suppressed_fields_json"]),
-                    "indexed_fields": json.loads(row["indexed_fields_json"]),
-                }
-                for row in indexed_records
-            ]
-            if projection_records_digest(actual_records) != expected_records_digest:
+            )
+            actual_records_digest, indexed_records_count = projection_records_digest_from_cursor(indexed_records_cursor)
+            if actual_records_digest != expected_records_digest:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
                 )
             projection_count = conn.execute("SELECT COUNT(*) FROM search_projection").fetchone()
             fts_count = conn.execute("SELECT COUNT(*) FROM search_projection_fts").fetchone()
             expected_count = int(payload["counts"]["indexed_rows"])
+            if indexed_records_count != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection row count mismatch"
+                )
             if projection_count is None or int(projection_count[0]) != expected_count:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: search_projection row count mismatch"
@@ -426,6 +411,46 @@ def projection_records_digest(records: list[dict[str, Any]]) -> str:
         hasher.update(canonical_json.encode("utf-8"))
     hasher.update(b"]")
     return hasher.hexdigest()
+
+
+def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    hasher.update(b"[")
+    seen_record = False
+    row_count = 0
+    for row in rows:
+        record = {
+            "authority_level": row["authority_level"],
+            "confidence_score": row["confidence_score"],
+            "indexed_fields": json.loads(row["indexed_fields_json"]),
+            "lineage_state": row["lineage_state"],
+            "object_pk": int(row["object_pk"]),
+            "object_ref": row["object_ref"],
+            "object_type": row["object_type"],
+            "projection_id": row["projection_id"],
+            "public_blocker": row["public_blocker"],
+            "publication_state": row["publication_state"],
+            "review_state": row["review_state"],
+            "subtitle": row["subtitle"],
+            "suppressed_fields": json.loads(row["suppressed_fields_json"]),
+            "title": row["title"],
+            "visible_profiles": json.loads(row["visible_profiles_json"]),
+        }
+        if seen_record:
+            hasher.update(b",")
+        hasher.update(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        row_count += 1
+        seen_record = True
+    hasher.update(b"]")
+    return hasher.hexdigest(), row_count
 
 
 def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
