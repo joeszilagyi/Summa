@@ -231,14 +231,25 @@ def parse_csv_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str, 
     errors: list[dict[str, str]] = []
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
+            reader = csv.DictReader(handle, restkey="__EXTRA_FIELDS__")
             if reader.fieldnames is None:
                 errors.append({"context": "line:1", "reason": "csv header row is missing"})
                 return records, errors
             if len(reader.fieldnames) != len(set(reader.fieldnames)):
                 errors.append({"context": "line:1", "reason": "duplicate CSV header"})
                 return records, errors
-            for row_index, _ in enumerate(reader, start=1):
+            for row_index, row in enumerate(reader, start=1):
+                if row.get("__EXTRA_FIELDS__"):
+                    errors.append({"context": f"line:{reader.line_num}", "reason": "csv row has extra columns"})
+                    continue
+                if any(value is None for key, value in row.items() if key != "__EXTRA_FIELDS__"):
+                    errors.append(
+                        {
+                            "context": f"line:{reader.line_num}",
+                            "reason": "csv row is missing one or more required fields",
+                        }
+                    )
+                    continue
                 records.append(
                     {
                         "record_locator": f"row:{row_index}",

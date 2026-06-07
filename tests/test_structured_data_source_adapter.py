@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.scripts import plan_structured_data_source_adapter as planner
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_structured_data_source_adapter.py"
@@ -213,6 +215,19 @@ def test_structured_data_csv_preserves_quoted_newlines_and_commas(tmp_path: Path
     assert payload["parse_error_count"] == 0
     assert [record["source_specific"]["record_locator"] for record in payload["handoff_records"]] == ["row:1", "row:2"]
     assert [record["source_specific"]["source_filename"] for record in payload["handoff_records"]] == ["quoted.csv", "quoted.csv"]
+
+
+def test_structured_data_csv_rejects_overflow_and_short_rows(tmp_path: Path) -> None:
+    data_path = tmp_path / "bad.csv"
+    data_path.write_text("a,b\n1,2,3\n4\n", encoding="utf-8")
+
+    records, errors = planner.parse_csv_records(data_path)
+
+    assert records == []
+    assert errors == [
+        {"context": "line:2", "reason": "csv row has extra columns"},
+        {"context": "line:3", "reason": "csv row is missing one or more required fields"},
+    ]
 
 
 def test_structured_data_json_duplicate_keys_scalar_roots_and_blank_jsonl_lines(tmp_path: Path) -> None:

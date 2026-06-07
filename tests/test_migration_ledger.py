@@ -147,6 +147,42 @@ def test_load_events_ignores_truncated_final_jsonl_line(tmp_path: Path) -> None:
     assert [event["event_id"] for event in events] == ["mle:one"]
 
 
+def test_load_events_streams_without_read_text(tmp_path: Path, monkeypatch) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "fixture_workspace.migration-ledger.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": migration_ledger.SCHEMA_VERSION,
+                "event_id": "mle:one",
+                "workspace_id": "fixture_workspace",
+                "migration_id": "mig:one",
+                "migration_type": "schema_migration",
+                "subject_ref": "sqlite/source_db",
+                "tool_surface": "tool.sqlite_migrate_schema",
+                "tool_version": "2026.06.02",
+                "input_version": "v1",
+                "output_version": "v2",
+                "input_artifact_refs": [{"role": "sqlite_schema", "path": "dbs/source.db"}],
+                "output_artifact_refs": [{"role": "sqlite_schema", "path": "dbs/source.db"}],
+                "occurred_at": "2026-06-02T12:00:00Z",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("load_events should stream the ledger rather than calling read_text")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    events = migration_ledger.load_events(ledger_path)
+
+    assert [event["event_id"] for event in events] == ["mle:one"]
+
+
 def test_validator_cli_writes_reports(tmp_path: Path) -> None:
     target = load_fixture("valid_append_only")
     report_json = tmp_path / "report.json"

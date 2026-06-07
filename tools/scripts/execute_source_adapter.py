@@ -377,12 +377,28 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
     errors: list[dict[str, str]] = []
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
+            reader = csv.DictReader(handle, restkey="__EXTRA_FIELDS__")
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
             if len(reader.fieldnames) != len(set(reader.fieldnames)):
                 return {}, [{"context": "line:1", "reason": "duplicate CSV header"}]
             for row_index, row in enumerate(reader, start=1):
+                if row.get("__EXTRA_FIELDS__"):
+                    errors.append(
+                        {
+                            "context": f"line:{reader.line_num}",
+                            "reason": "csv row has extra columns",
+                        }
+                    )
+                    continue
+                if any(value is None for key, value in row.items() if key != "__EXTRA_FIELDS__"):
+                    errors.append(
+                        {
+                            "context": f"line:{reader.line_num}",
+                            "reason": "csv row is missing one or more required fields",
+                        }
+                    )
+                    continue
                 row_map[f"row:{row_index}"] = dict(row)
     except UnicodeDecodeError:
         errors.append({"context": "file", "reason": "file is not valid UTF-8"})
@@ -490,6 +506,12 @@ def load_structured_record_map(
     return {}, [
         {"context": "file", "reason": f"unsupported structured format: {structured_format}"}
     ]
+
+
+def structured_record_map_cache_key(
+    source_path_value: str, structured_format: str, record_path: str | None
+) -> tuple[str, str, str]:
+    return source_path_value, structured_format, record_path or ""
 
 
 def serialize_structured_value(value: Any) -> str:
@@ -1075,7 +1097,7 @@ def execute_structured_data(
             }
         )
         structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = (source_path_value, structured_format)
+        cache_key = structured_record_map_cache_key(source_path_value, structured_format, record_path)
         record_map, parse_errors = load_structured_record_map(
             source_path, structured_format=structured_format, record_path=record_path
         )
@@ -1088,7 +1110,7 @@ def execute_structured_data(
         structured_format = record["source_specific"]["structured_format"]
         record_locator = record["source_specific"]["record_locator"]
         record_map, parse_errors = record_map_cache[
-            (record["resolved_source_path"], structured_format)
+            structured_record_map_cache_key(record["resolved_source_path"], structured_format, record_path)
         ]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         value = record_map.get(record_locator)
