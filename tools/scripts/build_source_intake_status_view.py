@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,14 +25,22 @@ from tools.source_db_tools import rights_retention  # type: ignore  # noqa: E402
 
 SCHEMA_VERSION = "source-intake-status.v1"
 ADAPTER_SCAN_PATTERNS = (
-    "**/source_adapter.json",
-    "**/*source_adapter*.json",
-    "**/*source-adapter*.json",
+    "*.json",
 )
 
 
 class SourceIntakeStatusError(RuntimeError):
     """Raised when source intake inputs cannot be scanned."""
+
+
+@dataclass(frozen=True)
+class AdapterCandidate:
+    path: Path
+    adapter_status: str
+    payload: dict[str, Any] | None
+    detail: str | None
+    workspace_id: str | None
+    adapter_id: str | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +88,10 @@ def resolve_path(raw_path: str) -> Path:
     return path
 
 
+def is_adapter_filename(name: str) -> bool:
+    return name == "source_adapter.json" or "source_adapter" in name or "source-adapter" in name
+
+
 def discover_root_adapters(raw_root: str) -> list[Path]:
     root = resolve_path(raw_root)
     if not root.exists():
@@ -88,52 +101,60 @@ def discover_root_adapters(raw_root: str) -> list[Path]:
 
     found: list[Path] = []
     seen: set[Path] = set()
-    for pattern in ADAPTER_SCAN_PATTERNS:
-        for path in sorted(root.glob(pattern)):
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            found.append(resolved)
+    for path in root.rglob("*.json"):
+        if not is_adapter_filename(path.name):
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(resolved)
+    found.sort(key=str)
     return found
 
 
-def collect_adapter_paths(args: argparse.Namespace) -> list[Path]:
-    paths: list[Path] = []
+def load_adapter_candidate(path: Path) -> AdapterCandidate:
+    adapter_status, payload, detail = load_json_object(path)
+    workspace_id = string_value(payload.get("workspace_id")) if payload is not None else None
+    adapter_id = string_value(payload.get("adapter_id")) if payload is not None else None
+    return AdapterCandidate(
+        path=path,
+        adapter_status=adapter_status,
+        payload=payload,
+        detail=detail,
+        workspace_id=workspace_id,
+        adapter_id=adapter_id,
+    )
+
+
+def collect_adapter_candidates(args: argparse.Namespace) -> list[AdapterCandidate]:
+    candidates: list[AdapterCandidate] = []
     seen: set[Path] = set()
     for raw_path in args.adapter:
         resolved = resolve_path(raw_path).resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        paths.append(resolved)
+        candidates.append(load_adapter_candidate(resolved))
 
     for raw_root in args.root:
         for path in discover_root_adapters(raw_root):
-            resolved = path.resolve()
-            if resolved in seen:
+            if path in seen:
                 continue
-            seen.add(resolved)
-            paths.append(resolved)
-    return paths
+            seen.add(path)
+            candidates.append(load_adapter_candidate(path))
+    return candidates
 
 
-def selected_adapter_paths(args: argparse.Namespace) -> list[Path]:
-    paths = collect_adapter_paths(args)
+def selected_adapter_candidates(args: argparse.Namespace) -> list[AdapterCandidate]:
+    candidates = collect_adapter_candidates(args)
     requested = {workspace_id for workspace_id in args.workspace_ids if isinstance(workspace_id, str) and workspace_id.strip()}
     if not requested:
-        return paths
+        return candidates
 
-    selected: list[tuple[str, Path]] = []
-    for path in paths:
-        adapter_status, payload, _ = load_json_object(path)
-        if adapter_status != "ok" or payload is None:
-            continue
-        workspace_id = string_value(payload.get("workspace_id"))
-        if workspace_id in requested:
-            selected.append((workspace_id, path))
-    selected.sort(key=lambda item: (item[0], str(item[1])))
-    return [path for _, path in selected]
+    selected = [candidate for candidate in candidates if candidate.workspace_id in requested]
+    selected.sort(key=lambda candidate: (candidate.workspace_id or "", candidate.adapter_id or "", str(candidate.path)))
+    return selected
 
 
 def load_json_object(path: Path) -> tuple[str, dict[str, Any] | None, str | None]:
@@ -152,10 +173,28 @@ def load_json_object(path: Path) -> tuple[str, dict[str, Any] | None, str | None
     return "ok", payload, None
 
 
-def validate_contract(path: Path) -> tuple[str, dict[str, Any]]:
-    result, exit_code = validate_source_adapter.validate_source_adapter(path)
+def contract_result_for_load_failure(detail: str | None) -> dict[str, Any]:
+    errors = []
+    if detail:
+        errors.append({"code": "ADAPTER_LOAD_FAILED", "message": detail})
+    return {
+        "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
+        "errors": errors,
+        "warnings": [],
+    }
+
+
+def validate_contract_payload(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    result, exit_code = validate_source_adapter.validate_source_adapter_payload(payload)
     status = "pass" if exit_code == validate_source_adapter.EXIT_PASS else "fail"
     return status, result
+
+
+def validate_contract(path: Path) -> tuple[str, dict[str, Any]]:
+    adapter_status, payload, detail = load_json_object(path)
+    if payload is None:
+        return "fail", contract_result_for_load_failure(detail)
+    return validate_contract_payload(payload)
 
 
 def list_value(value: Any) -> list[Any]:
@@ -310,13 +349,19 @@ def invalid_entry(path: Path, adapter_status: str, detail: str | None, contract_
     }
 
 
-def adapter_entry(path: Path) -> dict[str, Any]:
-    contract_status, contract_result = validate_contract(path)
-    adapter_status, payload, detail = load_json_object(path)
-    if payload is None:
-        return invalid_entry(path, adapter_status, detail, contract_result)
+def adapter_entry(candidate: AdapterCandidate) -> dict[str, Any]:
+    if candidate.payload is None:
+        return invalid_entry(
+            candidate.path,
+            candidate.adapter_status,
+            candidate.detail,
+            contract_result_for_load_failure(candidate.detail),
+        )
 
-    locator = locator_status(payload, path)
+    contract_status, contract_result = validate_contract_payload(candidate.payload)
+    payload = candidate.payload
+
+    locator = locator_status(payload, candidate.path)
     review_reasons = review_required_reasons(payload)
     blockers = public_use_blockers(payload)
     content_profile = dict_value(payload.get("content_profile"))
@@ -327,17 +372,17 @@ def adapter_entry(path: Path) -> dict[str, Any]:
         input_family=string_value(payload.get("input_family")),
     )
     intake_state = intake_state_for(
-        adapter_status=adapter_status,
+        adapter_status=candidate.adapter_status,
         contract_status=contract_status,
         locator=locator,
         review_reasons=review_reasons,
     )
     return {
-        "adapter_path": str(path),
-        "adapter_status": adapter_status,
+        "adapter_path": str(candidate.path),
+        "adapter_status": candidate.adapter_status,
         "contract_status": contract_status,
         "intake_state": intake_state,
-        "status_detail": detail,
+        "status_detail": candidate.detail,
         "adapter_id": payload.get("adapter_id"),
         "display_name": payload.get("display_name"),
         "workspace_id": payload.get("workspace_id"),
@@ -391,9 +436,9 @@ def build_source_intake_status_payload(args: argparse.Namespace) -> dict[str, An
         raise SourceIntakeStatusError("at least one --adapter or --root is required")
     if args.limit < 0:
         raise SourceIntakeStatusError("--limit must be greater than or equal to zero")
-    paths = selected_adapter_paths(args)
+    paths = selected_adapter_candidates(args)
     entries = sorted(
-        [adapter_entry(path) for path in paths],
+        [adapter_entry(candidate) for candidate in paths],
         key=lambda entry: (entry["workspace_id"] or "", entry["adapter_id"] or "", entry["adapter_path"]),
     )
     if args.limit:
