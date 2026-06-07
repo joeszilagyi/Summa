@@ -139,6 +139,69 @@ def test_validator_rejects_invalid_scheduler_policy_shape(tmp_path: Path) -> Non
     } <= codes
 
 
+def test_validator_rejects_unknown_saturation_state_fields(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.validator")
+    registry_path = write_registry(
+        tmp_path,
+        workspace_record(
+            workspace_root=workspace_root,
+            manifest_path=manifest_path,
+            scheduler_policy={
+                "saturation_state": {
+                    "state": "active",
+                    "reason_codes": [],
+                    "scheduler_action": "run",
+                    "unexpected_field": "suspicious",
+                },
+            },
+        ),
+    )
+
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+
+    assert exit_code == validate_topic_workspace_registry.EXIT_VALIDATION_FAILED
+    assert "UNKNOWN_SCHEDULER_POLICY_FIELD" not in {
+        entry["code"] for entry in result["errors"]
+    }
+    assert any(
+        error["code"] == "UNKNOWN_SATURATION_STATE_FIELD"
+        for error in result["errors"]
+    )
+
+
+def test_validator_allows_extensions_object_in_scheduler_policy(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.validator")
+    registry_path = write_registry(
+        tmp_path,
+        workspace_record(
+            workspace_root=workspace_root,
+            manifest_path=manifest_path,
+            scheduler_policy={
+                "extensions": {
+                    "custom_note": "safe",
+                },
+                "saturation_state": {
+                    "state": "active",
+                    "reason_codes": [],
+                    "scheduler_action": "run",
+                    "extensions": {
+                        "saturation_detail": "sample",
+                    },
+                },
+            },
+        ),
+    )
+
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+
+    assert exit_code == validate_topic_workspace_registry.EXIT_PASS, result
+    assert result["errors"] == []
+
+
 def test_validator_rejects_naive_failure_state_timestamps(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

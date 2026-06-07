@@ -78,7 +78,13 @@ ALLOWED_WORKSPACE_POLICY_CLASSES = {
     "public_safe_release",
 }
 ALLOWED_FAILURE_STATUSES = {"healthy", "retryable", "blocked"}
-SCHEDULER_POLICY_ALLOWED_KEYS = {"run_budget", "retry_policy", "failure_state"}
+SCHEDULER_POLICY_ALLOWED_KEYS = {
+    "run_budget",
+    "retry_policy",
+    "failure_state",
+    "saturation_state",
+    "extensions",
+}
 RUN_BUDGET_ALLOWED_KEYS = {"max_attempts", "max_runtime_seconds"}
 RETRY_POLICY_ALLOWED_KEYS = {"max_retryable_failures", "backoff_seconds"}
 FAILURE_STATE_ALLOWED_KEYS = {
@@ -461,6 +467,42 @@ def validate_scheduler_policy(
                 errors,
                 code="INVALID_BLOCKED_REASON",
             )
+
+    saturation_state = scheduler_policy.get("saturation_state")
+    if saturation_state is not None:
+        if not isinstance(saturation_state, dict):
+            add_error(
+                errors,
+                code="INVALID_SATURATION_STATE",
+                message="scheduler_policy.saturation_state must be an object",
+            )
+        else:
+            for key in sorted(
+                set(saturation_state)
+                - {
+                    "state",
+                    "reason_codes",
+                    "scheduler_action",
+                    "policy_id",
+                    "evaluated_at",
+                    "next_eligible_cycle",
+                    "recent_yield_summary",
+                    "extensions",
+                }
+            ):
+                add_error(
+                    errors,
+                    code="UNKNOWN_SATURATION_STATE_FIELD",
+                    message=f"unexpected scheduler_policy.saturation_state field: {key}",
+                )
+
+    extensions = scheduler_policy.get("extensions")
+    if extensions is not None and not isinstance(extensions, dict):
+        add_error(
+            errors,
+            code="INVALID_SCHEDULER_POLICY_EXTENSIONS",
+            message="scheduler_policy.extensions must be an object",
+        )
 
 
 def load_domain_pack(

@@ -109,6 +109,10 @@
         },
         "saturation_state": {
           "$ref": "#/$defs/saturation_state"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },
@@ -196,7 +200,7 @@
     },
     "saturation_state": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "state",
         "reason_codes",
@@ -246,6 +250,10 @@
         },
         "recent_yield_summary": {
           "type": "object"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },
