@@ -117,7 +117,9 @@ def _parse_rfc3339_timestamp(value: object, field_name: str) -> dt.datetime:
     try:
         parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise CycleEvidenceLedgerError(f"{field_name} must be an RFC3339 timestamp: {text}") from exc
+        raise CycleEvidenceLedgerError(
+            f"{field_name} must be an RFC3339 timestamp: {text}"
+        ) from exc
     if parsed.tzinfo is None:
         raise CycleEvidenceLedgerError(f"{field_name} must be an RFC3339 timestamp: {text}")
     return parsed.astimezone(dt.UTC)
@@ -437,8 +439,7 @@ def record_cycle_event_finish(
     finished = _parse_rfc3339_timestamp(ended_at or now, "ended_at")
     if finished < started:
         raise CycleEvidenceLedgerError(
-            "ended_at must not be earlier than started_at for cycle_event_id="
-            f"{cycle_event_id}"
+            f"ended_at must not be earlier than started_at for cycle_event_id={cycle_event_id}"
         )
     cursor = conn.execute(
         """
@@ -463,9 +464,9 @@ def record_cycle_event_finish(
             None if row_count_delta is None else _json_mapping(row_count_delta),
             warning_count,
             error_count,
-        now,
-        _require_nonblank(cycle_event_id, "cycle_event_id"),
-    ),
+            now,
+            _require_nonblank(cycle_event_id, "cycle_event_id"),
+        ),
     )
     if cursor.rowcount != 1:
         raise CycleEvidenceLedgerError(
@@ -497,9 +498,7 @@ def record_cycle_stage_start(
     stage = _require_nonblank(stage_name, "stage_name")
     run_id_text = _require_nonblank(run_id, "run_id")
     stage_id = stage_event_id or stable_id("stage", event_id, stage_order, stage)
-    started_at_value = (
-        started_at if started_at is not None or status != "skipped" else None
-    )
+    started_at_value = started_at if started_at is not None or status != "skipped" else None
     created = now_rfc3339()
     expected = {
         "stage_event_id": stage_id,
@@ -573,8 +572,7 @@ def record_cycle_stage_finish(
         finished = _parse_rfc3339_timestamp(finished_at_value, "ended_at")
         if finished < started:
             raise CycleEvidenceLedgerError(
-                "ended_at must not be earlier than started_at for stage_event_id="
-                f"{stage_event_id}"
+                f"ended_at must not be earlier than started_at for stage_event_id={stage_event_id}"
             )
     cursor = conn.execute(
         """

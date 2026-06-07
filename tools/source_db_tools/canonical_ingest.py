@@ -513,7 +513,9 @@ def ingest_candidate_batch(
             "tool_version": INGEST_TOOL_VERSION,
             "run_id": str(batch.get("run_id") or ""),
             "event_timestamp": created_at,
-            "note_text": _batch_provenance_note(batch, batch_hash=batch_hash, batch_path=batch_path),
+            "note_text": _batch_provenance_note(
+                batch, batch_hash=batch_hash, batch_path=batch_path
+            ),
             "provenance_event_key_v1": f"prov:gather-ingest:{batch_hash}",
         }
         if workspace_id is not None:

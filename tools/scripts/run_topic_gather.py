@@ -311,7 +311,9 @@ def detect_hazard_flags(source_text: str) -> list[str]:
     return flags
 
 
-def split_cli_values(raw_value: str | None, *, field_name: str, default: list[str] | None = None) -> list[str]:
+def split_cli_values(
+    raw_value: str | None, *, field_name: str, default: list[str] | None = None
+) -> list[str]:
     if raw_value is None:
         values = list(default or [])
     else:
@@ -321,7 +323,9 @@ def split_cli_values(raw_value: str | None, *, field_name: str, default: list[st
     return values
 
 
-def iter_source_text_chunks(path: Path, *, byte_cap: int = SOURCE_TEXT_BLOCK_BYTE_CAP) -> Iterator[str]:
+def iter_source_text_chunks(
+    path: Path, *, byte_cap: int = SOURCE_TEXT_BLOCK_BYTE_CAP
+) -> Iterator[str]:
     if byte_cap <= 0:
         raise GatherDriverError("source text byte cap must be greater than zero")
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -556,12 +560,16 @@ def resolve_batch_targets(
         facet_values = split_cli_values(args.facet, field_name="--facet")
 
     phase_values = split_cli_values(args.phase, field_name="--phase", default=[DEFAULT_PHASE])
-    invalid_phases = [phase for phase in phase_values if phase not in resolve_subject_runtime.PHASE_KEYS]
+    invalid_phases = [
+        phase for phase in phase_values if phase not in resolve_subject_runtime.PHASE_KEYS
+    ]
     if invalid_phases:
         valid = ", ".join(resolve_subject_runtime.PHASE_KEYS)
         raise GatherDriverError(f"--phase must be one of: {valid}")
     if next_action is not None and (len(facet_values) > 1 or len(phase_values) > 1):
-        raise GatherDriverError("batch mode is not supported when a feedback plan supplies next_action")
+        raise GatherDriverError(
+            "batch mode is not supported when a feedback plan supplies next_action"
+        )
     return facet_values, phase_values
 
 
@@ -706,7 +714,9 @@ def execute_gather_run(
         prior_state=prior_state_context,
         template=gather_inputs["wrapper_template"],
     )
-    parsed_blocks = parse_wrapped_blocks(rendered_prompt, template=gather_inputs["wrapper_template"])
+    parsed_blocks = parse_wrapped_blocks(
+        rendered_prompt, template=gather_inputs["wrapper_template"]
+    )
     rendered_source_blocks = [
         block for block in parsed_blocks if block.source_ref.startswith("file:")
     ]
@@ -753,9 +763,7 @@ def execute_gather_run(
             rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle"
         )
         if findings:
-            sample = "; ".join(
-                f"{finding['code']}@{finding['path']}" for finding in findings[:5]
-            )
+            sample = "; ".join(f"{finding['code']}@{finding['path']}" for finding in findings[:5])
             raise GatherDriverError(f"debug rendered prompt failed leak scan: {sample}")
     write_json(batch_path, batch, sync=False)
 
@@ -1377,7 +1385,9 @@ def main() -> int:
                     "run_count": len(results),
                     "runs": [json.loads(result["summary_json"]) for result in results],
                 }
-                sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+                sys.stdout.write(
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                )
             else:
                 lines = ["batch_mode=true", f"run_count={len(results)}"]
                 for result in results:

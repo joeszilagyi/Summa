@@ -1727,7 +1727,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     batch_path=batch_path,
                     run_dir=run_dir,
                 )
-                acquisition_result = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+                acquisition_result = acquisition_stage(
+                    args=args, manifest=manifest, run_dir=run_dir
+                )
                 if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
                     execution_run_dir, execution_artifacts = acquisition_result
                 else:

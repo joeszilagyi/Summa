@@ -218,8 +218,8 @@ def acquire_workspace_lock(
                 _stop: threading.Event = refresh_stop,
                 _interval: float = refresh_interval,
                 _lock: threading.Lock = refresh_lock,
-                _handle = handle,
-                _metadata = metadata,
+                _handle=handle,
+                _metadata=metadata,
             ) -> None:
                 while not _stop.wait(_interval):
                     with _lock:

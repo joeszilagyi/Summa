@@ -1264,9 +1264,7 @@ def _cached_claims_for_ref_and_type(
     claim_type: str,
     workspace_id: str | None,
     excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
-    claims_for_ref_type_cache: dict[
-        tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]
-    ]
+    claims_for_ref_type_cache: dict[tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]]
     | None = None,
 ) -> list[sqlite3.Row]:
     if claims_for_ref_type_cache is None:

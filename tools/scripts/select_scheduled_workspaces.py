@@ -538,7 +538,8 @@ def resolve_saturation_subject_id(workspace: dict[str, Any]) -> str | None:
     if isinstance(subject_id, str) and subject_id:
         return subject_id
     return load_subject_id_from_manifest(
-        workspace.get("resolved_default_subject_manifest") or workspace.get("default_subject_manifest"),
+        workspace.get("resolved_default_subject_manifest")
+        or workspace.get("default_subject_manifest"),
         allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
     )
 
@@ -635,6 +636,7 @@ def append_planned_run_records(
     with path.open("a+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
+
             def read_existing_ids(path: Path) -> set[str]:
                 existing: set[str] = set()
                 if not path.exists() or path.stat().st_size == 0:

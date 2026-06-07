@@ -1205,7 +1205,9 @@ def select_next_action(
     top_facet = facet_scores[0]
     facet_score_by_name = {item["facet"]: item for item in facet_scores}
     productive_leads = [
-        item for item in lead_scores if float(item["score"]) > 0.0 and item["facet"] in facet_score_by_name
+        item
+        for item in lead_scores
+        if float(item["score"]) > 0.0 and item["facet"] in facet_score_by_name
     ]
     if productive_leads:
         selected = productive_leads[0]
@@ -1473,7 +1475,9 @@ def build_plan(
             "lead_candidates": len(lead_scores),
             "lead_candidates_total": len(all_lead_scores),
             "productive_leads": sum(1 for item in lead_scores if float(item["score"]) > 0.0),
-            "productive_leads_total": sum(1 for item in all_lead_scores if float(item["score"]) > 0.0),
+            "productive_leads_total": sum(
+                1 for item in all_lead_scores if float(item["score"]) > 0.0
+            ),
             "deferred_candidates": len(deferred),
         },
         "facet_scores": facet_scores,
