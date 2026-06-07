@@ -375,10 +375,14 @@ def build_canonical_summary(
             },
             "detected_entity_counts": {
                 "by_type": count_by(conn, "extraction_detected_entity", "entity_type", cache),
-                "by_review_state": count_by(conn, "extraction_detected_entity", "review_state", cache),
+                "by_review_state": count_by(
+                    conn, "extraction_detected_entity", "review_state", cache
+                ),
             },
             "authority_reconciliation_counts": {
-                "by_review_state": count_by(conn, "authority_reconciliation", "review_state", cache),
+                "by_review_state": count_by(
+                    conn, "authority_reconciliation", "review_state", cache
+                ),
                 "by_method": count_by(conn, "authority_reconciliation", "method", cache),
             },
             "provenance_counts": {
@@ -766,7 +770,9 @@ def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dic
             "cycle_manifests": [],
         }
     manifests: list[dict[str, Any]] = []
-    for path in _iter_named_paths(workspace, "topic-cycle-manifest.json", "scheduled-topic-cycles-manifest.json"):
+    for path in _iter_named_paths(
+        workspace, "topic-cycle-manifest.json", "scheduled-topic-cycles-manifest.json"
+    ):
         payload = load_json_object(path)
         if payload is None:
             continue
@@ -807,7 +813,9 @@ def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dic
 
 
 def build_cycle_ledger_summary(
-    conn: sqlite3.Connection, redactor: Redactor, schema_cache: SchemaIntrospectionCache | None = None
+    conn: sqlite3.Connection,
+    redactor: Redactor,
+    schema_cache: SchemaIntrospectionCache | None = None,
 ) -> dict[str, Any]:
     cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
     if not cache.table_exists("cycle_event"):
@@ -1057,13 +1065,8 @@ def _is_recognized_redacted_diagnostic_bundle(path: Path) -> bool:
 
 
 def _is_canonical_workspace_root(path: Path) -> bool:
-    return (
-        (path / ".indexer" / "subject_manifest.json").is_file()
-        or (
-            (path / "source.txt").is_file()
-            and (path / "state").is_dir()
-            and (path / "runs").is_dir()
-        )
+    return (path / ".indexer" / "subject_manifest.json").is_file() or (
+        (path / "source.txt").is_file() and (path / "state").is_dir() and (path / "runs").is_dir()
     )
 
 
@@ -1071,15 +1074,21 @@ def _assert_diagnostic_output_target_safe(output_dir: Path, overwrite: bool) -> 
     if output_dir == REPO_ROOT:
         raise DiagnosticExportError(f"refusing to write output to repository root: {output_dir}")
     if output_dir == Path.cwd().resolve():
-        raise DiagnosticExportError(f"refusing to write output to current working directory: {output_dir}")
+        raise DiagnosticExportError(
+            f"refusing to write output to current working directory: {output_dir}"
+        )
     if output_dir == Path.home().resolve():
         raise DiagnosticExportError(f"refusing to write output to home directory: {output_dir}")
     if ".git" in output_dir.parts:
         raise DiagnosticExportError(f"refusing to write output under .git path: {output_dir}")
     if "runtime" in output_dir.parts or "dbs" in output_dir.parts:
-        raise DiagnosticExportError(f"refusing to write output into reserved workspace path: {output_dir}")
+        raise DiagnosticExportError(
+            f"refusing to write output into reserved workspace path: {output_dir}"
+        )
     if _is_canonical_workspace_root(output_dir):
-        raise DiagnosticExportError(f"refusing to write output to canonical workspace root: {output_dir}")
+        raise DiagnosticExportError(
+            f"refusing to write output to canonical workspace root: {output_dir}"
+        )
 
 
 def run_leak_scan(output_dir: Path) -> dict[str, Any]:
@@ -1114,7 +1123,9 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    stage_root = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=output_dir.parent))
+    stage_root = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=output_dir.parent)
+    )
     backup_root = None
     included: list[str] = []
     omitted: list[dict[str, str]] = []
@@ -1128,8 +1139,14 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
                 "section": "payload_bodies",
                 "reason": "Source payload bodies are not part of redacted diagnostics.",
             },
-            {"section": "complete_text", "reason": "Complete extracted text is omitted by default."},
-            {"section": "operator_notes", "reason": "Private operator notes are omitted by default."},
+            {
+                "section": "complete_text",
+                "reason": "Complete extracted text is omitted by default.",
+            },
+            {
+                "section": "operator_notes",
+                "reason": "Private operator notes are omitted by default.",
+            },
             {"section": "model_prompt_bodies", "reason": "Prompt bodies are omitted by default."},
         ]
 
@@ -1272,9 +1289,13 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
         "status": "pass",
         "output_dir": str(output_dir),
         "manifest_path": str(output_dir / "diagnostic-manifest.json"),
-        "leak_scan_status": "pass" if (leak_report or {}).get("status") == "pass" else "internal_with_leak_warnings",
+        "leak_scan_status": "pass"
+        if (leak_report or {}).get("status") == "pass"
+        else "internal_with_leak_warnings",
         "included_section_count": len(included),
-        "privacy_classification": final_manifest["privacy_classification"] if final_manifest else "local_operator_redacted",
+        "privacy_classification": final_manifest["privacy_classification"]
+        if final_manifest
+        else "local_operator_redacted",
     }
 
 
@@ -1325,9 +1346,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def render_text(report: Mapping[str, Any]) -> str:
-    return "\n".join(
-        f"{key}={format_operator_text_value(value)}" for key, value in report.items()
-    ) + "\n"
+    return (
+        "\n".join(f"{key}={format_operator_text_value(value)}" for key, value in report.items())
+        + "\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

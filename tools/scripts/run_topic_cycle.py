@@ -376,7 +376,9 @@ def build_manifest(
     }
 
 
-def build_stage_plan(*, feedback_plan_mode: str | None, build_next_feedback_plan: bool) -> list[str]:
+def build_stage_plan(
+    *, feedback_plan_mode: str | None, build_next_feedback_plan: bool
+) -> list[str]:
     if feedback_plan_mode == "auto":
         feedback_plan_pre = "build_feedback_plan_pre"
     elif feedback_plan_mode:
@@ -384,7 +386,9 @@ def build_stage_plan(*, feedback_plan_mode: str | None, build_next_feedback_plan
     else:
         feedback_plan_pre = "feedback_plan_pre"
 
-    feedback_plan_post = "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
+    feedback_plan_post = (
+        "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
+    )
     return [
         "resolve_subject_runtime",
         "resolve_domain_pack",
@@ -429,9 +433,7 @@ def attach_feedback_selection_explanation(
     )
 
 
-def record_feedback_plan_reference(
-    manifest: dict[str, Any], *, path: Path, when: str
-) -> None:
+def record_feedback_plan_reference(manifest: dict[str, Any], *, path: Path, when: str) -> None:
     record = {
         "path": str(path),
         "sha256": hash_file(path),
@@ -911,9 +913,7 @@ def candidate_ingest_stage(
         shutil.copy2(fixture, fixture_target)
         fixture_payload = read_json(fixture, label="candidate batch fixture")
         prompt_ref = (
-            fixture_payload.get("prompt")
-            if isinstance(fixture_payload.get("prompt"), dict)
-            else {}
+            fixture_payload.get("prompt") if isinstance(fixture_payload.get("prompt"), dict) else {}
         )
         rendered_prompt_path = prompt_ref.get("rendered_prompt_path")
         if isinstance(rendered_prompt_path, str) and rendered_prompt_path:

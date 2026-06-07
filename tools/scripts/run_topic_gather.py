@@ -581,18 +581,13 @@ def render_prompt_text(
         else ""
     )
     metadata_sections = [
-        "Untrusted subject metadata:\n"
-        f"{subject_block}\n",
+        f"Untrusted subject metadata:\n{subject_block}\n",
     ]
     if next_action_block:
-        metadata_sections.append(
-            "Untrusted feedback-plan metadata:\n"
-            f"{next_action_block}\n"
-        )
+        metadata_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
     if prior_state_block:
         metadata_sections.append(
-            "Untrusted prior canonical state metadata:\n"
-            f"{prior_state_block}\n"
+            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
         )
     return (
         f"{prompt_body.rstrip()}\n\n"
@@ -1107,14 +1102,14 @@ def main() -> int:
         )
         batch_path = run_dir / "gather-candidate-batch.json"
         if args.debug_rendered_prompt:
-            findings = scan_text(rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle")
+            findings = scan_text(
+                rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle"
+            )
             if findings:
                 sample = "; ".join(
                     f"{finding['code']}@{finding['path']}" for finding in findings[:5]
                 )
-                raise GatherDriverError(
-                    f"debug rendered prompt failed leak scan: {sample}"
-                )
+                raise GatherDriverError(f"debug rendered prompt failed leak scan: {sample}")
         write_json(batch_path, batch, sync=False)
 
         validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)

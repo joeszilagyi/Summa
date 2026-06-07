@@ -134,9 +134,7 @@ class GraphClosureLookup:
         if self._provenance_keys is None:
             self._provenance_keys = {
                 _text(row[0])
-                for row in self.conn.execute(
-                    "SELECT provenance_event_key_v1 FROM provenance_event"
-                )
+                for row in self.conn.execute("SELECT provenance_event_key_v1 FROM provenance_event")
                 if _text(row[0]) is not None
             }
         return text in self._provenance_keys
@@ -276,7 +274,9 @@ def _provenance_issue(
     )
 
 
-def audit_work(conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None) -> list[dict[str, Any]]:
+def audit_work(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
     lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM work ORDER BY work_id"):
@@ -325,7 +325,9 @@ def audit_capture_event(
     lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM capture_event ORDER BY capture_event_id"):
-        provenance_key, invalid = _provenance_issue(lookup, row, "capture_event", "capture_event_id")
+        provenance_key, invalid = _provenance_issue(
+            lookup, row, "capture_event", "capture_event_id"
+        )
         if invalid is not None:
             issues.append(invalid)
             continue
@@ -487,8 +489,10 @@ def audit_source_relationship(
         if from_ok and to_ok:
             continue
         has_target_label = _text(row["target_label"]) is not None
-        if provenance_key is not None and _reviewable(row["review_state"]) and (
-            from_ok or has_target_label
+        if (
+            provenance_key is not None
+            and _reviewable(row["review_state"])
+            and (from_ok or has_target_label)
         ):
             issues.append(
                 unresolved_issue(

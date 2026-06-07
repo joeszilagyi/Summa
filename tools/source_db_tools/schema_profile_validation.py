@@ -279,7 +279,11 @@ def validate_identifier_policy(
                 f"{profile_name} identifier scheme is unsupported: {scheme}",
             )
         elif status in {"invalid", "needs_review"}:
-            severity = invalid_severity if status == "invalid" else policy.get("needs_review_severity", "warning")
+            severity = (
+                invalid_severity
+                if status == "invalid"
+                else policy.get("needs_review_severity", "warning")
+            )
             append(
                 severity,
                 "INVALID_IDENTIFIER" if status == "invalid" else "IDENTIFIER_NEEDS_REVIEW",
@@ -524,7 +528,9 @@ def validate_record(
 
         if not condition_matches(record, condition):
             continue
-        missing_required = [field for field in rule.get("require_all", []) if not path_present(record, field)]
+        missing_required = [
+            field for field in rule.get("require_all", []) if not path_present(record, field)
+        ]
         if missing_required:
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
@@ -537,7 +543,9 @@ def validate_record(
                     message=rule.get("message", "invalid field combination"),
                 )
             )
-        forbidden_present = [field for field in rule.get("forbid_present", []) if path_present(record, field)]
+        forbidden_present = [
+            field for field in rule.get("forbid_present", []) if path_present(record, field)
+        ]
         if forbidden_present:
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
@@ -550,7 +558,12 @@ def validate_record(
                     message=rule.get("message", "invalid field combination"),
                 )
             )
-        if not missing_required and not forbidden_present and not rule.get("require_all") and not rule.get("forbid_present"):
+        if (
+            not missing_required
+            and not forbidden_present
+            and not rule.get("require_all")
+            and not rule.get("forbid_present")
+        ):
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
                 issue(
@@ -619,4 +632,9 @@ def validate_records(records: list[dict[str, Any]], profile_name: str) -> dict[s
 
 
 def render_report(records: list[dict[str, Any]], profile_name: str) -> str:
-    return json.dumps(validate_records(records, profile_name), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return (
+        json.dumps(
+            validate_records(records, profile_name), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    )

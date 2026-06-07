@@ -58,17 +58,32 @@ EXPECTED_REFERENCE_SCHEMAS: dict[str, set[str]] = {
     "topic_cycle_manifest": {"topic-cycle-run.v1", "topic-cycle-run.v0"},
     "scheduled_cycle_manifest": {"scheduled-topic-cycles-run.v1", "scheduled-topic-cycles-run.v0"},
     "feedback_plan": {"candidate-feedback-plan.v1", "candidate-feedback-plan.v0"},
-    "review_decision_apply_result": {"review-decision-apply-result.v1", "review-decision-apply-result.v0"},
-    "graph_closure_report": {"canonical-graph-closure-report.v1", "canonical-graph-closure-report.v0"},
-    "network_safety_gate_report": {"network-safety-gate-report.v1", "network-safety-gate-report.v0"},
-    "rebuildability_report": {"canonical-rebuildability-report.v1", "canonical-rebuildability-report.v0"},
+    "review_decision_apply_result": {
+        "review-decision-apply-result.v1",
+        "review-decision-apply-result.v0",
+    },
+    "graph_closure_report": {
+        "canonical-graph-closure-report.v1",
+        "canonical-graph-closure-report.v0",
+    },
+    "network_safety_gate_report": {
+        "network-safety-gate-report.v1",
+        "network-safety-gate-report.v0",
+    },
+    "rebuildability_report": {
+        "canonical-rebuildability-report.v1",
+        "canonical-rebuildability-report.v0",
+    },
     "release_readiness_report": {"release-readiness-report.v1", "release-readiness-report.v0"},
 }
 
 PUBLICATION_REFERENCE_SCHEMAS = {
     "knowledge_tree_export.json": {"knowledge-tree-export.v1", "knowledge-tree-export.v0"},
     "public_presentation.json": {"public-presentation.v1", "public-presentation.v0"},
-    "publication-artifacts-report.json": {"publication-artifacts-report.v1", "publication-artifacts-report.v0"},
+    "publication-artifacts-report.json": {
+        "publication-artifacts-report.v1",
+        "publication-artifacts-report.v0",
+    },
 }
 
 
@@ -255,7 +270,9 @@ def validate_spool_record(
                 )
             record = payload
         else:
-            record = payload if payload is not None else canonical_write_spool.load_spool_record(path)
+            record = (
+                payload if payload is not None else canonical_write_spool.load_spool_record(path)
+            )
         return Artifact(
             artifact_type="canonical_write_spool_record",
             path=path,
@@ -274,11 +291,7 @@ def validate_spool_record(
         )
     except Exception as exc:
         fallback_payload = (
-            payload
-            if payload is not None
-            else None
-            if payload_loaded
-            else read_json(path)
+            payload if payload is not None else None if payload_loaded else read_json(path)
         )
         return Artifact(
             artifact_type="canonical_write_spool_record",
@@ -358,8 +371,9 @@ def _finalize_discovered_artifact(candidate: DiscoveryCandidate) -> Artifact:
 def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
     if artifact.validation_status != "valid" or artifact.artifact_type not in REPLAYABLE_TYPES:
         return ReplayPreparation(artifact=artifact)
-    if artifact.artifact_type == "canonical_write_spool_record" and artifact.replay_status.startswith(
-        "skipped"
+    if (
+        artifact.artifact_type == "canonical_write_spool_record"
+        and artifact.replay_status.startswith("skipped")
     ):
         return ReplayPreparation(artifact=artifact)
     try:
@@ -506,9 +520,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "execution_ingest_report"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
                 )
             )
             continue
@@ -536,9 +548,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "scheduled_cycle_manifest"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["scheduled_cycle_manifest"],
                 )
             )
             continue
@@ -626,9 +636,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "release_readiness_report"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["release_readiness_report"],
                 )
             )
             continue

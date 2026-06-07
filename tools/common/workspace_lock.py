@@ -30,7 +30,9 @@ def safe_workspace_id(workspace_id: str) -> str:
     if not workspace_id or workspace_id.strip() != workspace_id:
         raise WorkspaceLockError("workspace_id must be a non-blank trimmed string")
     if any(char not in ID_SAFE_CHARS for char in workspace_id):
-        raise WorkspaceLockError("workspace_id may contain only letters, numbers, dot, underscore, and hyphen")
+        raise WorkspaceLockError(
+            "workspace_id may contain only letters, numbers, dot, underscore, and hyphen"
+        )
     return workspace_id
 
 
@@ -160,20 +162,31 @@ def acquire_workspace_lock(
             except BlockingIOError as exc:
                 handle.close()
                 if not wait or (timeout_seconds and time.monotonic() - start >= timeout_seconds):
-                    raise WorkspaceLockError(f"workspace lock is already held: {lock_path}") from exc
+                    raise WorkspaceLockError(
+                        f"workspace lock is already held: {lock_path}"
+                    ) from exc
                 time.sleep(0.1)
                 continue
 
-            reason = stale_reason(lock_path, stale_after_seconds=stale_after_seconds) if lock_path.stat().st_size else None
+            reason = (
+                stale_reason(lock_path, stale_after_seconds=stale_after_seconds)
+                if lock_path.stat().st_size
+                else None
+            )
             if reason and break_stale:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
                 quarantine_stale_lock(lock_path, reason=reason)
                 continue
             if reason and not break_stale:
-                raise WorkspaceLockError(f"workspace lock appears stale ({reason}) and break_stale is false: {lock_path}")
+                raise WorkspaceLockError(
+                    f"workspace lock appears stale ({reason}) and break_stale is false: {lock_path}"
+                )
 
-            write_metadata(handle, metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path))
+            write_metadata(
+                handle,
+                metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path),
+            )
             try:
                 yield lock_path
             finally:
@@ -196,7 +209,9 @@ def acquire_workspace_lock(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Acquire a workspace lock and optionally run a command.")
+    parser = argparse.ArgumentParser(
+        description="Acquire a workspace lock and optionally run a command."
+    )
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--lock-root", default=str(DEFAULT_LOCK_ROOT))
     parser.add_argument("--command-name", default="workspace-lock")
@@ -231,11 +246,17 @@ def main() -> int:
             if args.print_path:
                 print(path)
             if command:
-                timeout_seconds = args.command_timeout_seconds if args.command_timeout_seconds > 0 else None
+                timeout_seconds = (
+                    args.command_timeout_seconds if args.command_timeout_seconds > 0 else None
+                )
                 try:
                     return subprocess.run(command, check=False, timeout=timeout_seconds).returncode
                 except subprocess.TimeoutExpired:
-                    timeout_text = f"{args.command_timeout_seconds:g}" if args.command_timeout_seconds > 0 else "0"
+                    timeout_text = (
+                        f"{args.command_timeout_seconds:g}"
+                        if args.command_timeout_seconds > 0
+                        else "0"
+                    )
                     print(
                         f"Error: command timed out after {timeout_text} seconds: {' '.join(command)}",
                         file=sys.stderr,

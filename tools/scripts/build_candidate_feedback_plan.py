@@ -58,7 +58,9 @@ FACET_SCORE_SIGNAL_CAP = 5
 LEAD_SCORE_SIGNAL_CAP = 3
 RELATED_SCORE_SIGNAL_CAP = 3
 SOURCE_DIVERSITY_BONUS_STEP = 0.25
-QUESTION_TERMS = frozenset({"what", "which", "who", "whom", "whose", "where", "when", "why", "how", "whether"})
+QUESTION_TERMS = frozenset(
+    {"what", "which", "who", "whom", "whose", "where", "when", "why", "how", "whether"}
+)
 
 
 def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
@@ -280,7 +282,9 @@ def accepted_review_placeholder_sql() -> tuple[str, tuple[str, ...]]:
     return placeholders, tuple(sorted(ACCEPTED_REVIEW_STATES))
 
 
-def open_question_quality_bonus(*, claim_text: str, claim_type: str, provenance_payload: dict[str, Any]) -> float:
+def open_question_quality_bonus(
+    *, claim_text: str, claim_type: str, provenance_payload: dict[str, Any]
+) -> float:
     text = " ".join(str(claim_text or "").split())
     if not text:
         return -0.75
@@ -478,13 +482,16 @@ def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[
         event_artifacts.append((event_key, artifact_hash))
     yields_by_event = _family_yields_for_events(conn, event_artifacts)
     for entry in history:
-        yields = yields_by_event.get(entry["event_key"], {
-            "work": 0,
-            "source_claim": 0,
-            "extraction_detected_entity": 0,
-            "source_relationship": 0,
-            "source_access": 0,
-        })
+        yields = yields_by_event.get(
+            entry["event_key"],
+            {
+                "work": 0,
+                "source_claim": 0,
+                "extraction_detected_entity": 0,
+                "source_relationship": 0,
+                "source_access": 0,
+            },
+        )
         entry["yields"] = yields
         entry["total_yield"] = sum(yields.values())
     return history
@@ -601,7 +608,9 @@ def extraction_outcome_counts(
     ORDER BY capture_event_id
     """
     run_ids: set[str] = set()
-    capture_rows = conn.execute(query, tuple(requested_locators) + (subject_id, subject_id)).fetchall()
+    capture_rows = conn.execute(
+        query, tuple(requested_locators) + (subject_id, subject_id)
+    ).fetchall()
     capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
     if not capture_ids:
         return {
@@ -747,9 +756,12 @@ def load_source_access_leads(
             + weights["work_yield"] * signals["related_works"]
             + weights["claim_yield"] * related_claims_score
             + weights["entity_yield"] * related_entities_score
-            + weights["successful_extraction"] * capped_count(signals["successful_extractions"], LEAD_SCORE_SIGNAL_CAP)
-            - weights["failed_extraction_penalty"] * capped_count(signals["failed_extractions"], LEAD_SCORE_SIGNAL_CAP)
-            - weights["zero_yield_penalty"] * capped_count(signals["zero_yield_attempts"], LEAD_SCORE_SIGNAL_CAP)
+            + weights["successful_extraction"]
+            * capped_count(signals["successful_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["failed_extraction_penalty"]
+            * capped_count(signals["failed_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["zero_yield_penalty"]
+            * capped_count(signals["zero_yield_attempts"], LEAD_SCORE_SIGNAL_CAP)
         )
         reason_codes = ["open_lead_yield"]
         if signals["related_works"] or signals["related_claims"] or signals["related_entities"]:
@@ -827,10 +839,14 @@ def load_open_question_leads(
     leads: list[dict[str, Any]] = []
     for row in rows:
         provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
-        score = weights["open_lead"] + weights["claim_yield"] + open_question_quality_bonus(
-            claim_text=str(row["claim_text"] or ""),
-            claim_type=str(row["claim_type"] or ""),
-            provenance_payload=provenance or {},
+        score = (
+            weights["open_lead"]
+            + weights["claim_yield"]
+            + open_question_quality_bonus(
+                claim_text=str(row["claim_text"] or ""),
+                claim_type=str(row["claim_type"] or ""),
+                provenance_payload=provenance or {},
+            )
         )
         leads.append(
             {
@@ -1059,7 +1075,9 @@ def aggregate_facet_scores(
     facet_scores: list[dict[str, Any]] = []
     for facet in enabled_facets:
         signal_bucket = metrics[facet]
-        capped_productive_runs = capped_count(signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP)
+        capped_productive_runs = capped_count(
+            signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP
+        )
         capped_open_leads = capped_count(signal_bucket["open_leads"], FACET_SCORE_SIGNAL_CAP)
         capped_works = capped_count(signal_bucket["works"], FACET_SCORE_SIGNAL_CAP)
         capped_claims = capped_count(signal_bucket["claims"], FACET_SCORE_SIGNAL_CAP)
@@ -1068,16 +1086,16 @@ def aggregate_facet_scores(
         capped_successful_extractions = capped_count(
             signal_bucket["successful_extractions"], FACET_SCORE_SIGNAL_CAP
         )
-        capped_failed_extractions = capped_count(signal_bucket["failed_extractions"], FACET_SCORE_SIGNAL_CAP)
+        capped_failed_extractions = capped_count(
+            signal_bucket["failed_extractions"], FACET_SCORE_SIGNAL_CAP
+        )
         distinct_run_ids = {
             str(event["run_id"])
             for event in history_by_facet[facet]
             if isinstance(event.get("run_id"), str) and event.get("run_id")
         }
         apply_recent_low_yield_penalty = bool(
-            last_run_zero_yield[facet]
-            and capped_productive_runs == 0
-            and capped_open_leads == 0
+            last_run_zero_yield[facet] and capped_productive_runs == 0 and capped_open_leads == 0
         )
         score = (
             weights["productive_run"] * capped_productive_runs
@@ -1088,7 +1106,8 @@ def aggregate_facet_scores(
             + weights["relationship_yield"] * capped_relationships
             + weights["successful_extraction"] * capped_successful_extractions
             - weights["failed_extraction_penalty"] * capped_failed_extractions
-            - weights["zero_yield_penalty"] * capped_count(signal_bucket["zero_yield_runs"], FACET_SCORE_SIGNAL_CAP)
+            - weights["zero_yield_penalty"]
+            * capped_count(signal_bucket["zero_yield_runs"], FACET_SCORE_SIGNAL_CAP)
             - (weights["recent_low_yield_penalty"] if apply_recent_low_yield_penalty else 0.0)
             + SOURCE_DIVERSITY_BONUS_STEP * min(max(len(distinct_run_ids) - 1, 0), 4)
         )
@@ -1432,9 +1451,7 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
     explanation = payload.get("selection_explanation")
     if not isinstance(explanation, dict):
         raise CandidateFeedbackError("selection_explanation is missing")
-    warning_count = (
-        len(payload["warnings"]) if isinstance(payload.get("warnings"), list) else 0
-    )
+    warning_count = len(payload["warnings"]) if isinstance(payload.get("warnings"), list) else 0
     error_count = len(payload["errors"]) if isinstance(payload.get("errors"), list) else 0
     conn = canonical_store.connect_canonical_store(db_path)
     try:

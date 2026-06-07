@@ -249,13 +249,18 @@ def validate_handoff_sequence(records: list[dict[str, Any]]) -> None:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
 
     sequences = [record.get("sequence") for record in records]
-    if any(not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1 for sequence in sequences):
+    if any(
+        not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1
+        for sequence in sequences
+    ):
         raise SourceAcquisitionError("handoff artifact sequence values must be positive integers")
     if len(set(sequences)) != len(sequences):
         raise SourceAcquisitionError("handoff artifact must not repeat sequence values")
     expected_sequences = list(range(1, len(records) + 1))
     if sorted(sequences) != expected_sequences:
-        raise SourceAcquisitionError("handoff artifact sequence values must be contiguous starting at 1")
+        raise SourceAcquisitionError(
+            "handoff artifact sequence values must be contiguous starting at 1"
+        )
 
 
 def determine_executor_mode(requested_mode: str, *, variant: str) -> str:
@@ -404,7 +409,9 @@ def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) 
         raise SourceAcquisitionError("source adapter manifest locator must be an object")
     adapter_local_path = locator.get("local_path")
     if not isinstance(adapter_local_path, str) or not adapter_local_path.strip():
-        raise SourceAcquisitionError("source adapter manifest local_path must be a non-blank string")
+        raise SourceAcquisitionError(
+            "source adapter manifest local_path must be a non-blank string"
+        )
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 
@@ -1143,7 +1150,9 @@ def execute_structured_data(
             }
         )
         structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = structured_record_map_cache_key(source_path_value, structured_format, record_path)
+        cache_key = structured_record_map_cache_key(
+            source_path_value, structured_format, record_path
+        )
         record_map, parse_errors = load_structured_record_map(
             source_path, structured_format=structured_format, record_path=record_path
         )
@@ -1156,7 +1165,9 @@ def execute_structured_data(
         structured_format = record["source_specific"]["structured_format"]
         record_locator = record["source_specific"]["record_locator"]
         record_map, parse_errors = record_map_cache[
-            structured_record_map_cache_key(record["resolved_source_path"], structured_format, record_path)
+            structured_record_map_cache_key(
+                record["resolved_source_path"], structured_format, record_path
+            )
         ]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         value = record_map.get(record_locator)
@@ -1759,9 +1770,7 @@ def _build_remote_fetch_artifacts(
         input_hash=content_hash,
         byte_count_in=byte_count,
         extraction_method="remote_text_extract",
-        hazard_flags=list(
-            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-        ),
+        hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
         content_text=extracted_text,
         encoding_result=encoding_result,
         failure_reason=failure_reason,
@@ -1773,7 +1782,12 @@ def _build_remote_fetch_artifacts(
             "network_access_attempted": True,
         },
     )
-    return capture_event, extraction_record, extracted_text, fetch_result["status"] != "captured" or decode_failed
+    return (
+        capture_event,
+        extraction_record,
+        extracted_text,
+        fetch_result["status"] != "captured" or decode_failed,
+    )
 
 
 def execute_remote_fetches(
@@ -1826,7 +1840,9 @@ def execute_remote_fetches(
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
     record_plans: list[dict[str, Any]] = []
     host_tasks: dict[str, list[dict[str, Any]]] = {}
-    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
+    for index, record in enumerate(
+        sorted(records, key=lambda item: int(item["sequence"])), start=1
+    ):
         original_locator = record["preserved"]["original_locator"]
         url = original_locator["entry_url"]
         capture_id = make_capture_id(index)
@@ -1847,7 +1863,9 @@ def execute_remote_fetches(
                 if gate_action is None
                 else "network_gate_action_not_planned"
             )
-            request_method = str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
+            request_method = (
+                str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
+            )
             record_plan["kind"] = "denied"
             record_plan["capture_event"] = build_remote_denied_capture_event(
                 record=record,
@@ -1974,18 +1992,20 @@ def execute_remote_fetches(
             continue
 
         fetch_result = fetch_results_by_sequence[int(record_plan["sequence"])]
-        capture_event, extraction_record, extracted_text, record_failed = _build_remote_fetch_artifacts(
-            record=record_plan["record"],
-            adapter_payload=adapter_payload,
-            run_id=run_id,
-            handoff_hash=handoff_hash,
-            created_at=created_at,
-            capture_id=record_plan["capture_id"],
-            extraction_id=record_plan["extraction_id"],
-            url=record_plan["url"],
-            method=record_plan["method"],
-            user_agent=user_agent,
-            fetch_result=fetch_result,
+        capture_event, extraction_record, extracted_text, record_failed = (
+            _build_remote_fetch_artifacts(
+                record=record_plan["record"],
+                adapter_payload=adapter_payload,
+                run_id=run_id,
+                handoff_hash=handoff_hash,
+                created_at=created_at,
+                capture_id=record_plan["capture_id"],
+                extraction_id=record_plan["extraction_id"],
+                url=record_plan["url"],
+                method=record_plan["method"],
+                user_agent=user_agent,
+                fetch_result=fetch_result,
+            )
         )
         summary["urls_attempted"] += 1
         if fetch_result["status"] == "captured":

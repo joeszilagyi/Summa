@@ -302,7 +302,9 @@ def inspect_databases(
     )
     sampled_quick_check_paths = set(paths if quick_check else paths[: max(0, quick_check_sample)])
     databases = [
-        sqlite_integrity_for_path(path, quick_check=quick_check or path in sampled_quick_check_paths)
+        sqlite_integrity_for_path(
+            path, quick_check=quick_check or path in sampled_quick_check_paths
+        )
         for path in paths
     ]
     findings = []
@@ -643,7 +645,11 @@ def load_migration_ledger_receipt(path: Path) -> dict[str, Any] | None:
     counts = payload.get("counts")
     latest_event = payload.get("latest_event")
     status = payload.get("status")
-    if not isinstance(counts, dict) or not isinstance(latest_event, dict) or status not in {"pass", "warn", "fail"}:
+    if (
+        not isinstance(counts, dict)
+        or not isinstance(latest_event, dict)
+        or status not in {"pass", "warn", "fail"}
+    ):
         return None
     return payload
 
@@ -1140,7 +1146,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional canonical SQLite path to summarize read-only. Defaults to <repo-root>/canonical.sqlite.",
     )
     database_mode = parser.add_mutually_exclusive_group()
-    database_mode.add_argument("--fast", action="store_true", help="Use metadata-only database checks (default).")
+    database_mode.add_argument(
+        "--fast", action="store_true", help="Use metadata-only database checks (default)."
+    )
     database_mode.add_argument(
         "--database-quick-check",
         action="store_true",

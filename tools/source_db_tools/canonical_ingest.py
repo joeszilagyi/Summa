@@ -91,9 +91,11 @@ def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
 
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
     payload, batch_text = _load_json_object(batch_path, label="candidate batch")
-    result, exit_code = validate_gather_candidate_batch_validator.validate_gather_candidate_batch_payload(
-        payload,
-        target=batch_path,
+    result, exit_code = (
+        validate_gather_candidate_batch_validator.validate_gather_candidate_batch_payload(
+            payload,
+            target=batch_path,
+        )
     )
     if exit_code != EXIT_GATHER_BATCH_PASS:
         message = "; ".join(
@@ -112,7 +114,15 @@ def load_validated_execution_artifacts(
 ]:
     try:
         receipt = load_execution_artifacts(target)
-    except (FileNotFoundError, OSError, UnicodeDecodeError, DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError, ValueError) as exc:
+    except (
+        FileNotFoundError,
+        OSError,
+        UnicodeDecodeError,
+        DuplicateJsonKeyError,
+        NonStandardJsonConstantError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
         raise CanonicalIngestError(
             f"source acquisition execution validation failed: {exc}"
         ) from exc
@@ -203,7 +213,6 @@ def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] |
     return None
 
 
-
 def _structured_claim_text(candidate: dict[str, Any], structured: dict[str, Any] | None) -> str:
     if structured is not None:
         return _safe_json_text(structured)
@@ -227,7 +236,9 @@ def _normalize_key_text(value: Any) -> str:
 
 
 def _key_scope(workspace_id: str | None) -> str:
-    return workspace_id.strip() if isinstance(workspace_id, str) and workspace_id.strip() else "global"
+    return (
+        workspace_id.strip() if isinstance(workspace_id, str) and workspace_id.strip() else "global"
+    )
 
 
 def _structured_about_object_ref(
@@ -325,7 +336,9 @@ def _work_key_for_candidate(
             value = structured.get(field)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-    normalized_title = canonical_reconciliation.normalize_title(structured.get("title") if structured is not None else None)
+    normalized_title = canonical_reconciliation.normalize_title(
+        structured.get("title") if structured is not None else None
+    )
     normalized_type = canonical_reconciliation.normalize_authority_label(
         structured.get("work_type") if structured is not None else None
     )
@@ -351,12 +364,12 @@ def _work_key_for_candidate(
         except canonical_reconciliation.CanonicalReconciliationError:
             continue
     source_identifier = canonical_reconciliation.normalize_locator(
-        structured.get("canonical_url")
-        if structured is not None
-        else None,
+        structured.get("canonical_url") if structured is not None else None,
     )
     if source_identifier is None and structured is not None:
-        source_identifier = canonical_reconciliation.normalize_locator(structured.get("original_locator"))
+        source_identifier = canonical_reconciliation.normalize_locator(
+            structured.get("original_locator")
+        )
     normalized_title_key = canonical_reconciliation.normalize_work_key(
         title=normalized_title,
         work_type=normalized_type,

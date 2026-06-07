@@ -190,7 +190,9 @@ def _execute_review_decision(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
+                raise ApplyReviewDecisionCliError(
+                    f"{exc}; spool failed: {spool_exc}"
+                ) from spool_exc
         else:
             raise
     except Exception as exc:
@@ -198,7 +200,9 @@ def _execute_review_decision(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
+                raise ApplyReviewDecisionCliError(
+                    f"{exc}; spool failed: {spool_exc}"
+                ) from spool_exc
         raise
 
 

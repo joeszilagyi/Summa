@@ -63,6 +63,7 @@ _LANG_PATH_MAP: dict[str, str] = {}
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -120,10 +121,10 @@ def _append_warning(warnings: list[str] | None, message: str) -> None:
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
-    text = text.replace("\f", "\n\n")           # form-feed → paragraph break
+    text = text.replace("\f", "\n\n")  # form-feed → paragraph break
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)      # collapse excess blank lines
-    text = re.sub(r"[ \t]+\n", "\n", text)      # trailing whitespace
+    text = re.sub(r"\n{3,}", "\n\n", text)  # collapse excess blank lines
+    text = re.sub(r"[ \t]+\n", "\n", text)  # trailing whitespace
     return text.strip()
 
 
@@ -140,20 +141,22 @@ def _relative_to_collateral(pdf_path: Path) -> str:
 # PDF metadata via pypdf
 # ---------------------------------------------------------------------------
 
+
 def extract_pdf_metadata(pdf_path: Path) -> dict:
     meta: dict = {}
     try:
         import pypdf
+
         with open(pdf_path, "rb") as fh:
             reader = pypdf.PdfReader(fh)
             info = reader.metadata or {}
             meta = {
-                "title":             _str(info.get("/Title")),
-                "author":            _str(info.get("/Author")),
-                "subject":           _str(info.get("/Subject")),
-                "creator":           _str(info.get("/Creator")),
-                "producer":          _str(info.get("/Producer")),
-                "creation_date":     _str(info.get("/CreationDate")),
+                "title": _str(info.get("/Title")),
+                "author": _str(info.get("/Author")),
+                "subject": _str(info.get("/Subject")),
+                "creator": _str(info.get("/Creator")),
+                "producer": _str(info.get("/Producer")),
+                "creation_date": _str(info.get("/CreationDate")),
                 "modification_date": _str(info.get("/ModDate")),
             }
     except Exception as exc:
@@ -171,8 +174,10 @@ def _str(val: object) -> str:
 # Text extraction: pdfminer (text-layer PDFs)
 # ---------------------------------------------------------------------------
 
+
 def extract_text_layer(pdf_path: Path) -> str:
     from pdfminer.high_level import extract_text
+
     text = extract_text(str(pdf_path))
     return text or ""
 
@@ -192,6 +197,7 @@ def detect_text_layer(pdf_path: Path, page_count: int) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Text extraction: tesseract (scanned/image PDFs)
 # ---------------------------------------------------------------------------
+
 
 def extract_via_ocr(pdf_path: Path, lang: str, page_count: int = 0) -> tuple[str, list[str]]:
     warnings: list[str] = []
@@ -253,8 +259,9 @@ def _iter_ocr_page_images(convert_from_path, pdf_path: Path, page_count: int):
 # Main extraction entry point
 # ---------------------------------------------------------------------------
 
+
 def extract(pdf_path: Path, force: bool, lang: str | None, dry_run: bool) -> int:
-    txt_path  = pdf_path.with_suffix(".txt")
+    txt_path = pdf_path.with_suffix(".txt")
     meta_path = pdf_path.with_suffix(".meta.json")
 
     if txt_path.exists() and meta_path.exists() and not force:
@@ -269,7 +276,7 @@ def extract(pdf_path: Path, force: bool, lang: str | None, dry_run: bool) -> int
         print(f"  warning: {detail}; proceeding anyway", file=sys.stderr)
 
     has_text, text_layer_sample = detect_text_layer(pdf_path, page_count)
-    method   = "text_layer" if has_text else "ocr"
+    method = "text_layer" if has_text else "ocr"
 
     effective_lang = lang if lang is not None else infer_ocr_lang(pdf_path)
 
@@ -297,22 +304,22 @@ def extract(pdf_path: Path, force: bool, lang: str | None, dry_run: bool) -> int
         print(f"  error: {exc}", file=sys.stderr)
         return 1
 
-    text      = normalize_text(raw_text)
-    pdf_meta  = extract_pdf_metadata(pdf_path)
-    rel_path  = _relative_to_collateral(pdf_path)
+    text = normalize_text(raw_text)
+    pdf_meta = extract_pdf_metadata(pdf_path)
+    rel_path = _relative_to_collateral(pdf_path)
 
     extracted_at = _now_iso()
     meta_doc = {
-        "source_pdf":         rel_path,
-        "extracted_at":       extracted_at,
-        "extractor_version":  EXTRACTOR_VERSION,
-        "extraction_method":  method,
-        "ocr_language":       effective_lang if method == "ocr" else None,
-        "page_count":         page_count,
-        "char_count":         len(text),
-        "pdf_metadata":       pdf_meta,
-        "warnings":           warnings,
-        "rights_posture":     "unknown_review_required",
+        "source_pdf": rel_path,
+        "extracted_at": extracted_at,
+        "extractor_version": EXTRACTOR_VERSION,
+        "extraction_method": method,
+        "ocr_language": effective_lang if method == "ocr" else None,
+        "page_count": page_count,
+        "char_count": len(text),
+        "pdf_metadata": pdf_meta,
+        "warnings": warnings,
+        "rights_posture": "unknown_review_required",
         "source_access": {
             "original_locator": rel_path,
             "refetchability_status": "uncertain",
@@ -344,10 +351,7 @@ def extract(pdf_path: Path, force: bool, lang: str | None, dry_run: bool) -> int
     _write_atomic_text(txt_path, text)
     _write_atomic_json(meta_path, meta_doc)
 
-    print(
-        f"  → {txt_path.name}  "
-        f"({len(text):,} chars, {page_count} pages, method={method})"
-    )
+    print(f"  → {txt_path.name}  ({len(text):,} chars, {page_count} pages, method={method})")
     return 0
 
 
@@ -405,6 +409,7 @@ def _print_dry_run_summary(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

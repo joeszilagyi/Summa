@@ -275,7 +275,9 @@ def candidate_identifiers(structured: dict[str, Any] | None) -> list[dict[str, s
     deduped: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in identifiers:
-        normalized = identifier_normalization.identifier_storage_values(item["scheme"], item["value"])
+        normalized = identifier_normalization.identifier_storage_values(
+            item["scheme"], item["value"]
+        )
         key = (str(normalized["scheme"]), str(normalized["value"]))
         if key in seen:
             continue
@@ -386,7 +388,7 @@ def record_work_identifier(
     confidence_score: float | int | None = None,
     review_state: str | None = None,
     record_last_updated: str | None = None,
-    ) -> canonical_store.CanonicalWriteResult:
+) -> canonical_store.CanonicalWriteResult:
     normalized = identifier_normalization.identifier_storage_values(scheme, value)
     timestamp = _normalize_timestamp(
         record_last_updated,
@@ -468,9 +470,13 @@ def record_work_identifier(
                 or canonical_store._pending_review_state(review_state_value)
             )
         )
-        merged_review_state = existing["review_state"] if preserve_established else canonical_store._merged_review_state(
-            existing["review_state"],
-            review_state_value,
+        merged_review_state = (
+            existing["review_state"]
+            if preserve_established
+            else canonical_store._merged_review_state(
+                existing["review_state"],
+                review_state_value,
+            )
         )
     conn.execute(
         """
@@ -1648,8 +1654,12 @@ def _structured_contradictions_for_claim_group(
             continue
 
         left_about_ref = _claim_about_ref(left_row, left_payload)
-        left_claim_type = str(left_row["claim_type"] or left_payload.get("claim_type") or "").strip()
-        left_workspace_id = None if left_row["workspace_id"] is None else str(left_row["workspace_id"])
+        left_claim_type = str(
+            left_row["claim_type"] or left_payload.get("claim_type") or ""
+        ).strip()
+        left_workspace_id = (
+            None if left_row["workspace_id"] is None else str(left_row["workspace_id"])
+        )
 
         left_numeric = _structured_numeric_value(left_payload)
         if left_numeric is not None and left_claim_type and left_about_ref is not None:
@@ -1728,7 +1738,10 @@ def _structured_contradictions_for_claim_group(
 
         relation_type = left_claim_type.casefold()
         left_predicate = str(left_payload.get("predicate") or "").strip().casefold()
-        if relation_type in {"taught_by", "relationship_taught_by"} or left_predicate == "taught_by":
+        if (
+            relation_type in {"taught_by", "relationship_taught_by"}
+            or left_predicate == "taught_by"
+        ):
             subject_ref = left_about_ref
             object_ref = left_payload.get("to_object_ref") or left_payload.get("object_object_ref")
             if (
@@ -1789,7 +1802,9 @@ def _structured_contradictions_for_claim_group(
                                 conn,
                                 offending_namespace="source_claim",
                                 offending_id=left_claim_id,
-                                target_object_ref=_source_claim_ref(int(death_row["source_claim_id"])),
+                                target_object_ref=_source_claim_ref(
+                                    int(death_row["source_claim_id"])
+                                ),
                                 provenance_event_ref=provenance_event_ref,
                                 workspace_id=left_workspace_id,
                                 rule_id=TAUGHT_BY_IMPOSSIBLE_RULE,
@@ -1950,9 +1965,13 @@ def run_reconciliation_pass_for_ingest(
     ).fetchall()
     grouped_claim_rows: dict[tuple[str | None, str | None, str], list[sqlite3.Row]] = {}
     for claim_row in claim_rows:
-        about_object_ref = None if claim_row["about_object_ref"] is None else str(claim_row["about_object_ref"])
+        about_object_ref = (
+            None if claim_row["about_object_ref"] is None else str(claim_row["about_object_ref"])
+        )
         claim_type = "" if claim_row["claim_type"] is None else str(claim_row["claim_type"])
-        workspace_key = None if claim_row["workspace_id"] is None else str(claim_row["workspace_id"])
+        workspace_key = (
+            None if claim_row["workspace_id"] is None else str(claim_row["workspace_id"])
+        )
         key = (workspace_key, about_object_ref, claim_type)
         grouped_claim_rows.setdefault(key, []).append(claim_row)
 

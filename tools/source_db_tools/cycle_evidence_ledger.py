@@ -184,7 +184,9 @@ def _cycle_metrics_from_event(
     facet: str | None,
     status: str,
 ) -> dict[str, Any]:
-    table_counts = {table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES}
+    table_counts = {
+        table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES
+    }
     accepted_counts = {
         table_name: _review_state_count(
             conn,
@@ -265,17 +267,15 @@ def _assert_append_only_replay_compatible(
     ignore: frozenset[str] = frozenset(),
 ) -> None:
     if row is None:
-        raise CycleEvidenceLedgerError(f"ledger replay conflict for {table} {key}: existing row not found")
+        raise CycleEvidenceLedgerError(
+            f"ledger replay conflict for {table} {key}: existing row not found"
+        )
     mismatches = [
-        field
-        for field, value in expected.items()
-        if field not in ignore and row[field] != value
+        field for field, value in expected.items() if field not in ignore and row[field] != value
     ]
     if mismatches:
         field_list = ", ".join(mismatches)
-        raise CycleEvidenceLedgerError(
-            f"ledger replay mismatch for {table} {key}: {field_list}"
-        )
+        raise CycleEvidenceLedgerError(f"ledger replay mismatch for {table} {key}: {field_list}")
 
 
 def _file_size(path: Path) -> int | None:
@@ -568,7 +568,9 @@ def record_cycle_artifact_ref(
         "artifact_path": artifact_path_text,
         "artifact_hash": artifact_hash,
         "byte_count": byte_count,
-        "privacy_classification": _require_nonblank(privacy_classification, "privacy_classification"),
+        "privacy_classification": _require_nonblank(
+            privacy_classification, "privacy_classification"
+        ),
         "public_safe": _bool_int(public_safe),
         "schema_id": schema_id,
         "validation_status": validation_status,
@@ -1282,9 +1284,11 @@ def _record_feedback_candidates_payload(
             if not isinstance(item, dict):
                 continue
             candidate_id = _optional_text(item.get("candidate_id")) or f"deferred:{index}"
-            candidate_kind = _optional_text(item.get("candidate_kind")) or _optional_text(
-                item.get("proposal_kind")
-            ) or "feedback_candidate"
+            candidate_kind = (
+                _optional_text(item.get("candidate_kind"))
+                or _optional_text(item.get("proposal_kind"))
+                or "feedback_candidate"
+            )
             reason = _optional_text(item.get("reason")) or "deferred_by_feedback_plan"
             record_cycle_candidate_excluded(
                 conn,

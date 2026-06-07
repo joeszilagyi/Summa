@@ -1013,7 +1013,9 @@ def _resolve_detected_entity_workspace_id(
 
     if inferred_workspace_ids:
         first_inferred_workspace_id = inferred_workspace_ids[0]
-        if any(candidate != first_inferred_workspace_id for candidate in inferred_workspace_ids[1:]):
+        if any(
+            candidate != first_inferred_workspace_id for candidate in inferred_workspace_ids[1:]
+        ):
             raise CanonicalStoreError(
                 "detected entity workspace_id must match linked extraction/capture workspace_id"
             )
@@ -1257,16 +1259,20 @@ def upsert_work(
     proposed_state_text = review_state_value.strip().lower()
     is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
     is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
-    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+    if is_existing_established and (
+        is_proposed_established or _pending_review_state(review_state_value)
+    ):
         preserve_established_envelope = True
-    confidence_value = existing["confidence_score"] if preserve_established_envelope else _first_present(
-        score,
-        existing["confidence_score"],
+    confidence_value = (
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(
+            score,
+            existing["confidence_score"],
+        )
     )
     provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     publication_state_value = (
         existing["publication_state"]
@@ -1450,13 +1456,19 @@ def record_source_access(
                 "source_access_id",
                 int(existing["source_access_id"]),
                 {
-                    "review_state": _merged_review_state(existing["review_state"], review_state_value),
+                    "review_state": _merged_review_state(
+                        existing["review_state"], review_state_value
+                    ),
                     "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
                     "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
-                    "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
+                    "record_last_updated": _max_nonnull_iso(
+                        existing["record_last_updated"], timestamp
+                    ),
                 },
             )
-            return CanonicalWriteResult("source_access", int(existing["source_access_id"]), None, False)
+            return CanonicalWriteResult(
+                "source_access", int(existing["source_access_id"]), None, False
+            )
 
     _update_row(
         conn,
@@ -1655,19 +1667,21 @@ def record_source_claim(
     proposed_state_text = review_state_value.strip().lower()
     is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
     is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
-    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+    if is_existing_established and (
+        is_proposed_established or _pending_review_state(review_state_value)
+    ):
         preserve_established_envelope = True
 
     claim_text_update_value = (
         existing["claim_text"] if preserve_established_envelope else claim_text_value
     )
     claim_confidence_value = (
-        existing["confidence_score"] if preserve_established_envelope else _first_present(score, existing["confidence_score"])
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(score, existing["confidence_score"])
     )
     claim_provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     claim_publication_state_value = (
         existing["publication_state"]
@@ -2250,9 +2264,7 @@ def record_source_relationship(
         else _first_present(score, existing["confidence_score"])
     )
     relationship_provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     relationship_publication_state_value = (
         existing["publication_state"]

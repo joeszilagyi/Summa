@@ -25,7 +25,15 @@ except ImportError:  # pragma: no cover - package import fallback
 
 REVIEW_NAMESPACE = uuid.UUID("2d2d4f0a-6b0c-443a-9e69-47fd4a830243")
 SCRIPT_PATH = "tools/source_db_tools/review_queue.py"
-DEFAULT_PENDING_STATES = {"", "unreviewed", "machine_extracted", "proposed", "needs_review", "ambiguous", "demoted"}
+DEFAULT_PENDING_STATES = {
+    "",
+    "unreviewed",
+    "machine_extracted",
+    "proposed",
+    "needs_review",
+    "ambiguous",
+    "demoted",
+}
 ACCEPTED_STATES = {"accepted", "approved", "curated", "reviewed"}
 TRANSITION_STATES = {"accepted", "rejected", "demoted", "ambiguous"}
 PUBLICATION_BLOCKING_STATES = {"blocked", "draft", "local_only", "private_working"}
@@ -45,25 +53,89 @@ class ReviewTarget:
 
 
 TARGETS: dict[str, ReviewTarget] = {
-    "lead": ReviewTarget("lead", "lead", "lead_id", label_sql="label_text", source_type_sql="lead_kind", confidence_column=None),
+    "lead": ReviewTarget(
+        "lead",
+        "lead",
+        "lead_id",
+        label_sql="label_text",
+        source_type_sql="lead_kind",
+        confidence_column=None,
+    ),
     "work": ReviewTarget("work", "work", "work_id", label_sql="title", source_type_sql="work_type"),
-    "work_identifier": ReviewTarget("work_identifier", "work_identifier", "work_identifier_id", label_sql="scheme || ':' || value"),
-    "authority_identifier": ReviewTarget("authority_identifier", "authority_identifier", "authority_identifier_id", label_sql="scheme || ':' || value"),
-    "authority": ReviewTarget("authority", "authority_record", "authority_record_id", label_sql="preferred_label", source_type_sql="authority_type"),
-    "work_subject": ReviewTarget("work_subject", "work_subject", "work_subject_id", label_sql="COALESCE(source_note, subject_role)"),
-    "highlight": ReviewTarget("highlight", "extraction_highlight", "highlight_id", label_sql="substr(text_excerpt, 1, 120)"),
-    "detected_entity": ReviewTarget("detected_entity", "extraction_detected_entity", "detected_entity_id", label_sql="entity_label", source_type_sql="entity_type"),
+    "work_identifier": ReviewTarget(
+        "work_identifier",
+        "work_identifier",
+        "work_identifier_id",
+        label_sql="scheme || ':' || value",
+    ),
+    "authority_identifier": ReviewTarget(
+        "authority_identifier",
+        "authority_identifier",
+        "authority_identifier_id",
+        label_sql="scheme || ':' || value",
+    ),
+    "authority": ReviewTarget(
+        "authority",
+        "authority_record",
+        "authority_record_id",
+        label_sql="preferred_label",
+        source_type_sql="authority_type",
+    ),
+    "work_subject": ReviewTarget(
+        "work_subject",
+        "work_subject",
+        "work_subject_id",
+        label_sql="COALESCE(source_note, subject_role)",
+    ),
+    "highlight": ReviewTarget(
+        "highlight",
+        "extraction_highlight",
+        "highlight_id",
+        label_sql="substr(text_excerpt, 1, 120)",
+    ),
+    "detected_entity": ReviewTarget(
+        "detected_entity",
+        "extraction_detected_entity",
+        "detected_entity_id",
+        label_sql="entity_label",
+        source_type_sql="entity_type",
+    ),
     "relationship": ReviewTarget(
         "relationship",
         "source_relationship",
         "source_relationship_id",
         label_sql="predicate || ' -> ' || COALESCE(target_label, to_object_ref, '')",
     ),
-    "claim": ReviewTarget("claim", "source_claim", "source_claim_id", label_sql="substr(claim_text, 1, 120)", source_type_sql="claim_type"),
-    "topic_extension": ReviewTarget("topic_extension", "topic_extension", "topic_extension_id", label_sql="topic_id || ':' || extension_type"),
-    "source_access": ReviewTarget("source_access", "source_access", "source_access_id", label_sql="original_locator", confidence_column=None),
-    "capture_event": ReviewTarget("capture_event", "capture_event", "capture_event_id", label_sql="capture_method", confidence_column=None),
-    "extraction_record": ReviewTarget("extraction_record", "extraction_record", "extraction_id", label_sql="summary_short"),
+    "claim": ReviewTarget(
+        "claim",
+        "source_claim",
+        "source_claim_id",
+        label_sql="substr(claim_text, 1, 120)",
+        source_type_sql="claim_type",
+    ),
+    "topic_extension": ReviewTarget(
+        "topic_extension",
+        "topic_extension",
+        "topic_extension_id",
+        label_sql="topic_id || ':' || extension_type",
+    ),
+    "source_access": ReviewTarget(
+        "source_access",
+        "source_access",
+        "source_access_id",
+        label_sql="original_locator",
+        confidence_column=None,
+    ),
+    "capture_event": ReviewTarget(
+        "capture_event",
+        "capture_event",
+        "capture_event_id",
+        label_sql="capture_method",
+        confidence_column=None,
+    ),
+    "extraction_record": ReviewTarget(
+        "extraction_record", "extraction_record", "extraction_id", label_sql="summary_short"
+    ),
 }
 
 TYPE_ALIASES: dict[str, list[str]] = {
@@ -186,7 +258,9 @@ def public_blocker_expr(columns: set[str]) -> str:
     return "NULL"
 
 
-def apply_optional_filter(where: str, params: list[Any], expr: str, value: str | None) -> tuple[str, list[Any]]:
+def apply_optional_filter(
+    where: str, params: list[Any], expr: str, value: str | None
+) -> tuple[str, list[Any]]:
     if value is None:
         return where, params
     if expr == "NULL":
@@ -215,7 +289,9 @@ def list_review_items(
     if limit is not None and limit < 0:
         raise ValueError("limit must be non-negative")
     rows: list[dict[str, Any]] = []
-    normalized_object_type = "" if object_type is None else object_type.strip().lower().replace("-", "_")
+    normalized_object_type = (
+        "" if object_type is None else object_type.strip().lower().replace("-", "_")
+    )
     retention_only = normalized_object_type in {"retention_override", "retention_overrides"}
     for key in expand_object_type(object_type):
         target = TARGETS[key]
@@ -226,10 +302,14 @@ def list_review_items(
             continue
         if retention_only and "retention_policy_id" not in columns:
             continue
-        confidence_expr = target.confidence_column if target.confidence_column in columns else "NULL"
+        confidence_expr = (
+            target.confidence_column if target.confidence_column in columns else "NULL"
+        )
         source_type_expr = target.source_type_sql
         workspace_expr = optional_column_expr(columns, "workspace_id")
-        authority_level_expr = optional_column_expr(columns, "authority_level", "authority_tier", "authority_status")
+        authority_level_expr = optional_column_expr(
+            columns, "authority_level", "authority_tier", "authority_status"
+        )
         public_blocker_value_expr = public_blocker_expr(columns)
         where, params = pending_filter_sql(state)
         if target.extra_where:
@@ -247,7 +327,9 @@ def list_review_items(
             params.append(source_type)
         where, params = apply_optional_filter(where, params, workspace_expr, workspace_id)
         where, params = apply_optional_filter(where, params, authority_level_expr, authority_level)
-        where, params = apply_optional_filter(where, params, public_blocker_value_expr, public_blocker)
+        where, params = apply_optional_filter(
+            where, params, public_blocker_value_expr, public_blocker
+        )
         query = f"""
             SELECT
               ? AS object_type,
@@ -268,7 +350,14 @@ def list_review_items(
             item = dict(row)
             item["object_ref"] = f"{item['object_type']}:{item['object_pk']}"
             rows.append(item)
-    rows.sort(key=lambda row: (row.get("confidence_score") is None, row.get("confidence_score") or 2.0, row["object_type"], row["object_pk"]))
+    rows.sort(
+        key=lambda row: (
+            row.get("confidence_score") is None,
+            row.get("confidence_score") or 2.0,
+            row["object_type"],
+            row["object_pk"],
+        )
+    )
     return rows[:limit] if limit is not None else rows
 
 
@@ -293,10 +382,14 @@ def fetch_review_object(
         ).fetchone()
     else:
         columns = table_columns(conn, target.table)
-        confidence_expr = target.confidence_column if target.confidence_column in columns else "NULL"
+        confidence_expr = (
+            target.confidence_column if target.confidence_column in columns else "NULL"
+        )
         source_type_expr = target.source_type_sql
         workspace_expr = optional_column_expr(columns, "workspace_id")
-        authority_level_expr = optional_column_expr(columns, "authority_level", "authority_tier", "authority_status")
+        authority_level_expr = optional_column_expr(
+            columns, "authority_level", "authority_tier", "authority_status"
+        )
         public_blocker_value_expr = public_blocker_expr(columns)
         row = conn.execute(
             f"""
@@ -499,7 +592,9 @@ def render_json(value: Any) -> None:
 
 def render_list_text(rows: list[dict[str, Any]]) -> None:
     for row in rows:
-        confidence = "" if row.get("confidence_score") is None else f"{float(row['confidence_score']):.2f}"
+        confidence = (
+            "" if row.get("confidence_score") is None else f"{float(row['confidence_score']):.2f}"
+        )
         source_type = row.get("source_type") or ""
         label = row.get("label") or ""
         workspace_id = row.get("workspace_id") or ""
@@ -512,7 +607,9 @@ def render_list_text(rows: list[dict[str, Any]]) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="List and update review_state objects in source.sqlite.")
+    parser = argparse.ArgumentParser(
+        description="List and update review_state objects in source.sqlite."
+    )
     parser.add_argument("db", type=Path, help="Path to source.sqlite")
     parser.add_argument(
         "--dry-run",
@@ -522,12 +619,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_p = sub.add_parser("list", help="List reviewable objects")
-    list_p.add_argument("--state", help="Review state to filter; omit for non-accepted pending objects, or use 'all'")
-    list_p.add_argument("--object-type", help="Object type such as work, authority, claim, source_access, retention_override")
+    list_p.add_argument(
+        "--state",
+        help="Review state to filter; omit for non-accepted pending objects, or use 'all'",
+    )
+    list_p.add_argument(
+        "--object-type",
+        help="Object type such as work, authority, claim, source_access, retention_override",
+    )
     list_p.add_argument("--min-confidence", type=float)
     list_p.add_argument("--max-confidence", type=float)
     list_p.add_argument("--source-type")
-    list_p.add_argument("--workspace-id", help="Exact workspace_id match for targets that carry workspace metadata.")
+    list_p.add_argument(
+        "--workspace-id", help="Exact workspace_id match for targets that carry workspace metadata."
+    )
     list_p.add_argument(
         "--authority-level",
         help="Exact authority level/tier match for targets that carry authority metadata.",
@@ -541,7 +646,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     show_p = sub.add_parser("show", help="Show one review object")
     show_p.add_argument("object_id")
-    show_p.add_argument("--full", action="store_true", help="Show the full raw row instead of the lightweight projection.")
+    show_p.add_argument(
+        "--full",
+        action="store_true",
+        help="Show the full raw row instead of the lightweight projection.",
+    )
     show_p.add_argument("--format", choices=["text", "json"], default="json")
 
     for command, state in (

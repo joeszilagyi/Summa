@@ -694,9 +694,7 @@ def build_dcmi_export(
         if provenance:
             metadata["dcterms:provenance"] = provenance
             optional(report_bits, "dcmi.provenance")
-        records.append(
-            {"record_type": "work", "summa_ref": work_ref, "metadata": metadata}
-        )
+        records.append({"record_type": "work", "summa_ref": work_ref, "metadata": metadata})
     payload = base_export_payload(
         profile, generated_at=generated_at, include_private=include_private
     )
@@ -814,9 +812,7 @@ def build_premis_export(
         if row["work_id"] is not None:
             rights_posture = work_rights_by_id.get(int(row["work_id"]))
             if rights_posture:
-                rights.append(
-                    {"linked_object": capture_ref, "rights_statement": rights_posture}
-                )
+                rights.append({"linked_object": capture_ref, "rights_statement": rights_posture})
                 optional(report_bits, "premis.rights.posture")
     payload = base_export_payload(
         profile, generated_at=generated_at, include_private=include_private
@@ -853,7 +849,9 @@ def build_rico_export(
         where.append("workspace_id=?")
         params.append(subject_id)
     work_sql = (
-        "SELECT * FROM work" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY work_id"
+        "SELECT * FROM work"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " ORDER BY work_id"
     )
     work_excluded_count = 0
     work_included_count = 0
@@ -879,7 +877,9 @@ def build_rico_export(
             missing(report_bits, "rico.record_title", f"{work_ref} missing title")
     record_privacy_exclusion(report_bits, "work", work_excluded_count)
     if work_id is not None and work_included_count == 0:
-        raise StandardsProfileError(f"work not found or not public under current export policy: {work_id}")
+        raise StandardsProfileError(
+            f"work not found or not public under current export policy: {work_id}"
+        )
     auth_excluded_count = 0
     for row in conn.execute("SELECT * FROM authority_record ORDER BY authority_record_id"):
         if not include_private and not _row_is_public(row):
@@ -897,9 +897,7 @@ def build_rico_export(
         optional(report_bits, "rico.agent")
     record_privacy_exclusion(report_bits, "authority_record", auth_excluded_count)
     rel_excluded_count = 0
-    for row in conn.execute(
-        "SELECT * FROM source_relationship ORDER BY source_relationship_id"
-    ):
+    for row in conn.execute("SELECT * FROM source_relationship ORDER BY source_relationship_id"):
         if not include_private and not _row_is_public(row):
             rel_excluded_count += 1
             continue

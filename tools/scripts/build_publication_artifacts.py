@@ -194,9 +194,15 @@ def main() -> int:
         "export_path": report_path(export_path, base_dir=output_dir),
         "presentation_path": report_path(presentation_path, base_dir=output_dir),
         "publish_root": report_path(publish_root, base_dir=output_dir),
-        "search_projection_path": report_path(search_output_dir / "local_search_projection.json", base_dir=output_dir),
-        "search_results_path": report_path(search_output_dir / "local_search_results.json", base_dir=output_dir),
-        "search_index_db": report_path(search_output_dir / "local_search.sqlite", base_dir=output_dir),
+        "search_projection_path": report_path(
+            search_output_dir / "local_search_projection.json", base_dir=output_dir
+        ),
+        "search_results_path": report_path(
+            search_output_dir / "local_search_results.json", base_dir=output_dir
+        ),
+        "search_index_db": report_path(
+            search_output_dir / "local_search.sqlite", base_dir=output_dir
+        ),
         "leak_report_path": report_path(leak_report_path, base_dir=output_dir),
         "leak_scan": {
             "status": leak_report["status"],

@@ -96,7 +96,8 @@ def _spool_execution_artifacts(
         operation_kind="execution_artifact_ingest",
         operation_input={"artifact_refs": artifact_refs},
         replay_recipe={
-            "run_dir": str(run_dir),
+            "artifact_root": str(run_dir),
+            "run_dir": ".",
             "input_hashes": dict(input_hashes),
             "strict": not args.no_strict,
         },

@@ -117,7 +117,11 @@ REDACTION_GATE_REFS = [
     "review_gate",
 ]
 
-REQUIRED_PUBLICATION_TABLES = DOCUMENTED_EXPECTED_SQLITE_TABLES | {"schema_version", "source_access", "topic_extension"}
+REQUIRED_PUBLICATION_TABLES = DOCUMENTED_EXPECTED_SQLITE_TABLES | {
+    "schema_version",
+    "source_access",
+    "topic_extension",
+}
 
 
 class PublicationBuildError(RuntimeError):
@@ -178,7 +182,9 @@ def _normalize_fingerprint_value(value: Any) -> Any:
         return None
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
-            raise PublicationBuildError("non-finite numeric value cannot be included in publication fingerprint")
+            raise PublicationBuildError(
+                "non-finite numeric value cannot be included in publication fingerprint"
+            )
         return value
     return str(value)
 
@@ -208,7 +214,9 @@ def table_fingerprint(conn: sqlite3.Connection, table: str) -> str:
         raise PublicationBuildError(f"unknown table for fingerprinting: {table}")
     columns = [str(item["name"]) for item in table_schema_rows]
     primary_key_columns = [
-        column for column in columns if any(item["name"] == column and item["pk"] for item in table_schema_rows)
+        column
+        for column in columns
+        if any(item["name"] == column and item["pk"] for item in table_schema_rows)
     ]
     order_by_columns = primary_key_columns or columns
     row_query = f"SELECT * FROM {table}"
@@ -293,9 +301,19 @@ def ensure_required_publication_tables(conn: sqlite3.Connection) -> set[str]:
     return tables
 
 
-def row_is_public(row: sqlite3.Row, *, review_field: str = "review_state", publication_field: str = "publication_state", blocker_field: str = "public_blocker") -> bool:
+def row_is_public(
+    row: sqlite3.Row,
+    *,
+    review_field: str = "review_state",
+    publication_field: str = "publication_state",
+    blocker_field: str = "public_blocker",
+) -> bool:
     review_state = nonblank(row[review_field]) if review_field in row else None
-    publication_state = normalize_publication_state(row[publication_field]) if publication_field in row else "local_only"
+    publication_state = (
+        normalize_publication_state(row[publication_field])
+        if publication_field in row
+        else "local_only"
+    )
     public_blocker = nonblank(row[blocker_field]) if blocker_field in row else None
     return (
         is_searchable_review_state(review_state)
@@ -306,10 +324,22 @@ def row_is_public(row: sqlite3.Row, *, review_field: str = "review_state", publi
 
 def first_workspace_id(conn: sqlite3.Connection) -> str | None:
     candidate_queries = (
-        ("SELECT workspace_id FROM authority_record WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY authority_record_id LIMIT 1", ()),
-        ("SELECT workspace_id FROM work WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY work_id LIMIT 1", ()),
-        ("SELECT workspace_id FROM source_access WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY source_access_id LIMIT 1", ()),
-        ("SELECT workspace_id FROM topic_extension WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY topic_extension_id LIMIT 1", ()),
+        (
+            "SELECT workspace_id FROM authority_record WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY authority_record_id LIMIT 1",
+            (),
+        ),
+        (
+            "SELECT workspace_id FROM work WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY work_id LIMIT 1",
+            (),
+        ),
+        (
+            "SELECT workspace_id FROM source_access WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY source_access_id LIMIT 1",
+            (),
+        ),
+        (
+            "SELECT workspace_id FROM topic_extension WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) <> '' ORDER BY topic_extension_id LIMIT 1",
+            (),
+        ),
     )
     for query, params in candidate_queries:
         row = conn.execute(query, params).fetchone()
@@ -329,14 +359,20 @@ def schema_version_from_store(conn: sqlite3.Connection) -> int | None:
 def validate_export_file(path: Path) -> None:
     report, exit_code = validate_knowledge_tree_export(path)
     if exit_code != EXIT_EXPORT_PASS:
-        message = "; ".join(error["message"] for error in report["errors"]) or "knowledge tree export validation failed"
+        message = (
+            "; ".join(error["message"] for error in report["errors"])
+            or "knowledge tree export validation failed"
+        )
         raise PublicationBuildError(message)
 
 
 def validate_presentation_file(path: Path) -> None:
     report, exit_code = validate_public_knowledge_tree_presentation(path)
     if exit_code != EXIT_PRESENTATION_PASS:
-        message = "; ".join(error["message"] for error in report["errors"]) or "public presentation validation failed"
+        message = (
+            "; ".join(error["message"] for error in report["errors"])
+            or "public presentation validation failed"
+        )
         raise PublicationBuildError(message)
 
 
@@ -389,7 +425,10 @@ def build_search_artifacts(
         projection_payload = build_projection_payload(projection_args)
         projection_errors = validate_local_search_projection_payload(projection_payload)
         if projection_errors:
-            message = "; ".join(error["message"] for error in projection_errors) or "local search projection validation failed"
+            message = (
+                "; ".join(error["message"] for error in projection_errors)
+                or "local search projection validation failed"
+            )
             raise PublicationBuildError(message)
         if not managed_tmp:
             atomic_write_json(projection_json_path, projection_payload)
@@ -409,7 +448,10 @@ def build_search_artifacts(
         results_payload = build_results_payload(results_args)
         results_errors = validate_local_search_results_payload(results_payload)
         if results_errors:
-            message = "; ".join(error["message"] for error in results_errors) or "local search results validation failed"
+            message = (
+                "; ".join(error["message"] for error in results_errors)
+                or "local search results validation failed"
+            )
             raise PublicationBuildError(message)
         if not managed_tmp:
             atomic_write_json(results_json_path, results_payload)
@@ -439,13 +481,18 @@ def read_publication_snapshot(
     try:
         conn = connect_read_only(db_path)
     except sqlite3.DatabaseError as exc:
-        raise PublicationBuildError(f"database could not be opened read-only as SQLite: {db_path}") from exc
+        raise PublicationBuildError(
+            f"database could not be opened read-only as SQLite: {db_path}"
+        ) from exc
     try:
         required_tables = ensure_required_publication_tables(conn)
-        workspace_id = first_workspace_id(conn) or slugify_identifier(db_path.stem, fallback="canonical_workspace")
+        workspace_id = first_workspace_id(conn) or slugify_identifier(
+            db_path.stem, fallback="canonical_workspace"
+        )
         schema_version = schema_version_from_store(conn)
         publication_table_fingerprints = {
-            table_name: table_fingerprint(conn, table_name) for table_name in sorted(required_tables)
+            table_name: table_fingerprint(conn, table_name)
+            for table_name in sorted(required_tables)
         }
 
         authority_total = 0
@@ -464,7 +511,8 @@ def read_publication_snapshot(
             public_authorities.append(
                 {
                     "authority_record_id": as_int(row["authority_record_id"]),
-                    "preferred_label": nonblank(row["preferred_label"]) or f"Authority {row['authority_record_id']}",
+                    "preferred_label": nonblank(row["preferred_label"])
+                    or f"Authority {row['authority_record_id']}",
                     "authority_type": nonblank(row["authority_type"]) or "entity",
                     "confidence_score": row["confidence_score"],
                 }
@@ -513,7 +561,9 @@ def read_publication_snapshot(
                 {
                     "source_access_id": as_int(row["source_access_id"]),
                     "canonical_url": nonblank(row["canonical_url"]),
-                    "citation_hint": nonblank(row["citation_hint"]) or nonblank(row["work_title"]) or f"Source {row['source_access_id']}",
+                    "citation_hint": nonblank(row["citation_hint"])
+                    or nonblank(row["work_title"])
+                    or f"Source {row['source_access_id']}",
                     "access_class": nonblank(row["access_class"]) or "source",
                     "first_seen_at": nonblank(row["first_seen_at"]),
                     "last_seen_at": nonblank(row["last_seen_at"]),
@@ -558,7 +608,9 @@ def read_publication_snapshot(
                 {
                     "source_relationship_id": as_int(row["source_relationship_id"]),
                     "predicate": nonblank(row["predicate"]) or "related_to",
-                    "target_label": nonblank(row["target_label"]) or nonblank(row["to_object_ref"]) or "related record",
+                    "target_label": nonblank(row["target_label"])
+                    or nonblank(row["to_object_ref"])
+                    or "related record",
                 }
             )
 
@@ -598,7 +650,11 @@ def read_publication_snapshot(
             if not is_searchable_review_state(nonblank(row["review_state"])):
                 continue
             work_id = as_int(row["work_id"])
-            authority_id = as_int(row["authority_record_id"], 0) if row["authority_record_id"] is not None else None
+            authority_id = (
+                as_int(row["authority_record_id"], 0)
+                if row["authority_record_id"] is not None
+                else None
+            )
             if work_id not in public_work_ids and authority_id not in public_authority_ids:
                 continue
             public_work_subjects.append(
@@ -621,7 +677,11 @@ def read_publication_snapshot(
             """
         ):
             detected_total += 1
-            authority_id = as_int(row["authority_record_id"], 0) if row["authority_record_id"] is not None else None
+            authority_id = (
+                as_int(row["authority_record_id"], 0)
+                if row["authority_record_id"] is not None
+                else None
+            )
             if authority_id not in public_authority_ids:
                 continue
             if not is_searchable_review_state(nonblank(row["review_state"])):
@@ -629,7 +689,8 @@ def read_publication_snapshot(
             public_detected_entities.append(
                 {
                     "detected_entity_id": as_int(row["detected_entity_id"]),
-                    "entity_label": nonblank(row["entity_label"]) or f"Detected entity {row['detected_entity_id']}",
+                    "entity_label": nonblank(row["entity_label"])
+                    or f"Detected entity {row['detected_entity_id']}",
                     "entity_type": nonblank(row["entity_type"]) or "entity",
                 }
             )
@@ -655,10 +716,16 @@ def read_publication_snapshot(
                 }
             )
         capture_count = as_int(conn.execute("SELECT COUNT(*) FROM capture_event").fetchone()[0])
-        extraction_count = as_int(conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0])
-        review_history_count = as_int(conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0])
+        extraction_count = as_int(
+            conn.execute("SELECT COUNT(*) FROM extraction_record").fetchone()[0]
+        )
+        review_history_count = as_int(
+            conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0]
+        )
     except sqlite3.DatabaseError as exc:
-        raise PublicationBuildError(f"database query failed while building publication snapshot: {db_path}") from exc
+        raise PublicationBuildError(
+            f"database query failed while building publication snapshot: {db_path}"
+        ) from exc
     finally:
         conn.close()
 
@@ -733,7 +800,9 @@ def read_publication_snapshot(
         "captures": capture_count,
         "extractions": extraction_count,
         "review_events": review_history_count,
-        "search_indexed": as_int(search_artifacts.projection_payload["counts"]["projected_records"]),
+        "search_indexed": as_int(
+            search_artifacts.projection_payload["counts"]["projected_records"]
+        ),
         "search_returned": as_int(search_artifacts.results_payload["counts"]["returned"]),
     }
     validation_summary["withheld_total"] = sum(
@@ -841,7 +910,11 @@ def page_reference(family: str) -> tuple[str, str]:
 def build_home_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     related_ids = [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["home"]]
     reader_state = "ready" if snapshot["validation_summary"]["public_total"] else "sparse"
-    empty_state = "" if reader_state == "ready" else "The canonical store is initialized, but no public-safe records are ready for publication yet."
+    empty_state = (
+        ""
+        if reader_state == "ready"
+        else "The canonical store is initialized, but no public-safe records are ready for publication yet."
+    )
     sections = [
         build_section(
             "Overview",
@@ -916,7 +989,9 @@ def build_facet_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["facet"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["facet"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Topics", len(public_topics)),
@@ -965,7 +1040,9 @@ def build_entity_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["entity"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["entity"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Authorities", len(snapshot["public_authorities"])),
@@ -992,7 +1069,9 @@ def build_source_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         if row["canonical_url"]:
             label = f"{label} - {row['canonical_url']}"
         source_items.append(label)
-    claim_items = [row["public_summary"] for row in snapshot["public_claims"][: max(0, 5 - len(source_items))]]
+    claim_items = [
+        row["public_summary"] for row in snapshot["public_claims"][: max(0, 5 - len(source_items))]
+    ]
     items = source_items + claim_items
     reader_state = "ready" if items else "empty"
     empty_state = "" if items else "No public sources are currently available."
@@ -1013,7 +1092,9 @@ def build_source_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["source"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["source"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Sources", len(snapshot["public_sources"])),
@@ -1034,7 +1115,9 @@ def build_source_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[st
 
 
 def build_collection_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    collection_rows = [row for row in snapshot["public_topics"] if row["extension_type"] == "collection"]
+    collection_rows = [
+        row for row in snapshot["public_topics"] if row["extension_type"] == "collection"
+    ]
     items = [row["summary_short"] for row in collection_rows[:5]]
     if not items:
         items = [
@@ -1060,7 +1143,9 @@ def build_collection_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dic
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["collection"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["collection"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Collections", len(collection_rows)),
@@ -1082,7 +1167,9 @@ def build_collection_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dic
 
 def build_timeline_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     events = [row["text"] for row in snapshot["timeline_events"][:8]]
-    latest = snapshot["timeline_events"][-1]["timestamp"][:10] if snapshot["timeline_events"] else "none"
+    latest = (
+        snapshot["timeline_events"][-1]["timestamp"][:10] if snapshot["timeline_events"] else "none"
+    )
     reader_state = "ready" if events else "empty"
     empty_state = "" if events else "No public timeline events are currently available."
     sections = [
@@ -1102,7 +1189,9 @@ def build_timeline_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["timeline"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["timeline"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Events", len(snapshot["timeline_events"])),
@@ -1132,9 +1221,13 @@ def build_validation_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dic
         f"Indexed search rows: {validation['search_indexed']}",
     ]
     if validation["withheld_total"]:
-        bullet_items.append("Some records remain withheld until review or public blockers are cleared.")
+        bullet_items.append(
+            "Some records remain withheld until review or public blockers are cleared."
+        )
     else:
-        bullet_items.append("All currently eligible records publish cleanly into the public projection.")
+        bullet_items.append(
+            "All currently eligible records publish cleanly into the public projection."
+        )
     page = {
         "page_id": PAGE_ID_BY_FAMILY["validation"],
         "page_family": "validation",
@@ -1144,7 +1237,9 @@ def build_validation_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any], dic
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["validation"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["validation"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Status", validation["status"]),
@@ -1197,7 +1292,9 @@ def build_search_results_page(snapshot: dict[str, Any]) -> tuple[dict[str, Any],
         "review_posture": DEFAULT_PAGE_REVIEW_POSTURE,
         "publication_state": DEFAULT_PAGE_PUBLICATION_STATE,
         "source_ids": [CANONICAL_SOURCE_ID],
-        "related_page_ids": [PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["search_results"]],
+        "related_page_ids": [
+            PAGE_ID_BY_FAMILY[family] for family in RELATED_FAMILIES_BY_FAMILY["search_results"]
+        ],
         "summary_cards": summary_cards(
             [
                 ("Indexed rows", projected_records),
@@ -1236,7 +1333,9 @@ PAGE_BUILDERS = {
 }
 
 
-def build_page_inventory_hints(pages: list[dict[str, Any]], page_hints: list[dict[str, Any]], *, validation_state: str) -> list[dict[str, Any]]:
+def build_page_inventory_hints(
+    pages: list[dict[str, Any]], page_hints: list[dict[str, Any]], *, validation_state: str
+) -> list[dict[str, Any]]:
     page_by_id = {page["page_id"]: page for page in pages}
     route_by_id = {page["page_id"]: page["route"] for page in pages}
     hints_by_id = {hint["page_id"]: dict(hint) for hint in page_hints}
@@ -1244,16 +1343,24 @@ def build_page_inventory_hints(pages: list[dict[str, Any]], page_hints: list[dic
         page_id = PAGE_ID_BY_FAMILY[family]
         page = page_by_id[page_id]
         hint = hints_by_id[page_id]
-        related_routes = [route_by_id[item] for item in page["related_page_ids"] if item in route_by_id]
+        related_routes = [
+            route_by_id[item] for item in page["related_page_ids"] if item in route_by_id
+        ]
         navigation_children = related_routes if family == "home" else []
-        breadcrumbs = [PAGE_ROUTE_BY_FAMILY["home"]] if family == "home" else [PAGE_ROUTE_BY_FAMILY["home"], page["route"]]
+        breadcrumbs = (
+            [PAGE_ROUTE_BY_FAMILY["home"]]
+            if family == "home"
+            else [PAGE_ROUTE_BY_FAMILY["home"], page["route"]]
+        )
         hint["page_family"] = family
         hint["route"] = page["route"]
         hint["navigation_parent"] = "" if family == "home" else PAGE_ROUTE_BY_FAMILY["home"]
         hint["navigation_children"] = navigation_children
         hint["related_routes"] = related_routes
         hint["breadcrumbs"] = breadcrumbs
-        hint["validation_state"] = validation_state if hint.get("validation_state") is None else hint["validation_state"]
+        hint["validation_state"] = (
+            validation_state if hint.get("validation_state") is None else hint["validation_state"]
+        )
     return [hints_by_id[PAGE_ID_BY_FAMILY[family]] for family in PAGE_FAMILIES]
 
 
@@ -1272,9 +1379,13 @@ def build_knowledge_tree_export_payload(
         generated_at=effective_generated_at,
         search_artifacts_dir=search_artifacts_dir,
     )
-    effective_workspace_id = slugify_identifier(workspace_id or snapshot["workspace_id"], fallback="canonical_workspace")
+    effective_workspace_id = slugify_identifier(
+        workspace_id or snapshot["workspace_id"], fallback="canonical_workspace"
+    )
     effective_display_name = display_name or snapshot["display_name"]
-    effective_export_id = slugify_identifier(export_id or f"{effective_workspace_id}_knowledge_tree", fallback="knowledge_tree")
+    effective_export_id = slugify_identifier(
+        export_id or f"{effective_workspace_id}_knowledge_tree", fallback="knowledge_tree"
+    )
 
     pages: list[dict[str, Any]] = []
     page_hints: list[dict[str, Any]] = []
@@ -1325,10 +1436,18 @@ def build_knowledge_tree_export_payload(
             "validation_summary": snapshot["validation_summary"],
             "search": {
                 "query": snapshot["search_artifacts"].query_text,
-                "projection_schema_version": snapshot["search_artifacts"].projection_payload["schema_version"],
-                "results_schema_version": snapshot["search_artifacts"].results_payload["schema_version"],
-                "projected_records": snapshot["search_artifacts"].projection_payload["counts"]["projected_records"],
-                "returned_results": snapshot["search_artifacts"].results_payload["counts"]["returned"],
+                "projection_schema_version": snapshot["search_artifacts"].projection_payload[
+                    "schema_version"
+                ],
+                "results_schema_version": snapshot["search_artifacts"].results_payload[
+                    "schema_version"
+                ],
+                "projected_records": snapshot["search_artifacts"].projection_payload["counts"][
+                    "projected_records"
+                ],
+                "returned_results": snapshot["search_artifacts"].results_payload["counts"][
+                    "returned"
+                ],
             },
         },
     }
@@ -1377,11 +1496,17 @@ def build_public_presentation_payload(export_payload: dict[str, Any]) -> dict[st
         page_id = PAGE_ID_BY_FAMILY[family]
         page = page_by_id.get(page_id)
         if page is None:
-            raise PublicationBuildError(f"knowledge tree export is missing required page family: {family}")
+            raise PublicationBuildError(
+                f"knowledge tree export is missing required page family: {family}"
+            )
         hint = hints.get(page_id, {})
         raw_related_page_ids = page.get("related_page_ids")
         related_page_ids = raw_related_page_ids if isinstance(raw_related_page_ids, list) else []
-        related_routes = [route_by_id[item] for item in related_page_ids if isinstance(item, str) and item in route_by_id]
+        related_routes = [
+            route_by_id[item]
+            for item in related_page_ids
+            if isinstance(item, str) and item in route_by_id
+        ]
         raw_cards = page.get("summary_cards")
         summary_labels: list[str] = []
         if isinstance(raw_cards, list):
@@ -1398,8 +1523,12 @@ def build_public_presentation_payload(export_payload: dict[str, Any]) -> dict[st
             {
                 "page_family": family,
                 "route": page["route"],
-                "navigation_parent": hint.get("navigation_parent", "" if family == "home" else PAGE_ROUTE_BY_FAMILY["home"]),
-                "reader_state": hint.get("reader_state", "ready" if family == "validation" else "sparse"),
+                "navigation_parent": hint.get(
+                    "navigation_parent", "" if family == "home" else PAGE_ROUTE_BY_FAMILY["home"]
+                ),
+                "reader_state": hint.get(
+                    "reader_state", "ready" if family == "validation" else "sparse"
+                ),
                 "review_state": page.get("review_posture", DEFAULT_PAGE_REVIEW_POSTURE),
                 "validation_state": hint.get("validation_state", "passing"),
                 "publication_state": page.get("publication_state", DEFAULT_PAGE_PUBLICATION_STATE),
@@ -1414,7 +1543,9 @@ def build_public_presentation_payload(export_payload: dict[str, Any]) -> dict[st
                 "related_routes": related_routes,
                 "breadcrumbs": hint.get(
                     "breadcrumbs",
-                    [page["route"]] if family == "home" else [PAGE_ROUTE_BY_FAMILY["home"], page["route"]],
+                    [page["route"]]
+                    if family == "home"
+                    else [PAGE_ROUTE_BY_FAMILY["home"], page["route"]],
                 ),
             }
         )

@@ -135,8 +135,7 @@ def create_isolated_install_venv(tmp_path: Path) -> Path:
 def write_fake_console_command(bin_dir: Path, command: str, capture_path: Path) -> Path:
     script_path = bin_dir / command
     script_path.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n',
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n',
         encoding="utf-8",
     )
     script_path.chmod(0o755)
@@ -236,7 +235,9 @@ def test_live_index_wrappers_are_packaged_or_explicitly_excluded() -> None:
         assert (REPO_ROOT / "tools" / "scripts" / wrapper_name).is_file()
 
 
-@pytest.mark.parametrize("wrapper_name,console_command", sorted(INDEX_WRAPPER_CONSOLE_COMMANDS.items()))
+@pytest.mark.parametrize(
+    "wrapper_name,console_command", sorted(INDEX_WRAPPER_CONSOLE_COMMANDS.items())
+)
 def test_live_index_wrappers_prefer_installed_console_commands(
     wrapper_name: str, console_command: str, tmp_path: Path
 ) -> None:

@@ -347,7 +347,9 @@ def _scoped_pending_timestamp_source_sql(
 
 def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, Any]:
     event_key = str(event["event_key"])
-    table_counts = {table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES}
+    table_counts = {
+        table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES
+    }
     accepted_counts = {
         table_name: _review_state_count(
             conn,
@@ -355,7 +357,12 @@ def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[
             provenance_event_ref=event_key,
             states=ACCEPTED_REVIEW_STATES,
         )
-        for table_name in ("work", "source_claim", "source_relationship", "extraction_detected_entity")
+        for table_name in (
+            "work",
+            "source_claim",
+            "source_relationship",
+            "extraction_detected_entity",
+        )
     }
     reviewable_counts = {
         table_name: _review_state_count(
@@ -364,7 +371,12 @@ def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[
             provenance_event_ref=event_key,
             states=PENDING_REVIEW_STATES,
         )
-        for table_name in ("work", "source_claim", "source_relationship", "extraction_detected_entity")
+        for table_name in (
+            "work",
+            "source_claim",
+            "source_relationship",
+            "extraction_detected_entity",
+        )
     }
     contradiction_count = _safe_count(
         conn,
@@ -503,7 +515,9 @@ def _contradiction_metrics(
     workspace_id: str | None,
 ) -> dict[str, Any]:
     if workspace_id is None:
-        total = _safe_count(conn, "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'")
+        total = _safe_count(
+            conn, "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        )
         unresolved = _safe_count(
             conn,
             f"""
@@ -542,8 +556,12 @@ def _contradiction_metrics(
         "total_contradictions": total,
         "new_contradictions": new_in_lookback,
         "unresolved_contradictions": unresolved,
-        "contradictions_per_cycle": round(new_in_lookback / len(per_cycle), 4) if per_cycle else None,
-        "contradictions_per_new_source_claim": round(new_in_lookback / new_claims, 4) if new_claims else None,
+        "contradictions_per_cycle": round(new_in_lookback / len(per_cycle), 4)
+        if per_cycle
+        else None,
+        "contradictions_per_new_source_claim": round(new_in_lookback / new_claims, 4)
+        if new_claims
+        else None,
     }
 
 
@@ -680,7 +698,8 @@ def _yield_trend(per_cycle: list[dict[str, Any]]) -> str:
     if len(per_cycle) < MIN_CYCLES_FOR_TREND:
         return "insufficient_data"
     deltas = [
-        int(per_cycle[index]["new_reviewable_count"]) - int(per_cycle[index - 1]["new_reviewable_count"])
+        int(per_cycle[index]["new_reviewable_count"])
+        - int(per_cycle[index - 1]["new_reviewable_count"])
         for index in range(1, len(per_cycle))
     ]
     average_delta = sum(deltas) / len(deltas)
@@ -707,7 +726,11 @@ def _health_status(
     if contradiction_rate is not None and contradiction_rate > CONTRADICTION_RATE_WARNING_THRESHOLD:
         warnings.append("contradiction rate exceeds loop-health threshold")
         return "contradiction_spike", warnings
-    if resolution_available and resolution_coverage is not None and resolution_coverage < RESOLUTION_COVERAGE_WARNING_THRESHOLD:
+    if (
+        resolution_available
+        and resolution_coverage is not None
+        and resolution_coverage < RESOLUTION_COVERAGE_WARNING_THRESHOLD
+    ):
         warnings.append("review decisions are not keeping pace with reviewable ingestion")
         return "review_lagging", warnings
     oldest_age = backlog.get("oldest_pending_age_days")
@@ -799,9 +822,13 @@ def build_loop_health_summary(
             "new_reviewable_records": reviewable_ingested,
             "new_accepted_records": accepted_count,
             "new_source_claims": sum(int(cycle["new_source_claim_count"]) for cycle in per_cycle),
-            "new_detected_entities": sum(int(cycle["new_detected_entity_count"]) for cycle in per_cycle),
+            "new_detected_entities": sum(
+                int(cycle["new_detected_entity_count"]) for cycle in per_cycle
+            ),
             "new_works": sum(int(cycle["new_work_count"]) for cycle in per_cycle),
-            "new_source_relationships": sum(int(cycle["new_source_relationship_count"]) for cycle in per_cycle),
+            "new_source_relationships": sum(
+                int(cycle["new_source_relationship_count"]) for cycle in per_cycle
+            ),
         },
         "review_backlog": backlog,
         "contradictions": contradictions,

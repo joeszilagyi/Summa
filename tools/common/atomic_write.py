@@ -114,13 +114,16 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 
 
 def stable_json_text(payload: Any) -> str:
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-        allow_nan=False,
-    ) + "\n"
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    )
 
 
 def atomic_write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:

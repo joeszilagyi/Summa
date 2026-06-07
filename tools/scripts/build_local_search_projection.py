@@ -391,7 +391,9 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 ORDER BY object_type ASC, object_pk ASC, projection_id ASC
                 """
             )
-            actual_records_digest, indexed_records_count = projection_records_digest_from_cursor(indexed_records_cursor)
+            actual_records_digest, indexed_records_count = projection_records_digest_from_cursor(
+                indexed_records_cursor
+            )
             if actual_records_digest != expected_records_digest:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
@@ -492,7 +494,9 @@ def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, in
     return hasher.hexdigest(), row_count
 
 
-def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
+def build_visible_profiles(
+    publication_state: str, *, public_blocker: str | None, lineage_state: str
+) -> list[str]:
     profiles = ["local"]
     if public_blocker or lineage_state == "superseded":
         return profiles
@@ -504,10 +508,17 @@ def build_visible_profiles(publication_state: str, *, public_blocker: str | None
 
 
 def looks_like_private_path(value: str) -> bool:
-    return value.startswith("/") or value.startswith("~") or value.startswith("file://") or (len(value) > 2 and value[1:3] == ":\\")
+    return (
+        value.startswith("/")
+        or value.startswith("~")
+        or value.startswith("file://")
+        or (len(value) > 2 and value[1:3] == ":\\")
+    )
 
 
-def filter_fields(target: SearchTarget, row: sqlite3.Row, *, profile: str) -> tuple[list[dict[str, str]], list[str]]:
+def filter_fields(
+    target: SearchTarget, row: sqlite3.Row, *, profile: str
+) -> tuple[list[dict[str, str]], list[str]]:
     present_fields: list[dict[str, str]] = []
     suppressed_fields: list[str] = []
     for field_spec in target.field_specs:
@@ -527,9 +538,15 @@ def filter_fields(target: SearchTarget, row: sqlite3.Row, *, profile: str) -> tu
     return present_fields, suppressed_fields
 
 
-def choose_title(target: SearchTarget, fields: list[dict[str, str]], object_pk: int) -> tuple[str, str | None]:
-    title_candidates = {field_spec.field_name for field_spec in target.field_specs if field_spec.title_hint}
-    subtitle_candidates = {field_spec.field_name for field_spec in target.field_specs if field_spec.subtitle_hint}
+def choose_title(
+    target: SearchTarget, fields: list[dict[str, str]], object_pk: int
+) -> tuple[str, str | None]:
+    title_candidates = {
+        field_spec.field_name for field_spec in target.field_specs if field_spec.title_hint
+    }
+    subtitle_candidates = {
+        field_spec.field_name for field_spec in target.field_specs if field_spec.subtitle_hint
+    }
     title: str | None = None
     for field in fields:
         if field["field"] in title_candidates and field["text"].strip():
@@ -540,7 +557,11 @@ def choose_title(target: SearchTarget, fields: list[dict[str, str]], object_pk: 
 
     subtitle: str | None = None
     for field in fields:
-        if field["field"] in subtitle_candidates and field["text"].strip() and field["text"].strip() != title:
+        if (
+            field["field"] in subtitle_candidates
+            and field["text"].strip()
+            and field["text"].strip() != title
+        ):
             subtitle = field["text"].strip()
             break
     return title, subtitle
@@ -552,7 +573,10 @@ def load_correction_resolution(raw_path: str | None) -> tuple[set[str], set[str]
     ledger_path = resolve_existing_file(raw_path)
     report, exit_code = validate_correction_ledger(ledger_path)
     if exit_code != EXIT_LEDGER_PASS:
-        message = "; ".join(error["message"] for error in report["errors"]) or "correction ledger validation failed"
+        message = (
+            "; ".join(error["message"] for error in report["errors"])
+            or "correction ledger validation failed"
+        )
         raise SearchProjectionError(message)
     resolution = report.get("resolution", {})
     current_refs = set(resolution.get("current_object_refs", []))
@@ -576,7 +600,9 @@ def projection_record(
     if is_public_profile(profile) and not is_searchable_review_state(review_state):
         return None, "review_state_not_searchable"
 
-    publication_state = normalize_publication_state(row["publication_state"] if "publication_state" in columns else None)
+    publication_state = normalize_publication_state(
+        row["publication_state"] if "publication_state" in columns else None
+    )
     authority_level = first_nonblank(row, "authority_level", "authority_tier", "authority_status")
     confidence_score = first_nonblank_float(row, "confidence_score", "confidence")
     public_blocker = first_nonblank(row, "public_blocker")
@@ -597,7 +623,9 @@ def projection_record(
         return None, "no_indexable_fields"
 
     title, subtitle = choose_title(target, indexed_fields, object_pk)
-    visible_profiles = build_visible_profiles(publication_state, public_blocker=public_blocker, lineage_state=lineage_state)
+    visible_profiles = build_visible_profiles(
+        publication_state, public_blocker=public_blocker, lineage_state=lineage_state
+    )
     return (
         {
             "projection_id": f"{profile}:{object_ref}",
@@ -620,7 +648,9 @@ def projection_record(
     )
 
 
-def fetch_rows_in_batches(cursor: sqlite3.Cursor, *, batch_size: int) -> Iterator[list[sqlite3.Row]]:
+def fetch_rows_in_batches(
+    cursor: sqlite3.Cursor, *, batch_size: int
+) -> Iterator[list[sqlite3.Row]]:
     while True:
         rows = cursor.fetchmany(batch_size)
         if not rows:
@@ -651,7 +681,9 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
             if not SQL_IDENTIFIER_RE.fullmatch(target.table):
                 raise RuntimeError(f"invalid projection target table: {target.table}")
             if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
-                raise RuntimeError(f"invalid projection target primary key column: {target.pk_column}")
+                raise RuntimeError(
+                    f"invalid projection target primary key column: {target.pk_column}"
+                )
             if not table_exists(conn, target.table):
                 continue
             table_columns = table_column_names(conn, target.table)
@@ -672,7 +704,9 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     object_ref = f"{target.object_type}:{row[target.pk_column]}"
                     if record is None:
-                        excluded_records.append({"object_ref": object_ref, "reason": excluded_reason or "excluded"})
+                        excluded_records.append(
+                            {"object_ref": object_ref, "reason": excluded_reason or "excluded"}
+                        )
                         continue
                     projected_records.append(record)
                     if not private_paths_exposed and any(
@@ -681,7 +715,8 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                         private_paths_exposed = True
                     if not blocked_records_included and (
                         record["public_blocker"] is not None
-                        or record["publication_state"] in {"blocked", "local_only", "private_working"}
+                        or record["publication_state"]
+                        in {"blocked", "local_only", "private_working"}
                     ):
                         blocked_records_included = True
                     if not superseded_records_included and record["lineage_state"] == "superseded":
@@ -829,7 +864,9 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 payload["schema_version"],
                 payload["source"]["database_name"],
                 payload["source"]["database_fingerprint"],
-                None if payload["source"]["schema_version"] is None else str(payload["source"]["schema_version"]),
+                None
+                if payload["source"]["schema_version"] is None
+                else str(payload["source"]["schema_version"]),
                 payload["profile"],
                 payload["generated_at"],
                 records_digest,

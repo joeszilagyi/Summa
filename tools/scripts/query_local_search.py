@@ -85,8 +85,12 @@ def parse_indexed_fields_json(indexed_fields_json: str) -> tuple[dict[str, Any],
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a safe plain-text query over a local search projection index.")
-    parser.add_argument("--index-db", required=True, help="Path to the local search projection SQLite index.")
+    parser = argparse.ArgumentParser(
+        description="Run a safe plain-text query over a local search projection index."
+    )
+    parser.add_argument(
+        "--index-db", required=True, help="Path to the local search projection SQLite index."
+    )
     parser.add_argument("--query", required=True, help="Plain-text search query.")
     parser.add_argument(
         "--scope",
@@ -94,11 +98,25 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Optional result scope to constrain object families.",
     )
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Maximum number of results to return, capped at 100.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help="Maximum number of results to return, capped at 100.",
+    )
     parser.add_argument("--offset", type=int, default=0, help="Offset into the ordered result set.")
-    parser.add_argument("--format", choices=("json", "text"), default="json", help="Stdout format for the emitted results payload.")
-    parser.add_argument("--output-json", help="Optional JSON path for the emitted local-search-results payload.")
-    parser.add_argument("--generated-at", help="Optional RFC3339 timestamp override for deterministic tests.")
+    parser.add_argument(
+        "--format",
+        choices=("json", "text"),
+        default="json",
+        help="Stdout format for the emitted results payload.",
+    )
+    parser.add_argument(
+        "--output-json", help="Optional JSON path for the emitted local-search-results payload."
+    )
+    parser.add_argument(
+        "--generated-at", help="Optional RFC3339 timestamp override for deterministic tests."
+    )
     return parser.parse_args()
 
 
@@ -144,7 +162,9 @@ def load_metadata(conn: sqlite3.Connection) -> sqlite3.Row:
         """
     ).fetchone()
     if row is None:
-        raise SearchQueryError("projection_metadata row missing; rebuild the local search index with build_local_search_projection.py")
+        raise SearchQueryError(
+            "projection_metadata row missing; rebuild the local search index with build_local_search_projection.py"
+        )
     return row
 
 
@@ -377,11 +397,16 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
     conn = connect_read_only(index_path)
     try:
         metadata = load_metadata(conn)
-        rows, total = load_matching_rows(conn, fts_query=fts_query, scope=args.scope, limit=args.limit, offset=args.offset)
+        rows, total = load_matching_rows(
+            conn, fts_query=fts_query, scope=args.scope, limit=args.limit, offset=args.offset
+        )
     finally:
         conn.close()
 
-    results = [build_result(row, terms=terms, rank=args.offset + index + 1) for index, row in enumerate(rows)]
+    results = [
+        build_result(row, terms=terms, rank=args.offset + index + 1)
+        for index, row in enumerate(rows)
+    ]
     return {
         "schema_version": RESULTS_SCHEMA_VERSION,
         "generated_at": args.generated_at or now_rfc3339(),
@@ -433,7 +458,9 @@ def render_text(payload: dict[str, Any]) -> str:
         lines.append(f"result[{result['rank']}].result_class={result['result_class']}")
         lines.append(f"result[{result['rank']}].title={result['title']}")
         if result["matched_fields"]:
-            lines.append(f"result[{result['rank']}].matched_fields={','.join(result['matched_fields'])}")
+            lines.append(
+                f"result[{result['rank']}].matched_fields={','.join(result['matched_fields'])}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -446,7 +473,10 @@ def main() -> int:
             atomic_write_json(output_path, payload)
             report, exit_code = validate_local_search_results(output_path)
             if exit_code != EXIT_VALIDATOR_PASS:
-                message = "; ".join(error["message"] for error in report["errors"]) or "local search results validation failed"
+                message = (
+                    "; ".join(error["message"] for error in report["errors"])
+                    or "local search results validation failed"
+                )
                 raise SearchQueryError(message)
     except (OSError, SearchQueryError, sqlite3.DatabaseError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
