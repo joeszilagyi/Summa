@@ -137,3 +137,32 @@ def test_validator_rejects_invalid_scheduler_policy_shape(tmp_path: Path) -> Non
         "INVALID_FAILURE_ATTEMPT_COUNT",
         "INVALID_NEXT_RETRY_AT",
     } <= codes
+
+
+def test_validator_rejects_naive_failure_state_timestamps(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.validator")
+    registry_path = write_registry(
+        tmp_path,
+        workspace_record(
+            workspace_root=workspace_root,
+            manifest_path=manifest_path,
+            scheduler_policy={
+                "failure_state": {
+                    "status": "retryable",
+                    "attempt_count": 1,
+                    "last_failure_at": "2026-01-01T00:00:00",
+                    "next_retry_at": "2026-01-01T00:10:00",
+                },
+            },
+        ),
+    )
+
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+
+    assert exit_code == validate_topic_workspace_registry.EXIT_VALIDATION_FAILED
+    assert any(
+        error["code"] in {"INVALID_LAST_FAILURE_AT", "INVALID_NEXT_RETRY_AT"}
+        for error in result["errors"]
+    )

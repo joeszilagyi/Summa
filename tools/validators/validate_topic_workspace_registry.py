@@ -12,7 +12,6 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +21,7 @@ from common import (
     EXIT_VALIDATION_FAILED,
     add_report_args,
     display_path,
+    is_rfc3339_datetime,
     emit_report,
     render_text_report,
 )
@@ -319,10 +319,8 @@ def validate_timestamp_string(
     if not isinstance(value, str) or not value.strip():
         add_error(errors, code=code, message=f"{field} must be a non-blank timestamp string")
         return
-    try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        add_error(errors, code=code, message=f"{field} must be an ISO-8601 timestamp")
+    if not is_rfc3339_datetime(value):
+        add_error(errors, code=code, message=f"{field} must be an RFC3339 timestamp")
 
 
 def validate_scheduler_policy(
