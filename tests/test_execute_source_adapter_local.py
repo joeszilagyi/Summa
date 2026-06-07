@@ -204,6 +204,27 @@ def test_compute_git_snapshot_hash_is_order_insensitive() -> None:
     assert left == right
 
 
+def test_compute_git_snapshot_hash_is_stable_for_candidate_path_order() -> None:
+    left = source_executor.compute_git_snapshot_hash(
+        [
+            {"relative_path": "nested/data.json", "content_hash": "sha256:b", "byte_count": 2},
+            {"relative_path": "tracked.md", "content_hash": "sha256:a", "byte_count": 1},
+        ],
+        git_ref="refs/heads/main",
+        git_commit="abc123",
+    )
+    right = source_executor.compute_git_snapshot_hash(
+        [
+            {"relative_path": "tracked.md", "content_hash": "sha256:a", "byte_count": 1},
+            {"relative_path": "nested/data.json", "content_hash": "sha256:b", "byte_count": 2},
+        ],
+        git_ref="refs/heads/main",
+        git_commit="abc123",
+    )
+
+    assert left == right
+
+
 def test_normalize_created_at_rejects_invalid_timestamp() -> None:
     with pytest.raises(source_executor.SourceAcquisitionError, match="created_at must be an RFC3339 date-time"):
         source_executor.normalize_created_at("not-a-timestamp")
