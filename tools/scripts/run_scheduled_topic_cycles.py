@@ -210,7 +210,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def manifest_relative_path(path: Path, *, run_dir: Path) -> str:
-    return os.path.relpath(str(path.resolve()), start=str(run_dir)).replace(os.sep, "/")
+    relative = os.path.relpath(str(path.resolve()), start=str(run_dir)).replace(os.sep, "/")
+    if os.path.isabs(relative):
+        return os.path.splitdrive(relative)[1].lstrip("/\\")
+    return relative
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

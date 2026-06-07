@@ -143,6 +143,18 @@ def test_scheduled_runner_python_and_wrapper_help() -> None:
         capture_output=True,
         check=False,
     )
+
+
+def run_scheduled_in_dir(
+    args: list[str], *, cwd: Path
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     assert wrapper.returncode == 0, wrapper.stderr
     assert "--selection" in wrapper.stdout
 
@@ -195,6 +207,49 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
     ledger = ledger_root / "scheduled_subject.runtime-ledger.jsonl"
     lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     assert [line["event_type"] for line in lines] == ["command_start", "command_end"]
+
+
+def test_scheduled_runner_manifest_paths_are_run_relative_even_outside_cwd(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "scheduled_subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="scheduled_subject", workspace=workspace, manifest=manifest)],
+    )
+    runner = write_fake_cycle_runner(tmp_path)
+    run_dir = tmp_path / "scheduled-root" / "run"
+    ledger_root = tmp_path / "ledger-storage"
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    relative_selection = tmp_path.relative_to(tmp_path).joinpath("selection.json").as_posix()
+    relative_run_dir = tmp_path.relative_to(tmp_path).joinpath("scheduled-root", "run").as_posix()
+    proc = run_scheduled_in_dir(
+        [
+            "--selection",
+            relative_selection,
+            "--db",
+            str(db_path),
+            "--run-dir",
+            relative_run_dir,
+            "--run-id",
+            "scheduled-run",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--cycle-runner",
+            str(runner),
+            "--ledger-root",
+            str(ledger_root),
+        ],
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    output_manifest = run_dir / "scheduled-topic-cycles-run.json"
+    payload = json.loads(output_manifest.read_text(encoding="utf-8"))
+    assert payload["selection_artifact"]["path"] == "../../selection.json"
+    assert not Path(payload["workspace_results"][0]["ledger_path"]).is_absolute()
+    assert not Path(payload["workspace_results"][0]["cycle_manifest_path"]).is_absolute()
+    assert not Path(payload["workspace_results"][0]["scheduler_failure_state_record"]).is_absolute()
 
 
 def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, monkeypatch) -> None:
@@ -254,10 +309,15 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
     assert exit_code == 0
     assert payload["started_at"] == "2026-06-03T12:00:00Z"
     assert payload["ended_at"] == "2026-06-03T12:00:50Z"
-    assert [command[command.index("--timestamp") + 1] for command in captured_commands] == [
+    timestamps_by_workspace = {}
+    for command in captured_commands:
+        workspace = command[command.index("--workspace") + 1]
+        timestamps_by_workspace[workspace] = command[command.index("--timestamp") + 1]
+
+    assert set(timestamps_by_workspace.values()) == {
         "2026-06-03T12:00:10Z",
         "2026-06-03T12:00:30Z",
-    ]
+    }
     assert captured_commands[0][captured_commands[0].index("--timestamp") + 1] != payload[
         "started_at"
     ]
