@@ -143,6 +143,7 @@ def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limi
     events: list[dict[str, Any]] = []
     for row in rows:
         note = parse_note_text(row["note_text"])
+        artifact_hash = note.get("artifact_hash")
         events.append(
             {
                 "provenance_event_id": int(row["provenance_event_id"]),
@@ -151,6 +152,7 @@ def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limi
                 "event_timestamp": str(row["event_timestamp"]),
                 "facet": note.get("facet"),
                 "cycle_depth": note.get("cycle_depth"),
+                "_artifact_hash": artifact_hash if isinstance(artifact_hash, str) else None,
             }
         )
     return events
@@ -176,6 +178,60 @@ def _count_by_provenance_and_states(
         (event_key, *states),
     ).fetchone()
     return int(row["count"])
+
+
+def _count_by_provenance_grouped(
+    conn: sqlite3.Connection,
+    table: str,
+    event_keys: list[str],
+) -> dict[str, int]:
+    if not event_keys:
+        return {}
+    rows = conn.execute(
+        f"""
+        WITH requested_events(event_key) AS (
+          VALUES {", ".join("(?)" for _ in event_keys)}
+        )
+        SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+        FROM requested_events
+        INNER JOIN {table}
+          ON {table}.provenance_event_ref = requested_events.event_key
+        GROUP BY requested_events.event_key
+        """,
+        tuple(event_keys),
+    ).fetchall()
+    result = {event_key: 0 for event_key in event_keys}
+    result.update({str(row["event_key"]): int(row["count"]) for row in rows})
+    return result
+
+
+def _count_by_provenance_and_states_grouped(
+    conn: sqlite3.Connection,
+    table: str,
+    event_keys: list[str],
+    states: list[str],
+) -> dict[str, int]:
+    if not event_keys:
+        return {}
+    if not states:
+        return {event_key: 0 for event_key in event_keys}
+    rows = conn.execute(
+        f"""
+        WITH requested_events(event_key) AS (
+          VALUES {", ".join("(?)" for _ in event_keys)}
+        )
+        SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+        FROM requested_events
+        INNER JOIN {table}
+          ON {table}.provenance_event_ref = requested_events.event_key
+        WHERE {table}.review_state IN ({", ".join("?" for _ in states)})
+        GROUP BY requested_events.event_key
+        """,
+        tuple(event_keys) + tuple(states),
+    ).fetchall()
+    result = {event_key: 0 for event_key in event_keys}
+    result.update({str(row["event_key"]): int(row["count"]) for row in rows})
+    return result
 
 
 def source_access_count_for_event(
@@ -233,6 +289,52 @@ def source_access_count_for_event(
     return len(ids)
 
 
+def source_access_counts_for_events(
+    conn: sqlite3.Connection,
+    events: list[dict[str, Any]],
+    *,
+    states: list[str] | None = None,
+) -> dict[str, int]:
+    if not events:
+        return {}
+    rows = conn.execute(
+        f"""
+        WITH requested_events(event_key, artifact_hash) AS (
+          VALUES {", ".join("(?, ?)" for _ in events)}
+        ),
+        matched AS (
+          SELECT requested_events.event_key AS event_key, access.source_access_id AS source_access_id
+          FROM requested_events
+          INNER JOIN work
+            ON work.provenance_event_ref = requested_events.event_key
+          INNER JOIN source_access AS access
+            ON access.work_id = work.work_id
+          {f"WHERE access.review_state IN ({', '.join('?' for _ in states)})" if states else ""}
+          UNION ALL
+          SELECT requested_events.event_key AS event_key, access.source_access_id AS source_access_id
+          FROM requested_events
+          INNER JOIN source_access AS access
+            ON access.provenance_event_ref = requested_events.event_key
+          {f"WHERE access.review_state IN ({', '.join('?' for _ in states)})" if states else ""}
+          UNION ALL
+          SELECT requested_events.event_key AS event_key, access.source_access_id AS source_access_id
+          FROM requested_events
+          INNER JOIN source_access AS access
+            ON access.source_lead_id LIKE 'source-lead:' || requested_events.artifact_hash || ':%'
+          {f"WHERE access.review_state IN ({', '.join('?' for _ in states)})" if states else ""}
+        )
+        SELECT event_key, COUNT(DISTINCT source_access_id) AS count
+        FROM matched
+        GROUP BY event_key
+        """,
+        tuple(value for event in events for value in (event["event_key"], event.get("_artifact_hash")))
+        + (tuple(states) * 3 if states else ()),
+    ).fetchall()
+    result = {str(event["event_key"]): 0 for event in events}
+    result.update({str(row["event_key"]): int(row["count"]) for row in rows})
+    return result
+
+
 def authority_reconciliation_count_for_event(
     conn: sqlite3.Connection,
     event_key: str,
@@ -259,57 +361,135 @@ def authority_reconciliation_count_for_event(
     return int(row["count"])
 
 
-def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Policy) -> dict[str, Any]:
-    event_key = str(event["event_key"])
+def authority_reconciliation_counts_for_events(
+    conn: sqlite3.Connection,
+    event_keys: list[str],
+    *,
+    states: list[str] | None = None,
+) -> dict[str, int]:
+    if not event_keys:
+        return {}
+    rows = conn.execute(
+        f"""
+        WITH requested_events(event_key) AS (
+          VALUES {", ".join("(?)" for _ in event_keys)}
+        )
+        SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+        FROM requested_events
+        INNER JOIN extraction_detected_entity AS entity
+          ON entity.provenance_event_ref = requested_events.event_key
+        INNER JOIN authority_reconciliation AS reconciliation
+          ON reconciliation.detected_entity_id = entity.detected_entity_id
+        {f"WHERE reconciliation.review_state IN ({', '.join('?' for _ in states)})" if states else ""}
+        GROUP BY requested_events.event_key
+        """,
+        tuple(event_keys) + (tuple(states) if states else ()),
+    ).fetchall()
+    result = {event_key: 0 for event_key in event_keys}
+    result.update({str(row["event_key"]): int(row["count"]) for row in rows})
+    return result
+
+
+def _public_cycle_event(event: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in event.items() if key != "_artifact_hash"}
+
+
+def cycle_yields(
+    conn: sqlite3.Connection,
+    *,
+    events: list[dict[str, Any]],
+    policy: Policy,
+) -> list[dict[str, Any]]:
+    if not events:
+        return []
     raw = policy.raw
     accepted_states = list(raw["accepted_review_states"])
     reviewable_states = list(raw["reviewable_review_states"])
     useful_states = list(dict.fromkeys(accepted_states + reviewable_states))
-    family_counts = {table: 0 for table in USEFUL_FAMILY_TABLES}
-    family_counts.update(
-        {
-            "work": _count_by_provenance(conn, "work", event_key),
-            "source_claim": _count_by_provenance(conn, "source_claim", event_key),
-            "extraction_detected_entity": _count_by_provenance(conn, "extraction_detected_entity", event_key),
-            "source_relationship": _count_by_provenance(conn, "source_relationship", event_key),
-            "capture_event": _count_by_provenance(conn, "capture_event", event_key),
-            "extraction_record": _count_by_provenance(conn, "extraction_record", event_key),
-            "source_access": source_access_count_for_event(conn, event_key, states=useful_states),
-            "authority_reconciliation": authority_reconciliation_count_for_event(
-                conn,
-                event_key,
-                states=useful_states,
-            ),
-        }
+    event_keys = [str(event["event_key"]) for event in events]
+    family_counts_by_table = {
+        "work": _count_by_provenance_grouped(conn, "work", event_keys),
+        "source_claim": _count_by_provenance_grouped(conn, "source_claim", event_keys),
+        "extraction_detected_entity": _count_by_provenance_grouped(conn, "extraction_detected_entity", event_keys),
+        "source_relationship": _count_by_provenance_grouped(conn, "source_relationship", event_keys),
+        "capture_event": _count_by_provenance_grouped(conn, "capture_event", event_keys),
+        "extraction_record": _count_by_provenance_grouped(conn, "extraction_record", event_keys),
+    }
+    source_access_counts = source_access_counts_for_events(conn, events, states=useful_states)
+    authority_reconciliation_counts = authority_reconciliation_counts_for_events(
+        conn,
+        event_keys,
+        states=useful_states,
     )
-    accepted_records = sum(
-        _count_by_provenance_and_states(conn, table, event_key, accepted_states)
+    accepted_counts_by_table = {
+        table: _count_by_provenance_and_states_grouped(conn, table, event_keys, accepted_states)
         for table in REVIEW_STATE_TABLES
-    )
-    reviewable_records = sum(
-        _count_by_provenance_and_states(conn, table, event_key, reviewable_states)
+    }
+    reviewable_counts_by_table = {
+        table: _count_by_provenance_and_states_grouped(conn, table, event_keys, reviewable_states)
         for table in REVIEW_STATE_TABLES
-    )
+    }
     weights = raw["family_weights"]
-    useful_yield = (
-        weights["accepted_record"] * accepted_records
-        + weights["reviewable_record"] * reviewable_records
-        + sum(weights[family] * family_counts[family] for family in USEFUL_FAMILY_TABLES)
-    )
-    low_yield = is_low_yield(
-        mode=policy.mode,
-        accepted_records=accepted_records,
-        reviewable_records=reviewable_records,
-        useful_yield=useful_yield,
-        policy=raw,
-    )
+    cycles: list[dict[str, Any]] = []
+    for event in events:
+        event_key = str(event["event_key"])
+        family_counts = {table: 0 for table in USEFUL_FAMILY_TABLES}
+        family_counts.update(
+            {
+                "work": family_counts_by_table["work"].get(event_key, 0),
+                "source_claim": family_counts_by_table["source_claim"].get(event_key, 0),
+                "extraction_detected_entity": family_counts_by_table["extraction_detected_entity"].get(event_key, 0),
+                "source_relationship": family_counts_by_table["source_relationship"].get(event_key, 0),
+                "capture_event": family_counts_by_table["capture_event"].get(event_key, 0),
+                "extraction_record": family_counts_by_table["extraction_record"].get(event_key, 0),
+                "source_access": source_access_counts.get(event_key, 0),
+                "authority_reconciliation": authority_reconciliation_counts.get(event_key, 0),
+            }
+        )
+        accepted_records = sum(
+            accepted_counts_by_table[table].get(event_key, 0)
+            for table in REVIEW_STATE_TABLES
+        )
+        reviewable_records = sum(
+            reviewable_counts_by_table[table].get(event_key, 0)
+            for table in REVIEW_STATE_TABLES
+        )
+        useful_yield = (
+            weights["accepted_record"] * accepted_records
+            + weights["reviewable_record"] * reviewable_records
+            + sum(weights[family] * family_counts[family] for family in USEFUL_FAMILY_TABLES)
+        )
+        low_yield = is_low_yield(
+            mode=policy.mode,
+            accepted_records=accepted_records,
+            reviewable_records=reviewable_records,
+            useful_yield=useful_yield,
+            policy=raw,
+        )
+        cycles.append(
+            {
+                **_public_cycle_event(event),
+                "family_counts": family_counts,
+                "new_accepted_records": accepted_records,
+                "new_reviewable_records": reviewable_records,
+                "useful_yield": round(float(useful_yield), 4),
+                "low_yield": low_yield,
+            }
+        )
+    return cycles
+
+
+def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Policy) -> dict[str, Any]:
+    cycles = cycle_yields(conn, events=[event], policy=policy)
+    if cycles:
+        return cycles[0]
     return {
-        **event,
-        "family_counts": family_counts,
-        "new_accepted_records": accepted_records,
-        "new_reviewable_records": reviewable_records,
-        "useful_yield": round(float(useful_yield), 4),
-        "low_yield": low_yield,
+        **_public_cycle_event(event),
+        "family_counts": {table: 0 for table in USEFUL_FAMILY_TABLES},
+        "new_accepted_records": 0,
+        "new_reviewable_records": 0,
+        "useful_yield": 0.0,
+        "low_yield": True,
     }
 
 
@@ -393,7 +573,7 @@ def evaluate_saturation(
             "warnings": [],
         }
     events = load_recent_gather_events(conn, subject_id=subject_id, limit=policy.lookback_cycles)
-    cycles = [cycle_yield(conn, event=event, policy=policy) for event in events]
+    cycles = cycle_yields(conn, events=events, policy=policy)
     summary = summarize_cycles(cycles)
     warnings: list[str] = []
     reason_codes: list[str] = []

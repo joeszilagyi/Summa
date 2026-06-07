@@ -521,6 +521,65 @@ def test_evaluator_is_read_only(tmp_path: Path) -> None:
     assert db_path.read_bytes() == before
 
 
+def test_evaluate_saturation_batches_cycle_count_queries(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=3)
+    conn = canonical_store.connect_canonical_store(db_path)
+    executed_sql: list[str] = []
+    try:
+        with conn:
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                artifact_hash="artifact-one",
+            )
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                artifact_hash="artifact-two",
+            )
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-3",
+                cycle_depth=3,
+                event_index=3,
+                artifact_hash="artifact-three",
+            )
+        conn.set_trace_callback(executed_sql.append)
+        result = topic_saturation.evaluate_saturation(
+            conn,
+            workspace_id="batched_subject",
+            subject_id="batched_subject",
+            policy=topic_saturation.load_policy(policy),
+            evaluated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert result["recent_yield_summary"]["cycle_count"] == 3  # type: ignore[index]
+    assert sum("SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert sum("SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM capture_event WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM extraction_record WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql) == 1
+
+
 def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     subject_id = "subject_%_literal"
