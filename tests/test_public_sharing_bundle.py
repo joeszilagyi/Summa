@@ -222,3 +222,31 @@ def test_public_sharing_bundle_cli_emits_json_report(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["schema_version"] == "public-sharing-bundle-report.v1"
     assert payload["upload_attempted"] is False
+
+
+def test_public_sharing_bundle_recover_stale_backup(tmp_path: Path) -> None:
+    output_dir = tmp_path / "sharing-bundle"
+    backup_root = sharing_builder.backup_root_path(output_dir)
+    journal_path = sharing_builder.backup_journal_path(output_dir)
+
+    backup_root.mkdir()
+    (backup_root / "manifest.json").write_text('{"schema_version": "public-sharing-bundle.v1"}\n', encoding="utf-8")
+    journal_path.write_text(
+        json.dumps(
+            {
+                "version": "1",
+                "mode": "public-sharing-bundle",
+                "output_dir": str(output_dir),
+                "state": "pending",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    sharing_builder.recover_stale_backup(output_dir)
+
+    assert output_dir.is_dir()
+    assert (output_dir / "manifest.json").exists()
+    assert not backup_root.exists()
+    assert not journal_path.exists()

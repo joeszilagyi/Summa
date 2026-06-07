@@ -9,7 +9,6 @@ import json
 import shutil
 import sys
 import tempfile
-import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -36,6 +35,9 @@ SCRIPT_PATH = "tools/scripts/build_public_sharing_bundle.py"
 BUNDLE_SCHEMA_VERSION = "public-sharing-bundle.v1"
 REPORT_SCHEMA_VERSION = "public-sharing-bundle-report.v1"
 MANIFEST_FILENAME = "manifest.json"
+BACKUP_DIR_SUFFIX = ".backup"
+BACKUP_JOURNAL_SUFFIX = ".backup.journal"
+JOURNAL_VERSION = "1"
 
 
 class PublicSharingBundleError(RuntimeError):
@@ -71,6 +73,39 @@ def load_json(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PublicSharingBundleError(f"{label} must contain a JSON object: {path}")
     return payload
+
+
+def backup_root_path(output_dir: Path) -> Path:
+    return output_dir.with_name(f".{output_dir.name}{BACKUP_DIR_SUFFIX}")
+
+
+def backup_journal_path(output_dir: Path) -> Path:
+    return output_dir.with_name(f".{output_dir.name}{BACKUP_JOURNAL_SUFFIX}")
+
+
+def recover_stale_backup(output_dir: Path) -> None:
+    backup_root = backup_root_path(output_dir)
+    journal_path = backup_journal_path(output_dir)
+
+    if backup_root.exists() and not output_dir.exists() and journal_path.exists():
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        if (
+            journal.get("output_dir") == str(output_dir)
+            and journal.get("version") == JOURNAL_VERSION
+            and journal.get("state") == "pending"
+        ):
+            backup_root.replace(output_dir)
+
+    if journal_path.exists() and not backup_root.exists():
+        journal_path.unlink(missing_ok=True)
+
+
+def clear_backup_journal(journal_path: Path) -> None:
+    journal_path.unlink(missing_ok=True)
 
 
 def resolve_existing_file(path: Path, *, label: str) -> Path:
@@ -230,6 +265,9 @@ def build_bundle(
     presentation_payload = load_json(presentation_path, label="presentation")
 
     output_dir = resolve_path(output_dir)
+    recover_stale_backup(output_dir)
+    backup_root = backup_root_path(output_dir)
+    journal_path = backup_journal_path(output_dir)
     if output_dir.exists() and not overwrite:
         raise PublicSharingBundleError(f"output directory already exists: {output_dir}")
     if output_dir.exists() and not output_dir.is_dir():
@@ -242,7 +280,6 @@ def build_bundle(
 
     emitted_at = generated_at or now_rfc3339()
     temp_root = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".tmp", dir=output_dir.parent))
-    backup_root: Path | None = None
     try:
         site_root = temp_root / "site"
         included_artifacts: list[dict[str, str]] = []
@@ -301,15 +338,29 @@ def build_bundle(
             raise PublicSharingBundleError(f"public sharing red-team gate failed: {summary}")
 
         if output_dir.exists():
-            backup_root = output_dir.parent / f".{output_dir.name}.backup.{uuid.uuid4().hex[:8]}"
+            backup_root = backup_root_path(output_dir)
             output_dir.replace(backup_root)
+            journal_path.write_text(
+                json.dumps(
+                    {
+                        "version": JOURNAL_VERSION,
+                        "mode": "public-sharing-bundle",
+                        "output_dir": str(output_dir),
+                        "state": "pending",
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
         temp_root.replace(output_dir)
     except Exception:
-        if backup_root is not None and backup_root.exists() and not output_dir.exists():
+        if backup_root.exists() and not output_dir.exists():
             backup_root.replace(output_dir)
+        clear_backup_journal(journal_path)
         raise
     else:
-        if backup_root is not None and backup_root.exists():
+        if backup_root.exists():
+            clear_backup_journal(journal_path)
             shutil.rmtree(backup_root, ignore_errors=True)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
