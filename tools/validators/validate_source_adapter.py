@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import ipaddress
+import json
 import re
 import sys
 from pathlib import Path
@@ -40,7 +40,6 @@ PROJECT_ROOT = REPO_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from tools.common.network_safety_gate import normalized_allowlist_url  # noqa: E402
-
 from tools.common.source_adapter_contract import (  # noqa: E402
     ALLOWED_PRESERVE_FIELDS,
     AUTOMATION_POSTURES,
@@ -56,7 +55,6 @@ from tools.common.source_adapter_contract import (  # noqa: E402
     STRUCTURED_DATA_FORMATS,
 )
 from tools.source_db_tools import rights_retention  # noqa: E402
-
 
 VALIDATOR_NAME = "source_adapter"
 CONTRACT_VERSION = "1"
