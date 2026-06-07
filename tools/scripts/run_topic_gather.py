@@ -30,6 +30,7 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     parse_wrapped_blocks,
     render_wrapped_block,
 )
+from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
@@ -184,6 +185,11 @@ def parse_args() -> argparse.Namespace:
         choices=("text", "json"),
         default="text",
         help="Output format for the run summary.",
+    )
+    parser.add_argument(
+        "--debug-rendered-prompt",
+        action="store_true",
+        help="Include the full rendered prompt in the batch artifact after leak scanning.",
     )
     return parser.parse_args()
 
@@ -730,6 +736,7 @@ def build_candidate_batch(
     prior_state: dict[str, Any] | None,
     feedback_plan: dict[str, Any] | None,
     next_action: dict[str, Any] | None,
+    debug_rendered_prompt: bool,
 ) -> dict[str, Any]:
     subject = gather_inputs["subject"]
     pack = gather_inputs["domain_pack"]
@@ -811,7 +818,6 @@ def build_candidate_batch(
         "prompt": {
             "rendered_prompt_path": str(rendered_prompt_path),
             "rendered_prompt_hash": sha256_text(rendered_prompt),
-            "rendered_prompt": rendered_prompt,
         },
         "source_text_wrapping": {
             "wrapper_template_id": gather_inputs["wrapper_template"].template_id,
@@ -879,6 +885,8 @@ def build_candidate_batch(
             "cycle_depth": next_action["cycle_depth"],
             "previous_run_ids_considered": list(next_action["previous_run_ids_considered"]),
         }
+    if debug_rendered_prompt:
+        batch["prompt"]["rendered_prompt"] = rendered_prompt
     return batch
 
 
@@ -887,7 +895,6 @@ def render_summary_text(
     batch_path: Path,
     rendered_prompt_path: Path,
     batch: dict[str, Any],
-    rendered_prompt: str,
     live_result: dict[str, Any] | None,
 ) -> str:
     lines = [
@@ -918,13 +925,6 @@ def render_summary_text(
     if live_result is not None:
         lines.append(f"raw_engine_output_path={live_result['raw_engine_output_path']}")
         lines.append(f"stamped_output_path={live_result['stamped_output_path']}")
-    lines.extend(
-        [
-            "--- BEGIN RENDERED PROMPT ---",
-            rendered_prompt.rstrip(),
-            "--- END RENDERED PROMPT ---",
-        ]
-    )
     return "\n".join(lines) + "\n"
 
 
@@ -933,7 +933,6 @@ def render_summary_json(
     batch_path: Path,
     rendered_prompt_path: Path,
     batch: dict[str, Any],
-    rendered_prompt: str,
     live_result: dict[str, Any] | None,
     rendered_prompt_sha256: str,
     candidate_batch_sha256: str,
@@ -950,7 +949,6 @@ def render_summary_json(
         "prompt_bundle_id": batch["prompt_bundle"]["bundle_id"],
         "rendered_prompt_sha256": rendered_prompt_sha256,
         "rendered_prompt_path": str(rendered_prompt_path),
-        "rendered_prompt": rendered_prompt,
         "candidate_batch_path": str(batch_path),
         "candidate_batch_sha256": candidate_batch_sha256,
         "prior_state": batch.get("prior_state"),
@@ -1067,8 +1065,18 @@ def main() -> int:
             prior_state=prior_state,
             feedback_plan=feedback_plan,
             next_action=next_action,
+            debug_rendered_prompt=args.debug_rendered_prompt,
         )
         batch_path = run_dir / "gather-candidate-batch.json"
+        if args.debug_rendered_prompt:
+            findings = scan_text(rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle")
+            if findings:
+                sample = "; ".join(
+                    f"{finding['code']}@{finding['path']}" for finding in findings[:5]
+                )
+                raise GatherDriverError(
+                    f"debug rendered prompt failed leak scan: {sample}"
+                )
         write_json(batch_path, batch)
 
         validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
@@ -1086,7 +1094,6 @@ def main() -> int:
                     batch_path=batch_path,
                     rendered_prompt_path=rendered_prompt_path,
                     batch=batch,
-                    rendered_prompt=rendered_prompt,
                     rendered_prompt_sha256=rendered_prompt_sha256,
                     candidate_batch_sha256=candidate_batch_sha256,
                     live_result=live_result,
@@ -1098,7 +1105,6 @@ def main() -> int:
                     batch_path=batch_path,
                     rendered_prompt_path=rendered_prompt_path,
                     batch=batch,
-                    rendered_prompt=rendered_prompt,
                     live_result=live_result,
                 )
             )

@@ -682,8 +682,7 @@
       "additionalProperties": false,
       "required": [
         "rendered_prompt_path",
-        "rendered_prompt_hash",
-        "rendered_prompt"
+        "rendered_prompt_hash"
       ],
       "properties": {
         "rendered_prompt_path": {

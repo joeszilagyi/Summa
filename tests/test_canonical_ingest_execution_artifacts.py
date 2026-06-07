@@ -69,6 +69,8 @@ def build_hostile_execution_run(tmp_path: Path) -> Path:
             str(EXECUTE_SOURCE_ADAPTER),
             "--handoff",
             str(handoff_path),
+            "--adapter",
+            str(STRUCTURED_HOSTILE_ADAPTER),
             "--output",
             str(run_dir),
             "--run-id",

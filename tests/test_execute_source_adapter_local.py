@@ -73,6 +73,8 @@ def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProces
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(ADAPTER),
             "--output",
             str(output),
             "--mode",
@@ -101,6 +103,8 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
             str(EXECUTOR),
             "--handoff",
             str(handoff),
+            "--adapter",
+            str(ADAPTER),
             "--output",
             str(output),
             "--mode",
@@ -145,7 +149,6 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
     assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
     assert (output / "manifest.json").exists()
-
     assert [capture["source_reference"]["relative_path"] for capture in captures] == [
         "oversize/big.pdf",
         "prompt_notes.pdf",
@@ -181,6 +184,84 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
         check=False,
     )
     assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+
+
+def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    records = [json.loads(line) for line in handoff.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records[0]["adapter_path"] = str(FIXTURE_ROOT / "corpus" / "prompt_notes.pdf")
+    mismatched_handoff = tmp_path / "local-source-handoff-mismatched.jsonl"
+    mismatched_handoff.write_text(
+        json.dumps(records[0], ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "local-source-execution"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(mismatched_handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "handoff adapter_path does not match trusted adapter manifest" in (proc.stdout + proc.stderr)
+
+
+def test_execute_local_source_anchors_root_to_adapter_manifest(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    record = json.loads(handoff.read_text(encoding="utf-8").splitlines()[0])
+    record["preserved"]["original_locator"]["adapter_local_path"] = "."
+    record["relative_path"] = "source_adapter.json"
+    record["resolved_source_path"] = str(FIXTURE_ROOT / "source_adapter.json")
+    mutated_handoff = tmp_path / "local-source-handoff-root-mismatch.jsonl"
+    mutated_handoff.write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "local-source-execution"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(mutated_handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "escapes the allowed root" in (proc.stdout + proc.stderr)
 
 
 def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) -> None:

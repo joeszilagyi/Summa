@@ -210,6 +210,8 @@ def run_executor(
         str(EXECUTOR),
         "--handoff",
         str(handoff),
+        "--adapter",
+        str(ADAPTER),
         "--output",
         str(output),
         "--mode",

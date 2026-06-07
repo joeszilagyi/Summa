@@ -74,6 +74,7 @@ def test_wrapper_renderer_and_parser_round_trip() -> None:
     parsed = wrapper.parse_wrapped_blocks(rendered, template=template)
 
     assert len(parsed) == 1
+    assert "source_length: 29" in rendered
     assert parsed[0].source_ref == "source:fixture:1"
     assert parsed[0].provenance == "fixture provenance"
     assert list(parsed[0].hazard_flags) == ["prompt_injection_text", "hostile_markup"]

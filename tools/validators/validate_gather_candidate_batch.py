@@ -470,11 +470,14 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 )
 
     prompt = payload.get("prompt")
+    prompt_text: str | None = None
     if isinstance(prompt, dict):
         rendered_prompt = prompt.get("rendered_prompt")
         rendered_prompt_hash = prompt.get("rendered_prompt_hash")
         rendered_prompt_path = prompt.get("rendered_prompt_path")
+        prompt_path_text: str | None = None
         if isinstance(rendered_prompt, str):
+            prompt_text = rendered_prompt
             actual_hash = hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
             if rendered_prompt_hash != actual_hash:
                 add_error(
@@ -513,6 +516,9 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path="$.prompt.rendered_prompt_path",
                     )
                 else:
+                    prompt_path_text = file_text
+                    if prompt_text is None:
+                        prompt_text = file_text
                     if isinstance(rendered_prompt, str) and file_text != rendered_prompt:
                         add_error(
                             errors,
@@ -520,6 +526,15 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                             message="rendered_prompt_path content does not match inline rendered_prompt",
                             path="$.prompt.rendered_prompt_path",
                         )
+        if isinstance(prompt_path_text, str) and not isinstance(rendered_prompt, str):
+            actual_hash = hashlib.sha256(prompt_path_text.encode("utf-8")).hexdigest()
+            if rendered_prompt_hash != actual_hash:
+                add_error(
+                    errors,
+                    code="PROMPT_HASH_MISMATCH",
+                    message="rendered_prompt_hash does not match rendered_prompt_path content",
+                    path="$.prompt.rendered_prompt_hash",
+                )
 
     iteration_mode = payload.get("iteration_mode")
     cycle_depth = payload.get("cycle_depth")
@@ -591,8 +606,8 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="prior_state.context_hash does not match prior_state.context_text",
                     path="$.prior_state.context_hash",
                 )
-            if isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
-                if context_text not in prompt["rendered_prompt"]:
+            if isinstance(prompt_text, str):
+                if context_text not in prompt_text:
                     add_error(
                         errors,
                         code="PRIOR_STATE_PROMPT_MISMATCH",
@@ -658,9 +673,8 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
             )
 
     if isinstance(feedback_plan, dict):
-        if isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
-            rendered_prompt = prompt["rendered_prompt"]
-            if "NEXT ACTION SELECTION" not in rendered_prompt:
+        if isinstance(prompt_text, str):
+            if "NEXT ACTION SELECTION" not in prompt_text:
                 add_error(
                     errors,
                     code="FEEDBACK_PLAN_PROMPT_BLOCK_REQUIRED",
@@ -668,7 +682,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     path="$.prompt.rendered_prompt",
                 )
             next_action_id = feedback_plan.get("next_action_id")
-            if isinstance(next_action_id, str) and next_action_id not in rendered_prompt:
+            if isinstance(next_action_id, str) and next_action_id not in prompt_text:
                 add_error(
                     errors,
                     code="FEEDBACK_PLAN_PROMPT_MISMATCH",
@@ -745,7 +759,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 )
 
     wrapping = payload.get("source_text_wrapping")
-    if isinstance(wrapping, dict) and isinstance(prompt, dict) and isinstance(prompt.get("rendered_prompt"), str):
+    if isinstance(wrapping, dict) and isinstance(prompt_text, str):
         try:
             template = load_template()
         except RuntimeError as exc:
@@ -773,7 +787,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     path="$.source_text_wrapping.end_delimiter",
                 )
 
-            parsed_blocks = parse_wrapped_blocks(prompt["rendered_prompt"], template=template)
+            parsed_blocks = parse_wrapped_blocks(prompt_text, template=template)
             recorded_blocks = wrapping.get("blocks")
             if not isinstance(recorded_blocks, list):
                 return
