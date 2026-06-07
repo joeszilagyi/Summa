@@ -297,6 +297,47 @@ def test_remote_url_manifest_handoff_requires_explicit_source_identity_fields(tm
     assert "preserved.original_locator.manifest_input_path must be a non-blank string" in errors
 
 
+def test_handoff_validator_rejects_incomplete_original_locator_fields(tmp_path: Path) -> None:
+    def first_handoff_record(path: Path) -> dict[str, object]:
+        text = path.read_text(encoding="utf-8")
+        for raw_line in text.splitlines():
+            if raw_line.strip():
+                return json.loads(raw_line)
+        raise AssertionError(f"missing handoff line in {path}")
+
+    local_adapter = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
+    local_handoff = tmp_path / "local_handoff.jsonl"
+    local_proc = run_command(
+        [
+            str(LOCAL_SOURCE_PLANNER),
+            "--adapter",
+            str(local_adapter),
+            "--handoff-jsonl",
+            str(local_handoff),
+            "--format",
+            "json",
+        ]
+    )
+    assert local_proc.returncode == 0, local_proc.stdout + local_proc.stderr
+    local_record = first_handoff_record(local_handoff)
+    local_adapter_payload = json.loads(local_adapter.read_text(encoding="utf-8"))
+    local_mutated = copy.deepcopy(local_record)
+    local_mutated["preserved"]["original_locator"].pop("adapter_local_path", None)
+    local_errors = validate_source_adapter_handoff_record(local_mutated, local_adapter_payload)
+    assert "preserved.original_locator.adapter_local_path must be a non-blank string" in local_errors
+
+    _, git_adapter = init_local_git_repo_fixture(tmp_path)
+    git_handoff = tmp_path / "git_handoff.jsonl"
+    git_proc = run_command([str(LOCAL_GIT_REPO_PLANNER), "--adapter", str(git_adapter), "--handoff-jsonl", str(git_handoff), "--format", "json"])
+    assert git_proc.returncode == 0, git_proc.stdout + git_proc.stderr
+    git_record = first_handoff_record(git_handoff)
+    git_adapter_payload = json.loads(git_adapter.read_text(encoding="utf-8"))
+    git_mutated = copy.deepcopy(git_record)
+    git_mutated["preserved"]["original_locator"].pop("configured_ref", None)
+    git_errors = validate_source_adapter_handoff_record(git_mutated, git_adapter_payload)
+    assert "preserved.original_locator.configured_ref must be a non-blank string" in git_errors
+
+
 def test_handoff_validator_rejects_family_specific_state_mismatch(tmp_path: Path) -> None:
     adapter_path = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
     handoff_path = tmp_path / "invalid_handoff.json"

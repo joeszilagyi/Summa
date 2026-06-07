@@ -143,7 +143,7 @@ def validate_source_adapter_handoff_record(
         errors.append("source_specific must be an object")
 
     if isinstance(preserved, dict):
-        validate_preserved_fields(preserved, errors)
+        validate_preserved_fields(preserved, variant=variant, errors=errors)
         if isinstance(handoff, dict):
             requested_preserve = set(handoff.get("preserve_fields", []))
             unknown_preserved = sorted(set(preserved) - requested_preserve)
@@ -277,7 +277,12 @@ def validate_remote_url_manifest_identity(
         errors.append("source_identity.manifest_line must match preserved.original_locator.line_number")
 
 
-def validate_preserved_fields(preserved: dict[str, Any], errors: list[str]) -> None:
+def validate_preserved_fields(
+    preserved: dict[str, Any],
+    *,
+    variant: str,
+    errors: list[str],
+) -> None:
     allowed_preserve = {
         "original_locator",
         "discovery_provenance",
@@ -297,6 +302,13 @@ def validate_preserved_fields(preserved: dict[str, Any], errors: list[str]) -> N
         errors.append(f"preserved contains unknown field: {unknown_preserved[0]}")
     if "original_locator" in preserved and not isinstance(preserved.get("original_locator"), dict):
         errors.append("preserved.original_locator must be an object")
+        return
+    if "original_locator" in preserved:
+        validate_original_locator_fields(
+            original_locator=preserved.get("original_locator"),
+            variant=variant,
+            errors=errors,
+        )
     if "discovery_provenance" in preserved and not _is_nonblank_string(preserved.get("discovery_provenance")):
         errors.append("preserved.discovery_provenance must be a non-blank string")
     if "rights_posture" in preserved:
@@ -335,6 +347,31 @@ def validate_preserved_fields(preserved: dict[str, Any], errors: list[str]) -> N
         errors.append("preserved.transform_lineage must be an array")
     if "source_metadata" in preserved and not isinstance(preserved.get("source_metadata"), dict):
         errors.append("preserved.source_metadata must be an object")
+
+
+def validate_original_locator_fields(
+    *,
+    original_locator: dict[str, Any] | None,
+    variant: str,
+    errors: list[str],
+) -> None:
+    if variant == "remote_url_manifest":
+        expected = {"manifest_url", "entry_url", "manifest_input_path", "line_number"}
+    elif variant == "local_git_repo":
+        expected = {"adapter_local_path", "configured_ref", "inspected_ref", "resolved_repo_path"}
+    else:
+        expected = {"adapter_local_path", "resolved_source_path", "relative_path"}
+    for field in sorted(expected):
+        value = original_locator.get(field) if isinstance(original_locator, dict) else None
+        if field == "line_number":
+            if not isinstance(value, int) or isinstance(value, bool):
+                errors.append("preserved.original_locator.line_number must be an integer >= 1")
+                continue
+            if value < 1:
+                errors.append("preserved.original_locator.line_number must be an integer >= 1")
+            continue
+        if not _is_nonblank_string(value):
+            errors.append(f"preserved.original_locator.{field} must be a non-blank string")
 
 
 def validate_source_specific_fields(
