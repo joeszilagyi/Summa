@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -270,6 +271,60 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert not any(path.suffix == ".lock" for path in workspace.rglob("*"))
 
 
+def test_topic_cycle_acquires_workspace_lock_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    workspace = write_workspace(tmp_path, subject_id="locked_subject")
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-lock-default"
+    lock_calls: list[tuple[str, str, Path, bool]] = []
+
+    @contextlib.contextmanager
+    def fake_lock(
+        workspace_id: str,
+        *,
+        command: str,
+        lock_root: Path,
+        wait: bool,
+    ):
+        lock_calls.append((workspace_id, command, lock_root, wait))
+        yield tmp_path / "workspace.lock"
+
+    monkeypatch.setattr(module, "acquire_workspace_lock", fake_lock)
+
+    args = module.parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-lock-default",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+        ]
+    )
+
+    manifest, exit_code = module.run_topic_cycle(args)
+
+    assert exit_code == 0
+    assert lock_calls == [
+        (
+            "locked_subject",
+            "run_topic_cycle:cycle-lock-default",
+            module.DEFAULT_LOCK_ROOT,
+            False,
+        )
+    ]
+    assert manifest["status"] == "dry_run"  # type: ignore[index]
+
+
 def test_topic_cycle_graph_closure_is_disabled_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -516,6 +571,7 @@ def test_topic_cycle_final_status_recomputes_after_evidence_spool(
             "2026-06-03T12:00:00Z",
             "--mode",
             "local",
+            "--skip-workspace-lock",
         ]
     )
 

@@ -568,6 +568,7 @@ def run_scheduled_cycles(
                 mode,
                 "--format",
                 "json",
+                "--skip-workspace-lock",
             ]
             if candidate_batch_fixture:
                 command.extend(["--candidate-batch-fixture", candidate_batch_fixture])

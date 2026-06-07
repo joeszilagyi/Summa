@@ -106,6 +106,7 @@ def write_fake_cycle_runner(tmp_path: Path, *, exit_code: int = 0) -> Path:
                 "parser.add_argument('--candidate-batch-fixture')",
                 "parser.add_argument('--execution-run-fixture')",
                 "parser.add_argument('--build-next-feedback-plan', action='store_true')",
+                "parser.add_argument('--skip-workspace-lock', action='store_true')",
                 "args = parser.parse_args()",
                 "run_dir = pathlib.Path(args.run_dir)",
                 "run_dir.mkdir(parents=True, exist_ok=True)",
@@ -143,6 +144,8 @@ def test_scheduled_runner_python_and_wrapper_help() -> None:
         capture_output=True,
         check=False,
     )
+    assert wrapper.returncode == 0, wrapper.stderr
+    assert "--selection" in wrapper.stdout
 
 
 def run_scheduled_in_dir(
@@ -155,8 +158,6 @@ def run_scheduled_in_dir(
         capture_output=True,
         check=False,
     )
-    assert wrapper.returncode == 0, wrapper.stderr
-    assert "--selection" in wrapper.stdout
 
 
 def test_scheduled_runner_rejects_invalid_child_manifest_json(tmp_path: Path) -> None:
@@ -239,7 +240,7 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
 
 def test_scheduled_runner_manifest_paths_are_run_relative_even_outside_cwd(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "scheduled_subject")
-    selection = write_selection(
+    write_selection(
         tmp_path,
         [planned_record(workspace_id="scheduled_subject", workspace=workspace, manifest=manifest)],
     )
@@ -701,6 +702,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     db_path.write_text("fixture\n", encoding="utf-8")
 
     invocations: list[str] = []
+    commands: list[list[str]] = []
     monkeypatch.setattr(
         scheduled_runner,
         "_next_workspace_token",
@@ -713,6 +715,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     )
 
     def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
         run_id = command[command.index("--run-id") + 1]
         invocations.append(run_id)
         run_dir = Path(command[command.index("--run-dir") + 1])
@@ -749,6 +752,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
 
     assert exit_code == scheduled_runner.EXIT_SUCCESS
     assert len(invocations) == 2
+    assert all("--skip-workspace-lock" in command for command in commands)
     assert (
         payload["workspace_results"][0]["cycle_run_id"]
         != payload["workspace_results"][1]["cycle_run_id"]
@@ -757,7 +761,9 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     assert payload["workspace_results"][1]["cycle_run_id"].endswith("same-token-1")
 
 
-def test_scheduled_runner_does_not_double_run_locked_workspace(tmp_path: Path, monkeypatch) -> None:
+def test_scheduled_runner_does_not_double_run_locked_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace, manifest = write_workspace(tmp_path, "locked_subject")
     selection = write_selection(
         tmp_path,
@@ -773,19 +779,19 @@ def test_scheduled_runner_does_not_double_run_locked_workspace(tmp_path: Path, m
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
 
-@contextlib.contextmanager
-def fake_lock(*_args, **_kwargs):
-    call_count = fake_lock.__dict__.setdefault("calls", 0)
-    if call_count:
-        raise scheduled_runner.WorkspaceLockError("workspace lock is already held")
-    fake_lock.__dict__["calls"] = call_count + 1
-    yield Path("/tmp/scheduled-topic-lock.test")
+    @contextlib.contextmanager
+    def fake_lock(*_args, **_kwargs):
+        call_count = fake_lock.__dict__.setdefault("calls", 0)
+        if call_count:
+            raise scheduled_runner.WorkspaceLockError("workspace lock is already held")
+        fake_lock.__dict__["calls"] = call_count + 1
+        yield Path("/tmp/scheduled-topic-lock.test")
 
-    lock = fake_lock
     invocations: list[list[str]] = []
 
     def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
         invocations.append(command)
+        assert "--skip-workspace-lock" in command
         run_dir = Path(command[command.index("--run-dir") + 1])
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "topic-cycle-run.json").write_text(
@@ -834,7 +840,7 @@ def test_scheduled_runner_stdout_stderr_contract_validation_and_help(tmp_path: P
     selection = write_selection(tmp_path, [planned_record(workspace_id="subject", workspace=workspace, manifest=manifest)])
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
-    runner = write_fake_cycle_runner(tmp_path)
+    _ = write_fake_cycle_runner(tmp_path)
     missing_run_file = tmp_path / "missing.json"
 
     help_proc = run_scheduled(["--help"])

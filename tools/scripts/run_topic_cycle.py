@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.workspace_lock import (  # noqa: E402
+    DEFAULT_LOCK_ROOT,
+    WorkspaceLockError,
+    acquire_workspace_lock,
+)
 from tools.scripts import resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
     canonical_graph_closure,
@@ -262,6 +268,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-network",
         action="store_true",
         help="Reserved for later remote acquisition. F26 records this as disabled and refuses remote fetch.",
+    )
+    parser.add_argument(
+        "--skip-workspace-lock",
+        action="store_true",
+        help="Assume an outer wrapper already holds the workspace lock.",
     )
     parser.add_argument(
         "--degraded-spool",
@@ -1671,71 +1682,93 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     try:
         runtime = resolve_runtime_stage(args=args, manifest=manifest, workspace=workspace)
-        resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
-        validate_store_stage(args=args, manifest=manifest, db_path=db_path)
-        feedback_plan = resolve_feedback_plan(
-            args=args,
-            manifest=manifest,
-            workspace=workspace,
-            db_path=db_path,
-            run_dir=run_dir,
-            runtime=runtime,
-        )
-        batch_path = gather_stage(
-            args=args,
-            manifest=manifest,
-            workspace=workspace,
-            db_path=db_path,
-            run_dir=run_dir,
-            runtime=runtime,
-            feedback_plan=feedback_plan,
-        )
-        candidate_ingest_stage(
-            args=args, manifest=manifest, db_path=db_path, batch_path=batch_path, run_dir=run_dir
-        )
-        acquisition_result = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
-        if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
-            execution_run_dir, execution_artifacts = acquisition_result
-        else:
-            execution_run_dir = acquisition_result
-            execution_artifacts = None
-        execution_ingest_stage(
-            args=args,
-            manifest=manifest,
-            db_path=db_path,
-            execution_run_dir=execution_run_dir,
-            execution_artifacts=execution_artifacts,
-            run_dir=run_dir,
-        )
-        if args.build_next_feedback_plan:
-            build_feedback_plan_stage(
-                args=args,
-                manifest=manifest,
-                workspace=workspace,
-                db_path=db_path,
-                run_dir=run_dir,
-                runtime=runtime,
-                when="post",
+        lock_context = nullcontext()
+        if not getattr(args, "skip_workspace_lock", False):
+            workspace_id = manifest["workspace"].get("workspace_id")
+            if not isinstance(workspace_id, str) or not workspace_id.strip():
+                raise TopicCycleError(
+                    "workspace_id must be resolved before acquiring the workspace lock",
+                    stage_name="workspace_lock",
+                )
+            lock_context = acquire_workspace_lock(
+                workspace_id,
+                command=f"run_topic_cycle:{run_id}",
+                lock_root=DEFAULT_LOCK_ROOT,
+                wait=False,
             )
-        else:
-            stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
-            stage.skipped_reason = "not requested"
-            add_stage(manifest, stage)
-        publication_stage(manifest=manifest)
-        final_store_stage(args=args, manifest=manifest, db_path=db_path)
-        graph_closure_stage(
-            args=args,
-            manifest=manifest,
-            db_path=db_path,
-            run_dir=run_dir,
-        )
-        if args.mode == "dry-run":
-            manifest["status"] = "dry_run"
-        elif manifest.get("spool_records"):
-            manifest["status"] = "degraded"
-        else:
-            manifest["status"] = "completed"
-        return_code = 0
+        try:
+            with lock_context:
+                resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
+                validate_store_stage(args=args, manifest=manifest, db_path=db_path)
+                feedback_plan = resolve_feedback_plan(
+                    args=args,
+                    manifest=manifest,
+                    workspace=workspace,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                    runtime=runtime,
+                )
+                batch_path = gather_stage(
+                    args=args,
+                    manifest=manifest,
+                    workspace=workspace,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                    runtime=runtime,
+                    feedback_plan=feedback_plan,
+                )
+                candidate_ingest_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    batch_path=batch_path,
+                    run_dir=run_dir,
+                )
+                acquisition_result = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+                if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
+                    execution_run_dir, execution_artifacts = acquisition_result
+                else:
+                    execution_run_dir = acquisition_result
+                    execution_artifacts = None
+                execution_ingest_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    execution_run_dir=execution_run_dir,
+                    execution_artifacts=execution_artifacts,
+                    run_dir=run_dir,
+                )
+                if args.build_next_feedback_plan:
+                    build_feedback_plan_stage(
+                        args=args,
+                        manifest=manifest,
+                        workspace=workspace,
+                        db_path=db_path,
+                        run_dir=run_dir,
+                        runtime=runtime,
+                        when="post",
+                    )
+                else:
+                    stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
+                    stage.skipped_reason = "not requested"
+                    add_stage(manifest, stage)
+                publication_stage(manifest=manifest)
+                final_store_stage(args=args, manifest=manifest, db_path=db_path)
+                graph_closure_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                )
+                if args.mode == "dry-run":
+                    manifest["status"] = "dry_run"
+                elif manifest.get("spool_records"):
+                    manifest["status"] = "degraded"
+                else:
+                    manifest["status"] = "completed"
+                return_code = 0
+        except WorkspaceLockError as exc:
+            raise TopicCycleError(str(exc), stage_name="workspace_lock") from exc
     except TopicCycleError as exc:
         manifest["status"] = "failed"
         if exc.stage_name:
