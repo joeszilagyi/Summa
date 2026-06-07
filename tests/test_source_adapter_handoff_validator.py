@@ -574,3 +574,103 @@ def test_handoff_validator_rejects_noncontiguous_sequences(tmp_path: Path) -> No
     report = json.loads(report_json.read_text(encoding="utf-8"))
     messages = {error["message"] for error in report["errors"]}
     assert "handoff sequence values must be contiguous starting at 1 (missing 2)" in messages
+
+
+def test_handoff_validator_rejects_duplicate_sequences_in_json_array_payload(tmp_path: Path) -> None:
+    adapter_path = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "source_adapter_runtime" / "local_directory" / "source_adapter.json"
+    report_json = tmp_path / "report.json"
+    payload = {
+        "schema_version": "source-adapter-handoff.v1",
+        "adapter_id": "array-adapter",
+        "workspace_id": "alpha_subject",
+        "record_family": "capture",
+        "batch_unit": "per_file",
+        "adapter_path": "/tmp/source_adapter.json",
+        "emitted_at": "2026-06-02T00:00:00Z",
+        "sequence": 1,
+        "resolved_source_path": "/tmp/example.pdf",
+        "relative_path": "example.pdf",
+        "preserved": {
+            "discovery_provenance": "validator fixture",
+            "rights_posture": "private_local_only",
+            "byte_retention_status": "retained_private_only",
+            "discard_metadata": {"discard_required": False, "discard_reason": None},
+            "refetchability_status": "local_replayable",
+            "source_metadata": {"content_kinds": ["pdf"], "hazard_flags": []},
+            "transform_lineage": [],
+            "original_locator": {
+                "adapter_local_path": "corpus",
+                "resolved_source_path": "/tmp/example.pdf",
+                "relative_path": "example.pdf",
+            },
+        },
+        "source_specific": {"relative_path": "example.pdf", "source_filename": "example.pdf"},
+    }
+    duplicate_payload = [payload, {**payload, "sequence": 1, "resolved_source_path": "/tmp/example2.pdf", "relative_path": "example2.pdf", "source_specific": {"relative_path": "example2.pdf", "source_filename": "example2.pdf"}}]
+    (tmp_path / "handoff.json").write_text(json.dumps(duplicate_payload), encoding="utf-8")
+
+    proc = run_command(
+        [
+            str(VALIDATOR),
+            str(tmp_path / "handoff.json"),
+            "--adapter",
+            str(adapter_path),
+            "--report-json",
+            str(report_json),
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    messages = {error["message"] for error in report["errors"]}
+    assert "handoff sequence values must be unique: 1 appears more than once" in messages
+
+
+def test_handoff_validator_rejects_noncontiguous_sequences_in_json_array_payload(tmp_path: Path) -> None:
+    adapter_path = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "source_adapter_runtime" / "local_directory" / "source_adapter.json"
+    report_json = tmp_path / "report.json"
+    payload = {
+        "schema_version": "source-adapter-handoff.v1",
+        "adapter_id": "array-adapter",
+        "workspace_id": "alpha_subject",
+        "record_family": "capture",
+        "batch_unit": "per_file",
+        "adapter_path": "/tmp/source_adapter.json",
+        "emitted_at": "2026-06-02T00:00:00Z",
+        "sequence": 1,
+        "resolved_source_path": "/tmp/example.pdf",
+        "relative_path": "example.pdf",
+        "preserved": {
+            "discovery_provenance": "validator fixture",
+            "rights_posture": "private_local_only",
+            "byte_retention_status": "retained_private_only",
+            "discard_metadata": {"discard_required": False, "discard_reason": None},
+            "refetchability_status": "local_replayable",
+            "source_metadata": {"content_kinds": ["pdf"], "hazard_flags": []},
+            "transform_lineage": [],
+            "original_locator": {
+                "adapter_local_path": "corpus",
+                "resolved_source_path": "/tmp/example.pdf",
+                "relative_path": "example.pdf",
+            },
+        },
+        "source_specific": {"relative_path": "example.pdf", "source_filename": "example.pdf"},
+    }
+    noncontiguous_payload = [payload, {**payload, "sequence": 3, "resolved_source_path": "/tmp/example2.pdf", "relative_path": "example2.pdf", "source_specific": {"relative_path": "example2.pdf", "source_filename": "example2.pdf"}}]
+    (tmp_path / "handoff.json").write_text(json.dumps(noncontiguous_payload), encoding="utf-8")
+
+    proc = run_command(
+        [
+            str(VALIDATOR),
+            str(tmp_path / "handoff.json"),
+            "--adapter",
+            str(adapter_path),
+            "--report-json",
+            str(report_json),
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    messages = {error["message"] for error in report["errors"]}
+    assert "handoff sequence values must be contiguous starting at 1 (missing 2)" in messages
