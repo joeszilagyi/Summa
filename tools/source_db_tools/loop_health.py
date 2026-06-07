@@ -64,6 +64,14 @@ PER_CYCLE_TABLES: tuple[str, ...] = (
 )
 
 
+def _scope_identifier(*, subject_id: str | None, workspace_id: str | None) -> str | None:
+    if isinstance(workspace_id, str) and workspace_id.strip():
+        return workspace_id
+    if isinstance(subject_id, str) and subject_id.strip():
+        return subject_id
+    return None
+
+
 class LoopHealthError(RuntimeError):
     """Raised when a loop-health summary cannot be built."""
 
@@ -141,7 +149,7 @@ def _count_for_event(conn: sqlite3.Connection, table_name: str, event_key: str) 
 def _load_cycle_events(
     conn: sqlite3.Connection,
     *,
-    subject_id: str | None,
+    scope_id: str | None,
     lookback_cycles: int,
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
@@ -158,7 +166,13 @@ def _load_cycle_events(
     for row in rows:
         note = _load_note(row["note_text"])
         note_subject = note.get("subject_id")
-        if subject_id is not None and note_subject != subject_id:
+        note_workspace = note.get("workspace_id")
+        note_scopes = {
+            value
+            for value in (note_workspace, note_subject)
+            if isinstance(value, str) and value.strip()
+        }
+        if scope_id is not None and scope_id not in note_scopes:
             continue
         events.append(
             {
@@ -167,6 +181,7 @@ def _load_cycle_events(
                 "run_id": row["run_id"],
                 "event_timestamp": row["event_timestamp"],
                 "subject_id": note_subject,
+                "workspace_id": note_workspace,
                 "facet": note.get("facet"),
                 "cycle_depth": note.get("cycle_depth"),
                 "prompt_bundle_id": note.get("prompt_bundle_id"),
@@ -175,6 +190,76 @@ def _load_cycle_events(
         if len(events) >= lookback_cycles:
             break
     return list(reversed(events))
+
+
+def _scoped_row_query(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    timestamp_column: str,
+    scope_id: str | None,
+    placeholders: str,
+    params: tuple[Any, ...],
+) -> list[sqlite3.Row]:
+    if scope_id is None:
+        return conn.execute(
+            f"""
+            SELECT {timestamp_column} AS timestamp_value
+            FROM {table_name}
+            WHERE COALESCE(review_state, '') IN ({placeholders})
+            """,
+            params,
+        ).fetchall()
+    if table_name == "extraction_detected_entity":
+        return conn.execute(
+            f"""
+            SELECT entity.{timestamp_column} AS timestamp_value
+            FROM extraction_detected_entity AS entity
+            LEFT JOIN capture_event AS capture
+              ON capture.capture_event_id = entity.capture_event_id
+            LEFT JOIN extraction_record AS extraction
+              ON extraction.extraction_id = entity.extraction_id
+            WHERE COALESCE(entity.workspace_id, capture.workspace_id, extraction.workspace_id)=?
+              AND COALESCE(entity.review_state, '') IN ({placeholders})
+            """,
+            (scope_id, *params),
+        ).fetchall()
+    if table_name == "authority_reconciliation":
+        return conn.execute(
+            f"""
+            SELECT reconciliation.{timestamp_column} AS timestamp_value
+            FROM authority_reconciliation AS reconciliation
+            LEFT JOIN extraction_detected_entity AS entity
+              ON entity.detected_entity_id = reconciliation.detected_entity_id
+            LEFT JOIN extraction_record AS extraction
+              ON extraction.extraction_id = entity.extraction_id
+            LEFT JOIN capture_event AS capture
+              ON capture.capture_event_id = entity.capture_event_id
+            LEFT JOIN authority_record AS target_record
+              ON target_record.authority_record_id = CAST(reconciliation.target_id AS INTEGER)
+             AND reconciliation.target_namespace = 'authority_record'
+            LEFT JOIN authority_record AS candidate_record
+              ON candidate_record.authority_record_id = reconciliation.candidate_authority_record_id
+            WHERE COALESCE(
+                    entity.workspace_id,
+                    target_record.workspace_id,
+                    candidate_record.workspace_id,
+                    capture.workspace_id,
+                    extraction.workspace_id
+                  )=?
+              AND COALESCE(reconciliation.review_state, '') IN ({placeholders})
+            """,
+            (scope_id, *params),
+        ).fetchall()
+    return conn.execute(
+        f"""
+        SELECT {timestamp_column} AS timestamp_value
+        FROM {table_name}
+        WHERE workspace_id=?
+          AND COALESCE(review_state, '') IN ({placeholders})
+        """,
+        (scope_id, *params),
+    ).fetchall()
 
 
 def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, Any]:
@@ -242,19 +327,28 @@ def _per_cycle_metrics(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[
 
 
 def _backlog_metrics(conn: sqlite3.Connection, *, now: dt.datetime) -> dict[str, Any]:
+    return _backlog_metrics_scoped(conn, workspace_id=None, now=now)
+
+
+def _backlog_metrics_scoped(
+    conn: sqlite3.Connection,
+    *,
+    workspace_id: str | None,
+    now: dt.datetime,
+) -> dict[str, Any]:
     by_family: dict[str, int] = {}
     pending_timestamps: list[dt.datetime] = []
     placeholders = _state_placeholders(PENDING_REVIEW_STATES)
     params = tuple(sorted(PENDING_REVIEW_STATES))
     for table_name, _pk_column, timestamp_column in REVIEWABLE_TABLES:
-        rows = conn.execute(
-            f"""
-            SELECT {timestamp_column} AS timestamp_value
-            FROM {table_name}
-            WHERE COALESCE(review_state, '') IN ({placeholders})
-            """,
-            params,
-        ).fetchall()
+        rows = _scoped_row_query(
+            conn,
+            table_name=table_name,
+            timestamp_column=timestamp_column,
+            scope_id=workspace_id,
+            placeholders=placeholders,
+            params=params,
+        )
         by_family[table_name] = len(rows)
         for row in rows:
             parsed = _parse_timestamp(row["timestamp_value"])
@@ -282,18 +376,42 @@ def _contradiction_metrics(
     conn: sqlite3.Connection,
     *,
     per_cycle: list[dict[str, Any]],
+    workspace_id: str | None,
 ) -> dict[str, Any]:
-    total = _safe_count(conn, "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'")
-    unresolved = _safe_count(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM source_relationship
-        WHERE predicate='contradicts'
-          AND COALESCE(review_state, '') IN ({})
-        """.format(_state_placeholders(PENDING_REVIEW_STATES)),
-        tuple(sorted(PENDING_REVIEW_STATES)),
-    )
+    if workspace_id is None:
+        total = _safe_count(conn, "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'")
+        unresolved = _safe_count(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM source_relationship
+            WHERE predicate='contradicts'
+              AND COALESCE(review_state, '') IN ({})
+            """.format(_state_placeholders(PENDING_REVIEW_STATES)),
+            tuple(sorted(PENDING_REVIEW_STATES)),
+        )
+    else:
+        total = _safe_count(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM source_relationship
+            WHERE predicate='contradicts'
+              AND workspace_id=?
+            """,
+            (workspace_id,),
+        )
+        unresolved = _safe_count(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM source_relationship
+            WHERE predicate='contradicts'
+              AND workspace_id=?
+              AND COALESCE(review_state, '') IN ({})
+            """.format(_state_placeholders(PENDING_REVIEW_STATES)),
+            (workspace_id, *sorted(PENDING_REVIEW_STATES)),
+        )
     new_in_lookback = sum(int(cycle["new_contradiction_count"]) for cycle in per_cycle)
     new_claims = sum(int(cycle["new_source_claim_count"]) for cycle in per_cycle)
     return {
@@ -310,26 +428,125 @@ def _resolution_count(
     *,
     cycle_events: list[dict[str, Any]],
     evaluated_at: str,
+    workspace_id: str | None,
 ) -> tuple[bool, int | None]:
-    total_decisions = _safe_count(
-        conn,
-        "SELECT COUNT(*) FROM provenance_event WHERE event_type LIKE 'review_decision_%'",
-    )
+    if workspace_id is None:
+        total_decisions = _safe_count(
+            conn,
+            "SELECT COUNT(*) FROM provenance_event WHERE event_type LIKE 'review_decision_%'",
+        )
+    else:
+        total_decisions = _safe_count(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM provenance_event AS event
+            WHERE event.event_type LIKE 'review_decision_%'
+              AND (
+                (event.object_namespace='source_claim' AND EXISTS (
+                    SELECT 1
+                    FROM source_claim AS claim
+                    WHERE claim.source_claim_id = CAST(event.object_id AS INTEGER)
+                      AND claim.workspace_id=?
+                ))
+                OR (event.object_namespace='source_relationship' AND EXISTS (
+                    SELECT 1
+                    FROM source_relationship AS relationship
+                    WHERE relationship.source_relationship_id = CAST(event.object_id AS INTEGER)
+                      AND relationship.workspace_id=?
+                ))
+                OR (event.object_namespace='authority_reconciliation' AND EXISTS (
+                    SELECT 1
+                    FROM authority_reconciliation AS reconciliation
+                    LEFT JOIN extraction_detected_entity AS entity
+                      ON entity.detected_entity_id = reconciliation.detected_entity_id
+                    LEFT JOIN extraction_record AS extraction
+                      ON extraction.extraction_id = entity.extraction_id
+                    LEFT JOIN capture_event AS capture
+                      ON capture.capture_event_id = entity.capture_event_id
+                    LEFT JOIN authority_record AS target_record
+                      ON target_record.authority_record_id = CAST(reconciliation.target_id AS INTEGER)
+                     AND reconciliation.target_namespace = 'authority_record'
+                    LEFT JOIN authority_record AS candidate_record
+                      ON candidate_record.authority_record_id = reconciliation.candidate_authority_record_id
+                    WHERE reconciliation.authority_reconciliation_id = CAST(event.object_id AS INTEGER)
+                      AND COALESCE(
+                        entity.workspace_id,
+                        target_record.workspace_id,
+                        candidate_record.workspace_id,
+                        capture.workspace_id,
+                        extraction.workspace_id
+                      )=?
+                ))
+              )
+            """,
+            (workspace_id, workspace_id, workspace_id),
+        )
     if total_decisions == 0:
         return False, None
     if cycle_events:
         first = cycle_events[0].get("event_timestamp")
-        count = _safe_count(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM provenance_event
-            WHERE event_type LIKE 'review_decision_%'
-              AND event_timestamp >= ?
-              AND event_timestamp <= ?
-            """,
-            (first, evaluated_at),
-        )
+        if workspace_id is None:
+            count = _safe_count(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM provenance_event
+                WHERE event_type LIKE 'review_decision_%'
+                  AND event_timestamp >= ?
+                  AND event_timestamp <= ?
+                """,
+                (first, evaluated_at),
+            )
+        else:
+            count = _safe_count(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM provenance_event AS event
+                WHERE event.event_type LIKE 'review_decision_%'
+                  AND event.event_timestamp >= ?
+                  AND event.event_timestamp <= ?
+                  AND (
+                    (event.object_namespace='source_claim' AND EXISTS (
+                        SELECT 1
+                        FROM source_claim AS claim
+                        WHERE claim.source_claim_id = CAST(event.object_id AS INTEGER)
+                          AND claim.workspace_id=?
+                    ))
+                    OR (event.object_namespace='source_relationship' AND EXISTS (
+                        SELECT 1
+                        FROM source_relationship AS relationship
+                        WHERE relationship.source_relationship_id = CAST(event.object_id AS INTEGER)
+                          AND relationship.workspace_id=?
+                    ))
+                    OR (event.object_namespace='authority_reconciliation' AND EXISTS (
+                        SELECT 1
+                        FROM authority_reconciliation AS reconciliation
+                        LEFT JOIN extraction_detected_entity AS entity
+                          ON entity.detected_entity_id = reconciliation.detected_entity_id
+                        LEFT JOIN extraction_record AS extraction
+                          ON extraction.extraction_id = entity.extraction_id
+                        LEFT JOIN capture_event AS capture
+                          ON capture.capture_event_id = entity.capture_event_id
+                        LEFT JOIN authority_record AS target_record
+                          ON target_record.authority_record_id = CAST(reconciliation.target_id AS INTEGER)
+                         AND reconciliation.target_namespace = 'authority_record'
+                        LEFT JOIN authority_record AS candidate_record
+                          ON candidate_record.authority_record_id = reconciliation.candidate_authority_record_id
+                        WHERE reconciliation.authority_reconciliation_id = CAST(event.object_id AS INTEGER)
+                          AND COALESCE(
+                            entity.workspace_id,
+                            target_record.workspace_id,
+                            candidate_record.workspace_id,
+                            capture.workspace_id,
+                            extraction.workspace_id
+                          )=?
+                    ))
+                  )
+                """,
+                (first, evaluated_at, workspace_id, workspace_id, workspace_id),
+            )
     else:
         count = total_decisions
     return True, count
@@ -397,14 +614,16 @@ def build_loop_health_summary(
     if lookback_cycles < 1:
         raise LoopHealthError("lookback_cycles must be at least 1")
     evaluated_at, now_dt = _normalize_now(now)
-    events = _load_cycle_events(conn, subject_id=subject_id, lookback_cycles=lookback_cycles)
+    scope_id = _scope_identifier(subject_id=subject_id, workspace_id=workspace_id)
+    events = _load_cycle_events(conn, scope_id=scope_id, lookback_cycles=lookback_cycles)
     per_cycle = [_per_cycle_metrics(conn, event) for event in events]
-    backlog = _backlog_metrics(conn, now=now_dt)
-    contradictions = _contradiction_metrics(conn, per_cycle=per_cycle)
+    backlog = _backlog_metrics_scoped(conn, workspace_id=scope_id, now=now_dt)
+    contradictions = _contradiction_metrics(conn, per_cycle=per_cycle, workspace_id=scope_id)
     resolution_available, resolution_count = _resolution_count(
         conn,
         cycle_events=events,
         evaluated_at=evaluated_at,
+        workspace_id=scope_id,
     )
     reviewable_ingested = sum(int(cycle["new_reviewable_count"]) for cycle in per_cycle)
     accepted_count = sum(int(cycle["new_accepted_count"]) for cycle in per_cycle)
