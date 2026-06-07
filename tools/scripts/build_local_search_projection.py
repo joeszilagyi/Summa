@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ from tools.validators.validate_local_search_projection import validate_local_sea
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
 SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PROJECTION_FETCH_BATCH_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -617,6 +619,14 @@ def projection_record(
     )
 
 
+def fetch_rows_in_batches(cursor: sqlite3.Cursor, *, batch_size: int) -> Iterator[list[sqlite3.Row]]:
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            return
+        yield rows
+
+
 def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_existing_file(args.db)
     _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
@@ -626,6 +636,9 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         candidate_records = 0
         projected_records: list[dict[str, Any]] = []
         excluded_records: list[dict[str, str]] = []
+        private_paths_exposed = False
+        blocked_records_included = False
+        superseded_records_included = False
         for target in TARGETS:
             if not SQL_IDENTIFIER_RE.fullmatch(target.table):
                 raise RuntimeError(f"invalid projection target table: {target.table}")
@@ -637,22 +650,34 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
             projection_columns = projection_columns_for_target(target, table_columns)
             if not projection_columns:
                 continue
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"SELECT {', '.join(projection_columns)} FROM {target.table} ORDER BY {target.pk_column}"
-            ).fetchall()
-            for row in rows:
-                candidate_records += 1
-                record, excluded_reason = projection_record(
-                    target,
-                    row,
-                    profile=args.profile,
-                    superseded_refs=superseded_refs,
-                )
-                object_ref = f"{target.object_type}:{row[target.pk_column]}"
-                if record is None:
-                    excluded_records.append({"object_ref": object_ref, "reason": excluded_reason or "excluded"})
-                    continue
-                projected_records.append(record)
+            )
+            for rows in fetch_rows_in_batches(cursor, batch_size=PROJECTION_FETCH_BATCH_SIZE):
+                for row in rows:
+                    candidate_records += 1
+                    record, excluded_reason = projection_record(
+                        target,
+                        row,
+                        profile=args.profile,
+                        superseded_refs=superseded_refs,
+                    )
+                    object_ref = f"{target.object_type}:{row[target.pk_column]}"
+                    if record is None:
+                        excluded_records.append({"object_ref": object_ref, "reason": excluded_reason or "excluded"})
+                        continue
+                    projected_records.append(record)
+                    if not private_paths_exposed and any(
+                        looks_like_private_path(field["text"]) for field in record["indexed_fields"]
+                    ):
+                        private_paths_exposed = True
+                    if not blocked_records_included and (
+                        record["public_blocker"] is not None
+                        or record["publication_state"] in {"blocked", "local_only", "private_working"}
+                    ):
+                        blocked_records_included = True
+                    if not superseded_records_included and record["lineage_state"] == "superseded":
+                        superseded_records_included = True
         projected_records.sort(key=lambda item: (item["object_type"], item["object_pk"]))
     finally:
         conn.close()
@@ -662,21 +687,10 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "excluded_records": excluded_records,
         "profile": args.profile,
         "projected_records": projected_records,
-            "schema_version": source_schema_version,
+        "schema_version": source_schema_version,
         "source_database_name": db_path.name,
         "source_ledger_applied": ledger_applied,
     }
-
-    private_paths_exposed = any(
-        looks_like_private_path(field["text"])
-        for record in projected_records
-        for field in record["indexed_fields"]
-    )
-    blocked_records_included = any(
-        record["public_blocker"] is not None or record["publication_state"] in {"blocked", "local_only", "private_working"}
-        for record in projected_records
-    )
-    superseded_records_included = any(record["lineage_state"] == "superseded" for record in projected_records)
 
     generated_at = args.generated_at or now_rfc3339()
     return {
