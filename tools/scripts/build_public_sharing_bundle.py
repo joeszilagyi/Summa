@@ -87,18 +87,10 @@ def recover_stale_backup(output_dir: Path) -> None:
     backup_root = backup_root_path(output_dir)
     journal_path = backup_journal_path(output_dir)
 
-    if backup_root.exists() and not output_dir.exists() and journal_path.exists():
-        try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-
-        if (
-            journal.get("output_dir") == str(output_dir)
-            and journal.get("version") == JOURNAL_VERSION
-            and journal.get("state") == "pending"
-        ):
-            backup_root.replace(output_dir)
+    if backup_root.exists() and not output_dir.exists():
+        backup_root.replace(output_dir)
+        clear_backup_journal(journal_path)
+        return
 
     if journal_path.exists() and not backup_root.exists():
         journal_path.unlink(missing_ok=True)

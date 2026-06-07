@@ -273,3 +273,17 @@ def test_public_sharing_bundle_recover_stale_backup(tmp_path: Path) -> None:
     assert (output_dir / "manifest.json").exists()
     assert not backup_root.exists()
     assert not journal_path.exists()
+
+
+def test_public_sharing_bundle_recover_stale_backup_without_journal(tmp_path: Path) -> None:
+    output_dir = tmp_path / "sharing-bundle"
+    backup_root = sharing_builder.backup_root_path(output_dir)
+
+    backup_root.mkdir()
+    (backup_root / "manifest.json").write_text('{"schema_version": "public-sharing-bundle.v1"}\n', encoding="utf-8")
+
+    sharing_builder.recover_stale_backup(output_dir)
+
+    assert output_dir.is_dir()
+    assert (output_dir / "manifest.json").exists()
+    assert not backup_root.exists()
