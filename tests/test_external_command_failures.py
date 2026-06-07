@@ -33,16 +33,45 @@ def test_local_doctor_git_status_reports_git_failure(monkeypatch: pytest.MonkeyP
     (repo_root / ".git").mkdir(parents=True)
 
     monkeypatch.setattr(local_doctor.shutil, "which", lambda command: "/usr/bin/git")
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=1, stdout="", stderr="fatal: fixture")
+
     monkeypatch.setattr(
         local_doctor.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="fatal: fixture"),
+        fake_run,
     )
 
     status, output = local_doctor.git_status(repo_root)
 
     assert status == "git_status_failed"
     assert output == "fatal: fixture"
+    run_kwargs = captured["kwargs"]
+    assert isinstance(run_kwargs, dict)
+    assert run_kwargs["timeout"] == 10
+    env = run_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+def test_local_doctor_git_status_reports_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / ".git").mkdir(parents=True)
+
+    monkeypatch.setattr(local_doctor.shutil, "which", lambda command: "/usr/bin/git")
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(local_doctor.subprocess, "run", fake_run)
+
+    status, output = local_doctor.git_status(repo_root)
+
+    assert status == "git_status_failed"
+    assert output == "git status timed out after 10 seconds"
 
 
 def test_index_build_knowledge_tree_wrapper_reports_missing_python(tmp_path: Path) -> None:

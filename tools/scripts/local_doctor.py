@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -83,13 +84,20 @@ def command_available(repo_root: Path, relative_path: str) -> bool:
 def git_status(repo_root: Path) -> tuple[str, str]:
     if not (repo_root / ".git").exists() or not shutil.which("git"):
         return "not_git_checkout", ""
-    proc = subprocess.run(
-        ["git", "status", "--short"],
-        cwd=repo_root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return "git_status_failed", "git status timed out after 10 seconds"
     if proc.returncode != 0:
         return "git_status_failed", proc.stderr
     return ("dirty" if proc.stdout.strip() else "clean"), proc.stdout
