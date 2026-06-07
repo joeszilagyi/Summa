@@ -461,6 +461,7 @@ def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) ->
             conn,
             provenance_event_ref=capture_prov.event_key,
             original_locator="https://example.test/source-a",
+            source_locus_ref="source-locus-a",
             captured_at=FIXED_CREATED_AT,
             capture_method="fixture",
             workspace_id="alpha_subject",
@@ -478,8 +479,8 @@ def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) ->
         )
         metrics = planner.extraction_outcome_counts(
             conn,
-            source_locus_id=None,
-            locators=["https://example.test/source-a"],
+            source_locus_id="source-locus-a",
+            locators=["https://example.test/source-a", "https://example.test/source-b"],
             subject_id="alpha_subject",
             warnings=[],
         )
@@ -493,8 +494,49 @@ def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) ->
         if "FROM provenance_event" in sql and "provenance_event_key_v1 IN" in sql
     ]
     assert len(provenance_lookups) == 1
+    assert any("WITH requested_locators" in sql for sql in executed_sql)
+    assert not any("source_locus_ref=? OR original_locator=?" in sql for sql in executed_sql)
     assert metrics["capture_count"] == 1
     assert metrics["successful_extractions"] == 1
+
+
+def test_extraction_outcome_counts_returns_empty_related_runs_when_no_captures_match(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="candidate-feedback-selection",
+            object_id="no-capture-match",
+            event_type="capture_event",
+            tool_name="pytest.candidate_feedback_selection",
+            run_id="run-no-capture-match",
+            event_timestamp=FIXED_CREATED_AT,
+            provenance_event_key_v1="prov:no-capture-match",
+        )
+        canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/source-a",
+            captured_at=FIXED_CREATED_AT,
+            capture_method="fixture",
+            workspace_id="alpha_subject",
+        )
+        metrics = planner.extraction_outcome_counts(
+            conn,
+            source_locus_id="missing-locus",
+            locators=["https://example.test/missing"],
+            subject_id="alpha_subject",
+            warnings=[],
+        )
+    finally:
+        conn.close()
+
+    assert metrics["capture_count"] == 0
+    assert metrics["related_run_ids"] == []
 
 
 def test_lead_scope_sql_supports_explicit_table_aliases() -> None:
@@ -918,6 +960,53 @@ def test_open_question_leads_reward_more_specific_questions(tmp_path: Path) -> N
     assert specific_lead["score"] > generic_lead["score"]
 
 
+def test_open_question_leads_use_persisted_status_without_python_classifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        question_row = conn.execute(
+            """
+            SELECT source_claim_id, is_open_question
+            FROM source_claim
+            WHERE claim_text='Which overlooked local archives might add missing detail?'
+            """
+        ).fetchone()
+        assert question_row is not None
+        question_claim_ref = f"source_claim:{question_row['source_claim_id']}"
+        assert int(question_row["is_open_question"]) == 1
+        work_ids = planner.scope_work_ids(conn, subject_id)
+        history_by_event_key = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+    finally:
+        conn.close()
+
+    def fail_classifier(*args: object, **kwargs: object) -> bool:  # pragma: no cover - failure path
+        raise AssertionError("open-question classifier should not run during lead loading")
+
+    monkeypatch.setattr(planner, "claim_is_open_question", fail_classifier)
+
+    conn = canonical_store.connect_existing_read_only(db_path)
+    try:
+        leads = planner.load_open_question_leads(
+            conn,
+            subject_id=subject_id,
+            work_ids=work_ids,
+            history_by_event_key=history_by_event_key,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+        )
+    finally:
+        conn.close()
+
+    assert any(lead["object_ref"] == question_claim_ref for lead in leads)
+
+
 def test_candidate_feedback_includes_entity_leads_without_extraction_records(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -1098,6 +1187,48 @@ def test_entity_type_to_facet_mapping_keeps_non_person_place_entities_visible(tm
     assert lead["reason_codes"] == ["open_lead_yield", "works_candidate"]
 
 
+def test_entity_leads_use_direct_workspace_filter_without_coalesce(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        history_by_event_key = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+        leads = planner.load_entity_leads(
+            conn,
+            subject_id=subject_id,
+            enabled_facets=["people", "works"],
+            history_by_event_key=history_by_event_key,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+            warnings=[],
+        )
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        conn.close()
+
+    assert leads
+    entity_queries = [sql for sql in executed_sql if "FROM extraction_detected_entity entity" in sql]
+    assert entity_queries
+    assert any("entity.workspace_id=?" in sql for sql in entity_queries)
+    assert not any("COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id)=?" in sql for sql in entity_queries)
+
+
 def test_work_leads_preserve_related_run_ids_from_provenance(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -1143,6 +1274,56 @@ def test_work_leads_preserve_related_run_ids_from_provenance(tmp_path: Path) -> 
     work_leads = [item for item in payload["lead_scores"] if item["lead_kind"] == "work"]
     assert work_leads
     assert any("work-run-one" in item["related_run_ids"] for item in work_leads)
+
+
+def test_work_leads_use_scoped_join_without_python_scope_expansion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        history_by_event_key = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+    finally:
+        conn.close()
+
+    def fail_scope_work_ids(*args: object, **kwargs: object) -> list[int]:  # pragma: no cover - failure path
+        raise AssertionError("load_work_leads should not expand scoped work IDs in Python")
+
+    monkeypatch.setattr(planner, "scope_work_ids", fail_scope_work_ids)
+
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        leads = planner.load_work_leads(
+            conn,
+            subject_id=subject_id,
+            history_by_event_key=history_by_event_key,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+        )
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        conn.close()
+
+    assert leads == []
+    work_queries = [sql for sql in executed_sql if "WITH scoped_work_ids(work_id) AS" in sql]
+    assert work_queries
+    assert not any("work_id IN (" in sql for sql in work_queries)
 
 
 def test_feedback_plan_ledger_records_warning_and_error_counts(tmp_path: Path) -> None:

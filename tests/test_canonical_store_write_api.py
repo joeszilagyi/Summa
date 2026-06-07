@@ -190,7 +190,11 @@ def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
             (extraction.row_id,),
         ).fetchone()
         entity_row = conn.execute(
-            "SELECT review_state, provenance_event_ref FROM extraction_detected_entity WHERE detected_entity_id=?",
+            """
+            SELECT review_state, workspace_id, provenance_event_ref
+            FROM extraction_detected_entity
+            WHERE detected_entity_id=?
+            """,
             (entity.row_id,),
         ).fetchone()
         relationship_row = conn.execute(
@@ -223,6 +227,7 @@ def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     assert capture_row["review_state"] == "needs_review"
     assert extraction_row["review_state"] == "needs_review"
     assert entity_row["review_state"] == "proposed"
+    assert entity_row["workspace_id"] == "alpha_subject"
     assert relationship_row["review_state"] == "proposed"
     assert source_access_row["review_state"] == "needs_review"
     assert work_row["provenance_event_ref"] == provenance.event_key

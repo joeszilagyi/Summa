@@ -25,8 +25,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 6
-CURRENT_MIGRATION_ID = "0006_reconciliation_hot_path_indexes"
+CURRENT_SCHEMA_VERSION = 7
+CURRENT_MIGRATION_ID = "0007_source_claim_open_question_status"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -66,6 +66,7 @@ REQUIRED_INDEXES = {
     "ix_source_claim_about",
     "ix_source_claim_review",
     "ix_source_claim_workspace_type_review",
+    "ix_source_claim_workspace_question_review",
     "ix_source_relationship_refs",
     "ix_source_relationship_review",
     "ix_source_relationship_workspace_provenance_predicate",
@@ -237,9 +238,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=6,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0006_reconciliation_hot_path_indexes",
         sql_path=MIGRATIONS_DIR / "0006_reconciliation_hot_path_indexes.sql",
         notes="Add reconciliation hot-path indexes for query-heavy lookups.",
+    ),
+    MigrationSpec(
+        version=7,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0007_source_claim_open_question_status.sql",
+        notes="Persist open-question claim status for planner hot-path queries.",
     ),
 )
 
@@ -866,6 +873,13 @@ def _normalize_json_text(value: Any, field_name: str) -> str | None:
         raise CanonicalStoreError(f"{field_name} must be JSON-serializable") from exc
 
 
+def _is_open_question_claim(claim_text: str, claim_type: str | None) -> bool:
+    claim_type_text = (claim_type or "").casefold()
+    if "question" in claim_type_text:
+        return True
+    return "?" in claim_text
+
+
 def _pending_review_state(state: str | None) -> bool:
     return (state or "") in {
         "",
@@ -956,6 +970,72 @@ def _require_provenance_event(conn: sqlite3.Connection, provenance_event_ref: st
     if row is None:
         raise CanonicalStoreError(f"provenance_event_ref does not exist: {key}")
     return int(row["provenance_event_id"])
+
+
+def _resolve_detected_entity_workspace_id(
+    conn: sqlite3.Connection,
+    *,
+    workspace_id: str | None,
+    extraction_id: int | None,
+    capture_event_id: int | None,
+    existing_workspace_id: Any = None,
+) -> str:
+    explicit_workspace_id = _optional_nonblank(workspace_id, "workspace_id")
+    existing_workspace = _optional_nonblank(existing_workspace_id, "workspace_id")
+    inferred_workspace_ids: list[str] = []
+
+    if extraction_id is not None:
+        row = conn.execute(
+            """
+            SELECT workspace_id
+            FROM extraction_record
+            WHERE extraction_id=?
+            """,
+            (extraction_id,),
+        ).fetchone()
+        if row is not None:
+            inferred_workspace_id = _optional_nonblank(row["workspace_id"], "workspace_id")
+            if inferred_workspace_id is not None:
+                inferred_workspace_ids.append(inferred_workspace_id)
+
+    if capture_event_id is not None:
+        row = conn.execute(
+            """
+            SELECT workspace_id
+            FROM capture_event
+            WHERE capture_event_id=?
+            """,
+            (capture_event_id,),
+        ).fetchone()
+        if row is not None:
+            inferred_workspace_id = _optional_nonblank(row["workspace_id"], "workspace_id")
+            if inferred_workspace_id is not None:
+                inferred_workspace_ids.append(inferred_workspace_id)
+
+    if inferred_workspace_ids:
+        first_inferred_workspace_id = inferred_workspace_ids[0]
+        if any(candidate != first_inferred_workspace_id for candidate in inferred_workspace_ids[1:]):
+            raise CanonicalStoreError(
+                "detected entity workspace_id must match linked extraction/capture workspace_id"
+            )
+    else:
+        first_inferred_workspace_id = None
+
+    resolved_workspace_id = _first_present(
+        explicit_workspace_id,
+        existing_workspace,
+        first_inferred_workspace_id,
+    )
+    if resolved_workspace_id is None:
+        raise CanonicalStoreError(
+            "detected entity workspace_id is required and could not be inferred from extraction/capture"
+        )
+    for candidate in (explicit_workspace_id, existing_workspace, first_inferred_workspace_id):
+        if candidate is not None and candidate != resolved_workspace_id:
+            raise CanonicalStoreError(
+                "detected entity workspace_id must match linked extraction/capture workspace_id"
+            )
+    return str(resolved_workspace_id)
 
 
 def _update_row(
@@ -1304,10 +1384,6 @@ def record_source_access(
         criteria = {
             "work_id": work_id,
             "original_locator": locator,
-            "canonical_url": _optional_nonblank(canonical_url, "canonical_url"),
-            "source_locus_id": _optional_nonblank(source_locus_id, "source_locus_id"),
-            "source_lead_id": _optional_nonblank(source_lead_id, "source_lead_id"),
-            "workspace_id": _optional_nonblank(workspace_id, "workspace_id"),
         }
     elif source_lead_id is not None:
         criteria = {
@@ -1394,16 +1470,59 @@ def record_source_access(
         int(existing["source_access_id"]),
         {
             "work_id": _first_present(work_id, existing["work_id"]),
-            "source_locus_id": _first_present(
-                _optional_nonblank(source_locus_id, "source_locus_id"),
-                existing["source_locus_id"],
+            "source_lead_id": (
+                existing["source_lead_id"]
+                if (
+                    work_id is not None
+                    and _optional_nonblank(existing["source_lead_id"], "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id")
+                    != _optional_nonblank(existing["source_lead_id"], "source_lead_id")
+                )
+                else _first_present(
+                    _optional_nonblank(source_lead_id, "source_lead_id"),
+                    existing["source_lead_id"],
+                )
             ),
-            "source_lead_id": _first_present(
-                _optional_nonblank(source_lead_id, "source_lead_id"),
-                existing["source_lead_id"],
+            "source_locus_id": (
+                existing["source_locus_id"]
+                if (
+                    work_id is not None
+                    and _optional_nonblank(existing["source_lead_id"], "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id")
+                    != _optional_nonblank(existing["source_lead_id"], "source_lead_id")
+                )
+                else _first_present(
+                    _optional_nonblank(source_locus_id, "source_locus_id"),
+                    existing["source_locus_id"],
+                )
             ),
-            "canonical_url": _first_present(
-                _optional_nonblank(canonical_url, "canonical_url"), existing["canonical_url"]
+            "canonical_url": (
+                existing["canonical_url"]
+                if (
+                    work_id is not None
+                    and _optional_nonblank(existing["source_lead_id"], "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id")
+                    != _optional_nonblank(existing["source_lead_id"], "source_lead_id")
+                )
+                else _first_present(
+                    _optional_nonblank(canonical_url, "canonical_url"), existing["canonical_url"]
+                )
+            ),
+            "citation_hint": (
+                existing["citation_hint"]
+                if (
+                    work_id is not None
+                    and _optional_nonblank(existing["source_lead_id"], "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id") is not None
+                    and _optional_nonblank(source_lead_id, "source_lead_id")
+                    != _optional_nonblank(existing["source_lead_id"], "source_lead_id")
+                )
+                else _first_present(
+                    _optional_nonblank(citation_hint, "citation_hint"), existing["citation_hint"]
+                )
             ),
             "access_class": _first_present(
                 _optional_nonblank(access_class, "access_class"), existing["access_class"]
@@ -1415,9 +1534,6 @@ def record_source_access(
             "rights_posture": _first_present(
                 _optional_nonblank(rights_posture, "rights_posture"),
                 existing["rights_posture"],
-            ),
-            "citation_hint": _first_present(
-                _optional_nonblank(citation_hint, "citation_hint"), existing["citation_hint"]
             ),
             "review_state": _merged_review_state(existing["review_state"], review_state_value),
             "publication_state": _first_present(
@@ -1466,12 +1582,14 @@ def record_source_claim(
 ) -> CanonicalWriteResult:
     _require_provenance_event(conn, provenance_event_ref)
     claim_text_value = _require_nonblank(claim_text, "claim_text")
+    claim_type_value = _optional_nonblank(claim_type, "claim_type")
     claim_key = source_claim_key_v1 or stable_write_key(
         "claim",
         _optional_nonblank(about_object_ref, "about_object_ref") or "about:unknown",
-        _optional_nonblank(claim_type, "claim_type") or "claim",
+        claim_type_value or "claim",
         claim_text_value,
     )
+    is_open_question_value = 1 if _is_open_question_claim(claim_text_value, claim_type_value) else 0
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_SOURCE_CLAIM_REVIEW_STATE
     )
@@ -1498,6 +1616,7 @@ def record_source_claim(
               authority_level,
               public_blocker,
               workspace_id,
+              is_open_question,
               confidence_score,
               provenance_event_ref,
               evidence_locator_ref,
@@ -1505,7 +1624,7 @@ def record_source_claim(
               extraction_id,
               created_at,
               record_last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 claim_key,
@@ -1518,6 +1637,7 @@ def record_source_claim(
                 _optional_nonblank(authority_level, "authority_level"),
                 _optional_nonblank(public_blocker, "public_blocker"),
                 _optional_nonblank(workspace_id, "workspace_id"),
+                is_open_question_value,
                 score,
                 provenance_event_ref,
                 _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
@@ -1604,6 +1724,7 @@ def record_source_claim(
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
+            "is_open_question": max(int(existing["is_open_question"] or 0), is_open_question_value),
             "confidence_score": claim_confidence_value,
             "provenance_event_ref": claim_provenance_value,
             "evidence_locator_ref": _first_present(
@@ -1970,6 +2091,13 @@ def record_extraction_detected_entity(
             "source_span_end": character_end,
         },
     )
+    resolved_workspace_id = _resolve_detected_entity_workspace_id(
+        conn,
+        workspace_id=workspace_id,
+        extraction_id=extraction_id,
+        capture_event_id=capture_event_id,
+        existing_workspace_id=None if existing is None else existing["workspace_id"],
+    )
     if existing is None:
         cursor = conn.execute(
             """
@@ -2000,7 +2128,7 @@ def record_extraction_detected_entity(
                 authority_record_id,
                 review_state_value,
                 score,
-                _optional_nonblank(workspace_id, "workspace_id"),
+                resolved_workspace_id,
                 provenance_event_ref,
                 timestamp,
             ),
@@ -2020,9 +2148,7 @@ def record_extraction_detected_entity(
             ),
             "review_state": _merged_review_state(existing["review_state"], review_state_value),
             "confidence_score": _first_present(score, existing["confidence_score"]),
-            "workspace_id": _first_present(
-                _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
-            ),
+            "workspace_id": resolved_workspace_id,
             "provenance_event_ref": provenance_event_ref,
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },

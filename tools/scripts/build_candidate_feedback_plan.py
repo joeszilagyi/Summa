@@ -488,15 +488,16 @@ def extraction_outcome_counts(
     subject_id: str,
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
-    clauses: list[str] = []
-    params: list[Any] = [subject_id]
+    requested_locators: list[str] = []
+    seen_locators: set[str] = set()
     if source_locus_id:
-        clauses.append("source_locus_ref=?")
-        params.append(source_locus_id)
+        requested_locators.append(source_locus_id)
+        seen_locators.add(source_locus_id)
     for locator in locators:
-        clauses.append("original_locator=?")
-        params.append(locator)
-    if not clauses:
+        if locator not in seen_locators:
+            requested_locators.append(locator)
+            seen_locators.add(locator)
+    if not requested_locators:
         return {
             "successful_extractions": 0,
             "failed_extractions": 0,
@@ -505,12 +506,30 @@ def extraction_outcome_counts(
             "extraction_ids": [],
             "related_run_ids": [],
         }
-    query = (
-        "SELECT capture_event_id, provenance_event_ref FROM capture_event "
-        "WHERE workspace_id=? AND (" + " OR ".join(clauses) + ") ORDER BY capture_event_id"
+    lookup_values = ", ".join("(?)" for _ in requested_locators)
+    query = f"""
+    WITH requested_locators(locator) AS (
+        VALUES {lookup_values}
+    ),
+    matching_captures AS (
+        SELECT capture.capture_event_id, capture.provenance_event_ref
+        FROM capture_event AS capture
+        JOIN requested_locators
+          ON requested_locators.locator = capture.source_locus_ref
+        WHERE capture.workspace_id=?
+        UNION
+        SELECT capture.capture_event_id, capture.provenance_event_ref
+        FROM capture_event AS capture
+        JOIN requested_locators
+          ON requested_locators.locator = capture.original_locator
+        WHERE capture.workspace_id=?
     )
+    SELECT capture_event_id, provenance_event_ref
+    FROM matching_captures
+    ORDER BY capture_event_id
+    """
     run_ids: set[str] = set()
-    capture_rows = conn.execute(query, tuple(params)).fetchall()
+    capture_rows = conn.execute(query, tuple(requested_locators) + (subject_id, subject_id)).fetchall()
     capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
     if not capture_ids:
         return {
@@ -727,6 +746,7 @@ def load_open_question_leads(
                provenance_event_ref, created_at
         FROM source_claim
         WHERE {scope_sql}
+          AND is_open_question=1
           AND review_state IN ({placeholders})
         ORDER BY created_at DESC, source_claim_id ASC
         """,
@@ -735,8 +755,6 @@ def load_open_question_leads(
     leads: list[dict[str, Any]] = []
     for row in rows:
         provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
-        if not claim_is_open_question(row, provenance or {}):
-            continue
         score = weights["open_lead"] + weights["claim_yield"] + open_question_quality_bonus(
             claim_text=str(row["claim_text"] or ""),
             claim_type=str(row["claim_type"] or ""),
@@ -795,7 +813,7 @@ def load_entity_leads(
           ON extraction.extraction_id = entity.extraction_id
         LEFT JOIN capture_event capture
           ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id)=?
+        WHERE entity.workspace_id=?
           AND entity.review_state IN ({placeholders})
         ORDER BY entity.detected_entity_id
         """,
@@ -858,20 +876,25 @@ def load_work_leads(
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
 ) -> list[dict[str, Any]]:
-    work_ids = scope_work_ids(conn, subject_id)
-    if not work_ids:
-        return []
-    placeholders = ", ".join("?" for _ in work_ids)
     review_placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
         f"""
-        SELECT work_id, title, review_state, provenance_event_ref
+        WITH scoped_work_ids(work_id) AS (
+            SELECT work_id
+            FROM work
+            WHERE workspace_id=?
+            UNION
+            SELECT work_id
+            FROM work_subject
+            WHERE subject_object_ref=?
+        )
+        SELECT work.work_id, work.title, work.review_state, work.provenance_event_ref
         FROM work
-        WHERE work_id IN ({placeholders})
-          AND review_state IN ({review_placeholders})
-        ORDER BY work_id
+        JOIN scoped_work_ids USING (work_id)
+        WHERE work.review_state IN ({review_placeholders})
+        ORDER BY work.work_id
         """,
-        tuple(work_ids) + tuple(sorted(LEAD_REVIEW_STATES)),
+        (subject_id, subject_id) + tuple(sorted(LEAD_REVIEW_STATES)),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
