@@ -978,7 +978,7 @@ def _resolve_detected_entity_workspace_id(
     extraction_id: int | None,
     capture_event_id: int | None,
     existing_workspace_id: Any = None,
-) -> str:
+) -> str | None:
     explicit_workspace_id = _optional_nonblank(workspace_id, "workspace_id")
     existing_workspace = _optional_nonblank(existing_workspace_id, "workspace_id")
     inferred_workspace_ids: list[str] = []
@@ -1025,16 +1025,12 @@ def _resolve_detected_entity_workspace_id(
         existing_workspace,
         first_inferred_workspace_id,
     )
-    if resolved_workspace_id is None:
-        raise CanonicalStoreError(
-            "detected entity workspace_id is required and could not be inferred from extraction/capture"
-        )
     for candidate in (explicit_workspace_id, existing_workspace, first_inferred_workspace_id):
         if candidate is not None and candidate != resolved_workspace_id:
             raise CanonicalStoreError(
                 "detected entity workspace_id must match linked extraction/capture workspace_id"
             )
-    return str(resolved_workspace_id)
+    return None if resolved_workspace_id is None else str(resolved_workspace_id)
 
 
 def _update_row(

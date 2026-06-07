@@ -7,7 +7,6 @@ import pytest
 
 from tools.source_db_tools import canonical_store
 
-
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 OLDER_TIMESTAMP = "2026-06-02T09:08:07Z"
 NEWER_TIMESTAMP = "2026-06-04T10:09:08Z"
@@ -238,6 +237,48 @@ def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     assert entity_row["provenance_event_ref"] == provenance.event_key
     assert relationship_row["provenance_event_ref"] == provenance.event_key
     assert history_row["new_state"] == "needs_review"
+
+
+def test_write_api_allows_unscoped_detected_entity_without_workspace(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-unscoped-entity",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            tool_version="1.0",
+            run_id="fixture-unscoped-entity",
+            event_timestamp=FIXED_TIMESTAMP,
+            note_text="fixture ingest provenance",
+            provenance_event_key_v1="prov:fixture-ingest:unscoped-entity",
+        )
+        entity = canonical_store.record_extraction_detected_entity(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            entity_label="Unscoped Example",
+            normalized_label="unscoped example",
+            entity_type="person",
+            confidence_score=0.41,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        entity_row = conn.execute(
+            """
+            SELECT review_state, workspace_id, provenance_event_ref
+            FROM extraction_detected_entity
+            WHERE detected_entity_id=?
+            """,
+            (entity.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert entity.created is True
+    assert entity_row["review_state"] == "proposed"
+    assert entity_row["workspace_id"] is None
+    assert entity_row["provenance_event_ref"] == provenance.event_key
 
 
 def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) -> None:
@@ -833,35 +874,34 @@ def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        with pytest.raises(canonical_store.CanonicalStoreError, match="review_state"):
-            with conn:
-                provenance = canonical_store.record_provenance_event(
-                    conn,
-                    object_namespace="fixture_ingest",
-                    object_id="fixture-003",
-                    event_type="fixture_ingest",
-                    tool_name="pytest",
-                    event_timestamp=FIXED_TIMESTAMP,
-                    provenance_event_key_v1="prov:fixture-rollback",
-                )
-                canonical_store.upsert_work(
-                    conn,
-                    work_key_v1="work:fixture-gamma",
-                    provenance_event_ref=provenance.event_key,
-                    work_type="article",
-                    title="Fixture Gamma Work",
-                    workspace_id="gamma_subject",
-                    created_at=FIXED_TIMESTAMP,
-                    record_last_updated=FIXED_TIMESTAMP,
-                )
-                canonical_store.record_source_claim(
-                    conn,
-                    provenance_event_ref=provenance.event_key,
-                    claim_text="This write should roll back.",
-                    review_state="not_a_valid_review_state",
-                    created_at=FIXED_TIMESTAMP,
-                    record_last_updated=FIXED_TIMESTAMP,
-                )
+        with pytest.raises(canonical_store.CanonicalStoreError, match="review_state"), conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture_ingest",
+                object_id="fixture-003",
+                event_type="fixture_ingest",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:fixture-rollback",
+            )
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:fixture-gamma",
+                provenance_event_ref=provenance.event_key,
+                work_type="article",
+                title="Fixture Gamma Work",
+                workspace_id="gamma_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                claim_text="This write should roll back.",
+                review_state="not_a_valid_review_state",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
 
         counts = canonical_store.canonical_family_counts(conn)
     finally:
