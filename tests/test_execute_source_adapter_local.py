@@ -11,7 +11,6 @@ import pytest
 
 from tools.scripts import execute_source_adapter as source_executor
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_local_source_adapter.py"
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
