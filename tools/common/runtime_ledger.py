@@ -100,7 +100,6 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
     with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(line)
         handle.flush()
-        os.fsync(handle.fileno())
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:

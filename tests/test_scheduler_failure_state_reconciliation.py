@@ -405,6 +405,24 @@ def test_runtime_ledger_load_events_tolerates_truncated_terminal_json_without_ne
     assert events == [first_event]
 
 
+def test_runtime_ledger_append_event_does_not_call_fsync(tmp_path: Path, monkeypatch) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "no-fsync.runtime-ledger.jsonl"
+    calls: list[int] = []
+
+    monkeypatch.setattr(runtime_ledger.os, "fsync", lambda _: calls.append(0))
+    event = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="append-no-fsync",
+        event_type="command_start",
+        command="pytest-fixture",
+    )
+    runtime_ledger.append_event(ledger_path, event)
+
+    assert calls == []
+    events = runtime_ledger.load_events(ledger_path)
+    assert len(events) == 1
+
+
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
