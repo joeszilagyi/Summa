@@ -420,7 +420,7 @@ def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
         return ReplayPreparation(artifact=artifact, load_error=str(exc))
 
 
-def discover_artifacts(runs_dir: Path) -> list[Artifact]:
+def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
     if not runs_dir.exists() or not runs_dir.is_dir():
         raise RebuildabilityError(f"runs directory not found: {runs_dir}")
     candidates: list[DiscoveryCandidate] = []
@@ -666,6 +666,11 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
                         payload_loaded=True,
                     )
                 )
+    return candidates
+
+
+def discover_artifacts(runs_dir: Path) -> list[Artifact]:
+    candidates = _inventory_discovered_artifacts(runs_dir)
     if not candidates:
         return []
     with ThreadPoolExecutor() as executor:

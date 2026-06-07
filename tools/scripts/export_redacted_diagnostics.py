@@ -76,6 +76,7 @@ REVIEW_TABLES = (
 )
 ARTIFACT_SUFFIXES = {".json", ".jsonl", ".txt", ".log", ".sqlite", ".db", ".csv", ".html"}
 MAX_WORKSPACE_ARTIFACTS = 500
+MAX_SPOOL_RECORD_DETAILS = 100
 
 
 class DiagnosticExportError(RuntimeError):
@@ -568,6 +569,24 @@ def load_json_object(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _workspace_search_roots(workspace: Path) -> list[Path]:
+    roots = [workspace]
+    runs_root = workspace / "runs"
+    if runs_root.is_dir() and runs_root != workspace:
+        roots.append(runs_root)
+    return roots
+
+
+def _iter_named_paths(workspace: Path, *names: str) -> list[Path]:
+    paths: set[Path] = set()
+    for root in _workspace_search_roots(workspace):
+        for name in names:
+            for path in root.rglob(name):
+                if path.is_file():
+                    paths.add(path.resolve())
+    return sorted(paths, key=lambda item: item.as_posix())
+
+
 def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dict[str, Any]:
     if workspace is None:
         return {
@@ -576,9 +595,7 @@ def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dic
             "cycle_manifests": [],
         }
     manifests: list[dict[str, Any]] = []
-    for path in sorted(workspace.rglob("*.json")):
-        if path.name not in {"topic-cycle-manifest.json", "scheduled-topic-cycles-manifest.json"}:
-            continue
+    for path in _iter_named_paths(workspace, "topic-cycle-manifest.json", "scheduled-topic-cycles-manifest.json"):
         payload = load_json_object(path)
         if payload is None:
             continue
@@ -665,9 +682,14 @@ def build_spool_summary(workspace: Path | None, redactor: Redactor) -> dict[str,
             "schema_version": "redacted-diagnostic-spool-summary.v1",
             "workspace_present": False,
             "spool_records": [],
+            "spool_records_truncated": False,
         }
+    spool_paths = sorted(
+        (path for path in workspace.rglob("*spool*.json") if path.is_file()),
+        key=lambda item: item.as_posix(),
+    )
     records: list[dict[str, Any]] = []
-    for path in sorted(workspace.rglob("*spool*.json")):
+    for path in spool_paths[:MAX_SPOOL_RECORD_DETAILS]:
         payload = load_json_object(path)
         if payload is None:
             continue
@@ -687,8 +709,9 @@ def build_spool_summary(workspace: Path | None, redactor: Redactor) -> dict[str,
     return {
         "schema_version": "redacted-diagnostic-spool-summary.v1",
         "workspace_present": True,
-        "spool_record_count": len(records),
+        "spool_record_count": len(spool_paths),
         "spool_records": records,
+        "spool_records_truncated": len(spool_paths) > MAX_SPOOL_RECORD_DETAILS,
     }
 
 
@@ -757,11 +780,11 @@ def build_manifest(
     redactor: Redactor,
     included_sections: list[str],
     omitted_sections: list[dict[str, str]],
+    file_hashes: list[dict[str, Any]],
     leak_report: Mapping[str, Any] | None,
     warnings: list[str],
     errors: list[str],
 ) -> dict[str, Any]:
-    file_hashes = section_hashes(output_dir)
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -948,6 +971,7 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
         write_json(stage_root / "redaction-report.json", build_redaction_report(args, redactor))
         included.append("redaction-report.json")
 
+        file_hashes = section_hashes(stage_root)
         provisional_manifest = build_manifest(
             args=args,
             db_path=db_path,
@@ -957,6 +981,7 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
             redactor=redactor,
             included_sections=included,
             omitted_sections=omitted,
+            file_hashes=file_hashes,
             leak_report=None,
             warnings=warnings,
             errors=errors,
@@ -974,6 +999,7 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
             redactor=redactor,
             included_sections=included,
             omitted_sections=omitted,
+            file_hashes=file_hashes,
             leak_report=leak_report,
             warnings=warnings,
             errors=errors,

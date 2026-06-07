@@ -770,6 +770,29 @@ def test_discover_artifacts_validates_replayable_artifacts_in_parallel(tmp_path:
     } == {"gather_candidate_batch", "source_acquisition_execution"}
 
 
+def test_inventory_discovered_artifacts_streams_without_replay_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+
+    def fail_candidate_batch(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("inventory should not validate candidate batches")
+
+    def fail_execution_dir(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("inventory should not validate execution artifacts")
+
+    monkeypatch.setattr(audit, "validate_candidate_batch", fail_candidate_batch)
+    monkeypatch.setattr(audit, "validate_execution_dir", fail_execution_dir)
+
+    candidates = audit._inventory_discovered_artifacts(runs_dir)
+
+    assert {
+        candidate.kind
+        for candidate in candidates
+        if candidate.artifact_type in {"gather_candidate_batch", "source_acquisition_execution"}
+    } == {"gather_candidate_batch", "source_acquisition_execution"}
+
+
 def test_replay_artifacts_reuses_discovery_validation_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
