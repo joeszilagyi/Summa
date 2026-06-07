@@ -12,14 +12,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SQLITE_TOOL_DIR = REPO_ROOT / "tools" / "source_db_tools"
 if str(SQLITE_TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(SQLITE_TOOL_DIR))
 
 import review_queue  # type: ignore  # noqa: E402
-
 
 SCHEMA_VERSION = "review-queue.v1"
 DEFAULT_LIMIT = 50
@@ -65,7 +63,15 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=DEFAULT_LIMIT,
-        help="Maximum number of queue items to return. Counts still cover the full filtered queue.",
+        help=(
+            "Maximum number of queue items to return. Counts cover the returned page by "
+            "default; use --full-counts to compute counts over the full filtered queue."
+        ),
+    )
+    parser.add_argument(
+        "--full-counts",
+        action="store_true",
+        help="Compute counts over the full filtered queue instead of only the returned page.",
     )
     parser.add_argument(
         "--format",
@@ -159,7 +165,7 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     conn = connect_read_only(db_path)
     try:
-        all_rows = review_queue.list_review_items(
+        page_rows = review_queue.list_review_items(
             conn,
             object_type=args.object_type,
             state=args.state,
@@ -169,13 +175,28 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
             workspace_id=args.workspace_id,
             authority_level=args.authority_level,
             public_blocker=args.public_blocker,
-            limit=None,
+            limit=args.limit,
+        )
+        count_rows = (
+            review_queue.list_review_items(
+                conn,
+                object_type=args.object_type,
+                state=args.state,
+                min_confidence=args.min_confidence,
+                max_confidence=args.max_confidence,
+                source_type=args.source_type,
+                workspace_id=args.workspace_id,
+                authority_level=args.authority_level,
+                public_blocker=args.public_blocker,
+                limit=None,
+            )
+            if args.full_counts
+            else page_rows
         )
     finally:
         conn.close()
 
-    returned_rows = all_rows[: args.limit] if args.limit is not None else all_rows
-    items = [normalize_item(row) for row in returned_rows]
+    items = [normalize_item(row) for row in page_rows]
     filters = {
         "object_type": args.object_type,
         "state": args.state if args.state is not None else "pending_non_accepted",
@@ -186,6 +207,7 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
         "authority_level": args.authority_level,
         "public_blocker": args.public_blocker,
         "limit": args.limit,
+        "full_counts": args.full_counts,
     }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -196,15 +218,15 @@ def build_review_queue_payload(args: argparse.Namespace) -> dict[str, Any]:
             "supported_actions": ["accept", "reject", "demote", "mark-ambiguous"],
         },
         "counts": {
-            "total_items": len(all_rows),
+            "total_items": len(count_rows),
             "returned_items": len(items),
-            "by_review_state": count_by(all_rows, "review_state"),
-            "by_object_type": count_by(all_rows, "object_type"),
-            "by_workspace_id": count_by(all_rows, "workspace_id"),
-            "by_authority_level": count_by(all_rows, "authority_level"),
-            "by_public_blocker": count_by(all_rows, "public_blocker"),
+            "by_review_state": count_by(count_rows, "review_state"),
+            "by_object_type": count_by(count_rows, "object_type"),
+            "by_workspace_id": count_by(count_rows, "workspace_id"),
+            "by_authority_level": count_by(count_rows, "authority_level"),
+            "by_public_blocker": count_by(count_rows, "public_blocker"),
         },
-        "truncated": len(items) < len(all_rows),
+        "truncated": args.limit is not None and len(page_rows) == args.limit,
         "items": items,
     }
 
@@ -224,6 +246,7 @@ def render_text(payload: dict[str, Any]) -> str:
         f"workspace_id_filter={text_value(payload['filters']['workspace_id'])}",
         f"authority_level_filter={text_value(payload['filters']['authority_level'])}",
         f"public_blocker_filter={text_value(payload['filters']['public_blocker'])}",
+        f"full_counts={str(payload['filters']['full_counts']).lower()}",
         f"total_items={payload['counts']['total_items']}",
         f"returned_items={payload['counts']['returned_items']}",
         f"truncated={str(payload['truncated']).lower()}",
