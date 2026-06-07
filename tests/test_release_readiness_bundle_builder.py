@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "build_release_readiness_bundle.py"
 WRAPPER_PATH = REPO_ROOT / "tools" / "scripts" / "Index_Build_Release_Readiness_Bundle.sh"
@@ -136,6 +138,50 @@ def test_non_json_report_fails_before_success(tmp_path: Path) -> None:
 
     assert proc.returncode != 0
     assert "doctor report is not readable JSON" in proc.stderr
+
+
+def test_run_command_times_out_and_clears_partial_report(tmp_path: Path, monkeypatch: Any) -> None:
+    report_path = tmp_path / "doctor-report.json"
+    report_path.write_text("{\n  \"status\": \"pass\"\n}\n", encoding="utf-8")
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["fake-tool"], timeout=builder.REPORT_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    with pytest.raises(builder.ReleaseReadinessBundleError, match="timed out"):
+        builder.run_command(["fake-tool"], report_path=report_path, label="doctor report")
+
+    assert not report_path.exists()
+
+
+def test_timeout_failure_is_written_into_bundle_manifest(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    output_dir = tmp_path / "bundle"
+
+    def fake_generated_report_command(
+        key: str, args: argparse.Namespace, destination: Path
+    ) -> list[str]:
+        return ["fake-tool", key, str(destination)]
+
+    def fake_run_command(
+        command: list[str], *, report_path: Path, label: str
+    ) -> tuple[dict[str, Any], int]:
+        raise builder.ReleaseReadinessBundleError(
+            f"{label} timed out after {builder.REPORT_TIMEOUT_SECONDS:g}s before producing a usable report: {report_path}"
+        )
+
+    monkeypatch.setattr(builder, "generated_report_command", fake_generated_report_command)
+    monkeypatch.setattr(builder, "run_command", fake_run_command)
+
+    args = builder.parse_args(["--mode", "run", "--output-dir", str(output_dir)])
+    with pytest.raises(builder.ReleaseReadinessBundleError, match="timed out"):
+        builder.build_release_readiness_bundle(args)
+
+    manifest = load_json(output_dir / "release-readiness-bundle-manifest.json")
+    assert manifest["errors"]
+    assert "timed out" in manifest["errors"][0]
 
 
 def test_final_validator_failure_propagates_in_strict_mode(tmp_path: Path) -> None:
