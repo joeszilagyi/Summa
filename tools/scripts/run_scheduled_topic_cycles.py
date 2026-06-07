@@ -216,6 +216,32 @@ def manifest_relative_path(path: Path, *, run_dir: Path) -> str:
     return relative
 
 
+def parse_child_manifest_output(raw_manifest: str | None) -> dict[str, Any] | None:
+    if not raw_manifest:
+        return None
+    try:
+        payload = json.loads(raw_manifest)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def resolve_child_manifest(
+    *,
+    child_manifest_path: Path,
+    proc: subprocess.CompletedProcess[str] | None,
+) -> dict[str, Any] | None:
+    child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
+    if isinstance(child_manifest, dict):
+        return child_manifest
+    if not child_manifest_path.is_file():
+        return None
+    try:
+        return json.loads(child_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -577,18 +603,17 @@ def run_scheduled_cycles(
         )
         child_manifest_path = child_run_dir / "topic-cycle-run.json"
         child_status = None
-        if child_manifest_path.is_file():
-            try:
-                child_manifest = json.loads(child_manifest_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                child_manifest = None
-            if isinstance(child_manifest, dict):
-                raw_child_status = child_manifest.get("status")
-                if isinstance(raw_child_status, str):
-                    child_status = raw_child_status
-                cycle_event_id = child_manifest.get("cycle_event_id")
-                if isinstance(cycle_event_id, str) and cycle_event_id:
-                    result["cycle_event_id"] = cycle_event_id
+        child_manifest = resolve_child_manifest(
+            child_manifest_path=child_manifest_path,
+            proc=proc,
+        )
+        if isinstance(child_manifest, dict):
+            raw_child_status = child_manifest.get("status")
+            if isinstance(raw_child_status, str):
+                child_status = raw_child_status
+            cycle_event_id = child_manifest.get("cycle_event_id")
+            if isinstance(cycle_event_id, str) and cycle_event_id:
+                result["cycle_event_id"] = cycle_event_id
 
         artifact_refs = [
             {"artifact_type": "topic_cycle_manifest", "path": result["cycle_manifest_path"]}
