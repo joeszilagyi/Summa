@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -336,6 +337,126 @@ def test_rico_profile_json_uses_stable_uri_identifiers(tmp_path: Path) -> None:
         " " not in node_id and node_id.startswith("https://example.org/summa/") for node_id in ids
     )
     assert graph["relations"]
+
+
+def test_rico_export_streams_rows_without_fetchall(monkeypatch) -> None:
+    profile = standards_profiles.load_profile("rico.v1")
+
+    class FakeCursor:
+        def __init__(self, rows: list[dict[str, Any]]) -> None:
+            self._rows = rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+        def fetchall(self):
+            raise AssertionError("RiC export should not fetchall() rows")
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[Any, ...] = ()):  # noqa: ARG002
+            if sql.startswith("SELECT * FROM work"):
+                return FakeCursor(
+                    [
+                        {
+                            "work_id": 1,
+                            "title": "Public work",
+                            "work_key_v1": "work:public",
+                            "work_type": "web_page",
+                            "first_seen_at": FIXED_TIMESTAMP,
+                            "rights_posture": "metadata only",
+                            "provenance_event_ref": "prov:public",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "work_id": 2,
+                            "title": "Private work",
+                            "work_key_v1": "work:private",
+                            "work_type": "web_page",
+                            "first_seen_at": FIXED_TIMESTAMP,
+                            "rights_posture": "metadata only",
+                            "provenance_event_ref": "prov:private",
+                            "public_blocker": "private_fixture",
+                            "publication_state": "private_working",
+                        },
+                    ]
+                )
+            if sql.startswith("SELECT * FROM authority_record"):
+                return FakeCursor(
+                    [
+                        {
+                            "authority_record_id": 11,
+                            "preferred_label": "Public authority",
+                            "authority_type": "person",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "authority_record_id": 12,
+                            "preferred_label": "Private authority",
+                            "authority_type": "person",
+                            "public_blocker": "private_fixture",
+                            "publication_state": "private_working",
+                        },
+                    ]
+                )
+            if sql.startswith("SELECT * FROM source_relationship"):
+                return FakeCursor(
+                    [
+                        {
+                            "source_relationship_id": 21,
+                            "predicate": "about",
+                            "from_object_ref": "work:1",
+                            "to_object_ref": "authority_record:11",
+                            "target_label": "Public authority",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "source_relationship_id": 22,
+                            "predicate": "about",
+                            "from_object_ref": "work:2",
+                            "to_object_ref": "authority_record:12",
+                            "target_label": "Private authority",
+                            "public_blocker": "private_fixture",
+                            "publication_state": "private_working",
+                        },
+                    ]
+                )
+            if sql.startswith("SELECT provenance_event_id, event_type, event_timestamp FROM provenance_event"):
+                return FakeCursor(
+                    [
+                        {
+                            "provenance_event_id": 31,
+                            "event_type": "fixture",
+                            "event_timestamp": FIXED_TIMESTAMP,
+                        }
+                    ]
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def close(self) -> None:
+            return None
+
+    payload, report_bits = standards_profiles.build_rico_export(
+        FakeConnection(),
+        profile,
+        subject_id="rebuildability",
+        base_uri="https://example.org/summa",
+        include_private=False,
+        generated_at=FIXED_TIMESTAMP,
+        work_id=None,
+    )
+
+    graph = payload["rico_profile_json"]
+    assert len(graph["nodes"]) == 3
+    assert len(graph["relations"]) == 1
+    assert {entry["table"] for entry in report_bits["privacy_exclusions"]} == {
+        "work",
+        "authority_record",
+        "source_relationship",
+    }
+    assert all(entry["excluded_count"] == 1 for entry in report_bits["privacy_exclusions"])
 
 
 def test_nara_readiness_report_distinguishes_present_and_missing_transfer_package(
