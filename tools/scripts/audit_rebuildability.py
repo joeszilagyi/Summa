@@ -714,6 +714,7 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
+                    allow_nan=False,
                     default=str,
                 )
                 row_hashes.append(hashlib.sha256(encoded.encode()).hexdigest())
