@@ -564,14 +564,19 @@ def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> Non
         return existing
 
     existing_ids = read_existing_ids(path)
+    seen_ids: set[str] = set()
     path.parent.mkdir(parents=True, exist_ok=True)
     needs_leading_newline = path.exists() and path.stat().st_size > 0 and not path.read_bytes().endswith(b"\n")
     with path.open("a", encoding="utf-8") as handle:
         if needs_leading_newline:
             handle.write("\n")
         for record in records:
-            if record.get("planned_run_id") in existing_ids:
+            planned_run_id = record.get("planned_run_id")
+            if not isinstance(planned_run_id, str):
                 continue
+            if planned_run_id in existing_ids or planned_run_id in seen_ids:
+                continue
+            seen_ids.add(planned_run_id)
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.scripts import select_scheduled_workspaces as selector
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
 
@@ -302,6 +304,48 @@ def test_selector_appends_planned_runs_without_merging_existing_terminal_line(
     assert appended["workspace_id"] == "selected_workspace"
     assert appended["decision"] == "selected"
     assert appended["planned_run_id"] == "planner-fixture:selected_workspace"
+
+
+def test_selector_append_planned_runs_deduplicates_duplicates_in_single_call(tmp_path: Path) -> None:
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=tmp_path / "workspace",
+                manifest_path=tmp_path / "manifest.json",
+            )
+        ],
+    )
+    registry_root = tmp_path / "workspace"
+    registry_root.mkdir()
+    manifest = write_manifest(registry_root, subject_id="subject.selected")
+    record = {
+        "schema_version": "planned-run.v1",
+        "planner_run_id": "planner-fixture",
+        "planned_run_id": "planner-fixture:selected_workspace",
+        "planned_at": "2026-01-01T00:00:00Z",
+        "workspace_id": "selected_workspace",
+        "decision": "selected",
+        "cadence_reason": "schedule_posture:scheduled",
+        "skipped_reason": None,
+        "skipped_reasons": [],
+        "run_budget": {"max_attempts": 1},
+        "retry_policy": None,
+        "failure_state": None,
+        "workspace_root": str(registry_root),
+        "resolved_workspace_root": str(registry_root),
+        "default_subject_manifest": str(manifest),
+        "resolved_default_subject_manifest": str(manifest),
+        "selection_explanation_id": "explanation-id",
+        "saturation": None,
+        "saturation_override": False,
+        "registry_path": str(registry_path),
+    }
+    planned_runs = tmp_path / "planned-runs.jsonl"
+    selector.append_planned_run_records(planned_runs, [record, record])
+
+    assert read_jsonl(planned_runs) == [record]
 
 
 def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
