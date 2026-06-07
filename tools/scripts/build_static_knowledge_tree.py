@@ -537,6 +537,7 @@ def build_manifest_payload(
     export_payload: dict[str, Any],
     page_records: list[dict[str, Any]],
     asset_records: list[dict[str, Any]],
+    presentation_sha256: str | None = None,
     durable_paths: bool = False,
 ) -> dict[str, Any]:
     export_path_value = (
@@ -557,7 +558,9 @@ def build_manifest_payload(
         "export_path": export_path_value,
         "export_sha256": hash_file(export_path),
         "presentation_path": presentation_path_value,
-        "presentation_sha256": hash_file(presentation_path),
+        "presentation_sha256": (
+            presentation_sha256 if presentation_sha256 is not None else hash_file(presentation_path)
+        ),
         "built_at": built_at,
         "output_root": ".",
         "page_count": len(page_records),
@@ -586,6 +589,7 @@ def write_static_tree(
     presentation_payload: dict[str, Any],
     build_id: str,
     built_at: str,
+    presentation_sha256: str | None = None,
 ) -> dict[str, Any]:
     route_index, _ = build_presentation_indexes(presentation_payload)
     page_route_map = {
@@ -632,6 +636,7 @@ def write_static_tree(
         export_payload=export_payload,
         page_records=page_records,
         asset_records=asset_records,
+        presentation_sha256=presentation_sha256,
     )
     manifest_path = stage_root / "build-manifest.json"
     atomic_write_json(manifest_path, manifest_payload)
@@ -736,6 +741,7 @@ def build_static_knowledge_tree(
             presentation_payload=presentation_payload,
             build_id=effective_build_id,
             built_at=effective_built_at,
+            presentation_sha256=presentation_sha256,
         )
         final_manifest_payload = dict(stage_result["manifest"])
         final_manifest_payload["export_path"] = relative_manifest_path(

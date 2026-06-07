@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "build_static_knowledge_tree.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_knowledge_tree_build_manifest.py"
@@ -121,6 +120,41 @@ def test_build_manifest_receipt_validation_uses_in_memory_artifacts(tmp_path: Pa
 
     assert exit_code == manifest_validator.EXIT_PASS, report
     assert report["counts"]["accepted"] == 1
+
+
+def test_build_manifest_payload_uses_precomputed_presentation_hash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    export_path = export_fixture()
+    presentation_path = presentation_fixture()
+    export_payload = json.loads(export_path.read_text(encoding="utf-8"))
+    seen_hash_paths: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        seen_hash_paths.append(path)
+        if path == presentation_path:
+            raise AssertionError("presentation path should not be rehashed when a receipt hash is supplied")
+        if path == export_path:
+            return "sha256:" + "1" * 64
+        raise AssertionError(f"unexpected hash_file path: {path}")
+
+    monkeypatch.setattr(builder, "hash_file", fake_hash_file)
+
+    payload = builder.build_manifest_payload(
+        export_path=export_path,
+        presentation_path=presentation_path,
+        publish_root=tmp_path / "public-site",
+        build_id="build-20260602T180004Z",
+        built_at="2026-06-02T18:00:04Z",
+        export_payload=export_payload,
+        page_records=[],
+        asset_records=[],
+        presentation_sha256="sha256:" + "2" * 64,
+    )
+
+    assert seen_hash_paths == [export_path]
+    assert payload["presentation_sha256"] == "sha256:" + "2" * 64
+    assert payload["export_sha256"] == "sha256:" + "1" * 64
 
 
 def test_build_manifest_validator_rejects_windows_style_routes(tmp_path: Path) -> None:
