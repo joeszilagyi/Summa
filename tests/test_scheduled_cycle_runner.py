@@ -185,6 +185,10 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
     assert payload["attempted_workspace_count"] == 1
     assert payload["completed_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "completed"
+    assert not Path(payload["selection_artifact"]["path"]).is_absolute()
+    assert not Path(payload["workspace_results"][0]["ledger_path"]).is_absolute()
+    assert not Path(payload["workspace_results"][0]["cycle_manifest_path"]).is_absolute()
+    assert not Path(payload["workspace_results"][0]["scheduler_failure_state_record"]).is_absolute()
     assert payload["workspace_results"][0]["cycle_event_id"].startswith(
         "cycle:scheduled-run.scheduled_subject.1."
     )

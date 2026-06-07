@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -205,6 +206,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def manifest_relative_path(path: Path, *, run_dir: Path) -> str:
+    return os.path.relpath(str(path.resolve()), start=str(run_dir)).replace(os.sep, "/")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -377,7 +382,7 @@ def run_scheduled_cycles(
         "schema_version": SCHEMA_VERSION,
         "scheduled_run_id": run_id,
         "selection_artifact": {
-            "path": str(selection_path),
+            "path": manifest_relative_path(selection_path, run_dir=run_dir),
             "sha256": hash_file(selection_path),
         },
         "started_at": started_at,
@@ -490,7 +495,7 @@ def run_scheduled_cycles(
             manifest["workspace_results"].append(result)
             continue
         ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
-        result["ledger_path"] = str(ledger_path)
+        result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
         prior_attempts = terminal_attempt_count(ledger_path, workspace_id=workspace_id)
         result["attempt_number"] = prior_attempts + 1
         attempt_refusal = max_attempts_exceeded(record, prior_attempts=prior_attempts)
@@ -566,7 +571,9 @@ def run_scheduled_cycles(
                     elapsed = round(monotonic() - start, 6)
                     result["runtime_consumed_seconds"] = elapsed
                     result["cycle_run_id"] = child_run_id
-                    result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
+                    result["cycle_manifest_path"] = manifest_relative_path(
+                        child_run_dir / "topic-cycle-run.json", run_dir=run_dir
+                    )
                     result["outcome"] = "failed"
                     _set_failure(
                         result=result,
@@ -586,11 +593,16 @@ def run_scheduled_cycles(
                         event_type="command_failure",
                         occurred_at=child_ended_at,
                         artifact_refs=[
-                            {"artifact_type": "topic_cycle_manifest", "path": str(child_run_dir / "topic-cycle-run.json")}
+                            {
+                                "artifact_type": "topic_cycle_manifest",
+                                "path": result["cycle_manifest_path"],
+                            }
                         ],
                         failure={"message": result["failure_reason"]},
                     )
-                    result["scheduler_failure_state_record"] = str(ledger_path)
+                    result["scheduler_failure_state_record"] = manifest_relative_path(
+                        ledger_path, run_dir=run_dir
+                    )
                     manifest["workspace_results"].append(result)
                     attempted_index += 1
                     continue
@@ -623,7 +635,9 @@ def run_scheduled_cycles(
         elapsed = round(monotonic() - start, 6)
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
-        result["cycle_manifest_path"] = str(child_run_dir / "topic-cycle-run.json")
+        result["cycle_manifest_path"] = manifest_relative_path(
+            child_run_dir / "topic-cycle-run.json", run_dir=run_dir
+        )
         child_manifest_path = child_run_dir / "topic-cycle-run.json"
         child_status = None
         if child_manifest_path.is_file():
@@ -697,7 +711,7 @@ def run_scheduled_cycles(
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
-        result["scheduler_failure_state_record"] = str(ledger_path)
+        result["scheduler_failure_state_record"] = manifest_relative_path(ledger_path, run_dir=run_dir)
         manifest["workspace_results"].append(result)
         attempted_index += 1
     manifest["ended_at"] = utc_now()
