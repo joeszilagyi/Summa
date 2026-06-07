@@ -112,28 +112,29 @@ def check_asset(source: Path, *, asset_class: str) -> dict[str, Any]:
 
 def verify_restored_snapshot(snapshot_manifest: dict[str, Any]) -> list[dict[str, Any]]:
     verifications = []
-    with tempfile.TemporaryDirectory(prefix="topic-backup-restore-") as temp_dir:
-        restore_root = Path(temp_dir)
-        for artifact in snapshot_manifest["artifacts"]:
-            source = Path(artifact["snapshot_path"])
-            restored = restore_root / source.name
-            shutil.copy2(source, restored)
-            sha_ok = sha256_file(restored) == artifact["sha256"]
+    for artifact in snapshot_manifest["artifacts"]:
+        source = Path(artifact["snapshot_path"])
+        try:
+            sha_ok = sha256_file(source) == artifact["sha256"]
             sqlite_ok = True
             sqlite_messages: Any = []
-            if artifact["asset_class"] == "sqlite_db" or restored.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
-                check = run_check(restored)
+            if artifact["asset_class"] == "sqlite_db" or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
+                check = run_check(source)
                 sqlite_ok = check["status"] == "pass"
                 sqlite_messages = check["messages"]
-            verifications.append(
-                {
-                    "source_snapshot_path": artifact["snapshot_path"],
-                    "sha256_status": "pass" if sha_ok else "fail",
-                    "sqlite_integrity_status": "pass" if sqlite_ok else "fail",
-                    "sqlite_messages": sqlite_messages,
-                    "status": "pass" if sha_ok and sqlite_ok else "fail",
-                }
-            )
+        except OSError as exc:
+            sha_ok = False
+            sqlite_ok = False
+            sqlite_messages = [str(exc)]
+        verifications.append(
+            {
+                "source_snapshot_path": artifact["snapshot_path"],
+                "sha256_status": "pass" if sha_ok else "fail",
+                "sqlite_integrity_status": "pass" if sqlite_ok else "fail",
+                "sqlite_messages": sqlite_messages,
+                "status": "pass" if sha_ok and sqlite_ok else "fail",
+            }
+        )
     return verifications
 
 
