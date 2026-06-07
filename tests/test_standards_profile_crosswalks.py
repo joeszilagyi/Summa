@@ -563,6 +563,114 @@ def test_premis_export_reports_object_event_fixity_and_agent_limitation(tmp_path
     assert result.conformance_report["conformance_status"] == "pass_with_warnings"
 
 
+def test_premis_export_preloads_related_rows_once_per_table() -> None:
+    profile = standards_profiles.load_profile("premis.v1")
+
+    class FakeResult:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return self._rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeResult:
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            if normalized.startswith("SELECT * FROM capture_event"):
+                return FakeResult(
+                    [
+                        {
+                            "capture_event_id": 1,
+                            "byte_count": 10,
+                            "mime_type": "image/tiff",
+                            "content_hash": "sha256:abc",
+                            "captured_at": FIXED_TIMESTAMP,
+                            "capture_method": "scanner",
+                            "provenance_event_ref": "prov:1",
+                            "work_id": 1,
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "capture_event_id": 2,
+                            "byte_count": 20,
+                            "mime_type": "application/pdf",
+                            "content_hash": "sha256:def",
+                            "captured_at": FIXED_TIMESTAMP,
+                            "capture_method": "upload",
+                            "provenance_event_ref": "prov:2",
+                            "work_id": 2,
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                    ]
+                )
+            if "FROM provenance_event WHERE provenance_event_key_v1 IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {
+                            "provenance_event_key_v1": "prov:1",
+                            "event_type": "capture",
+                            "event_timestamp": FIXED_TIMESTAMP,
+                            "tool_name": "pytest",
+                            "actor_type": "system",
+                            "actor_id": "runner-1",
+                        },
+                        {
+                            "provenance_event_key_v1": "prov:2",
+                            "event_type": "capture",
+                            "event_timestamp": FIXED_TIMESTAMP,
+                            "tool_name": "pytest",
+                            "actor_type": "system",
+                            "actor_id": "runner-2",
+                        },
+                    ]
+                )
+            if "FROM work WHERE work_id IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {"work_id": 1, "rights_posture": "open"},
+                        {"work_id": 2, "rights_posture": "restricted"},
+                    ]
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def close(self) -> None:
+            return None
+
+    fake_conn = FakeConnection()
+    payload, report_bits = standards_profiles.build_premis_export(
+        fake_conn,
+        profile,
+        capture_id=None,
+        subject_id=None,
+        include_private=False,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    assert sum(sql.startswith("SELECT * FROM capture_event") for sql in fake_conn.queries) == 1
+    assert sum("FROM provenance_event WHERE provenance_event_key_v1 IN" in sql for sql in fake_conn.queries) == 1
+    assert sum("FROM work WHERE work_id IN" in sql for sql in fake_conn.queries) == 1
+    premis = payload["premis"]
+    assert len(premis["objects"]) == 2
+    assert len(premis["events"]) == 4
+    assert len(premis["agents"]) == 1
+    assert premis["rights"] == [
+        {"linked_object": "capture_event:1", "rights_statement": "open"},
+        {"linked_object": "capture_event:2", "rights_statement": "restricted"},
+    ]
+    assert report_bits["privacy_exclusions"] == []
+
+
 def test_rico_profile_json_uses_stable_uri_identifiers(tmp_path: Path) -> None:
     fixture = build_fixture_store(tmp_path)
     result = standards_profiles.export_profile(

@@ -722,6 +722,46 @@ def build_premis_export(
     events: list[dict[str, Any]] = []
     agents: dict[str, dict[str, Any]] = {}
     rights: list[dict[str, Any]] = []
+    capture_work_ids = list(
+        dict.fromkeys(int(row["work_id"]) for row in captures if row["work_id"] is not None)
+    )
+    provenance_refs = list(
+        dict.fromkeys(
+            nonblank(row["provenance_event_ref"])
+            for row in captures
+            if nonblank(row["provenance_event_ref"])
+        )
+    )
+    provenance_by_key: dict[Any, dict[str, Any]] = {}
+    work_rights_by_id: dict[Any, str | None] = {}
+    if provenance_refs:
+        provenance_placeholders = ", ".join("?" for _ in provenance_refs)
+        for row in conn.execute(
+            (
+                "SELECT provenance_event_key_v1, event_type, event_timestamp, tool_name, actor_type, actor_id "
+                f"FROM provenance_event WHERE provenance_event_key_v1 IN ({provenance_placeholders}) "
+                "ORDER BY provenance_event_id"
+            ),
+            tuple(provenance_refs),
+        ):
+            provenance_by_key[row["provenance_event_key_v1"]] = {
+                "event_type": row["event_type"],
+                "event_timestamp": row["event_timestamp"],
+                "tool_name": row["tool_name"],
+                "actor_type": row["actor_type"],
+                "actor_id": row["actor_id"],
+            }
+    if capture_work_ids:
+        work_placeholders = ", ".join("?" for _ in capture_work_ids)
+        work_rights_by_id = {
+            int(work_id): nonblank(rows[0]["rights_posture"])
+            for work_id, rows in grouped_rows_by_key(
+                conn,
+                f"SELECT work_id, rights_posture FROM work WHERE work_id IN ({work_placeholders}) ORDER BY work_id",
+                tuple(capture_work_ids),
+                key_field="work_id",
+            ).items()
+        }
     for row in captures:
         capture_ref = f"capture_event:{row['capture_event_id']}"
         obj: dict[str, Any] = {
@@ -756,7 +796,11 @@ def build_premis_export(
             satisfy(report_bits, "premis.event.capture")
         else:
             missing(report_bits, "premis.event.capture", f"{capture_ref} missing captured_at")
-        if provenance := provenance_summary(conn, row["provenance_event_ref"]):
+        if provenance_ref := nonblank(row["provenance_event_ref"]):
+            provenance = provenance_by_key.get(provenance_ref)
+        else:
+            provenance = None
+        if provenance:
             events.append({"event_identifier": f"event:{capture_ref}:provenance", **provenance})
             optional(report_bits, "premis.event.provenance")
             tool = nonblank(provenance.get("tool_name"))
@@ -768,12 +812,10 @@ def build_premis_export(
                 }
                 optional(report_bits, "premis.agent.tool")
         if row["work_id"] is not None:
-            work = conn.execute(
-                "SELECT rights_posture FROM work WHERE work_id=?", (row["work_id"],)
-            ).fetchone()
-            if work is not None and nonblank(work["rights_posture"]):
+            rights_posture = work_rights_by_id.get(int(row["work_id"]))
+            if rights_posture:
                 rights.append(
-                    {"linked_object": capture_ref, "rights_statement": work["rights_posture"]}
+                    {"linked_object": capture_ref, "rights_statement": rights_posture}
                 )
                 optional(report_bits, "premis.rights.posture")
     payload = base_export_payload(
