@@ -141,37 +141,6 @@ def normalize_plain_query(raw_query: str) -> tuple[str, list[str], str]:
     return normalized_query, terms, fts_query
 
 
-def rank_value(value: Any, mapping: dict[str, float], fallback: float) -> float:
-    if not isinstance(value, str):
-        return fallback
-    return mapping.get(value.strip().lower(), fallback)
-
-
-def confidence_score(row: sqlite3.Row) -> float:
-    raw_confidence = row["confidence_score"]
-    try:
-        value = float(raw_confidence)
-    except (TypeError, ValueError):
-        return 0.0
-    if value != value or value < 0:
-        return 0.0
-    return value
-
-
-def composite_score(row: sqlite3.Row, bm25_score: float) -> float:
-    authority_score = rank_value(row["authority_level"], AUTHORITY_SCORE_BY_LEVEL, 0.0)
-    review_score = rank_value(row["review_state"], REVIEW_STATE_BONUS, 0.0)
-    penalty = NEGATIVE_REVIEW_STATE_PENALTY.get((row["review_state"] or "").strip().lower(), 0.0)
-    confidence = min(1.0, confidence_score(row))
-    return (
-        (bm25_score * COMPOSITE_RANK_PENALTY_SCALE)
-        + authority_score
-        + review_score
-        + penalty
-        - (confidence * CONFIDENCE_BONUS_SCALE)
-    )
-
-
 def build_scope_clause(scope: str) -> tuple[str, list[str]]:
     if scope == "all":
         return "", []
