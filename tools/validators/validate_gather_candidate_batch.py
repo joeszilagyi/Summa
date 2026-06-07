@@ -399,6 +399,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
     engine = payload.get("engine")
     raw_engine_output = payload.get("raw_engine_output")
     engine_output_ref = payload.get("engine_output_ref")
+    feedback_plan = payload.get("feedback_plan")
     if isinstance(mode, str) and isinstance(engine, dict) and isinstance(provenance, dict):
         if mode == "dry_run":
             if engine.get("invoked") is True or provenance.get("engine_invoked") is True:
@@ -430,48 +431,90 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     path="$.provenance",
                 )
         elif mode == "live":
-            if engine.get("invoked") is not True or provenance.get("engine_invoked") is not True:
-                add_error(
-                    errors,
-                    code="LIVE_ENGINE_INVOCATION_REQUIRED",
-                    message="mode=live must include engine invocation provenance",
-                    path="$.mode",
-                )
-            if engine.get("engine_present") is not True or provenance.get("engine_present") is not True:
-                add_error(
-                    errors,
-                    code="LIVE_ENGINE_PRESENCE_REQUIRED",
-                    message="mode=live must include engine_present=true",
-                    path="$.engine",
-                )
-            if not isinstance(raw_engine_output, str) or not raw_engine_output:
-                add_error(
-                    errors,
-                    code="LIVE_RAW_OUTPUT_REQUIRED",
-                    message="mode=live must include raw_engine_output",
-                    path="$.raw_engine_output",
-                )
-            if not isinstance(engine_output_ref, str) or not engine_output_ref:
-                add_error(
-                    errors,
-                    code="LIVE_ENGINE_OUTPUT_REF_REQUIRED",
-                    message="mode=live must include engine_output_ref",
-                    path="$.engine_output_ref",
-                )
-            if not isinstance(provenance.get("stamped_output_path"), str) or not provenance.get("stamped_output_path"):
-                add_error(
-                    errors,
-                    code="LIVE_STAMPED_OUTPUT_PATH_REQUIRED",
-                    message="mode=live must include provenance.stamped_output_path",
-                    path="$.provenance.stamped_output_path",
-                )
-            if not isinstance(provenance.get("stamped_output_footer"), dict):
-                add_error(
-                    errors,
-                    code="LIVE_STAMPED_OUTPUT_FOOTER_REQUIRED",
-                    message="mode=live must include provenance.stamped_output_footer",
-                    path="$.provenance.stamped_output_footer",
-                )
+            should_call_llm = None
+            if isinstance(feedback_plan, dict):
+                next_action = feedback_plan.get("next_action")
+                if isinstance(next_action, dict):
+                    should_call_llm = next_action.get("should_call_llm")
+            if should_call_llm is False:
+                if engine.get("invoked") is True or provenance.get("engine_invoked") is True:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_INVOCATION_FORBIDDEN",
+                        message="mode=live must not claim engine invocation when the feedback plan skips LLM execution",
+                        path="$.mode",
+                    )
+                if engine.get("engine_present") is True or provenance.get("engine_present") is True:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_PRESENCE_FORBIDDEN",
+                        message="mode=live must not claim engine presence when the feedback plan skips LLM execution",
+                        path="$.engine",
+                    )
+                if raw_engine_output not in (None, ""):
+                    add_error(
+                        errors,
+                        code="LIVE_RAW_OUTPUT_FORBIDDEN",
+                        message="mode=live must not include raw_engine_output when the feedback plan skips LLM execution",
+                        path="$.raw_engine_output",
+                    )
+                if engine_output_ref is not None:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_OUTPUT_REF_FORBIDDEN",
+                        message="mode=live must not include engine_output_ref when the feedback plan skips LLM execution",
+                        path="$.engine_output_ref",
+                    )
+                if provenance.get("stamped_output_path") is not None or provenance.get("stamped_output_footer") is not None:
+                    add_error(
+                        errors,
+                        code="LIVE_STAMP_FORBIDDEN",
+                        message="mode=live must not claim stamped engine output when the feedback plan skips LLM execution",
+                        path="$.provenance",
+                    )
+            else:
+                if engine.get("invoked") is not True or provenance.get("engine_invoked") is not True:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_INVOCATION_REQUIRED",
+                        message="mode=live must include engine invocation provenance",
+                        path="$.mode",
+                    )
+                if engine.get("engine_present") is not True or provenance.get("engine_present") is not True:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_PRESENCE_REQUIRED",
+                        message="mode=live must include engine_present=true",
+                        path="$.engine",
+                    )
+                if not isinstance(raw_engine_output, str) or not raw_engine_output:
+                    add_error(
+                        errors,
+                        code="LIVE_RAW_OUTPUT_REQUIRED",
+                        message="mode=live must include raw_engine_output",
+                        path="$.raw_engine_output",
+                    )
+                if not isinstance(engine_output_ref, str) or not engine_output_ref:
+                    add_error(
+                        errors,
+                        code="LIVE_ENGINE_OUTPUT_REF_REQUIRED",
+                        message="mode=live must include engine_output_ref",
+                        path="$.engine_output_ref",
+                    )
+                if not isinstance(provenance.get("stamped_output_path"), str) or not provenance.get("stamped_output_path"):
+                    add_error(
+                        errors,
+                        code="LIVE_STAMPED_OUTPUT_PATH_REQUIRED",
+                        message="mode=live must include provenance.stamped_output_path",
+                        path="$.provenance.stamped_output_path",
+                    )
+                if not isinstance(provenance.get("stamped_output_footer"), dict):
+                    add_error(
+                        errors,
+                        code="LIVE_STAMPED_OUTPUT_FOOTER_REQUIRED",
+                        message="mode=live must include provenance.stamped_output_footer",
+                        path="$.provenance.stamped_output_footer",
+                    )
 
     prompt = payload.get("prompt")
     prompt_text: str | None = None
@@ -544,7 +587,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
     cycle_depth = payload.get("cycle_depth")
     previous_run_ids = payload.get("previous_run_ids")
     prior_state = payload.get("prior_state")
-    feedback_plan = payload.get("feedback_plan")
     facet = payload.get("facet")
     prompt_bundle = payload.get("prompt_bundle")
     if cycle_depth is not None and not isinstance(cycle_depth, int):

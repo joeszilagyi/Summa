@@ -453,6 +453,7 @@
         "subject_id",
         "selected_facet",
         "selected_prompt_bundle_id",
+        "should_call_llm",
         "selection_score",
         "scoring_policy_id",
         "rationale",
@@ -487,6 +488,9 @@
         "selected_prompt_bundle_id": {
           "type": "string",
           "minLength": 1
+        },
+        "should_call_llm": {
+          "type": "boolean"
         },
         "selected_object_ref": {
           "type": [

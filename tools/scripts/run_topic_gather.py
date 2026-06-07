@@ -1048,7 +1048,10 @@ def main() -> int:
         write_text(rendered_prompt_path, rendered_prompt)
 
         live_result: dict[str, Any] | None = None
-        if args.mode == "live":
+        should_call_llm = True
+        if isinstance(next_action, dict):
+            should_call_llm = bool(next_action.get("should_call_llm", True))
+        if args.mode == "live" and should_call_llm:
             live_result = run_live_engine(
                 run_dir=run_dir,
                 rendered_prompt_path=rendered_prompt_path,
