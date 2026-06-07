@@ -385,6 +385,165 @@ def test_dcmi_export_and_conformance_report(tmp_path: Path) -> None:
     assert result.conformance_report["required_fields_missing"] == []
 
 
+def test_dcmi_export_preloads_related_rows_once_per_table() -> None:
+    profile = standards_profiles.load_profile("dcmi.v1")
+
+    class FakeResult:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return self._rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeResult:
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            if normalized.startswith("SELECT * FROM work"):
+                return FakeResult(
+                    [
+                        {
+                            "work_id": 1,
+                            "title": "Work One",
+                            "work_key_v1": "wk-1",
+                            "work_type": "article",
+                            "first_seen_at": FIXED_TIMESTAMP,
+                            "rights_posture": "open",
+                            "provenance_event_ref": "prov:1",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "work_id": 2,
+                            "title": "Work Two",
+                            "work_key_v1": "wk-2",
+                            "work_type": "report",
+                            "first_seen_at": FIXED_TIMESTAMP,
+                            "rights_posture": "restricted",
+                            "provenance_event_ref": "prov:2",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                    ]
+                )
+            if "FROM source_access WHERE work_id IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {
+                            "work_id": 1,
+                            "canonical_url": "https://example.org/work/1",
+                            "original_locator": None,
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "work_id": 2,
+                            "canonical_url": None,
+                            "original_locator": "https://example.org/work/2",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                    ]
+                )
+            if "FROM source_claim WHERE about_object_ref IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {
+                            "about_object_ref": "work:1",
+                            "public_summary": "Summary one",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "about_object_ref": "work:2",
+                            "public_summary": "Summary two",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                    ]
+                )
+            if "FROM source_relationship WHERE from_object_ref IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {
+                            "from_object_ref": "work:1",
+                            "target_label": "Subject one",
+                            "predicate": "relatedTo",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                        {
+                            "from_object_ref": "work:2",
+                            "target_label": "Subject two",
+                            "predicate": "relatedTo",
+                            "public_blocker": "",
+                            "publication_state": "public_safe",
+                        },
+                    ]
+                )
+            if "FROM provenance_event WHERE provenance_event_key_v1 IN" in normalized:
+                assert len(params) == 2
+                return FakeResult(
+                    [
+                        {
+                            "provenance_event_key_v1": "prov:1",
+                            "event_type": "ingest",
+                            "event_timestamp": FIXED_TIMESTAMP,
+                            "tool_name": "pytest",
+                            "actor_type": "system",
+                            "actor_id": "runner-1",
+                        },
+                        {
+                            "provenance_event_key_v1": "prov:2",
+                            "event_type": "ingest",
+                            "event_timestamp": FIXED_TIMESTAMP,
+                            "tool_name": "pytest",
+                            "actor_type": "system",
+                            "actor_id": "runner-2",
+                        },
+                    ]
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def close(self) -> None:
+            return None
+
+    fake_conn = FakeConnection()
+    payload, report_bits = standards_profiles.build_dcmi_export(
+        fake_conn,
+        profile,
+        work_id=None,
+        subject_id=None,
+        include_private=False,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    assert sum("FROM source_access WHERE work_id IN" in sql for sql in fake_conn.queries) == 1
+    assert sum("FROM source_claim WHERE about_object_ref IN" in sql for sql in fake_conn.queries) == 1
+    assert sum("FROM source_relationship WHERE from_object_ref IN" in sql for sql in fake_conn.queries) == 1
+    assert (
+        sum("FROM provenance_event WHERE provenance_event_key_v1 IN" in sql for sql in fake_conn.queries)
+        == 1
+    )
+    records = payload["records"]
+    assert [record["summa_ref"] for record in records] == ["work:1", "work:2"]
+    assert records[0]["metadata"]["dcterms:source"] == ["https://example.org/work/1"]
+    assert records[1]["metadata"]["dcterms:source"] == ["https://example.org/work/2"]
+    assert records[0]["metadata"]["dcterms:description"] == ["Summary one"]
+    assert records[1]["metadata"]["dcterms:subject"] == ["Subject two"]
+    assert records[0]["metadata"]["dcterms:provenance"]["tool_name"] == "pytest"
+    assert report_bits["privacy_exclusions"] == []
+
+
 def test_premis_export_reports_object_event_fixity_and_agent_limitation(tmp_path: Path) -> None:
     fixture = build_fixture_store(tmp_path)
     result = standards_profiles.export_profile(
