@@ -47,6 +47,25 @@ def table_count(path: Path, table_name: str) -> int:
         conn.close()
 
 
+class CountingConnection:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.executed_sql: list[str] = []
+        self.closed = False
+
+    def execute(self, sql: str, params: tuple[object, ...] = ()) -> sqlite3.Cursor:
+        self.executed_sql.append(sql)
+        return self._conn.execute(sql, params)
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self._conn.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
 def insert_orphan_claim(path: Path, *, review_state: str = "accepted") -> None:
     conn = sqlite3.connect(path)
     try:
@@ -76,6 +95,25 @@ def insert_orphan_claim(path: Path, *, review_state: str = "accepted") -> None:
                 FIXED_TIMESTAMP,
                 FIXED_TIMESTAMP,
             ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_work_orphan(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """
+            INSERT INTO work (
+              work_key_v1,
+              title,
+              record_last_updated
+            ) VALUES (?, ?, ?)
+            """,
+            ("work:orphan:order", "orphan work", FIXED_TIMESTAMP),
         )
         conn.commit()
     finally:
@@ -257,6 +295,100 @@ def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     assert "SOURCE_ACCESS_TRUE_ORPHAN" in codes
     assert "CAPTURE_EVENT_TRUE_ORPHAN" in codes
     assert report["status"] == "fail"
+
+
+def test_graph_closure_batches_existence_lookups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="graph-closure-batch",
+                event_type="fixture_ingest",
+                tool_name="pytest.graph_closure",
+                run_id="graph-closure",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:batch",
+            )
+            work_one = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:graph-closure:1",
+                provenance_event_ref=provenance.event_key,
+                title="First work",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:graph-closure:2",
+                provenance_event_ref=provenance.event_key,
+                title="Second work",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_access(
+                conn,
+                original_locator="https://example.invalid/first",
+                provenance_event_ref=provenance.event_key,
+                work_id=work_one.row_id,
+                review_state="needs_review",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_access(
+                conn,
+                original_locator="https://example.invalid/second",
+                provenance_event_ref=provenance.event_key,
+                work_id=work_one.row_id,
+                review_state="needs_review",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+    finally:
+        conn.close()
+
+    original_connect = canonical_store.connect_existing_read_only
+    proxy = CountingConnection(original_connect(db_path))
+    monkeypatch.setattr(canonical_store, "connect_existing_read_only", lambda _path: proxy)
+
+    report = canonical_graph_closure.audit_canonical_graph_closure(
+        db_path,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    assert report["status"] == "pass"
+    assert sum(
+        sql == "SELECT provenance_event_key_v1 FROM provenance_event"
+        for sql in proxy.executed_sql
+    ) == 1
+    assert sum(
+        sql == "SELECT CAST(work_id AS TEXT), CAST(work_key_v1 AS TEXT) FROM work WHERE work_id IS NOT NULL OR work_key_v1 IS NOT NULL"
+        for sql in proxy.executed_sql
+    ) == 1
+    assert not any(
+        "SELECT 1 FROM provenance_event WHERE provenance_event_key_v1=?" in sql
+        for sql in proxy.executed_sql
+    )
+    assert not any(
+        "SELECT 1 FROM work WHERE CAST(work_id AS TEXT)=? LIMIT 1" in sql
+        for sql in proxy.executed_sql
+    )
+
+
+def test_graph_closure_preserves_audit_order_without_global_sort(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    insert_work_orphan(db_path)
+    insert_orphan_claim(db_path)
+
+    report = canonical_graph_closure.audit_canonical_graph_closure(
+        db_path,
+        generated_at=FIXED_TIMESTAMP,
+    )
+
+    issue_tables = [issue["table"] for issue in report["issues"]]
+    assert issue_tables[:2] == ["work", "source_claim"]
 
 
 def test_graph_closure_report_is_deterministic_and_read_only(tmp_path: Path) -> None:
