@@ -143,6 +143,38 @@ def test_source_adapter_validator_rejects_unknown_nested_fields(tmp_path: Path) 
     assert "unexpected normalized_handoff field: unexpected_handoff_field" in messages
 
 
+def test_source_adapter_validator_rejects_unknown_top_level_nested_fields_with_codes(tmp_path: Path) -> None:
+    source_adapter_payload = json.loads(
+        (FIXTURE_ROOT / "valid_local_directory" / "inputs" / "source_adapter.json").read_text(encoding="utf-8")
+    )
+    source_adapter_payload["content_profile"]["unexpected_profile_key"] = "unexpected"
+    source_adapter_payload["normalized_handoff"]["unexpected_handoff_field"] = "unexpected"
+
+    target_path = tmp_path / "source_adapter.json"
+    target_path.write_text(json.dumps(source_adapter_payload), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            str(target_path),
+            "--report-json",
+            "actual/report.json",
+            "--report-text",
+            "actual/report.txt",
+        ],
+        cwd=tmp_path,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    report = json.loads((tmp_path / "actual" / "report.json").read_text(encoding="utf-8"))
+    codes = {error["code"] for error in report["errors"]}
+    assert "UNKNOWN_CONTENT_PROFILE_FIELD" in codes
+    assert "UNKNOWN_HANDOFF_FIELD" in codes
+
+
 def test_source_adapter_validator_does_not_recreate_missing_expected_reports(tmp_path: Path) -> None:
     expected_report = json.loads(
         (FIXTURE_ROOT / "valid_local_directory" / "expected" / "report.json").read_text(encoding="utf-8")
