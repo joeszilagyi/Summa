@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.source_db_tools import canonical_store  # noqa: E402
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
 
 PROFILE_SCHEMA_VERSION = "standards-profile.v1"
 EXPORT_SCHEMA_VERSION = "standards-profile-export.v1"
@@ -1084,7 +1085,7 @@ def export_profile(
     output_resolved = resolve_path(output_path) if output_path is not None else None
     if output_resolved is not None:
         output_resolved.parent.mkdir(parents=True, exist_ok=True)
-        output_resolved.write_text(stable_json(export_payload), encoding="utf-8")
+        atomic_write_json(output_resolved, export_payload)
     report = conformance_report(
         profile=profile,
         export_payload=export_payload,
@@ -1099,7 +1100,7 @@ def export_profile(
     )
     if report_resolved is not None:
         report_resolved.parent.mkdir(parents=True, exist_ok=True)
-        report_resolved.write_text(stable_json(report), encoding="utf-8")
+        atomic_write_json(report_resolved, report)
     if strict and report["validation_status"] == "fail":
         raise StandardsProfileError(f"profile {profile_id} export failed conformance validation")
     return ExportResult(profile=profile, export_payload=export_payload, conformance_report=report)

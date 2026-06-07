@@ -408,6 +408,39 @@ def test_export_is_deterministic_across_repeated_runs(tmp_path: Path) -> None:
     ) == standards_profiles.stable_json(second.conformance_report)
 
 
+def test_export_profile_uses_atomic_json_writer_for_output_and_report(tmp_path: Path) -> None:
+    fixture = build_fixture_store(tmp_path)
+    output_path = tmp_path / "export.json"
+    report_path = tmp_path / "report.json"
+
+    wrote: list[tuple[Path, object]] = []
+
+    def fake_atomic_write(path: Path, payload: object) -> None:
+        wrote.append((path, payload))
+
+    def reject_direct_write(_self: object, *args: object, **kwargs: object) -> None:
+        raise AssertionError("direct write_text should not be used")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(standards_profiles.Path, "write_text", reject_direct_write)
+    monkeypatch.setattr(standards_profiles, "atomic_write_json", fake_atomic_write)
+    try:
+        standards_profiles.export_profile(
+            db_path=fixture["db_path"],
+            profile_id="dcmi.v1",
+            output_path=output_path,
+            conformance_report_path=report_path,
+            generated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(wrote) == 2
+    called_paths = {entry[0] for entry in wrote}
+    assert output_path.resolve() in called_paths
+    assert report_path.resolve() in called_paths
+
+
 def test_missing_required_field_causes_conformance_failure(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
