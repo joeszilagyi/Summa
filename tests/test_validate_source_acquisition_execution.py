@@ -67,3 +67,26 @@ def test_execution_validation_rejects_capture_handoff_hash_mismatch(tmp_path: Pa
         error["code"] == "CAPTURE_HANDOFF_HASH_MISMATCH" for error in report.get("errors", [])
     )
 
+
+def test_execution_validation_rejects_duplicate_capture_ids(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    execution_record = json.loads((run_dir / "execution-record.json").read_text(encoding="utf-8"))
+    capture_events = [
+        json.loads(line)
+        for line in (run_dir / "capture-events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    capture_events.append(dict(capture_events[0]))
+    execution_record["capture_event_count"] = 2
+
+    (run_dir / "execution-record.json").write_text(
+        json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_json_lines(run_dir / "capture-events.jsonl", capture_events)
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "DUPLICATE_CAPTURE_ID" for error in report.get("errors", []))

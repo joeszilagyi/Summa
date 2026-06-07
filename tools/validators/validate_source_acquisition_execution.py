@@ -344,6 +344,7 @@ def validate_capture_events(
     expected_input_handoff_hash: str,
     errors: list[dict[str, Any]],
 ) -> None:
+    seen_capture_ids: set[str] = set()
     for index, record in enumerate(records):
         base = f"$[{index}]"
         if record.get("schema_version") not in SUPPORTED_CAPTURE_SCHEMA_VERSIONS:
@@ -378,6 +379,17 @@ def validate_capture_events(
                 message="capture event run_id does not match execution-record.json",
                 path=f"{base}.run_id",
             )
+        capture_id = record.get("capture_id")
+        if isinstance(capture_id, str):
+            if capture_id in seen_capture_ids:
+                add_error(
+                    errors,
+                    code="DUPLICATE_CAPTURE_ID",
+                    message=f"duplicate capture_id encountered: {capture_id}",
+                    path=f"{base}.capture_id",
+                )
+            else:
+                seen_capture_ids.add(capture_id)
         if record.get("handoff_hash") != expected_input_handoff_hash:
             add_error(
                 errors,
