@@ -7,10 +7,10 @@ from pathlib import Path
 
 from tools.source_db_tools import canonical_ingest, canonical_store
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER_PATH = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
 FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXTURE_PROMPT = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "rendered-prompt.txt"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
 
 
@@ -86,6 +86,8 @@ def write_seed_batch(tmp_path: Path, *, subject_id: str, run_id: str = "cycle-on
     payload["subject"]["subject_id"] = subject_id
     seed_path = tmp_path / f"{run_id}-gather-candidate-batch.json"
     seed_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    prompt_path = seed_path.with_name("rendered-prompt.txt")
+    prompt_path.write_text(FIXTURE_PROMPT.read_text(encoding="utf-8"), encoding="utf-8")
     return seed_path
 
 
