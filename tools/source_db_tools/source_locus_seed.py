@@ -161,6 +161,36 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column_name: str
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_definition}")
 
 
+def iter_seed_records(seed_path: Path):
+    if not seed_path.is_file():
+        raise RuntimeError(f"seed file not found: {seed_path}")
+    if seed_path.suffix == ".jsonl":
+        with seed_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"{seed_path}:{line_number}: invalid JSON") from exc
+                if not isinstance(value, dict):
+                    raise RuntimeError(f"{seed_path}:{line_number}: seed row must be an object")
+                yield value
+        return
+
+    try:
+        value = json.loads(seed_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{seed_path}: invalid JSON") from exc
+    if isinstance(value, dict):
+        records = value.get("source_loci")
+    else:
+        records = value
+    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+        raise RuntimeError("seed JSON must be a list of objects or an object with source_loci list")
+    yield from records
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -218,34 +248,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def load_seed_records(seed_path: Path) -> list[dict[str, Any]]:
-    if not seed_path.is_file():
-        raise RuntimeError(f"seed file not found: {seed_path}")
-    if seed_path.suffix == ".jsonl":
-        records: list[dict[str, Any]] = []
-        with seed_path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    value = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError(f"{seed_path}:{line_number}: invalid JSON") from exc
-                if not isinstance(value, dict):
-                    raise RuntimeError(f"{seed_path}:{line_number}: seed row must be an object")
-                records.append(value)
-        return records
-
-    try:
-        value = json.loads(seed_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{seed_path}: invalid JSON") from exc
-    if isinstance(value, dict):
-        records = value.get("source_loci")
-    else:
-        records = value
-    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
-        raise RuntimeError("seed JSON must be a list of objects or an object with source_loci list")
-    return records
+    return list(iter_seed_records(seed_path))
 
 
 def unknown_locus_id(topic_id: str) -> str:
@@ -647,10 +650,12 @@ def seed_database(
     overwrite_curation: bool = False,
 ) -> dict[str, Any]:
     ensure_schema(conn)
-    raw_records = load_seed_records(seed_path)
-    unknown_id = ensure_unknown_locus(conn, topic_id, discovered_at=discovered_at, discovered_by=discovered_by)
+    raw_records = iter_seed_records(seed_path)
+    unknown_id = ensure_unknown_locus(
+        conn, topic_id, discovered_at=discovered_at, discovered_by=discovered_by
+    )
     inserted_or_updated = 1
-    records: list[dict[str, Any]] = []
+    manual_seed_records = 0
     for raw in raw_records:
         record = normalize_seed_record(
             raw,
@@ -666,7 +671,7 @@ def seed_database(
             overwrite_curation=overwrite_curation,
         )
         inserted_or_updated += 1
-        records.append(record)
+        manual_seed_records += 1
     assigned_unknown_leads = 0
     if assign_unknown_leads:
         assigned_unknown_leads = assign_unknown_locus_to_unlinked_leads(
@@ -683,7 +688,7 @@ def seed_database(
         "topic_id": topic_id,
         "seed_path": seed_path.as_posix(),
         "inserted_or_updated": inserted_or_updated,
-        "manual_seed_records": len(records),
+        "manual_seed_records": manual_seed_records,
         "unknown_locus_id": unknown_id,
         "assigned_unknown_leads": assigned_unknown_leads,
         "source_locus_export": export,

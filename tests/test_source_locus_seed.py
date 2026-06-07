@@ -198,3 +198,72 @@ def test_deprecated_source_locus_is_inspectable_and_reversible(tmp_path: Path) -
     assert restored_loci[0]["is_deprecated"] is False
     assert restored_loci[0]["deprecation_reason"] is None
     assert restored_plan["plan_status"] == "accepted"
+
+
+def test_seed_database_streams_jsonl_records_without_materializing_list(
+    tmp_path: Path, monkeypatch
+) -> None:
+    conn = sqlite3.connect(tmp_path / "source.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    source_locus_seed.ensure_schema(conn)
+
+    class StreamingRecords:
+        def __init__(self, records: list[dict[str, object]]) -> None:
+            self._records = records
+            self._index = 0
+
+        def __iter__(self) -> "StreamingRecords":
+            return self
+
+        def __next__(self) -> dict[str, object]:
+            if self._index >= len(self._records):
+                raise StopIteration
+            value = self._records[self._index]
+            self._index += 1
+            return value
+
+        def __len__(self) -> int:
+            raise AssertionError("seed_database should stream JSONL records instead of materializing them")
+
+    records = [
+        {
+            "display_name": "Streamed Archive One",
+            "locus_type": "archive",
+            "query_family": "archives",
+            "languages": ["en"],
+            "access_class": "public_catalog_or_web",
+            "rights_posture": "metadata_only",
+            "refetchability_status": "not_checked",
+        },
+        {
+            "display_name": "Streamed Archive Two",
+            "locus_type": "archive",
+            "query_family": "archives",
+            "languages": ["en"],
+            "access_class": "public_catalog_or_web",
+            "rights_posture": "metadata_only",
+            "refetchability_status": "not_checked",
+        },
+    ]
+
+    monkeypatch.setattr(
+        source_locus_seed,
+        "iter_seed_records",
+        lambda _path: StreamingRecords(records),
+    )
+
+    try:
+        report = source_locus_seed.seed_database(
+            conn,
+            seed_path=tmp_path / "seed.jsonl",
+            topic_id="stream_topic",
+            discovered_at=FIXED_TIMESTAMP,
+            discovered_by="pytest",
+        )
+    finally:
+        conn.close()
+
+    assert report["manual_seed_records"] == 2
+    assert report["inserted_or_updated"] == 3
+    assert report["source_locus_export"]["counts"]["total_loci"] == 3
