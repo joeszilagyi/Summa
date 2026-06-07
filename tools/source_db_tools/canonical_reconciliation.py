@@ -27,6 +27,9 @@ AUTHORITY_MATCH_LABEL_AND_TYPE = 0.75
 AUTHORITY_MATCH_LABEL_AND_TYPE_AMBIGUOUS = 0.5
 AUTO_MERGE_REVIEW_STATES = ("accepted", "approved", "curated", "reviewed")
 AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD = 0.0
+WORK_MATCH_REVIEW_STATES = tuple(
+    sorted(set(AUTO_MERGE_REVIEW_STATES) | set(canonical_store.PRIOR_STATE_LEAD_REVIEW_STATES))
+)
 WORK_MATCH_EXACT_IDENTIFIER = 1.0
 WORK_MATCH_TITLE_TYPE_AND_SOURCE = 0.95
 STRUCTURED_CONTRADICTION_CONFIDENCE = 1.0
@@ -272,7 +275,8 @@ def candidate_identifiers(structured: dict[str, Any] | None) -> list[dict[str, s
     deduped: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in identifiers:
-        key = (item["scheme"].strip().lower(), item["value"].strip())
+        normalized = identifier_normalization.identifier_storage_values(item["scheme"], item["value"])
+        key = (str(normalized["scheme"]), str(normalized["value"]))
         if key in seen:
             continue
         seen.add(key)
@@ -507,7 +511,7 @@ def find_existing_work_match(
     identifiers = candidate_identifiers(structured)
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
-        review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
+        review_state_placeholders = ", ".join("?" for _ in WORK_MATCH_REVIEW_STATES)
         rows = conn.execute(
             """
             SELECT work.work_id, work.work_key_v1
@@ -517,7 +521,8 @@ def find_existing_work_match(
               AND work_identifier.validity_status='valid'
               AND work.review_state IN ({})
               AND work_identifier.review_state IN ({})
-              AND COALESCE(work_identifier.confidence_score, 0.0) >= ?
+              AND work_identifier.confidence_score IS NOT NULL
+              AND work_identifier.confidence_score >= ?
             ORDER BY work.work_id
             """.format(
                 review_state_placeholders, review_state_placeholders
@@ -525,8 +530,8 @@ def find_existing_work_match(
             (
                 normalized["scheme"],
                 normalized["value"],
-                *AUTO_MERGE_REVIEW_STATES,
-                *AUTO_MERGE_REVIEW_STATES,
+                *WORK_MATCH_REVIEW_STATES,
+                *WORK_MATCH_REVIEW_STATES,
                 AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
             ),
         ).fetchall()
@@ -686,7 +691,8 @@ def find_existing_authority_match(
               AND authority_identifier.validity_status='valid'
               AND authority_record.review_state IN ({})
               AND authority_identifier.review_state IN ({})
-              AND COALESCE(authority_identifier.confidence_score, 0.0) >= ?
+              AND authority_identifier.confidence_score IS NOT NULL
+              AND authority_identifier.confidence_score >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
             """.format(
                 review_state_placeholders, review_state_placeholders

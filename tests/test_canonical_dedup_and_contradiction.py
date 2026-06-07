@@ -455,6 +455,152 @@ def test_existing_work_match_fallback_prefilters_by_source_locator(tmp_path: Pat
     )
 
 
+def test_pending_exact_identifier_duplicates_match_existing_work(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="pending-work-duplicate",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work_row = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:pending-duplicate",
+                provenance_event_ref=provenance.event_key,
+                work_type="article",
+                title="Pending Duplicate Work",
+                confidence_score=0.9,
+                review_state="needs_review",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/pending-duplicate",
+                confidence_score=0.9,
+                review_state="needs_review",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            work_match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={"identifiers": [{"scheme": "doi", "value": "10.1000/pending-duplicate"}]},
+                work_type="article",
+                title="Different Pending Work",
+                workspace_id=None,
+            )
+    finally:
+        conn.close()
+
+    assert work_match is not None
+    assert work_match.work_id == work_row.row_id
+
+
+def test_null_confidence_work_identifier_does_not_exactly_match(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id="null-confidence-work",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work_row = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:null-confidence",
+                provenance_event_ref=provenance.event_key,
+                work_type="article",
+                title="Null Confidence Work",
+                confidence_score=0.9,
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_reconciliation.record_work_identifier(
+                conn,
+                work_id=work_row.row_id,
+                scheme="doi",
+                value="10.1000/null-confidence-work",
+                confidence_score=None,
+                review_state="accepted",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            work_match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={"identifiers": [{"scheme": "doi", "value": "10.1000/null-confidence-work"}]},
+                work_type="article",
+                title="Different Work Title",
+                workspace_id=None,
+            )
+    finally:
+        conn.close()
+
+    assert work_match is None
+
+
+def test_null_confidence_authority_identifier_does_not_auto_merge(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:jane-smith-null-confidence",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.add_authority_identifier(
+                conn,
+                authority_record_id=authority_id,
+                scheme="orcid",
+                value="0000-0002-1825-0097",
+                is_primary=1,
+                confidence_score=None,
+                review_state="accepted",
+                verified_at=FIXED_TIMESTAMP,
+            )
+            matches = canonical_reconciliation.find_existing_authority_match(
+                conn,
+                entity_label="Different Person",
+                entity_type="person",
+                structured={"identifiers": [{"scheme": "orcid", "value": "0000-0002-1825-0097"}]},
+            )
+    finally:
+        conn.close()
+
+    assert matches == []
+
+
+def test_candidate_identifiers_collapses_equivalent_identifier_forms() -> None:
+    identifiers = canonical_reconciliation.candidate_identifiers(
+        {
+            "identifiers": [
+                {"scheme": "doi", "value": "https://doi.org/10.1000/normalized"},
+                {"scheme": "doi", "value": "10.1000/normalized"},
+                {"scheme": "orcid", "value": "0000-0002-1825-0097"},
+                {"scheme": "orcid", "value": "https://orcid.org/0000-0002-1825-0097"},
+            ]
+        }
+    )
+
+    assert len(identifiers) == 2
+    assert [item["scheme"] for item in identifiers] == ["doi", "orcid"]
+
+
 def test_record_work_identifier_replay_without_review_state_preserves_established_state(
     tmp_path: Path,
 ) -> None:
