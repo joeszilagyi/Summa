@@ -251,3 +251,48 @@ def test_default_build_id_is_deterministic_from_inputs(tmp_path: Path) -> None:
     manifest_b = json.loads((publish_root_b / "build-manifest.json").read_text(encoding="utf-8"))
     assert manifest_a["export_sha256"] == manifest_b["export_sha256"]
     assert manifest_a["presentation_sha256"] == manifest_b["presentation_sha256"]
+
+
+def test_builder_cli_derives_deterministic_default_build_id_from_inputs(tmp_path: Path) -> None:
+    publish_root_a = tmp_path / "public-site-a"
+    publish_root_b = tmp_path / "public-site-b"
+
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--export",
+            str(export_fixture()),
+            "--presentation",
+            str(presentation_fixture()),
+            "--publish-root",
+            str(publish_root_a),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--export",
+            str(export_fixture()),
+            "--presentation",
+            str(presentation_fixture()),
+            "--publish-root",
+            str(publish_root_b),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert second.returncode == 0, second.stdout + second.stderr
+    payload_a = json.loads(first.stdout)
+    payload_b = json.loads(second.stdout)
+    assert payload_a["build_id"] == payload_b["build_id"]
+    assert payload_a["build_id"].startswith("build-")
