@@ -16,7 +16,7 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +117,12 @@ class DiscoveryCandidate:
     payload: dict[str, Any] | None = None
     payload_loaded: bool = False
     expected_schema_versions: set[str] | None = None
+
+
+@dataclass(frozen=True)
+class ReplayPreparation:
+    artifact: Artifact
+    load_error: str | None = None
 
 
 def hash_file(path: Path) -> str:
@@ -347,6 +353,71 @@ def _finalize_discovered_artifact(candidate: DiscoveryCandidate) -> Artifact:
         payload=candidate.payload,
         payload_loaded=candidate.payload_loaded,
     )
+
+
+def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
+    if artifact.validation_status != "valid" or artifact.artifact_type not in REPLAYABLE_TYPES:
+        return ReplayPreparation(artifact=artifact)
+    if artifact.artifact_type == "canonical_write_spool_record" and artifact.replay_status.startswith(
+        "skipped"
+    ):
+        return ReplayPreparation(artifact=artifact)
+    try:
+        if artifact.artifact_type == "gather_candidate_batch":
+            if artifact.replay_inputs is not None:
+                batch = artifact.replay_inputs.get("batch")
+                digest = artifact.replay_inputs.get("batch_hash")
+                if isinstance(batch, dict) and isinstance(digest, str):
+                    return ReplayPreparation(artifact=artifact)
+            batch, digest = canonical_ingest.load_validated_candidate_batch(artifact.path)
+            return ReplayPreparation(
+                artifact=replace(
+                    artifact,
+                    payload=batch,
+                    replay_inputs={"batch": batch, "batch_hash": digest},
+                )
+            )
+        if artifact.artifact_type == "source_acquisition_execution":
+            if artifact.replay_inputs is not None:
+                execution_record = artifact.replay_inputs.get("execution_record")
+                captures = artifact.replay_inputs.get("capture_events")
+                extractions = artifact.replay_inputs.get("extraction_records")
+                paths = artifact.replay_inputs.get("paths")
+                hashes = artifact.replay_inputs.get("input_hashes")
+                if (
+                    isinstance(execution_record, dict)
+                    and isinstance(captures, list)
+                    and isinstance(extractions, list)
+                    and isinstance(paths, dict)
+                    and isinstance(hashes, dict)
+                ):
+                    return ReplayPreparation(artifact=artifact)
+            execution_record, captures, extractions, paths, hashes = (
+                canonical_ingest.load_validated_execution_artifacts(artifact.path)
+            )
+            return ReplayPreparation(
+                artifact=replace(
+                    artifact,
+                    payload=execution_record,
+                    replay_inputs={
+                        "execution_record": execution_record,
+                        "capture_events": captures,
+                        "extraction_records": extractions,
+                        "paths": paths,
+                        "input_hashes": hashes,
+                    },
+                )
+            )
+        if artifact.replay_inputs is not None:
+            record = artifact.replay_inputs.get("record")
+            if isinstance(record, dict):
+                return ReplayPreparation(artifact=artifact)
+        record = canonical_write_spool.load_spool_record(artifact.path)
+        return ReplayPreparation(
+            artifact=replace(artifact, payload=record, replay_inputs={"record": record})
+        )
+    except Exception as exc:
+        return ReplayPreparation(artifact=artifact, load_error=str(exc))
 
 
 def discover_artifacts(runs_dir: Path) -> list[Artifact]:
@@ -852,9 +923,14 @@ def replay_artifacts(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     results: list[dict[str, Any]] = []
     errors: list[str] = []
+    prepared_artifacts: list[ReplayPreparation] = []
+    if artifacts:
+        with ThreadPoolExecutor(max_workers=min(4, len(artifacts))) as executor:
+            prepared_artifacts = list(executor.map(_prepare_replay_artifact, artifacts))
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        for artifact in artifacts:
+        for prepared in prepared_artifacts:
+            artifact = prepared.artifact
             if artifact.validation_status != "valid":
                 continue
             if artifact.artifact_type not in REPLAYABLE_TYPES:
@@ -870,6 +946,20 @@ def replay_artifacts(
                         "status": artifact.replay_status,
                     }
                 )
+                continue
+            if prepared.load_error is not None:
+                message = f"{artifact.artifact_type} replay failed for {artifact.path}: {prepared.load_error}"
+                errors.append(message)
+                results.append(
+                    {
+                        "artifact_type": artifact.artifact_type,
+                        "path": str(artifact.path),
+                        "status": "failed",
+                        "error": prepared.load_error,
+                    }
+                )
+                if strict:
+                    break
                 continue
             try:
                 with conn:

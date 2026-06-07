@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -801,6 +802,83 @@ def test_replay_artifacts_reuses_discovery_validation_receipts(
 
     results, errors = audit.replay_artifacts(db_path=db_path, artifacts=replayable, strict=True)
 
+    assert errors == []
+    assert {item["status"] for item in results} == {"replayed"}
+
+
+def test_replay_artifacts_prepares_validations_in_parallel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    db_path = tmp_path / "rebuilt.sqlite"
+    bootstrap_db(db_path)
+    artifacts = [
+        replace(artifact, replay_inputs=None)
+        for artifact in audit.discover_artifacts(runs_dir)
+        if artifact.artifact_type in audit.REPLAYABLE_TYPES
+    ]
+
+    barrier = threading.Barrier(len(artifacts))
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def wrap_candidate(path: Path) -> tuple[dict[str, Any], str]:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=5)
+            return {"schema_version": "gather-candidate-batch.v1"}, "batch-hash"
+        finally:
+            with lock:
+                active -= 1
+
+    def wrap_execution(path: Path) -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Path],
+        dict[str, str],
+    ]:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=5)
+            execution_record = {"schema_version": "source-acquisition-execution.v1"}
+            empty_paths = {
+                "execution_record": path / "execution-record.json",
+                "capture_events": path / "capture-events.jsonl",
+                "extraction_records": path / "extraction-records.jsonl",
+            }
+            return execution_record, [], [], empty_paths, {
+                "execution_record": "record-hash",
+                "capture_events": "capture-hash",
+                "extraction_records": "extraction-hash",
+            }
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(audit.canonical_ingest, "load_validated_candidate_batch", wrap_candidate)
+    monkeypatch.setattr(audit.canonical_ingest, "load_validated_execution_artifacts", wrap_execution)
+    monkeypatch.setattr(
+        audit,
+        "replay_candidate_batch",
+        lambda *_args, **_kwargs: {"status": "completed", "counts": {}},
+    )
+    monkeypatch.setattr(
+        audit,
+        "replay_execution_artifacts",
+        lambda *_args, **_kwargs: {"status": "completed", "counts": {}},
+    )
+
+    results, errors = audit.replay_artifacts(db_path=db_path, artifacts=artifacts, strict=True)
+
+    assert max_active >= 2
     assert errors == []
     assert {item["status"] for item in results} == {"replayed"}
 

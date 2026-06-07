@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -445,3 +446,48 @@ def test_export_source_loci_uses_sql_aggregates_and_paged_fetches(
         "locus:stream_topic:archive:one",
         "locus:stream_topic:archive:two",
     ]
+
+
+def test_seed_main_relaxed_report_write_skips_fsync(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "report.json"
+    seed_json = tmp_path / "seed.json"
+    seed_json.write_text("[]", encoding="utf-8")
+    fsync_calls: list[int] = []
+
+    class FakeConn:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(source_locus_seed, "connect", lambda _path: FakeConn())
+    monkeypatch.setattr(
+        source_locus_seed,
+        "seed_database",
+        lambda *args, **kwargs: {
+            "schema_version": source_locus_seed.REPORT_SCHEMA_VERSION,
+            "status": "completed",
+        },
+    )
+
+    def fake_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+
+    monkeypatch.setattr(source_locus_seed.os, "fsync", fake_fsync)
+
+    exit_code = source_locus_seed.main(
+        [
+            "seed",
+            "--db",
+            str(tmp_path / "source.sqlite"),
+            "--seed-json",
+            str(seed_json),
+            "--topic-id",
+            "stream_topic",
+            "--report-json",
+            str(output),
+            "--relaxed-report-write",
+        ]
+    )
+
+    assert exit_code == 0
+    assert fsync_calls == []
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "completed"
