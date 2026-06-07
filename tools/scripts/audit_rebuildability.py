@@ -7,6 +7,7 @@ Documentation: docs/scripts/index_audit_rebuildability.md
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import shutil
@@ -85,6 +86,8 @@ class Artifact:
     stage: str | None
     validation_status: str
     replay_status: str
+    payload: dict[str, Any] | None = None
+    replay_inputs: dict[str, Any] | None = None
     failure_reason: str | None = None
 
     def as_report(self, runs_dir: Path) -> dict[str, Any]:
@@ -103,6 +106,17 @@ class Artifact:
             "replay_status": self.replay_status,
             "failure_reason": self.failure_reason,
         }
+
+
+@dataclass(frozen=True)
+class DiscoveryCandidate:
+    artifact_type: str
+    path: Path
+    stage: str | None
+    kind: str
+    payload: dict[str, Any] | None = None
+    payload_loaded: bool = False
+    expected_schema_versions: set[str] | None = None
 
 
 def hash_file(path: Path) -> str:
@@ -157,6 +171,8 @@ def validate_candidate_batch(path: Path) -> Artifact:
             stage="candidate_ingest",
             validation_status="valid",
             replay_status="pending",
+            payload=batch,
+            replay_inputs={"batch": batch, "batch_hash": digest},
         )
     except Exception as exc:
         return Artifact(
@@ -190,6 +206,14 @@ def validate_execution_dir(run_dir: Path) -> Artifact:
             stage="execution_ingest",
             validation_status="valid",
             replay_status="pending",
+            payload=_execution_record,
+            replay_inputs={
+                "execution_record": _execution_record,
+                "capture_events": _captures,
+                "extraction_records": _extractions,
+                "paths": _paths,
+                "input_hashes": hashes,
+            },
         )
     except Exception as exc:
         return Artifact(
@@ -205,9 +229,21 @@ def validate_execution_dir(run_dir: Path) -> Artifact:
         )
 
 
-def validate_spool_record(path: Path) -> Artifact:
+def validate_spool_record(
+    path: Path,
+    payload: dict[str, Any] | None = None,
+    *,
+    payload_loaded: bool = False,
+) -> Artifact:
     try:
-        record = canonical_write_spool.load_spool_record(path)
+        if payload_loaded:
+            if payload is None:
+                raise canonical_write_spool.CanonicalWriteSpoolError(
+                    f"spool record is unreadable: {path}"
+                )
+            record = payload
+        else:
+            record = payload if payload is not None else canonical_write_spool.load_spool_record(path)
         return Artifact(
             artifact_type="canonical_write_spool_record",
             path=path,
@@ -221,13 +257,22 @@ def validate_spool_record(path: Path) -> Artifact:
             replay_status="pending"
             if record.get("replay_status") in {"pending", "failed"}
             else f"skipped_{record.get('replay_status')}",
+            payload=record,
+            replay_inputs={"record": record},
         )
     except Exception as exc:
+        fallback_payload = (
+            payload
+            if payload is not None
+            else None
+            if payload_loaded
+            else read_json(path)
+        )
         return Artifact(
             artifact_type="canonical_write_spool_record",
             path=path,
             hash=hash_file(path) if path.exists() else None,
-            schema_id=_schema(read_json(path)),
+            schema_id=_schema(fallback_payload),
             run_id=None,
             stage=None,
             validation_status="invalid",
@@ -242,8 +287,10 @@ def reference_artifact(
     *,
     stage: str | None = None,
     expected_schema_versions: set[str] | None = None,
+    payload: dict[str, Any] | None = None,
+    payload_loaded: bool = False,
 ) -> Artifact:
-    payload = read_json(path)
+    payload = payload if payload is not None else None if payload_loaded else read_json(path)
     schema_id = _schema(payload)
     if payload is not None and expected_schema_versions is not None:
         if schema_id is None:
@@ -270,99 +317,178 @@ def reference_artifact(
         stage=stage,
         validation_status=validation_status,
         replay_status="reference_only",
+        payload=payload,
         failure_reason=reason,
+    )
+
+
+def _finalize_discovered_artifact(candidate: DiscoveryCandidate) -> Artifact:
+    if candidate.kind == "gather_candidate_batch":
+        return validate_candidate_batch(candidate.path)
+    if candidate.kind == "source_acquisition_execution":
+        return validate_execution_dir(candidate.path)
+    if candidate.kind == "canonical_write_spool_record":
+        return validate_spool_record(
+            candidate.path,
+            payload=candidate.payload,
+            payload_loaded=candidate.payload_loaded,
+        )
+    return reference_artifact(
+        candidate.path,
+        candidate.artifact_type,
+        stage=candidate.stage,
+        expected_schema_versions=candidate.expected_schema_versions,
+        payload=candidate.payload,
+        payload_loaded=candidate.payload_loaded,
     )
 
 
 def discover_artifacts(runs_dir: Path) -> list[Artifact]:
     if not runs_dir.exists() or not runs_dir.is_dir():
         raise RebuildabilityError(f"runs directory not found: {runs_dir}")
-    artifacts: list[Artifact] = []
+    candidates: list[DiscoveryCandidate] = []
     seen_execution_dirs: set[Path] = set()
-    for path in sorted(runs_dir.rglob("*")):
+    for path in runs_dir.rglob("*"):
         if path.is_symlink():
             continue
         if not path.is_file():
             continue
         name = path.name
         if name == "gather-candidate-batch.json":
-            artifacts.append(validate_candidate_batch(path))
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="gather_candidate_batch",
+                    path=path,
+                    stage="candidate_ingest",
+                    kind="gather_candidate_batch",
+                )
+            )
             continue
         if name == "execution-record.json":
             run_dir = path.parent
             if run_dir not in seen_execution_dirs:
                 seen_execution_dirs.add(run_dir)
-                artifacts.append(validate_execution_dir(run_dir))
+                candidates.append(
+                    DiscoveryCandidate(
+                        artifact_type="source_acquisition_execution",
+                        path=run_dir,
+                        stage="execution_ingest",
+                        kind="source_acquisition_execution",
+                    )
+                )
             continue
         if name in {"candidate-ingest-report.json", "canonical-ingest-report.json"}:
             payload = read_json(path)
             if payload and payload.get("ingest_kind") == "candidate_batch":
-                artifacts.append(
-                    reference_artifact(
-                        path,
-                        "candidate_ingest_report",
+                candidates.append(
+                    DiscoveryCandidate(
+                        artifact_type="candidate_ingest_report",
+                        path=path,
                         stage="candidate_ingest",
-                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["candidate_ingest_report"],
+                        kind="reference",
+                        payload=payload,
+                        payload_loaded=True,
+                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                            "candidate_ingest_report"
+                        ],
                     )
                 )
             elif payload and payload.get("ingest_kind") == "execution_artifacts":
-                artifacts.append(
-                    reference_artifact(
-                        path,
-                        "execution_ingest_report",
+                candidates.append(
+                    DiscoveryCandidate(
+                        artifact_type="execution_ingest_report",
+                        path=path,
                         stage="execution_ingest",
-                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
+                        kind="reference",
+                        payload=payload,
+                        payload_loaded=True,
+                        expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                            "execution_ingest_report"
+                        ],
                     )
                 )
             else:
-                artifacts.append(reference_artifact(path, "candidate_ingest_report"))
+                candidates.append(
+                    DiscoveryCandidate(
+                        artifact_type="candidate_ingest_report",
+                        path=path,
+                        stage=None,
+                        kind="reference",
+                        payload=payload,
+                        payload_loaded=True,
+                    )
+                )
             continue
         if name in {"execution-ingest-report.json", "execution-artifact-ingest-report.json"}:
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "execution_ingest_report",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="execution_ingest_report",
+                    path=path,
                     stage="execution_ingest",
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                        "execution_ingest_report"
+                    ],
                 )
             )
             continue
         if name in {"topic-cycle-run.json", "topic-cycle-manifest.json"}:
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "topic_cycle_manifest",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="topic_cycle_manifest",
+                    path=path,
                     stage="topic_cycle",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["topic_cycle_manifest"],
                 )
             )
             continue
         if name == "scheduled-topic-cycles-run.json":
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "scheduled_cycle_manifest",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="scheduled_cycle_manifest",
+                    path=path,
                     stage="scheduled_cycle",
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["scheduled_cycle_manifest"],
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                        "scheduled_cycle_manifest"
+                    ],
                 )
             )
             continue
         if name in {"candidate-feedback-plan.json", "feedback-plan.json"}:
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "feedback_plan",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="feedback_plan",
+                    path=path,
                     stage="feedback_plan",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["feedback_plan"],
                 )
             )
             continue
         if name in {"review-decision-apply-result.json", "review-decision-result.json"}:
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "review_decision_apply_result",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="review_decision_apply_result",
+                    path=path,
                     stage="review_apply",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
                         "review_decision_apply_result"
                     ],
@@ -370,41 +496,59 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
             )
             continue
         if name == "network-safety-gate-report.json":
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "network_safety_gate_report",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="network_safety_gate_report",
+                    path=path,
                     stage="network_gate",
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["network_safety_gate_report"],
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
+                        "network_safety_gate_report"
+                    ],
                 )
             )
             continue
         if name == "graph-closure-report.json":
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "graph_closure_report",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="graph_closure_report",
+                    path=path,
                     stage="graph_closure",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["graph_closure_report"],
                 )
             )
             continue
         if name in {"canonical-rebuildability-report.json", "rebuildability-report.json"}:
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "rebuildability_report",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="rebuildability_report",
+                    path=path,
                     stage="rebuildability",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["rebuildability_report"],
                 )
             )
             continue
         if name == "release-readiness-report.json":
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "release_readiness_report",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="release_readiness_report",
+                    path=path,
                     stage="release_readiness",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
                         "release_readiness_report"
                     ],
@@ -417,11 +561,15 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
             "publication-artifacts-report.json",
         }:
             expected = PUBLICATION_REFERENCE_SCHEMAS.get(name)
-            artifacts.append(
-                reference_artifact(
-                    path,
-                    "publication_artifact",
+            payload = read_json(path)
+            candidates.append(
+                DiscoveryCandidate(
+                    artifact_type="publication_artifact",
+                    path=path,
                     stage="publication",
+                    kind="reference",
+                    payload=payload,
+                    payload_loaded=True,
                     expected_schema_versions=expected,
                 )
             )
@@ -429,7 +577,22 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
         if path.suffix == ".json":
             payload = read_json(path)
             if payload and payload.get("schema_version") == canonical_write_spool.SCHEMA_VERSION:
-                artifacts.append(validate_spool_record(path))
+                candidates.append(
+                    DiscoveryCandidate(
+                        artifact_type="canonical_write_spool_record",
+                        path=path,
+                        stage=payload.get("stage_name")
+                        if isinstance(payload.get("stage_name"), str)
+                        else None,
+                        kind="canonical_write_spool_record",
+                        payload=payload,
+                        payload_loaded=True,
+                    )
+                )
+    if not candidates:
+        return []
+    with ThreadPoolExecutor() as executor:
+        artifacts = list(executor.map(_finalize_discovered_artifact, candidates))
     return sorted(artifacts, key=artifact_sort_key)
 
 
@@ -440,7 +603,7 @@ def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[di
     for artifact in artifacts:
         if artifact.artifact_type != "topic_cycle_manifest":
             continue
-        payload = read_json(artifact.path)
+        payload = artifact.payload if artifact.payload is not None else read_json(artifact.path)
         if not payload:
             continue
         for stage in payload.get("stages", []):
@@ -523,9 +686,16 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
                     continue
                 rows = conn.execute(
                     f"SELECT {key_column} AS value FROM {table} WHERE {key_column} IS NOT NULL ORDER BY {key_column}"
-                ).fetchall()
-                payload = "\n".join(str(row["value"]) for row in rows)
-                result[table] = hashlib.sha256(payload.encode()).hexdigest()
+                )
+                digest = hashlib.sha256()
+                first = True
+                for row in rows:
+                    if first:
+                        first = False
+                    else:
+                        digest.update(b"\n")
+                    digest.update(str(row["value"]).encode())
+                result[table] = digest.hexdigest()
                 continue
 
             columns = [
@@ -536,9 +706,8 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
             if not columns:
                 result[table] = hashlib.sha256(b"").hexdigest()
                 continue
-            rows = conn.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
             row_hashes: list[str] = []
-            for row in rows:
+            for row in conn.execute(f"SELECT {', '.join(columns)} FROM {table}"):
                 payload = {column: row[column] for column in columns}
                 encoded = json.dumps(
                     payload,
@@ -568,6 +737,19 @@ def db_summary(db_path: Path) -> dict[str, Any]:
 def replay_candidate_batch(
     conn: sqlite3.Connection, db_path: Path, artifact: Artifact
 ) -> dict[str, Any]:
+    if artifact.replay_inputs is not None:
+        batch = artifact.replay_inputs.get("batch")
+        digest = artifact.replay_inputs.get("batch_hash")
+        if isinstance(batch, dict) and isinstance(digest, str):
+            return canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=artifact.path,
+                batch_hash=digest,
+                dry_run=False,
+                strict=True,
+                db_path=db_path,
+            )
     batch, digest = canonical_ingest.load_validated_candidate_batch(artifact.path)
     return canonical_ingest.ingest_candidate_batch(
         conn,
@@ -583,6 +765,30 @@ def replay_candidate_batch(
 def replay_execution_artifacts(
     conn: sqlite3.Connection, db_path: Path, artifact: Artifact
 ) -> dict[str, Any]:
+    if artifact.replay_inputs is not None:
+        execution_record = artifact.replay_inputs.get("execution_record")
+        captures = artifact.replay_inputs.get("capture_events")
+        extractions = artifact.replay_inputs.get("extraction_records")
+        paths = artifact.replay_inputs.get("paths")
+        hashes = artifact.replay_inputs.get("input_hashes")
+        if (
+            isinstance(execution_record, dict)
+            and isinstance(captures, list)
+            and isinstance(extractions, list)
+            and isinstance(paths, dict)
+            and isinstance(hashes, dict)
+        ):
+            return canonical_ingest.ingest_execution_artifacts(
+                conn,
+                execution_record,
+                captures,
+                extractions,
+                paths=paths,
+                input_hashes=hashes,
+                dry_run=False,
+                strict=True,
+                db_path=db_path,
+            )
     execution_record, captures, extractions, paths, hashes = (
         canonical_ingest.load_validated_execution_artifacts(artifact.path)
     )
@@ -602,6 +808,17 @@ def replay_execution_artifacts(
 def replay_spool_record(
     conn: sqlite3.Connection, db_path: Path, artifact: Artifact
 ) -> dict[str, Any]:
+    if artifact.replay_inputs is not None:
+        record = artifact.replay_inputs.get("record")
+        if isinstance(record, dict):
+            return canonical_write_spool.replay_spool_record(
+                conn,
+                record,
+                db_path=db_path,
+                dry_run=False,
+                strict=True,
+                record_path=artifact.path,
+            )
     record = canonical_write_spool.load_spool_record(artifact.path)
     return canonical_write_spool.replay_spool_record(
         conn,
