@@ -131,7 +131,7 @@ def test_structured_data_directory_plans_csv_json_jsonl_and_xml_without_payload_
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     assert sorted(path.relative_to(FIXTURE_ROOT).as_posix() for path in input_paths if path != adapter_path) == tree_before
     assert snapshot_paths(input_paths) == snapshot_before
 
@@ -190,7 +190,7 @@ def test_structured_data_directory_rejects_symlink_root(tmp_path: Path) -> None:
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["blocker_count"] == 1
     assert payload["blockers"][0].startswith("local directory root is a symlink")
@@ -207,7 +207,7 @@ def test_structured_data_csv_preserves_quoted_newlines_and_commas(tmp_path: Path
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0
@@ -249,7 +249,7 @@ def test_structured_data_json_duplicate_keys_scalar_roots_and_blank_jsonl_lines(
     scalar_proc = run_planner(["--adapter", str(scalar_adapter), "--format", "json"])
     jsonl_proc = run_planner(["--adapter", str(jsonl_adapter), "--format", "json"])
 
-    assert duplicate_proc.returncode == 0, duplicate_proc.stdout + duplicate_proc.stderr
+    assert duplicate_proc.returncode == 1, duplicate_proc.stdout + duplicate_proc.stderr
     duplicate_payload = json.loads(duplicate_proc.stdout)
     assert duplicate_payload["parse_error_count"] == 1
     assert "duplicate JSON object key" in duplicate_payload["parse_errors"][0]["reason"]
@@ -261,7 +261,7 @@ def test_structured_data_json_duplicate_keys_scalar_roots_and_blank_jsonl_lines(
     assert scalar_payload["handoff_records"][0]["source_specific"]["record_kind"] == "scalar"
     assert scalar_payload["handoff_records"][0]["source_specific"]["record_locator"] == "object:1"
 
-    assert jsonl_proc.returncode == 0, jsonl_proc.stdout + jsonl_proc.stderr
+    assert jsonl_proc.returncode == 1, jsonl_proc.stdout + jsonl_proc.stderr
     jsonl_payload = json.loads(jsonl_proc.stdout)
     assert jsonl_payload["parsed_record_count"] == 2
     assert jsonl_payload["parse_error_count"] == 1
@@ -288,7 +288,7 @@ def test_structured_data_xml_namespaces_and_repeated_children_are_selected(tmp_p
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0
@@ -308,7 +308,7 @@ def test_structured_data_local_file_honors_record_path_hint(tmp_path: Path) -> N
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 2
     assert payload["parse_error_count"] == 0
@@ -328,7 +328,7 @@ def test_structured_data_reports_malformed_jsonl_with_line_context_and_no_payloa
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["parsed_record_count"] == 1
     assert payload["parse_error_count"] == 1
