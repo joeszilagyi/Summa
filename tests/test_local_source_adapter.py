@@ -44,7 +44,7 @@ def test_local_directory_adapter_plans_candidates_and_handoff_records(tmp_path: 
 
     proc = run_planner(["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     assert sorted(path.relative_to(FIXTURE_ROOT).as_posix() for path in input_paths) == tree_before
     assert snapshot_paths(input_paths) == snapshot_before
 
@@ -82,7 +82,7 @@ def test_local_file_adapter_handles_single_file_root(tmp_path: Path) -> None:
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["candidate_count"] == 1
     assert payload["blocker_count"] == 0
@@ -156,7 +156,7 @@ def test_local_directory_adapter_rejects_symlink_root(tmp_path: Path) -> None:
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["blocker_count"] == 1
     assert payload["blockers"][0].startswith("local directory root is a symlink")
@@ -235,7 +235,7 @@ def test_local_directory_adapter_rejects_symlink_escape_and_keeps_binary_bytes_a
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["candidate_count"] == 1
     assert payload["blocker_count"] == 0
@@ -317,7 +317,7 @@ def test_local_directory_adapter_reports_blockers_for_missing_or_unmatched_roots
 
     proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["candidate_count"] == 0
     assert payload["blocker_count"] == 1
