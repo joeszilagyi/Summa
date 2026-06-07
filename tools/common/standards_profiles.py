@@ -223,8 +223,14 @@ def public_row_clause(alias: str = "") -> str:
     )
 
 
-def public_conditions_for_table(conn: sqlite3.Connection, table: str, alias: str = "") -> list[str]:
-    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+def public_conditions_for_table(
+    conn: sqlite3.Connection,
+    table: str,
+    alias: str = "",
+    *,
+    schema_cache: dict[str, set[str]] | None = None,
+) -> list[str]:
+    columns = table_columns(conn, table, schema_cache=schema_cache)
     prefix = f"{alias}." if alias else ""
     conditions: list[str] = []
     if "public_blocker" in columns:
@@ -311,8 +317,13 @@ def parse_record_id(value: str | int | None, *, label: str) -> int | None:
     return parsed
 
 
-def privacy_exclusions_for_table(conn: sqlite3.Connection, table: str) -> int:
-    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+def privacy_exclusions_for_table(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    schema_cache: dict[str, set[str]] | None = None,
+) -> int:
+    columns = table_columns(conn, table, schema_cache=schema_cache)
     predicates: list[str] = []
     if "public_blocker" in columns:
         predicates.append("COALESCE(public_blocker, '') <> ''")
