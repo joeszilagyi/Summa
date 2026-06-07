@@ -10,6 +10,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from functools import lru_cache
 from typing import Any
 
 
@@ -64,6 +65,21 @@ NEGATIVE_REVIEW_STATE_PENALTY = {
 
 class SearchQueryError(RuntimeError):
     """Raised when search query inputs or outputs cannot be processed."""
+
+
+@lru_cache(maxsize=1024)
+def parse_indexed_fields_json(indexed_fields_json: str) -> tuple[dict[str, Any], ...]:
+    try:
+        parsed = json.loads(indexed_fields_json)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    indexed_fields: list[dict[str, Any]] = []
+    for field in parsed:
+        if isinstance(field, dict):
+            indexed_fields.append(field)
+    return tuple(indexed_fields)
 
 
 def parse_args() -> argparse.Namespace:
@@ -249,29 +265,23 @@ def render_snippets(row: sqlite3.Row, terms: list[str]) -> list[dict[str, Any]]:
     private_field_snippets: list[dict[str, Any]] = []
     indexed_fields_json = row["indexed_fields_json"]
     if isinstance(indexed_fields_json, str):
-        try:
-            indexed_fields = json.loads(indexed_fields_json)
-        except json.JSONDecodeError:
-            indexed_fields = []
+        indexed_fields = parse_indexed_fields_json(indexed_fields_json)
     else:
-        indexed_fields = []
-    if isinstance(indexed_fields, list):
-        for field in indexed_fields:
-            if not isinstance(field, dict):
-                continue
-            field_name = field.get("field")
-            field_text = field.get("text")
-            if not isinstance(field_name, str) or not isinstance(field_text, str):
-                continue
-            if looks_like_private_path(field_text):
-                private_field_snippets.append(
-                    {
-                        "field": field_name,
-                        "text": "[suppressed private path]",
-                        "locator": None,
-                        "display_policy": "suppressed",
-                    }
-                )
+        indexed_fields = ()
+    for field in indexed_fields:
+        field_name = field.get("field")
+        field_text = field.get("text")
+        if not isinstance(field_name, str) or not isinstance(field_text, str):
+            continue
+        if looks_like_private_path(field_text):
+            private_field_snippets.append(
+                {
+                    "field": field_name,
+                    "text": "[suppressed private path]",
+                    "locator": None,
+                    "display_policy": "suppressed",
+                }
+            )
     match_snippet = row["match_snippet"]
     if isinstance(match_snippet, str) and match_snippet.strip():
         snippets.append(

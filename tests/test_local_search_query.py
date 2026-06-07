@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
@@ -297,6 +299,49 @@ def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
     assert snippet["display_policy"] == "suppressed"
     assert snippet["text"] == "[suppressed private path]"
     assert payload["policy"]["private_paths_exposed"] is False
+
+
+def test_build_result_caches_indexed_fields_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    indexed_fields_json = json.dumps(
+        [
+            {"field": "indexed_text", "text": "public snippet"},
+            {"field": "title", "text": "secondary snippet"},
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    row = {
+        "projection_id": 1,
+        "object_type": "work",
+        "object_ref": "work:1",
+        "title": "Public Work",
+        "subtitle": "Supplemental Work",
+        "indexed_fields_json": indexed_fields_json,
+        "match_snippet": "public snippet",
+        "suppressed_fields_json": "[]",
+        "review_state": "reviewed",
+        "publication_state": "public_release_allowed",
+        "profile": "local",
+        "score": 1.0,
+    }
+    load_calls = 0
+    real_json_loads = query_tool.json.loads
+
+    def counting_json_loads(raw: object, *args: object, **kwargs: object) -> object:
+        nonlocal load_calls
+        if raw == indexed_fields_json:
+            load_calls += 1
+        return real_json_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(query_tool.json, "loads", counting_json_loads)
+    query_tool.parse_indexed_fields_json.cache_clear()
+
+    first = query_tool.build_result(row, terms=["public"], rank=1)
+    second = query_tool.build_result(row, terms=["public"], rank=2)
+
+    assert load_calls == 1
+    assert first["snippets"][0]["text"] == "public snippet"
+    assert second["snippets"][0]["text"] == "public snippet"
 
 
 def test_query_cli_treats_sql_injection_like_input_as_plain_text(tmp_path: Path) -> None:
