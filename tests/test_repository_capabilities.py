@@ -251,6 +251,19 @@ def test_validator_rejects_unimportable_console_script_targets(monkeypatch) -> N
     assert any("cannot import console script target" in error["message"] for error in loaded["errors"])
 
 
+def test_validator_rejects_duplicate_json_keys_in_capability_index(tmp_path: Path) -> None:
+    validator = importlib.import_module("tools.scripts.validate_repository_capabilities")
+    index_path = tmp_path / "repository_capabilities.v1.json"
+    index_path.write_text('{"capabilities": [], "capabilities": []}\n', encoding="utf-8")
+
+    try:
+        validator.load_json_object(index_path)
+    except validator.CapabilityValidationError as exc:
+        assert isinstance(exc.__cause__, validator.DuplicateJsonKeyError)
+    else:
+        raise AssertionError("expected duplicate JSON key rejection")
+
+
 def test_validator_report_passes_for_checked_in_index() -> None:
     proc = subprocess.run(
         [sys.executable, str(VALIDATOR_PATH), "--index", str(INDEX_PATH), "--format", "json"],
