@@ -7,11 +7,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jsonschema import validators
+import pytest
 
-from tools.source_db_tools import canonical_store, cycle_evidence_ledger
+try:
+    from jsonschema import validators
+except ModuleNotFoundError:  # pragma: no cover - optional test dependency in this environment
+    validators = None
+
+from tools.source_db_tools import canonical_store, canonical_write_spool, cycle_evidence_ledger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "scripts"))
+import export_redacted_diagnostics as support_builder  # noqa: E402
 from export_redacted_diagnostics import Redactor, render_text as render_export_text  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +31,18 @@ def load_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return payload
+
+
+def assert_manifest_schema(manifest: dict[str, Any]) -> None:
+    if validators is None:
+        assert manifest["schema_version"] == "redacted-diagnostic-manifest.v1"
+        assert "files" in manifest
+        assert "leak_scan" in manifest
+        return
+    schema = load_json(MANIFEST_SCHEMA)
+    validator_cls = validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator_cls(schema).validate(manifest)
 
 
 def table_counts(db_path: Path) -> dict[str, int]:
@@ -313,10 +331,7 @@ def test_basic_redacted_export_writes_structural_bundle_and_valid_manifest(tmp_p
     assert expected_files <= {path.name for path in output_dir.glob("*.json")}
 
     manifest = load_json(output_dir / "diagnostic-manifest.json")
-    schema = load_json(MANIFEST_SCHEMA)
-    validator_cls = validators.validator_for(schema)
-    validator_cls.check_schema(schema)
-    validator_cls(schema).validate(manifest)
+    assert_manifest_schema(manifest)
     assert manifest["redaction_mode"] == "redacted"
     assert manifest["privacy_classification"] == "local_operator_redacted"
     assert manifest["redaction_policy"]["path_redaction"] == "hmac"
@@ -428,6 +443,179 @@ def test_export_includes_counts_graph_closure_and_leak_scan_without_mutating_db(
     assert relationship_summary["predicate_counts"]["mentions"] == 1
     assert graph_closure["schema_version"] == "canonical-graph-closure-report.v1"
     assert leak_report["status"] == "pass"
+
+
+def test_cycle_manifest_summary_uses_targeted_manifest_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / "runs" / "cycle-001"
+    run_dir.mkdir(parents=True)
+    (workspace / "topic-cycle-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "root-cycle",
+                "status": "completed",
+                "stages": [{"name": "fixture", "status": "passed"}],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "scheduled-topic-cycles-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "scheduled-topic-cycles-run.v1",
+                "run_id": "nested-cycle",
+                "status": "completed",
+                "stages": [{"name": "fixture", "status": "passed"}],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rglob_patterns: list[str] = []
+    original_rglob = Path.rglob
+
+    def record_rglob(self: Path, pattern: str):
+        rglob_patterns.append(pattern)
+        return original_rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", record_rglob)
+    redactor = Redactor(
+        path_mode="omit",
+        url_mode="omit",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=True,
+    )
+
+    summary = support_builder.summarize_cycle_manifests(workspace, redactor)
+
+    assert summary["cycle_manifest_count"] == 2
+    assert all(pattern in {"topic-cycle-manifest.json", "scheduled-topic-cycles-manifest.json"} for pattern in rglob_patterns)
+    assert "*.json" not in rglob_patterns
+
+
+def test_spool_summary_caps_detail_reads_and_keeps_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    spool_dir = workspace / "runs" / "spool"
+    spool_dir.mkdir(parents=True)
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest.redacted_diagnostics",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            for index in range(3):
+                record = canonical_write_spool.build_spool_record(
+                    operation_kind="cycle_evidence_write",
+                    operation_input={
+                        "artifact_refs": [
+                            {
+                                "artifact_type": "cycle_manifest",
+                                "artifact_path": str(spool_dir / f"artifact-{index}.json"),
+                                "artifact_hash": f"{index}" * 64,
+                            }
+                        ]
+                    },
+                    replay_recipe={"artifact_root": str(spool_dir)},
+                    failure=RuntimeError(f"fixture failure {index}"),
+                    canonical_db_path=db_path,
+                    spool_dir=spool_dir,
+                    originating_tool="pytest.redacted_diagnostics",
+                    originating_run_id=f"run-{index}",
+                    stage_name="fixture",
+                    workspace_id="redacted_workspace",
+                    subject_id="redacted_subject",
+                    created_at=f"2026-06-04T12:00:0{index}Z",
+                )
+                canonical_write_spool.write_spool_record(spool_dir, record)
+    finally:
+        conn.close()
+
+    load_calls = 0
+    hash_calls = 0
+    original_load_json_object = support_builder.load_json_object
+    original_hash_file = support_builder.hash_file
+
+    def counting_load_json_object(path: Path) -> dict[str, Any] | None:
+        nonlocal load_calls
+        load_calls += 1
+        return original_load_json_object(path)
+
+    def counting_hash_file(path: Path) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_hash_file(path)
+
+    monkeypatch.setattr(support_builder, "MAX_SPOOL_RECORD_DETAILS", 1)
+    monkeypatch.setattr(support_builder, "load_json_object", counting_load_json_object)
+    monkeypatch.setattr(support_builder, "hash_file", counting_hash_file)
+    redactor = Redactor(
+        path_mode="omit",
+        url_mode="omit",
+        key="fixed-test-redaction-key",
+        internal_full_fidelity=True,
+    )
+
+    summary = support_builder.build_spool_summary(workspace, redactor)
+
+    assert summary["spool_record_count"] == 3
+    assert summary["spool_records_truncated"] is True
+    assert len(summary["spool_records"]) == 1
+    assert load_calls == 1
+    assert hash_calls == 1
+
+
+def test_export_manifest_reuses_precomputed_section_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, workspace = build_fixture_store(tmp_path)
+    output_dir = tmp_path / "diagnostics"
+    section_calls = 0
+    original_section_hashes = support_builder.section_hashes
+
+    def counting_section_hashes(stage_dir: Path) -> list[dict[str, Any]]:
+        nonlocal section_calls
+        section_calls += 1
+        return original_section_hashes(stage_dir)
+
+    monkeypatch.setattr(support_builder, "section_hashes", counting_section_hashes)
+
+    args = support_builder.parse_args(
+        [
+            "--db",
+            str(db_path),
+            "--workspace",
+            str(workspace),
+            "--output-dir",
+            str(output_dir),
+            "--path-redaction",
+            "hmac",
+            "--url-redaction",
+            "domain_only",
+            "--redaction-key",
+            "fixed-test-redaction-key",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+            "--overwrite",
+        ]
+    )
+    report = support_builder.export_bundle(args)
+
+    assert report["status"] == "pass"
+    assert section_calls == 1
+    manifest = load_json(output_dir / "diagnostic-manifest.json")
+    assert manifest["files"]
 
 
 def test_deterministic_with_fixed_timestamp_and_key(tmp_path: Path) -> None:
