@@ -18,6 +18,10 @@ EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "local_source"
 ADAPTER = FIXTURE_ROOT / "source_adapter.json"
+LOCAL_FILE_FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_file"
+LOCAL_FILE_PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_local_source_adapter.py"
+LOCAL_FILE_ADAPTER = LOCAL_FILE_FIXTURE_ROOT / "source_adapter.json"
+LOCAL_FILE_SOURCE = (LOCAL_FILE_FIXTURE_ROOT / "single.pdf").resolve()
 
 
 def canonical_json_bytes(value: dict[str, Any]) -> bytes:
@@ -89,6 +93,28 @@ def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProces
         capture_output=True,
         check=False,
     )
+
+
+def build_local_file_handoff(tmp_path: Path) -> Path:
+    handoff = tmp_path / "local-file-handoff.jsonl"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(LOCAL_FILE_PLANNER),
+            "--adapter",
+            str(LOCAL_FILE_ADAPTER),
+            "--handoff-jsonl",
+            str(handoff),
+            "--format",
+            "json",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return handoff
 
 
 def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs(
@@ -184,6 +210,45 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
         check=False,
     )
     assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+
+
+def test_execute_local_file_streams_payload_without_materializing_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = build_local_file_handoff(tmp_path)
+    adapter_payload = source_executor.load_validated_adapter(LOCAL_FILE_ADAPTER)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff, adapter_path=LOCAL_FILE_ADAPTER
+    )
+    expected_hash = hashlib.sha256(LOCAL_FILE_SOURCE.read_bytes()).hexdigest()
+    expected_size = LOCAL_FILE_SOURCE.stat().st_size
+    original_read_bytes = source_executor.Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        if self.expanduser().resolve() == LOCAL_FILE_SOURCE:
+            raise AssertionError("local file adapter should stream payload bytes")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_source(
+        records=records,
+        adapter_payload=adapter_payload,
+        adapter_path=LOCAL_FILE_ADAPTER,
+        run_id="local-file-streaming-test",
+        created_at="2026-06-03T12:34:56Z",
+        handoff_hash=handoff_hash,
+    )
+
+    assert len(capture_events) == 1
+    assert len(extraction_records) == 1
+    assert local_paths == [str(LOCAL_FILE_SOURCE)]
+    assert capture_events[0]["content_hash"] == expected_hash
+    assert capture_events[0]["byte_count"] == expected_size
+    assert capture_events[0]["capture_method"] == "local_file_copy"
+    assert extraction_records[0]["input_hash"] == expected_hash
+    assert extraction_records[0]["byte_count_in"] == expected_size
+    assert extraction_records[0]["capture_id"] == capture_events[0]["capture_id"]
 
 
 def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
