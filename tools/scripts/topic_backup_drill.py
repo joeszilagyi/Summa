@@ -146,6 +146,20 @@ def verify_restored_snapshot(snapshot_manifest: dict[str, Any]) -> list[dict[str
     return verifications
 
 
+def backup_asset_task(
+    asset: dict[str, Any],
+    source: Path,
+    snapshot_root: Path,
+    *,
+    workspace_root: Path,
+    workspace_id: str,
+) -> dict[str, Any]:
+    destination = snapshot_root / "files" / relative_snapshot_path(workspace_root, source)
+    artifact = backup_asset(source, destination, asset_class=asset["asset_class"], workspace_id=workspace_id)
+    artifact["asset_id"] = asset["asset_id"]
+    return artifact
+
+
 def build_snapshot(
     *,
     workspace_root: Path,
@@ -205,11 +219,35 @@ def build_snapshot(
     )
     artifacts = []
     try:
-        for asset, source in assets:
-            destination = snapshot_root / "files" / relative_snapshot_path(workspace_root, source)
-            artifact = backup_asset(source, destination, asset_class=asset["asset_class"], workspace_id=workspace_id)
-            artifact["asset_id"] = asset["asset_id"]
-            artifacts.append(artifact)
+        sqlite_assets = [(asset, source) for asset, source in assets if asset["asset_class"] == "sqlite_db" or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}]
+        other_assets = [(asset, source) for asset, source in assets if (asset, source) not in sqlite_assets]
+        for asset, source in sqlite_assets:
+            artifacts.append(
+                backup_asset_task(
+                    asset,
+                    source,
+                    snapshot_root,
+                    workspace_root=workspace_root,
+                    workspace_id=workspace_id,
+                )
+            )
+        if other_assets:
+            max_workers = min(4, len(other_assets))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        backup_asset_task,
+                        asset,
+                        source,
+                        snapshot_root,
+                        workspace_root=workspace_root,
+                        workspace_id=workspace_id,
+                    )
+                    for asset, source in other_assets
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    artifacts.append(future.result())
+        artifacts.sort(key=lambda artifact: artifact["asset_id"])
         snapshot_manifest = {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "workspace_id": workspace_id,
