@@ -12,6 +12,7 @@ unchanged.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import re
 import json
 import shutil
@@ -509,9 +510,8 @@ def classify_repo_path(
     }
 
 
-def glob_matches(repo_path: str, pattern: str) -> bool:
-    """Match contract globs with '/'-aware *, ?, and recursive ** semantics."""
-    path = PurePosixPath(repo_path).as_posix()
+@lru_cache(maxsize=None)
+def compile_glob_regex(pattern: str) -> re.Pattern[str]:
     regex = []
     index = 0
     while index < len(pattern):
@@ -530,7 +530,13 @@ def glob_matches(repo_path: str, pattern: str) -> bool:
             continue
         regex.append(re.escape(char))
         index += 1
-    return re.fullmatch("".join(regex), path) is not None
+    return re.compile("".join(regex))
+
+
+def glob_matches(repo_path: str, pattern: str) -> bool:
+    """Match contract globs with '/'-aware *, ?, and recursive ** semantics."""
+    path = PurePosixPath(repo_path).as_posix()
+    return compile_glob_regex(pattern).fullmatch(path) is not None
 
 
 def build_repo_file_rows(
