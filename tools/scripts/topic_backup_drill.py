@@ -45,16 +45,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+@lru_cache(maxsize=1024)
+def cached_asset_matches(workspace_root_value: str, pattern: str) -> tuple[str, ...]:
+    workspace_root = Path(workspace_root_value)
+    matches = sorted(workspace_root.glob(pattern))
+    if not matches and pattern.startswith("dbs/"):
+        matches = sorted(REPO_ROOT.glob(pattern))
+    return tuple(str(path.resolve()) for path in matches if path.is_file())
+
+
 def resolve_asset_paths(workspace_root: Path, manifest: dict[str, Any]) -> list[tuple[dict[str, Any], Path]]:
     resolved = []
+    workspace_root_value = str(workspace_root.resolve())
     for asset in manifest["assets"]:
         pattern = asset["path_glob"]
-        matches = sorted(workspace_root.glob(pattern))
-        if not matches and pattern.startswith("dbs/"):
-            matches = sorted(REPO_ROOT.glob(pattern))
-        for path in matches:
-            if path.is_file():
-                resolved.append((asset, path.resolve()))
+        for raw_path in cached_asset_matches(workspace_root_value, pattern):
+            resolved.append((asset, Path(raw_path)))
     return resolved
 
 

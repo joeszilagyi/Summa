@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import threading
 from pathlib import Path
 
 
@@ -47,3 +46,33 @@ def test_verify_restored_snapshot_checks_snapshots_in_place(tmp_path: Path, monk
             "status": "pass",
         }
     ]
+
+
+def test_resolve_asset_paths_caches_repeated_glob_matches(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    asset_dir = workspace_root / "dbs" / "shared"
+    asset_dir.mkdir(parents=True)
+    (asset_dir / "one.txt").write_text("one\n", encoding="utf-8")
+    manifest = {
+        "assets": [
+            {"asset_id": "asset-1", "path_glob": "dbs/shared/*.txt", "asset_class": "other"},
+            {"asset_id": "asset-2", "path_glob": "dbs/shared/*.txt", "asset_class": "other"},
+        ]
+    }
+
+    topic_backup_drill.cached_asset_matches.cache_clear()
+    glob_calls: list[str] = []
+    original_glob = Path.glob
+
+    def fake_glob(self: Path, pattern: str):
+        if self == workspace_root.resolve():
+            glob_calls.append(pattern)
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", fake_glob)
+
+    resolved = topic_backup_drill.resolve_asset_paths(workspace_root, manifest)
+
+    assert [path.name for _, path in resolved] == ["one.txt", "one.txt"]
+    assert glob_calls == ["dbs/shared/*.txt"]
+
