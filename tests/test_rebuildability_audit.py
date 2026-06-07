@@ -823,6 +823,61 @@ def test_table_content_hash_summary_streams_key_rows_without_fetchall(
     }
 
 
+def test_table_content_hash_summary_forces_allow_nan_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    bootstrap_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="rebuildability",
+                object_id="row-hash",
+                event_type="fixture",
+                actor_type="tool",
+                actor_id="pytest",
+                tool_name="tests/test_rebuildability_audit.py",
+                run_id="run-row-hash",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="row hash fixture",
+                provenance_event_key_v1="prov:rebuildability:row-hash",
+            )
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:row-hash",
+                provenance_event_ref=provenance.event_key,
+                work_type="web_page",
+                title="Row hash fixture",
+                review_state="accepted",
+                publication_state="public_safe",
+                workspace_id="rebuildability",
+                first_seen_at=FIXED_TIMESTAMP,
+                last_seen_at=FIXED_TIMESTAMP,
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+    finally:
+        conn.close()
+
+    calls: list[dict[str, Any]] = []
+    original_dumps = audit.json.dumps
+
+    def fake_dumps(payload: Any, **kwargs: Any) -> str:
+        calls.append(dict(kwargs))
+        assert kwargs.get("allow_nan") is False
+        return original_dumps(payload, **kwargs)
+
+    monkeypatch.setattr(audit.json, "dumps", fake_dumps)
+
+    summary = audit.table_content_hash_summary(db_path)
+
+    assert calls
+    assert any(call.get("allow_nan") is False for call in calls)
+    assert "work" in summary
+
+
 def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     (runs_dir / "gather" / "run-001" / "gather-candidate-batch.json").unlink()

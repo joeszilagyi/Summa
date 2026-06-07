@@ -180,6 +180,19 @@ def test_public_sharing_bundle_builder_rejects_manifest_paths_that_escape_bundle
         sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle")
 
 
+def test_public_sharing_bundle_builder_revalidates_manifest_paths_before_copy(tmp_path: Path, monkeypatch) -> None:
+    build_manifest = build_site(tmp_path)
+
+    monkeypatch.setattr(
+        sharing_builder,
+        "included_site_entries",
+        lambda _build_manifest: ["../escape.html"],
+    )
+
+    with pytest.raises(sharing_builder.PublicSharingBundleError, match="path traversal"):
+        sharing_builder.build_bundle(build_manifest, tmp_path / "sharing-bundle")
+
+
 def test_public_sharing_bundle_builder_excludes_private_fields_from_export_metadata(
     tmp_path: Path,
 ) -> None:
@@ -273,3 +286,17 @@ def test_public_sharing_bundle_recover_stale_backup(tmp_path: Path) -> None:
     assert (output_dir / "manifest.json").exists()
     assert not backup_root.exists()
     assert not journal_path.exists()
+
+
+def test_public_sharing_bundle_recover_stale_backup_without_journal(tmp_path: Path) -> None:
+    output_dir = tmp_path / "sharing-bundle"
+    backup_root = sharing_builder.backup_root_path(output_dir)
+
+    backup_root.mkdir()
+    (backup_root / "manifest.json").write_text('{"schema_version": "public-sharing-bundle.v1"}\n', encoding="utf-8")
+
+    sharing_builder.recover_stale_backup(output_dir)
+
+    assert output_dir.is_dir()
+    assert (output_dir / "manifest.json").exists()
+    assert not backup_root.exists()

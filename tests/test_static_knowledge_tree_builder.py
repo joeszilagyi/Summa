@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "build_static_knowledge_tree.py"
@@ -217,6 +219,25 @@ def test_build_static_knowledge_tree_restores_previous_output_on_publish_failure
 
     assert (publish_root / "index.html").read_text(encoding="utf-8") == original_body
     assert (publish_root / "build-manifest.json").is_file()
+
+
+def test_publish_stage_dir_reports_backup_restored_on_failure(tmp_path: Path) -> None:
+    stage_root = tmp_path / "stage-site"
+    publish_root = tmp_path / "public-site"
+    stage_root.mkdir()
+    publish_root.mkdir()
+    (publish_root / "index.html").write_text("old output", encoding="utf-8")
+    (stage_root / "index.html").write_text("new output", encoding="utf-8")
+
+    def fail_after_backup() -> None:
+        raise RuntimeError("simulated publish failure")
+
+    with pytest.raises(builder.StaticKnowledgeTreeBuildError) as exc_info:
+        builder.publish_stage_dir(stage_root, publish_root, after_backup_hook=fail_after_backup)
+
+    assert exc_info.value.report["backup_restored"] is True
+    assert exc_info.value.report["backup_root"]
+    assert (publish_root / "index.html").read_text(encoding="utf-8") == "old output"
 
 
 def test_build_static_knowledge_tree_rejects_unrecognized_existing_publish_root(tmp_path: Path) -> None:

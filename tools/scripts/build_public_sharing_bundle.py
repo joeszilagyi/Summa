@@ -87,18 +87,10 @@ def recover_stale_backup(output_dir: Path) -> None:
     backup_root = backup_root_path(output_dir)
     journal_path = backup_journal_path(output_dir)
 
-    if backup_root.exists() and not output_dir.exists() and journal_path.exists():
-        try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-
-        if (
-            journal.get("output_dir") == str(output_dir)
-            and journal.get("version") == JOURNAL_VERSION
-            and journal.get("state") == "pending"
-        ):
-            backup_root.replace(output_dir)
+    if backup_root.exists() and not output_dir.exists():
+        backup_root.replace(output_dir)
+        clear_backup_journal(journal_path)
+        return
 
     if journal_path.exists() and not backup_root.exists():
         journal_path.unlink(missing_ok=True)
@@ -240,6 +232,16 @@ def _normalize_bundle_relative_path(raw_path: str, *, field_name: str) -> str:
     return normalized_path
 
 
+def bundle_child_path(root: Path, relative_path: str, *, field_name: str) -> Path:
+    normalized_path = _normalize_bundle_relative_path(relative_path, field_name=field_name)
+    candidate = root.joinpath(*PurePosixPath(normalized_path).parts)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise PublicSharingBundleError(f"declared site artifact escaped bundle root: {field_name}") from exc
+    return candidate
+
+
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
     report = scan_directory(bundle_root, profile="public_bundle")
     return report["findings"]
@@ -317,10 +319,10 @@ def build_bundle(
         site_root = temp_root / "site"
         included_artifacts: list[dict[str, str]] = []
         for relative_path in included_site_entries(build_manifest):
-            source_path = output_root / relative_path
+            source_path = bundle_child_path(output_root, relative_path, field_name="build manifest artifact")
             if not source_path.exists() or not source_path.is_file():
                 raise PublicSharingBundleError(f"declared site artifact is missing from output_root: {relative_path}")
-            target_path = site_root / relative_path
+            target_path = bundle_child_path(site_root, relative_path, field_name="bundle site artifact")
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
             family = "page" if PurePosixPath(relative_path).suffix == ".html" else "asset"
