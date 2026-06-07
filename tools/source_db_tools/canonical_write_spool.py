@@ -302,7 +302,7 @@ def mark_spool_record_replayed(
     payload["replayed_at"] = replayed_at
     payload["replay_result_refs"] = dict(replay_result_refs)
     payload["spool_record_checksum"] = record_checksum(payload)
-    return write_spool_record(path.parent.parent.parent, payload)
+    return write_spool_record(path, payload)
 
 
 def mark_spool_record_failed(
