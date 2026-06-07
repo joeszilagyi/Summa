@@ -184,6 +184,7 @@ DEFAULT_GATHER_PRIOR_STATE_LIMIT = 5
 DEFAULT_GATHER_PRIOR_STATE_MAX_CHARS = 5000
 DEFAULT_GATHER_PRIOR_STATE_MAX_PREVIOUS_RUNS = 5
 DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE = 0.8
+GATHER_PRIOR_STATE_SOURCE_NAMESPACE = "topic_subject"
 PRIOR_STATE_ESTABLISHED_REVIEW_STATES = frozenset({"accepted", "approved", "curated", "reviewed"})
 PRIOR_STATE_LEAD_REVIEW_STATES = frozenset(
     {"machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
@@ -2941,38 +2942,37 @@ def load_gather_prior_state(
         (subject_key, per_family_limit),
     ).fetchall()
 
-    subject_pattern = f'%"subject_id": "{subject_key}"%'
     previous_total = conn.execute(
         """
         SELECT COUNT(*) AS count
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND source_object_namespace=?
+          AND source_object_id=?
         """,
-        (subject_pattern,),
+        (GATHER_PRIOR_STATE_SOURCE_NAMESPACE, subject_key),
     ).fetchone()
     previous_rows = conn.execute(
         """
-        SELECT provenance_event_id, run_id, event_timestamp, note_text
+        SELECT provenance_event_id, run_id, event_timestamp,
+               CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.cycle_depth') END AS cycle_depth
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND source_object_namespace=?
+          AND source_object_id=?
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         LIMIT ?
         """,
-        (subject_pattern, max_previous_runs),
+        (GATHER_PRIOR_STATE_SOURCE_NAMESPACE, subject_key, max_previous_runs),
     ).fetchall()
 
     previous_runs: list[dict[str, Any]] = []
     for row in previous_rows:
-        note_payload = _load_json_note(row["note_text"])
         previous_runs.append(
             {
                 "run_id": None if row["run_id"] is None else str(row["run_id"]),
                 "event_timestamp": str(row["event_timestamp"]),
-                "cycle_depth": note_payload.get("cycle_depth")
-                if isinstance(note_payload, dict)
-                else None,
+                "cycle_depth": None if row["cycle_depth"] is None else int(row["cycle_depth"]),
             }
         )
 

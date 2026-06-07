@@ -76,6 +76,7 @@ class ProvenanceLookupCountingProxy:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
         self.provenance_lookup_count = 0
+        self.prior_state_like_count = 0
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._conn, name)
@@ -92,6 +93,8 @@ class ProvenanceLookupCountingProxy:
             normalized_sql = " ".join(sql.split()).upper()
             if normalized_sql.startswith("SELECT PROVENANCE_EVENT_ID FROM PROVENANCE_EVENT"):
                 self.provenance_lookup_count += 1
+            if "NOTE_TEXT LIKE" in normalized_sql:
+                self.prior_state_like_count += 1
         return self._conn.execute(sql, params)
 
 
@@ -365,16 +368,17 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
     tuned_batch["candidates"] = tuned_candidates
 
     conn = canonical_store.connect_canonical_store(db_path)
+    proxy = ProvenanceLookupCountingProxy(conn)
     try:
-        with conn:
+        with proxy:
             canonical_ingest.ingest_candidate_batch(
-                conn,
+                proxy,
                 tuned_batch,
                 batch_path=FIXTURE_BATCH,
                 batch_hash=batch_hash,
                 db_path=db_path,
             )
-        prior_state = canonical_store.load_gather_prior_state(conn, subject_id=subject_id)
+        prior_state = canonical_store.load_gather_prior_state(proxy, subject_id=subject_id)
     finally:
         conn.close()
 
@@ -383,6 +387,7 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
     assert {
         record["entity_label"] for record in prior_state["records"]["entities"]
     } >= {"Alpha Example"}
+    assert proxy.prior_state_like_count == 0
 
 
 def test_candidate_batch_dry_run_reports_intended_writes_without_mutation(tmp_path: Path) -> None:

@@ -505,20 +505,21 @@ def ingest_candidate_batch(
     provenance_event: canonical_store.ProvenanceEventRef | None = None
     provenance_event_key = ""
     if not dry_run:
-        provenance_event = canonical_store.record_provenance_event(
-            conn,
-            object_namespace="gather_candidate_batch",
-            object_id=str(batch.get("run_id") or batch_hash),
-            event_type="gather_candidate_batch_ingest",
-            tool_name=GATHER_INGEST_TOOL,
-            tool_version=INGEST_TOOL_VERSION,
-            run_id=str(batch.get("run_id") or ""),
-            event_timestamp=created_at,
-            source_object_namespace="topic_subject",
-            source_object_id=workspace_id,
-            note_text=_batch_provenance_note(batch, batch_hash=batch_hash, batch_path=batch_path),
-            provenance_event_key_v1=f"prov:gather-ingest:{batch_hash}",
-        )
+        provenance_kwargs: dict[str, Any] = {
+            "object_namespace": "gather_candidate_batch",
+            "object_id": str(batch.get("run_id") or batch_hash),
+            "event_type": "gather_candidate_batch_ingest",
+            "tool_name": GATHER_INGEST_TOOL,
+            "tool_version": INGEST_TOOL_VERSION,
+            "run_id": str(batch.get("run_id") or ""),
+            "event_timestamp": created_at,
+            "note_text": _batch_provenance_note(batch, batch_hash=batch_hash, batch_path=batch_path),
+            "provenance_event_key_v1": f"prov:gather-ingest:{batch_hash}",
+        }
+        if workspace_id is not None:
+            provenance_kwargs["source_object_namespace"] = "topic_subject"
+            provenance_kwargs["source_object_id"] = workspace_id
+        provenance_event = canonical_store.record_provenance_event(conn, **provenance_kwargs)
         provenance_event_key = provenance_event.event_key
         provenance_event_id = provenance_event.event_id
         report["provenance_event"] = {
