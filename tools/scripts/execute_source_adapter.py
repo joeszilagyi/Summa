@@ -1093,10 +1093,11 @@ def execute_structured_data(
 def compute_git_snapshot_hash(
     file_entries: list[dict[str, Any]], *, git_ref: str, git_commit: str
 ) -> str:
+    ordered_file_entries = sorted(file_entries, key=lambda item: item["relative_path"])
     payload = {
         "git_ref": git_ref,
         "git_commit": git_commit,
-        "files": file_entries,
+        "files": ordered_file_entries,
     }
     return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 

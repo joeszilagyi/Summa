@@ -179,3 +179,24 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
         check=False,
     )
     assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+
+
+def test_compute_git_snapshot_hash_is_order_insensitive() -> None:
+    left = source_executor.compute_git_snapshot_hash(
+        [
+            {"relative_path": "b.txt", "content_hash": "sha256:b", "byte_count": 2},
+            {"relative_path": "a.txt", "content_hash": "sha256:a", "byte_count": 1},
+        ],
+        git_ref="refs/heads/main",
+        git_commit="abc123",
+    )
+    right = source_executor.compute_git_snapshot_hash(
+        [
+            {"relative_path": "a.txt", "content_hash": "sha256:a", "byte_count": 1},
+            {"relative_path": "b.txt", "content_hash": "sha256:b", "byte_count": 2},
+        ],
+        git_ref="refs/heads/main",
+        git_commit="abc123",
+    )
+
+    assert left == right
