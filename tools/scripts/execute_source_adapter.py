@@ -1294,6 +1294,7 @@ def execute_local_git_repo(
     snapshot_hash = compute_git_snapshot_hash(
         file_entries, git_ref=git_ref, git_commit=resolved_commit
     )
+    snapshot_byte_count = sum(entry["byte_count"] for entry in file_entries)
     capture_event = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "capture_id": make_capture_id(1),
@@ -1311,7 +1312,7 @@ def execute_local_git_repo(
         "original_locator": record["preserved"]["original_locator"],
         "normalized_local_path": str(repo_path),
         "content_hash": snapshot_hash,
-        "byte_count": sum(entry["byte_count"] for entry in file_entries),
+        "byte_count": snapshot_byte_count,
         "content_type": "application/x-git-local-checkout",
         "captured_at": created_at,
         "capture_method": "local_git_snapshot",
@@ -1344,8 +1345,8 @@ def execute_local_git_repo(
                 adapter_type="local_git_repo",
                 handoff_sequence=record["sequence"],
                 relative_path=file_entry["relative_path"],
-                input_hash=file_entry["content_hash"],
-                byte_count_in=file_entry["byte_count"],
+                input_hash=capture_event["content_hash"],
+                byte_count_in=snapshot_byte_count,
                 extraction_method="git_file_text_extract",
                 hazard_flags=list(
                     record["preserved"].get("source_metadata", {}).get("hazard_flags", [])

@@ -14,9 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.scripts import plan_local_git_repo_adapter
-from tools.scripts import execute_source_adapter as source_executor
- 
+from tools.scripts import plan_local_git_repo_adapter  # noqa: E402, I001
+from tools.scripts import execute_source_adapter as source_executor  # noqa: E402, I001
+
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_local_git_repo_adapter.py"
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_git_repo"
@@ -405,6 +405,8 @@ def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> Non
     assert captures[0]["git_commit"] == expected_commit
     assert [entry["extraction_method"] for entry in extractions] == ["git_file_text_extract", "git_file_text_extract"]
     assert [entry["status"] for entry in extractions] == ["completed", "completed"]
+    assert {entry["input_hash"] for entry in extractions} == {captures[0]["content_hash"]}
+    assert {entry["byte_count_in"] for entry in extractions} == {captures[0]["byte_count"]}
     assert (output / "execution-record.json").read_bytes() == (
         json.dumps(execution, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
