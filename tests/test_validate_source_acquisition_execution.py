@@ -90,3 +90,27 @@ def test_execution_validation_rejects_duplicate_capture_ids(tmp_path: Path) -> N
 
     assert proc.returncode == validator.EXIT_VALIDATION_FAILED
     assert any(error["code"] == "DUPLICATE_CAPTURE_ID" for error in report.get("errors", []))
+
+
+def test_execution_validation_rejects_duplicate_extraction_ids(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    execution_record = json.loads((run_dir / "execution-record.json").read_text(encoding="utf-8"))
+    execution_record["extraction_record_count"] = 2
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    extraction_records.append(dict(extraction_records[0]))
+
+    (run_dir / "execution-record.json").write_text(
+        json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    write_json_lines(run_dir / "extraction-records.jsonl", extraction_records)
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "DUPLICATE_EXTRACTION_ID" for error in report.get("errors", []))

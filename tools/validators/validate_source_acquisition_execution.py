@@ -488,6 +488,7 @@ def validate_extraction_records(
     errors: list[dict[str, Any]],
 ) -> None:
     artifact_root_resolved = artifact_root.resolve()
+    seen_extraction_ids: set[str] = set()
     for index, record in enumerate(records):
         base = f"$[{index}]"
         if record.get("schema_version") not in SUPPORTED_EXTRACTION_SCHEMA_VERSIONS:
@@ -524,6 +525,17 @@ def validate_extraction_records(
                 message="extraction record run_id does not match execution-record.json",
                 path=f"{base}.run_id",
             )
+        extraction_id = record.get("extraction_id")
+        if isinstance(extraction_id, str):
+            if extraction_id in seen_extraction_ids:
+                add_error(
+                    errors,
+                    code="DUPLICATE_EXTRACTION_ID",
+                    message=f"duplicate extraction_id encountered: {extraction_id}",
+                    path=f"{base}.extraction_id",
+                )
+            else:
+                seen_extraction_ids.add(extraction_id)
         capture_id = record.get("capture_id")
         if isinstance(capture_id, str) and capture_id not in capture_ids:
             add_error(
