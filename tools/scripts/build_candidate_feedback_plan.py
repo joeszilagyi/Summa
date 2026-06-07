@@ -379,6 +379,105 @@ def canonical_family_yields_for_event(conn: sqlite3.Connection, event_key: str) 
     return counts
 
 
+def _family_yields_for_events(
+    conn: sqlite3.Connection,
+    event_artifacts: list[tuple[str, str | None]],
+) -> dict[str, dict[str, int]]:
+    event_artifacts_by_key: dict[str, str | None] = {}
+    for event_key, artifact_hash in event_artifacts:
+        if event_key not in event_artifacts_by_key:
+            event_artifacts_by_key[event_key] = artifact_hash
+    if not event_artifacts_by_key:
+        return {}
+    values_clause = ", ".join("(?, ?)" for _ in event_artifacts_by_key)
+    params: list[Any] = []
+    for event_key, artifact_hash in event_artifacts_by_key.items():
+        params.extend([event_key, artifact_hash])
+    rows = conn.execute(
+        f"""
+        WITH requested_events(event_key, artifact_hash) AS (
+            VALUES {values_clause}
+        ),
+        work_counts AS (
+            SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+            FROM requested_events
+            JOIN work ON work.provenance_event_ref = requested_events.event_key
+            GROUP BY requested_events.event_key
+        ),
+        source_claim_counts AS (
+            SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+            FROM requested_events
+            JOIN source_claim ON source_claim.provenance_event_ref = requested_events.event_key
+            GROUP BY requested_events.event_key
+        ),
+        extraction_detected_entity_counts AS (
+            SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+            FROM requested_events
+            JOIN extraction_detected_entity ON extraction_detected_entity.provenance_event_ref = requested_events.event_key
+            GROUP BY requested_events.event_key
+        ),
+        source_relationship_counts AS (
+            SELECT requested_events.event_key AS event_key, COUNT(*) AS count
+            FROM requested_events
+            JOIN source_relationship ON source_relationship.provenance_event_ref = requested_events.event_key
+            GROUP BY requested_events.event_key
+        ),
+        source_access_matches AS (
+            SELECT requested_events.event_key AS event_key, access.source_access_id AS source_access_id
+            FROM requested_events
+            JOIN work ON work.provenance_event_ref = requested_events.event_key
+            JOIN source_access AS access ON access.work_id = work.work_id
+            UNION
+            SELECT requested_events.event_key AS event_key, access.source_access_id AS source_access_id
+            FROM requested_events
+            JOIN source_access AS access
+              ON requested_events.artifact_hash IS NOT NULL
+             AND requested_events.artifact_hash <> ''
+             AND access.source_lead_id LIKE ('source-lead:' || requested_events.artifact_hash || ':%')
+        ),
+        source_access_counts AS (
+            SELECT event_key, COUNT(*) AS count
+            FROM source_access_matches
+            GROUP BY event_key
+        )
+        SELECT requested_events.event_key,
+               COALESCE(work_counts.count, 0) AS work_count,
+               COALESCE(source_claim_counts.count, 0) AS source_claim_count,
+               COALESCE(extraction_detected_entity_counts.count, 0) AS extraction_detected_entity_count,
+               COALESCE(source_relationship_counts.count, 0) AS source_relationship_count,
+               COALESCE(source_access_counts.count, 0) AS source_access_count
+        FROM requested_events
+        LEFT JOIN work_counts USING (event_key)
+        LEFT JOIN source_claim_counts USING (event_key)
+        LEFT JOIN extraction_detected_entity_counts USING (event_key)
+        LEFT JOIN source_relationship_counts USING (event_key)
+        LEFT JOIN source_access_counts USING (event_key)
+        ORDER BY requested_events.event_key
+        """,
+        tuple(params),
+    ).fetchall()
+    summaries: dict[str, dict[str, int]] = {
+        event_key: {
+            "work": 0,
+            "source_claim": 0,
+            "extraction_detected_entity": 0,
+            "source_relationship": 0,
+            "source_access": 0,
+        }
+        for event_key in event_artifacts_by_key
+    }
+    for row in rows:
+        event_key = str(row["event_key"])
+        summaries[event_key] = {
+            "work": int(row["work_count"]),
+            "source_claim": int(row["source_claim_count"]),
+            "extraction_detected_entity": int(row["extraction_detected_entity_count"]),
+            "source_relationship": int(row["source_relationship_count"]),
+            "source_access": int(row["source_access_count"]),
+        }
+    return summaries
+
+
 def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[str, Any]]:
     pattern = f'%"subject_id": "{subject_id}"%'
     rows = conn.execute(
@@ -392,6 +491,7 @@ def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[
         (pattern,),
     ).fetchall()
     history: list[dict[str, Any]] = []
+    event_artifacts: list[tuple[str, str | None]] = []
     for row in rows:
         note_payload = parse_note_text(row["note_text"])
         if note_payload.get("subject_id") != subject_id:
@@ -400,8 +500,9 @@ def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[
         if not isinstance(facet, str) or not facet:
             continue
         event_key = str(row["provenance_event_key_v1"])
-        yields = canonical_family_yields_for_event(conn, event_key)
-        total_yield = sum(yields.values())
+        artifact_hash = note_payload.get("artifact_hash")
+        if not isinstance(artifact_hash, str):
+            artifact_hash = None
         history.append(
             {
                 "event_id": int(row["provenance_event_id"]),
@@ -411,10 +512,20 @@ def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[
                 "facet": facet,
                 "prompt_bundle_id": note_payload.get("prompt_bundle_id"),
                 "cycle_depth": note_payload.get("cycle_depth"),
-                "yields": yields,
-                "total_yield": total_yield,
             }
         )
+        event_artifacts.append((event_key, artifact_hash))
+    yields_by_event = _family_yields_for_events(conn, event_artifacts)
+    for entry in history:
+        yields = yields_by_event.get(entry["event_key"], {
+            "work": 0,
+            "source_claim": 0,
+            "extraction_detected_entity": 0,
+            "source_relationship": 0,
+            "source_access": 0,
+        })
+        entry["yields"] = yields
+        entry["total_yield"] = sum(yields.values())
     return history
 
 
