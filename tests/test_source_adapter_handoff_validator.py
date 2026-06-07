@@ -484,3 +484,93 @@ def test_handoff_validator_reports_jsonl_line_numbers_for_parse_failures(tmp_pat
     assert report["errors"][0]["line"] == 2
     assert "invalid JSON syntax" in report["errors"][0]["message"]
     assert "Traceback" not in proc.stdout
+
+
+def test_handoff_validator_rejects_duplicate_sequences(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
+    handoff_path = tmp_path / "invalid.jsonl"
+
+    proc = run_command(
+        [
+            str(LOCAL_SOURCE_PLANNER),
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_path),
+            "--format",
+            "json",
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    handoff_lines = [line for line in handoff_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    first_record = json.loads(handoff_lines[0])
+    second_record = json.loads(handoff_lines[1])
+    second_record["sequence"] = first_record["sequence"]
+    handoff_path.write_text(
+        "\n".join([json.dumps(first_record, sort_keys=True), json.dumps(second_record, sort_keys=True)])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report_json = tmp_path / "report.json"
+    proc = run_command(
+        [
+            str(VALIDATOR),
+            str(handoff_path),
+            "--adapter",
+            str(adapter_path),
+            "--report-json",
+            str(report_json),
+        ]
+    )
+
+    assert proc.returncode == 1
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    messages = {error["message"] for error in report["errors"]}
+    assert "handoff sequence values must be unique: 1 appears more than once" in messages
+
+
+def test_handoff_validator_rejects_noncontiguous_sequences(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
+    handoff_path = tmp_path / "invalid.jsonl"
+
+    proc = run_command(
+        [
+            str(LOCAL_SOURCE_PLANNER),
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_path),
+            "--format",
+            "json",
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    handoff_lines = [line for line in handoff_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    first_record = json.loads(handoff_lines[0])
+    second_record = json.loads(handoff_lines[1])
+    second_record["sequence"] = first_record["sequence"] + 2
+    handoff_path.write_text(
+        "\n".join([json.dumps(first_record, sort_keys=True), json.dumps(second_record, sort_keys=True)])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report_json = tmp_path / "report.json"
+    proc = run_command(
+        [
+            str(VALIDATOR),
+            str(handoff_path),
+            "--adapter",
+            str(adapter_path),
+            "--report-json",
+            str(report_json),
+        ]
+    )
+
+    assert proc.returncode == 1
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    messages = {error["message"] for error in report["errors"]}
+    assert "handoff sequence values must be contiguous starting at 1 (missing 2)" in messages

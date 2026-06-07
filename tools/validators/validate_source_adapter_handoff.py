@@ -83,6 +83,43 @@ def parse_json_value(raw_text: str) -> Any:
     )
 
 
+def validate_sequence_values(
+    records: list[tuple[int | None, dict[str, Any]]],
+) -> tuple[dict[int | None, str], str | None]:
+    duplicate_sequence_lines: dict[int | None, str] = {}
+    sequences: dict[int, list[int | None]] = {}
+
+    for line_number, record in records:
+        sequence = record.get("sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            continue
+        if sequence < 1:
+            continue
+        sequences.setdefault(sequence, []).append(line_number)
+
+    for sequence, lines in sorted(sequences.items()):
+        if len(lines) > 1:
+            for line_number in lines[1:]:
+                duplicate_sequence_lines[line_number] = (
+                    f"handoff sequence values must be unique: {sequence} appears more than once"
+                )
+
+    sorted_sequences = sorted(sequences)
+    if not sorted_sequences:
+        return duplicate_sequence_lines, None
+    missing_sequences = [
+        index for index in range(1, sorted_sequences[-1] + 1) if index not in sequences
+    ]
+    if missing_sequences:
+        missing_sequence = missing_sequences[0]
+        return (
+            duplicate_sequence_lines,
+            f"handoff sequence values must be contiguous starting at 1 (missing {missing_sequence})",
+        )
+
+    return duplicate_sequence_lines, None
+
+
 def load_adapter_payload(adapter_path: Path | None) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
     if adapter_path is None:
         return None, [], EXIT_PASS
@@ -177,9 +214,15 @@ def validate_source_adapter_handoff(target: Path, adapter_path: Path | None = No
     if exit_code != EXIT_PASS:
         return {"counts": counts, "errors": errors, "warnings": warnings}, exit_code
 
+    duplicate_sequence_lines, noncontiguous_sequences_error = validate_sequence_values(records)
+
     for line_number, record in records:
         counts["inspected"] += 1
         record_errors = validate_source_adapter_handoff_record(record, adapter_payload=adapter_payload)
+        if line_number in duplicate_sequence_lines:
+            record_errors.append(duplicate_sequence_lines[line_number])
+        if noncontiguous_sequences_error is not None:
+            record_errors.append(noncontiguous_sequences_error)
         if record_errors:
             counts["rejected"] += 1
             for message in record_errors:
