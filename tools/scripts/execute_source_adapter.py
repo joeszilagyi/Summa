@@ -39,6 +39,7 @@ from tools.common.network_safety_gate import (  # noqa: E402
     evaluate_request,
     load_request,
 )
+from tools.validators.common import is_rfc3339_datetime
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
@@ -254,7 +255,11 @@ def determine_executor_mode(requested_mode: str, *, variant: str) -> str:
 
 
 def normalize_created_at(created_at: str | None) -> str:
-    return created_at or utc_now()
+    if created_at is None:
+        return utc_now()
+    if not is_rfc3339_datetime(created_at):
+        raise SourceAcquisitionError(f"created_at must be an RFC3339 date-time: {created_at}")
+    return created_at
 
 
 def resolve_run_id(output_dir: Path, *, run_id: str | None) -> str:
@@ -1974,7 +1979,6 @@ def main() -> int:
             raise SourceAcquisitionError(
                 "remote_url_manifest execution requires --network-safety-request"
             )
-        prepare_output_dir(output_dir, run_id=run_id)
 
         if args.dry_run:
             gate_report = None
@@ -2002,16 +2006,6 @@ def main() -> int:
                     timeout_seconds=args.timeout_seconds,
                     max_response_bytes=args.max_response_bytes,
                 )
-                write_execution_artifacts(
-                    output_dir=output_dir,
-                    execution_record=remote_execution_record,
-                    capture_events=remote_capture_events,
-                    extraction_records=remote_extraction_records,
-                    denial_record=remote_denial_record,
-                    gate_report=gate_report,
-                    text_artifacts={},
-                )
-                validate_emitted_artifacts(output_dir)
                 sys.stdout.write(
                     json.dumps(
                         remote_execution_record, ensure_ascii=False, indent=2, sort_keys=True
@@ -2035,20 +2029,12 @@ def main() -> int:
                 gate_report=None,
                 planned_actions=planned_actions,
             )
-            write_execution_artifacts(
-                output_dir=output_dir,
-                execution_record=execution_record,
-                capture_events=[],
-                extraction_records=[],
-                denial_record=None,
-                gate_report=gate_report,
-                text_artifacts={},
-            )
-            validate_emitted_artifacts(output_dir)
             sys.stdout.write(
                 json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
             )
             return 0
+
+        prepare_output_dir(output_dir, run_id=run_id)
 
         denial_record = None
         gate_report = None

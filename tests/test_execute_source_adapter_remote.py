@@ -697,13 +697,13 @@ def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(t
         proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True, dry_run=True)
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        execution = json.loads(proc.stdout)
         assert execution["status"] == "dry_run"
         assert execution["canonical_persistence_attempted"] is False
         assert execution["network_access_attempted"] is False
-        assert load_jsonl(output / "capture-events.jsonl") == []
-        assert load_jsonl(output / "extraction-records.jsonl") == []
-        assert not (output / "payloads").exists()
+        assert execution["capture_event_count"] == 0
+        assert execution["extraction_record_count"] == 0
+        assert not output.exists()
     finally:
         server.shutdown()
 
