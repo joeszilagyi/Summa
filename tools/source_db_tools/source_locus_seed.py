@@ -744,7 +744,7 @@ def seed_database(
     }
 
 
-def write_json(path: Path | None, payload: dict[str, Any]) -> None:
+def write_json(path: Path | None, payload: dict[str, Any], *, durable: bool = True) -> None:
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -755,7 +755,8 @@ def write_json(path: Path | None, payload: dict[str, Any]) -> None:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
             handle.write(rendered)
             handle.flush()
-            os.fsync(handle.fileno())
+            if durable:
+                os.fsync(handle.fileno())
         os.replace(tmp_path_obj, path)
     finally:
         if tmp_path_obj.exists():
@@ -764,9 +765,19 @@ def write_json(path: Path | None, payload: dict[str, Any]) -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Seed and report local source-locus candidates without acquisition.")
+    report_write = argparse.ArgumentParser(add_help=False)
+    report_write.add_argument(
+        "--relaxed-report-write",
+        action="store_true",
+        help="Skip fsync for generated report JSON files; useful for scratch and test runs.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    seed = subparsers.add_parser("seed", help="Load a manually supplied seed list into source_locus.")
+    seed = subparsers.add_parser(
+        "seed",
+        help="Load a manually supplied seed list into source_locus.",
+        parents=[report_write],
+    )
     seed.add_argument("--db", required=True, type=Path)
     seed.add_argument("--seed-json", required=True, type=Path, help="JSON or JSONL manual seed list.")
     seed.add_argument("--topic-id", required=True)
@@ -786,7 +797,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     seed.add_argument("--report-json", type=Path)
 
-    productivity = subparsers.add_parser("update-productivity", help="Increment deterministic source-locus counters.")
+    productivity = subparsers.add_parser(
+        "update-productivity",
+        help="Increment deterministic source-locus counters.",
+        parents=[report_write],
+    )
     productivity.add_argument("--db", required=True, type=Path)
     productivity.add_argument("--locus-id", required=True)
     productivity.add_argument("--queries-run", type=int, default=0)
@@ -797,7 +812,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     productivity.add_argument("--timestamp", default="2026-04-28T00:00:00+00:00")
     productivity.add_argument("--report-json", type=Path)
 
-    export = subparsers.add_parser("export", help="Export source-locus records as full-fidelity local JSON.")
+    export = subparsers.add_parser(
+        "export",
+        help="Export source-locus records as full-fidelity local JSON.",
+        parents=[report_write],
+    )
     export.add_argument("--db", required=True, type=Path)
     export.add_argument("--topic-id")
     export.add_argument("--report-json", type=Path)
@@ -848,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
-    write_json(args.report_json, payload)
+    write_json(args.report_json, payload, durable=not args.relaxed_report_write)
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
