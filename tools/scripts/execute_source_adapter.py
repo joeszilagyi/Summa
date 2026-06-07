@@ -348,6 +348,36 @@ def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
     return decoded_text, "utf8", None
 
 
+def stream_local_file_payload(
+    path: Path,
+) -> tuple[str, int, str | None, str, str | None]:
+    digest = hashlib.sha256()
+    byte_count = 0
+    preview = bytearray()
+    saw_binary_byte = False
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            byte_count += len(chunk)
+            if not saw_binary_byte and b"\x00" in chunk:
+                saw_binary_byte = True
+            if len(preview) < MAX_EXTRACT_TEXT_BYTES:
+                preview.extend(chunk[: MAX_EXTRACT_TEXT_BYTES - len(preview)])
+
+    content_hash = digest.hexdigest()
+    if byte_count > MAX_EXTRACT_TEXT_BYTES:
+        return content_hash, byte_count, None, "not_attempted", "oversized_payload"
+    if saw_binary_byte:
+        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
+    try:
+        decoded_text = preview.decode("utf-8")
+    except UnicodeDecodeError:
+        return content_hash, byte_count, None, "invalid_utf8", "invalid_utf8"
+    if not is_probably_text(decoded_text):
+        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
+    return content_hash, byte_count, decoded_text, "utf8", None
+
+
 def guess_content_type(path: Path, *, fallback: str = "application/octet-stream") -> str:
     guessed, _ = mimetypes.guess_type(path.name)
     return guessed or fallback
@@ -944,7 +974,16 @@ def execute_local_source(
         original_locator = record["preserved"]["original_locator"]
         try:
             ensure_path_is_local_file(source_path)
-            payload = source_path.read_bytes()
+            if adapter_payload["input_family"] == "local_file":
+                content_hash, byte_count, extracted_text, encoding_result, failure_reason = (
+                    stream_local_file_payload(source_path)
+                )
+            else:
+                payload = source_path.read_bytes()
+                content_hash = sha256_bytes(payload)
+                byte_count = len(payload)
+                extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+
             capture_event = {
                 "schema_version": CAPTURE_SCHEMA_VERSION,
                 "capture_id": capture_id,
@@ -960,8 +999,8 @@ def execute_local_source(
                 },
                 "original_locator": original_locator,
                 "normalized_local_path": str(source_path),
-                "content_hash": sha256_bytes(payload),
-                "byte_count": len(payload),
+                "content_hash": content_hash,
+                "byte_count": byte_count,
                 "content_type": guess_content_type(source_path),
                 "captured_at": created_at,
                 "capture_method": capture_method,
@@ -972,7 +1011,6 @@ def execute_local_source(
                 "verification_status": "unverified",
             }
             capture_events.append(capture_event)
-            extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
             extraction_id = make_extraction_id(len(extraction_records) + 1)
             extracted_text_path = None
             if extracted_text is not None:
