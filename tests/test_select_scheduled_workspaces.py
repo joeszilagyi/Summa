@@ -348,6 +348,52 @@ def test_selector_append_planned_runs_deduplicates_duplicates_in_single_call(tmp
     assert read_jsonl(planned_runs) == [record]
 
 
+def test_selector_append_planned_runs_uses_streaming_reader_for_existing_file(tmp_path: Path) -> None:
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=tmp_path / "workspace",
+                manifest_path=tmp_path / "manifest.json",
+            )
+        ],
+    )
+    registry_root = tmp_path / "workspace"
+    registry_root.mkdir()
+    manifest = write_manifest(registry_root, subject_id="subject.selected")
+    record = {
+        "schema_version": "planned-run.v1",
+        "planner_run_id": "planner-fixture",
+        "planned_run_id": "planner-fixture:selected_workspace",
+        "planned_at": "2026-01-01T00:00:00Z",
+        "workspace_id": "selected_workspace",
+        "decision": "selected",
+        "cadence_reason": "schedule_posture:scheduled",
+        "skipped_reason": None,
+        "skipped_reasons": [],
+        "run_budget": {"max_attempts": 1},
+        "retry_policy": None,
+        "failure_state": None,
+        "workspace_root": str(registry_root),
+        "resolved_workspace_root": str(registry_root),
+        "default_subject_manifest": str(manifest),
+        "resolved_default_subject_manifest": str(manifest),
+        "selection_explanation_id": "explanation-id",
+        "saturation": None,
+        "saturation_override": False,
+        "registry_path": str(registry_path),
+    }
+    planned_runs = tmp_path / "planned-runs.jsonl"
+    planned_runs.write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+    )
+
+    selector.append_planned_run_records(planned_runs, [record])
+
+    assert read_jsonl(planned_runs) == [record]
+
+
 def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspaces" / "selected"
     workspace_root.mkdir(parents=True)

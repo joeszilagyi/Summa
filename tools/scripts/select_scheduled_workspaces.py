@@ -551,22 +551,27 @@ def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> Non
         existing: set[str] = set()
         if not path.exists() or path.stat().st_size == 0:
             return existing
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            planned_run_id = parsed.get("planned_run_id") if isinstance(parsed, dict) else None
-            if isinstance(planned_run_id, str):
-                existing.add(planned_run_id)
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                planned_run_id = parsed.get("planned_run_id") if isinstance(parsed, dict) else None
+                if isinstance(planned_run_id, str):
+                    existing.add(planned_run_id)
         return existing
 
     existing_ids = read_existing_ids(path)
     seen_ids: set[str] = set()
     path.parent.mkdir(parents=True, exist_ok=True)
-    needs_leading_newline = path.exists() and path.stat().st_size > 0 and not path.read_bytes().endswith(b"\n")
+    needs_leading_newline = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as handle:
+            handle.seek(-1, os.SEEK_END)
+            needs_leading_newline = handle.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as handle:
         if needs_leading_newline:
             handle.write("\n")
