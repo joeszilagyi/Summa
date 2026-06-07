@@ -44,6 +44,9 @@ SUPPORTED_EXECUTION_SCHEMA_VERSIONS = {EXECUTION_SCHEMA_VERSION, "source-acquisi
 SUPPORTED_CAPTURE_SCHEMA_VERSIONS = {CAPTURE_SCHEMA_VERSION, "source-capture-event.v0"}
 SUPPORTED_EXTRACTION_SCHEMA_VERSIONS = {EXTRACTION_SCHEMA_VERSION, "source-extraction-record.v0"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+SUPPORTED_EXECUTION_STATUSES = {"completed", "denied", "dry_run", "failed"}
+SUPPORTED_CAPTURE_STATUSES = {"completed", "failed", "skipped", "denied"}
+SUPPORTED_EXTRACTION_STATUSES = {"completed", "failed", "skipped", "denied"}
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -167,6 +170,19 @@ def _require_string(
         add_error(errors, code=code, message=message, path=path)
 
 
+def _require_enum(
+    value: Any,
+    *,
+    errors: list[dict[str, Any]],
+    path: str,
+    code: str,
+    message: str,
+    allowed: set[str],
+) -> None:
+    if value not in allowed:
+        add_error(errors, code=code, message=message, path=path)
+
+
 def _require_bool(
     value: Any,
     *,
@@ -250,6 +266,14 @@ def validate_execution_record(
             code="STRING_REQUIRED",
             message=f"{key} must be a non-blank string",
         )
+    _require_enum(
+        payload.get("status"),
+        errors=errors,
+        path="$.status",
+        code="INVALID_EXECUTION_STATUS",
+        message=f"status must be one of {sorted(SUPPORTED_EXECUTION_STATUSES)!r}",
+        allowed=SUPPORTED_EXECUTION_STATUSES,
+    )
     _require_rfc3339(
         payload.get("created_at"),
         errors=errors,
@@ -362,8 +386,8 @@ def validate_capture_events(
             "workspace_id",
             "adapter_type",
             "capture_method",
-            "status",
-            "verification_status",
+        "status",
+        "verification_status",
         ):
             _require_string(
                 record.get(key),
@@ -372,6 +396,14 @@ def validate_capture_events(
                 code="STRING_REQUIRED",
                 message=f"{key} must be a non-blank string",
             )
+        _require_enum(
+            record.get("status"),
+            errors=errors,
+            path=f"{base}.status",
+            code="INVALID_CAPTURE_STATUS",
+            message=f"status must be one of {sorted(SUPPORTED_CAPTURE_STATUSES)!r}",
+            allowed=SUPPORTED_CAPTURE_STATUSES,
+        )
         if record.get("run_id") != expected_run_id:
             add_error(
                 errors,
@@ -508,9 +540,9 @@ def validate_extraction_records(
             "adapter_type",
             "extraction_method",
             "encoding_result",
-            "status",
-            "verification_status",
-            "truncation_status",
+        "status",
+        "verification_status",
+        "truncation_status",
         ):
             _require_string(
                 record.get(key),
@@ -519,6 +551,14 @@ def validate_extraction_records(
                 code="STRING_REQUIRED",
                 message=f"{key} must be a non-blank string",
             )
+        _require_enum(
+            record.get("status"),
+            errors=errors,
+            path=f"{base}.status",
+            code="INVALID_EXTRACTION_STATUS",
+            message=f"status must be one of {sorted(SUPPORTED_EXTRACTION_STATUSES)!r}",
+            allowed=SUPPORTED_EXTRACTION_STATUSES,
+        )
         if record.get("run_id") != expected_run_id:
             add_error(
                 errors,
