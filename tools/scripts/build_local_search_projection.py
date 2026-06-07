@@ -561,6 +561,7 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
     _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
     conn = connect_read_only(db_path)
     try:
+        source_schema_version = read_schema_version(conn)
         candidate_records = 0
         projected_records: list[dict[str, Any]] = []
         excluded_records: list[dict[str, str]] = []
@@ -586,7 +587,6 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 projected_records.append(record)
         projected_records.sort(key=lambda item: (item["object_type"], item["object_pk"]))
-        schema_version = read_schema_version(conn)
     finally:
         conn.close()
 
@@ -595,7 +595,7 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "excluded_records": excluded_records,
         "profile": args.profile,
         "projected_records": projected_records,
-        "schema_version": schema_version,
+            "schema_version": source_schema_version,
         "source_database_name": db_path.name,
         "source_ledger_applied": ledger_applied,
     }
@@ -618,7 +618,7 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "source": {
             "database_name": db_path.name,
             "database_fingerprint": database_fingerprint(logical_fingerprint_source),
-            "schema_version": schema_version,
+            "schema_version": source_schema_version,
             "correction_ledger_applied": ledger_applied,
         },
         "profile": args.profile,
