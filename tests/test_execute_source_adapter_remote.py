@@ -553,6 +553,161 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
         )
 
 
+def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        {
+            "sequence": 1,
+            "relative_path": "a-one",
+            "preserved": {
+                "original_locator": {"entry_url": "https://host-a.test/one"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://host-a.test/manifest.json"},
+        },
+        {
+            "sequence": 2,
+            "relative_path": "b-one",
+            "preserved": {
+                "original_locator": {"entry_url": "https://host-b.test/one"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://host-b.test/manifest.json"},
+        },
+        {
+            "sequence": 3,
+            "relative_path": "a-two",
+            "preserved": {
+                "original_locator": {"entry_url": "https://host-a.test/two"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://host-a.test/manifest.json"},
+        },
+    ]
+    gate_report = {
+        "schema_version": "network-safety-gate-report.v1",
+        "decision": "allow",
+        "execution_allowed": True,
+        "counts": {"errors": 0, "warnings": 0},
+        "planned_actions": [
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://host-b.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-3",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/two",
+                "status": "planned",
+                "method": "GET",
+            },
+        ],
+        "checks": {
+            "network_policy": {
+                "user_agent": "SummaRemoteTest/1.0",
+                "allow_http": True,
+                "robots_mode": "respect_robots",
+            },
+            "rate_limits": {"min_interval_seconds": 0.25},
+            "allowlist": {
+                "hosts": [],
+                "url_prefixes": ["https://host-a.test/", "https://host-b.test/"],
+            },
+        },
+    }
+    host_a_started = threading.Event()
+    host_b_completed = threading.Event()
+    sleep_calls: list[float] = []
+    fetch_calls: list[str] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        assert host_a_started.is_set()
+        assert host_b_completed.wait(timeout=1.0), "host B did not complete while host A was sleeping"
+
+    def fake_remote_fetch_one(
+        *,
+        url: str,
+        method: str,
+        user_agent: str,
+        allowlist_hosts: list[str],
+        allowlist_prefixes: list[str],
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> dict[str, Any]:
+        del method, user_agent, allowlist_hosts, allowlist_prefixes, timeout_seconds, max_response_bytes
+        fetch_calls.append(url)
+        if "host-a.test" in url and url.endswith("/one"):
+            host_a_started.set()
+        if "host-b.test" in url:
+            host_b_completed.set()
+        return {
+            "status": "captured",
+            "failure_reason": None,
+            "http_status_code": 200,
+            "final_url": url,
+            "redirect_count": 0,
+            "attempted_urls": [url],
+            "payload": b"remote fixture text\n",
+            "truncated": False,
+            "headers": {"Content-Type": "text/plain; charset=utf-8", "Content-Length": "20"},
+        }
+
+    monkeypatch.setattr(source_executor, "remote_fetch_one", fake_remote_fetch_one)
+    monkeypatch.setattr(source_executor.time, "sleep", fake_sleep)
+
+    capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary = (
+        source_executor.execute_remote_fetches(
+            records=records,
+            adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+            run_id="remote-concurrent-hosts",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash="a" * 64,
+            gate_report=gate_report,
+            timeout_seconds=2,
+            max_response_bytes=1024,
+        )
+    )
+
+    assert failed is False
+    assert summary["urls_attempted"] == 3
+    assert summary["urls_succeeded"] == 3
+    assert summary["urls_failed"] == 0
+    assert summary["urls_denied"] == 0
+    assert sleep_calls == [0.25]
+    assert len(fetch_calls) == 3
+    assert fetch_calls[0] in {"https://host-a.test/one", "https://host-b.test/one"}
+    assert fetch_calls[1] in {"https://host-a.test/one", "https://host-b.test/one"}
+    assert fetch_calls[0] != fetch_calls[1]
+    assert fetch_calls[2] == "https://host-a.test/two"
+    assert [record["final_url"] for record in capture_events] == [
+        "https://host-a.test/one",
+        "https://host-b.test/one",
+        "https://host-a.test/two",
+    ]
+    assert [record["status"] for record in extraction_records] == ["completed", "completed", "completed"]
+    assert text_artifacts == {
+        "extracted-text/extraction-0001.txt": "remote fixture text\n",
+        "extracted-text/extraction-0002.txt": "remote fixture text\n",
+        "extracted-text/extraction-0003.txt": "remote fixture text\n",
+    }
+    assert binary_artifacts == {}
+
+
 def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path) -> None:
     server, base_url = fixture_server()
     try:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import mimetypes
@@ -1603,6 +1604,142 @@ def remote_fetch_one(
         }
 
 
+def _remote_fetch_host_key(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc.lower()
+
+
+def _remote_fetch_host_queue(
+    *,
+    tasks: list[dict[str, Any]],
+    user_agent: str,
+    allowlist_hosts: list[str],
+    allowlist_prefixes: list[str],
+    timeout_seconds: float,
+    max_response_bytes: int,
+    min_interval_seconds: float,
+) -> dict[int, dict[str, Any]]:
+    results: dict[int, dict[str, Any]] = {}
+    for index, task in enumerate(tasks):
+        if index > 0 and min_interval_seconds > 0:
+            time.sleep(min_interval_seconds)
+        results[int(task["sequence"])] = remote_fetch_one(
+            url=task["url"],
+            method=task["method"],
+            user_agent=user_agent,
+            allowlist_hosts=allowlist_hosts,
+            allowlist_prefixes=allowlist_prefixes,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
+    return results
+
+
+def _build_remote_fetch_artifacts(
+    *,
+    record: dict[str, Any],
+    adapter_payload: dict[str, Any],
+    run_id: str,
+    handoff_hash: str,
+    created_at: str,
+    capture_id: str,
+    extraction_id: str,
+    url: str,
+    method: str,
+    user_agent: str,
+    fetch_result: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str | None, bool]:
+    payload = fetch_result["payload"]
+    content_type = extract_content_type(fetch_result.get("headers"))
+    content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
+    byte_count = len(payload) if fetch_result["status"] == "captured" else 0
+    response_headers = normalize_response_headers(fetch_result.get("headers"))
+    capture_event = {
+        "schema_version": CAPTURE_SCHEMA_VERSION,
+        "capture_id": capture_id,
+        "run_id": run_id,
+        "handoff_hash": handoff_hash,
+        "handoff_sequences": [record["sequence"]],
+        "adapter_id": adapter_payload["adapter_id"],
+        "workspace_id": adapter_payload["workspace_id"],
+        "adapter_type": "remote_url_manifest",
+        "source_reference": {
+            "relative_path": record["relative_path"],
+            "remote_url": url,
+            "manifest_url": record["source_specific"].get("manifest_url"),
+        },
+        "original_locator": record["preserved"]["original_locator"],
+        "normalized_url": urlparse(url).geturl(),
+        "final_url": fetch_result["final_url"],
+        "redirect_count": fetch_result["redirect_count"],
+        "http_status_code": fetch_result["http_status_code"],
+        "request_method": method,
+        "user_agent": user_agent,
+        "content_hash": content_hash,
+        "byte_count": byte_count,
+        "content_length_header": response_headers.get("content-length"),
+        "content_type": content_type,
+        "captured_at": created_at,
+        "capture_method": "remote_url_fetch",
+        "transient_payload_path": None,
+        "payload_retention_policy": "hash_only",
+        "network_access_attempted": True,
+        "rights_posture": record["preserved"].get("rights_posture"),
+        "status": "completed" if fetch_result["status"] == "captured" else "failed",
+        "failure_reason": fetch_result["failure_reason"],
+        "canonical_persistence_attempted": False,
+        "verification_status": "unverified",
+    }
+    if fetch_result.get("redirect_target"):
+        capture_event["redirect_target"] = fetch_result["redirect_target"]
+    if fetch_result.get("error_detail"):
+        capture_event["error_detail"] = fetch_result["error_detail"]
+
+    extracted_text = None
+    encoding_result = "not_attempted"
+    failure_reason = fetch_result["failure_reason"]
+    extracted_text_path = None
+    decode_failed = False
+    if fetch_result["status"] == "captured":
+        if method == "HEAD":
+            failure_reason = "head_request_no_body"
+        elif not is_extractable_content_type(content_type):
+            failure_reason = "unsupported_content_type"
+        else:
+            extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+            if extracted_text is not None:
+                extracted_text_path = f"extracted-text/{extraction_id}.txt"
+            else:
+                decode_failed = True
+
+    extraction_record = build_extraction_record(
+        extraction_id=extraction_id,
+        run_id=run_id,
+        capture_id=capture_id,
+        adapter_payload=adapter_payload,
+        adapter_type="remote_url_manifest",
+        handoff_sequence=record["sequence"],
+        relative_path=record["relative_path"],
+        input_hash=content_hash,
+        byte_count_in=byte_count,
+        extraction_method="remote_text_extract",
+        hazard_flags=list(
+            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+        ),
+        content_text=extracted_text,
+        encoding_result=encoding_result,
+        failure_reason=failure_reason,
+        extracted_text_path=extracted_text_path,
+        extra_fields={
+            "content_type": content_type,
+            "remote_url": url,
+            "final_url": fetch_result["final_url"],
+            "network_access_attempted": True,
+        },
+    )
+    return capture_event, extraction_record, extracted_text, fetch_result["status"] != "captured" or decode_failed
+
+
 def execute_remote_fetches(
     *,
     records: list[dict[str, Any]],
@@ -1651,15 +1788,21 @@ def execute_remote_fetches(
     )
     min_interval_seconds = float(min_interval) if isinstance(min_interval, (int, float)) else 0.0
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
-
-    for index, record in enumerate(
-        sorted(records, key=lambda item: int(item["sequence"])), start=1
-    ):
+    record_plans: list[dict[str, Any]] = []
+    host_tasks: dict[str, list[dict[str, Any]]] = {}
+    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
         original_locator = record["preserved"]["original_locator"]
         url = original_locator["entry_url"]
         capture_id = make_capture_id(index)
         extraction_id = make_extraction_id(index)
         gate_action = action_map.get(url)
+        record_plan: dict[str, Any] = {
+            "sequence": int(record["sequence"]),
+            "record": record,
+            "capture_id": capture_id,
+            "extraction_id": extraction_id,
+            "url": url,
+        }
         if gate_action is None or gate_action.get("status") != "planned":
             failed = True
             summary["urls_denied"] += 1
@@ -1669,182 +1812,20 @@ def execute_remote_fetches(
                 else "network_gate_action_not_planned"
             )
             request_method = str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
-            capture_events.append(
-                build_remote_denied_capture_event(
-                    record=record,
-                    adapter_payload=adapter_payload,
-                    run_id=run_id,
-                    handoff_hash=handoff_hash,
-                    created_at=created_at,
-                    capture_id=capture_id,
-                    url=url,
-                    method=request_method,
-                    failure_reason=denied_reason,
-                    user_agent=user_agent,
-                )
+            record_plan["kind"] = "denied"
+            record_plan["capture_event"] = build_remote_denied_capture_event(
+                record=record,
+                adapter_payload=adapter_payload,
+                run_id=run_id,
+                handoff_hash=handoff_hash,
+                created_at=created_at,
+                capture_id=capture_id,
+                url=url,
+                method=request_method,
+                failure_reason=denied_reason,
+                user_agent=user_agent,
             )
-            extraction_records.append(
-                build_extraction_record(
-                    extraction_id=extraction_id,
-                    run_id=run_id,
-                    capture_id=capture_id,
-                    adapter_payload=adapter_payload,
-                    adapter_type="remote_url_manifest",
-                    handoff_sequence=record["sequence"],
-                    relative_path=record["relative_path"],
-                    input_hash=None,
-                    byte_count_in=0,
-                    extraction_method="remote_text_extract",
-                    hazard_flags=list(
-                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                    ),
-                    content_text=None,
-                    encoding_result="not_attempted",
-                    failure_reason=denied_reason,
-                    extracted_text_path=None,
-                    status_override="denied",
-                    extra_fields={
-                        "content_type": "application/octet-stream",
-                        "remote_url": url,
-                        "final_url": url,
-                        "network_access_attempted": True,
-                    },
-                )
-            )
-            continue
-        method = str(gate_action.get("method") or "GET").upper()
-        if method not in {"GET", "HEAD"}:
-            failed = True
-            summary["urls_denied"] += 1
-            capture_events.append(
-                build_remote_denied_capture_event(
-                    record=record,
-                    adapter_payload=adapter_payload,
-                    run_id=run_id,
-                    handoff_hash=handoff_hash,
-                    created_at=created_at,
-                    capture_id=capture_id,
-                    url=url,
-                    method=method,
-                    failure_reason="unsupported_request_method",
-                    user_agent=user_agent,
-                )
-            )
-            extraction_records.append(
-                build_extraction_record(
-                    extraction_id=extraction_id,
-                    run_id=run_id,
-                    capture_id=capture_id,
-                    adapter_payload=adapter_payload,
-                    adapter_type="remote_url_manifest",
-                    handoff_sequence=record["sequence"],
-                    relative_path=record["relative_path"],
-                    input_hash=None,
-                    byte_count_in=0,
-                    extraction_method="remote_text_extract",
-                    hazard_flags=list(
-                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                    ),
-                    content_text=None,
-                    encoding_result="not_attempted",
-                    failure_reason="unsupported_request_method",
-                    extracted_text_path=None,
-                    status_override="denied",
-                    extra_fields={
-                        "content_type": "application/octet-stream",
-                        "remote_url": url,
-                        "final_url": url,
-                        "network_access_attempted": True,
-                    },
-                )
-            )
-            continue
-        if index > 1 and min_interval_seconds > 0:
-            time.sleep(min_interval_seconds)
-
-        fetch_result = remote_fetch_one(
-            url=url,
-            method=method,
-            user_agent=user_agent,
-            allowlist_hosts=allowlist_hosts,
-            allowlist_prefixes=allowlist_prefixes,
-            timeout_seconds=timeout_seconds,
-            max_response_bytes=max_response_bytes,
-        )
-        summary["urls_attempted"] += 1
-        payload = fetch_result["payload"]
-        content_type = extract_content_type(fetch_result.get("headers"))
-        content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
-        byte_count = len(payload) if fetch_result["status"] == "captured" else 0
-        if fetch_result["status"] == "captured":
-            summary["bytes_captured"] += byte_count
-            summary["urls_succeeded"] += 1
-        else:
-            failed = True
-            summary["urls_failed"] += 1
-
-        response_headers = normalize_response_headers(fetch_result.get("headers"))
-        capture_event = {
-            "schema_version": CAPTURE_SCHEMA_VERSION,
-            "capture_id": capture_id,
-            "run_id": run_id,
-            "handoff_hash": handoff_hash,
-            "handoff_sequences": [record["sequence"]],
-            "adapter_id": adapter_payload["adapter_id"],
-            "workspace_id": adapter_payload["workspace_id"],
-            "adapter_type": "remote_url_manifest",
-            "source_reference": {
-                "relative_path": record["relative_path"],
-                "remote_url": url,
-                "manifest_url": record["source_specific"].get("manifest_url"),
-            },
-            "original_locator": original_locator,
-            "normalized_url": urlparse(url).geturl(),
-            "final_url": fetch_result["final_url"],
-            "redirect_count": fetch_result["redirect_count"],
-            "http_status_code": fetch_result["http_status_code"],
-            "request_method": method,
-            "user_agent": user_agent,
-            "content_hash": content_hash,
-            "byte_count": byte_count,
-            "content_length_header": response_headers.get("content-length"),
-            "content_type": content_type,
-            "captured_at": created_at,
-            "capture_method": "remote_url_fetch",
-            "transient_payload_path": None,
-            "payload_retention_policy": "hash_only",
-            "network_access_attempted": True,
-            "rights_posture": record["preserved"].get("rights_posture"),
-            "status": "completed" if fetch_result["status"] == "captured" else "failed",
-            "failure_reason": fetch_result["failure_reason"],
-            "canonical_persistence_attempted": False,
-            "verification_status": "unverified",
-        }
-        if fetch_result.get("redirect_target"):
-            capture_event["redirect_target"] = fetch_result["redirect_target"]
-        if fetch_result.get("error_detail"):
-            capture_event["error_detail"] = fetch_result["error_detail"]
-        capture_events.append(capture_event)
-
-        extraction_id = make_extraction_id(len(extraction_records) + 1)
-        extracted_text = None
-        encoding_result = "not_attempted"
-        failure_reason = fetch_result["failure_reason"]
-        extracted_text_path = None
-        if fetch_result["status"] == "captured":
-            if method == "HEAD":
-                failure_reason = "head_request_no_body"
-            elif not is_extractable_content_type(content_type):
-                failure_reason = "unsupported_content_type"
-            else:
-                extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
-                if extracted_text is not None:
-                    extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                    text_artifacts[extracted_text_path] = extracted_text
-                else:
-                    failed = True
-        extraction_records.append(
-            build_extraction_record(
+            record_plan["extraction_record"] = build_extraction_record(
                 extraction_id=extraction_id,
                 run_id=run_id,
                 capture_id=capture_id,
@@ -1852,24 +1833,137 @@ def execute_remote_fetches(
                 adapter_type="remote_url_manifest",
                 handoff_sequence=record["sequence"],
                 relative_path=record["relative_path"],
-                input_hash=content_hash,
-                byte_count_in=byte_count,
+                input_hash=None,
+                byte_count_in=0,
                 extraction_method="remote_text_extract",
                 hazard_flags=list(
                     record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
                 ),
-                content_text=extracted_text,
-                encoding_result=encoding_result,
-                failure_reason=failure_reason,
-                extracted_text_path=extracted_text_path,
+                content_text=None,
+                encoding_result="not_attempted",
+                failure_reason=denied_reason,
+                extracted_text_path=None,
+                status_override="denied",
                 extra_fields={
-                    "content_type": content_type,
+                    "content_type": "application/octet-stream",
                     "remote_url": url,
-                    "final_url": fetch_result["final_url"],
+                    "final_url": url,
                     "network_access_attempted": True,
                 },
             )
+            record_plans.append(record_plan)
+            continue
+        method = str(gate_action.get("method") or "GET").upper()
+        if method not in {"GET", "HEAD"}:
+            failed = True
+            summary["urls_denied"] += 1
+            record_plan["kind"] = "denied"
+            record_plan["capture_event"] = build_remote_denied_capture_event(
+                record=record,
+                adapter_payload=adapter_payload,
+                run_id=run_id,
+                handoff_hash=handoff_hash,
+                created_at=created_at,
+                capture_id=capture_id,
+                url=url,
+                method=method,
+                failure_reason="unsupported_request_method",
+                user_agent=user_agent,
+            )
+            record_plan["extraction_record"] = build_extraction_record(
+                extraction_id=extraction_id,
+                run_id=run_id,
+                capture_id=capture_id,
+                adapter_payload=adapter_payload,
+                adapter_type="remote_url_manifest",
+                handoff_sequence=record["sequence"],
+                relative_path=record["relative_path"],
+                input_hash=None,
+                byte_count_in=0,
+                extraction_method="remote_text_extract",
+                hazard_flags=list(
+                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                ),
+                content_text=None,
+                encoding_result="not_attempted",
+                failure_reason="unsupported_request_method",
+                extracted_text_path=None,
+                status_override="denied",
+                extra_fields={
+                    "content_type": "application/octet-stream",
+                    "remote_url": url,
+                    "final_url": url,
+                    "network_access_attempted": True,
+                },
+            )
+            record_plans.append(record_plan)
+            continue
+        host_key = _remote_fetch_host_key(url)
+        host_tasks.setdefault(host_key, []).append(
+            {
+                "sequence": int(record["sequence"]),
+                "url": url,
+                "method": method,
+            }
         )
+        record_plan["kind"] = "fetch"
+        record_plan["host"] = host_key
+        record_plan["method"] = method
+        record_plans.append(record_plan)
+
+    fetch_results_by_sequence: dict[int, dict[str, Any]] = {}
+    if host_tasks:
+        max_workers = min(4, len(host_tasks))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _remote_fetch_host_queue,
+                    tasks=tasks,
+                    user_agent=user_agent,
+                    allowlist_hosts=allowlist_hosts,
+                    allowlist_prefixes=allowlist_prefixes,
+                    timeout_seconds=timeout_seconds,
+                    max_response_bytes=max_response_bytes,
+                    min_interval_seconds=min_interval_seconds,
+                ): host
+                for host, tasks in host_tasks.items()
+            }
+            for future in as_completed(futures):
+                fetch_results_by_sequence.update(future.result())
+
+    for record_plan in record_plans:
+        if record_plan["kind"] == "denied":
+            capture_events.append(record_plan["capture_event"])
+            extraction_records.append(record_plan["extraction_record"])
+            continue
+
+        fetch_result = fetch_results_by_sequence[int(record_plan["sequence"])]
+        capture_event, extraction_record, extracted_text, record_failed = _build_remote_fetch_artifacts(
+            record=record_plan["record"],
+            adapter_payload=adapter_payload,
+            run_id=run_id,
+            handoff_hash=handoff_hash,
+            created_at=created_at,
+            capture_id=record_plan["capture_id"],
+            extraction_id=record_plan["extraction_id"],
+            url=record_plan["url"],
+            method=record_plan["method"],
+            user_agent=user_agent,
+            fetch_result=fetch_result,
+        )
+        summary["urls_attempted"] += 1
+        if fetch_result["status"] == "captured":
+            summary["urls_succeeded"] += 1
+            summary["bytes_captured"] += int(capture_event["byte_count"])
+        else:
+            failed = True
+            summary["urls_failed"] += 1
+        if record_failed:
+            failed = True
+        capture_events.append(capture_event)
+        extraction_records.append(extraction_record)
+        if extracted_text is not None and extraction_record["extracted_text_path"] is not None:
+            text_artifacts[extraction_record["extracted_text_path"]] = extracted_text
     return capture_events, extraction_records, text_artifacts, {}, failed, summary
 
 
