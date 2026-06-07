@@ -239,6 +239,20 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
         conn.close()
 
 
+def test_cycle_evidence_rejects_non_finite_json_values(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-non-finite-json",
+                metadata={"bad": float("nan")},
+            )
+    finally:
+        conn.close()
+
+
 def test_cycle_evidence_finish_rejects_reverse_chronology(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
