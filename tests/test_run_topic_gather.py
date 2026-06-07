@@ -281,6 +281,7 @@ def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:
     assert payload["candidate_batch_sha256"] == candidate_hash
     assert payload["rendered_prompt_sha256"] == prompt_hash
     assert payload["rendered_prompt_sha256"] == batch_payload["prompt"]["rendered_prompt_hash"]
+    assert "rendered_prompt" not in batch_payload["prompt"]
 
 
 def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path: Path) -> None:
