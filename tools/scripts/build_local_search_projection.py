@@ -299,12 +299,7 @@ def ensure_safe_index_target(source_db_path: Path, index_path: Path) -> None:
         ) from exc
 
 
-def validate_projection_index_file(
-    index_path: Path,
-    payload: dict[str, Any],
-    *,
-    expected_records_digest: str | None = None,
-) -> None:
+def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) -> None:
     try:
         conn = connect_read_only(index_path)
         try:
@@ -342,10 +337,11 @@ def validate_projection_index_file(
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: source fingerprint mismatch"
                 )
-            if expected_records_digest is None:
-                expected_records_digest = projection_records_digest(payload["records"])
-            else:
+            expected_records_digest = payload.get("_projection_records_digest")
+            if isinstance(expected_records_digest, str):
                 expected_records_digest = str(expected_records_digest)
+            else:
+                expected_records_digest = projection_records_digest(payload["records"])
             if str(metadata["projection_records_digest"]) != expected_records_digest:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
@@ -710,6 +706,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
             temp_path = Path(handle.name)
         conn = sqlite3.connect(temp_path)
         records_digest = projection_records_digest(payload["records"])
+        payload["_projection_records_digest"] = records_digest
         conn.executescript(
             """
             PRAGMA journal_mode=DELETE;
@@ -781,16 +778,11 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 int(bool(payload["policy"]["private_paths_exposed"])),
             ),
         )
+        search_projection_rows = []
+        search_projection_fts_rows = []
         for record in payload["records"]:
             indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])
-            conn.execute(
-                """
-                INSERT INTO search_projection (
-                  projection_id, object_ref, object_type, object_pk, title, subtitle,
-                  review_state, publication_state, confidence_score, authority_level, public_blocker,
-                  lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            search_projection_rows.append(
                 (
                     record["projection_id"],
                     record["object_ref"],
@@ -808,14 +800,9 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                     json.dumps(record["visible_profiles"], sort_keys=True),
                     json.dumps(record["suppressed_fields"], sort_keys=True),
                     json.dumps(record["indexed_fields"], sort_keys=True),
-                ),
+                )
             )
-            conn.execute(
-                """
-                INSERT INTO search_projection_fts (
-                  projection_id, object_ref, object_type, title, subtitle, indexed_text
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
+            search_projection_fts_rows.append(
                 (
                     record["projection_id"],
                     record["object_ref"],
@@ -823,12 +810,32 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                     record["title"],
                     record["subtitle"] or "",
                     indexed_text,
-                ),
+                )
+            )
+        if search_projection_rows:
+            conn.executemany(
+                """
+                INSERT INTO search_projection (
+                  projection_id, object_ref, object_type, object_pk, title, subtitle,
+                  review_state, publication_state, confidence_score, authority_level, public_blocker,
+                  lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                search_projection_rows,
+            )
+        if search_projection_fts_rows:
+            conn.executemany(
+                """
+                INSERT INTO search_projection_fts (
+                  projection_id, object_ref, object_type, title, subtitle, indexed_text
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                search_projection_fts_rows,
             )
         conn.commit()
         conn.close()
         conn = None
-        validate_projection_index_file(temp_path, payload, expected_records_digest=records_digest)
+        validate_projection_index_file(temp_path, payload)
         temp_path.replace(index_path)
         temp_path = None
     finally:
