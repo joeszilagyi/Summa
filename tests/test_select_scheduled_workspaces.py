@@ -406,6 +406,54 @@ def test_selector_records_limit_deferred_workspace(tmp_path: Path) -> None:
     assert records_by_workspace["second_workspace"]["skipped_reason"] == "selection limit reached"
 
 
+def test_selector_derives_deterministic_planner_run_id_when_not_provided(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    run = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--format",
+            "json",
+        ]
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    run_second = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--format",
+            "json",
+        ]
+    )
+    assert run_second.returncode == 0, run_second.stdout + run_second.stderr
+
+    payload = json.loads(run.stdout)
+    payload_second = json.loads(run_second.stdout)
+    assert payload["planner_run_id"] == payload_second["planner_run_id"]
+    assert payload["planner_run_id"].startswith("planner-")
+    assert payload["planned_run_records"][0]["planned_run_id"] == (
+        f"{payload['planner_run_id']}:selected_workspace"
+    )
+
+
 def test_selector_rejects_invalid_run_budget() -> None:
     proc = run_selector(["--run-budget-max-attempts", "0"])
 

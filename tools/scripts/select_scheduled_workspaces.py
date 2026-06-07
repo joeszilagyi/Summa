@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import sqlite3
 import sys
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--planner-run-id",
-        default=f"planner-{uuid.uuid4()}",
+        default=None,
         help="Identifier for this selector planning pass. Defaults to a generated ID.",
     )
     parser.add_argument(
@@ -156,6 +156,47 @@ def parse_args() -> argparse.Namespace:
         help="Disable saturation evaluation even when --saturation-policy is supplied.",
     )
     return parser.parse_args()
+
+
+def _hash_file_bytes(payload: Path) -> str:
+    return hashlib.sha256(payload.read_bytes()).hexdigest()
+
+
+def _derive_planner_run_id(
+    *,
+    planned_at: str,
+    registry_path: Path,
+    workspace_ids: list[str],
+    args: argparse.Namespace,
+) -> str:
+    policy = {
+        "run_budget_max_attempts": args.run_budget_max_attempts,
+        "run_budget_max_runtime_seconds": args.run_budget_max_runtime_seconds,
+        "include_manual": args.include_manual,
+        "limit": args.limit,
+        "saturation_policy": str(args.saturation_policy) if args.saturation_policy else None,
+        "include_saturated": args.include_saturated,
+        "ignore_saturation": args.ignore_saturation,
+        "workspace_ids": workspace_ids,
+    }
+    if args.saturation_policy:
+        try:
+            policy["saturation_policy_sha256"] = _hash_file_bytes(Path(args.saturation_policy))
+        except OSError:
+            policy["saturation_policy_sha256"] = None
+
+    planner_seed = {
+        "planned_at": planned_at,
+        "registry_sha256": _hash_file_bytes(registry_path),
+        "policy": policy,
+    }
+    signature = json.dumps(
+        planner_seed,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"planner-{hashlib.sha256(signature).hexdigest()[:16]}"
 
 
 def validate_registry_or_raise(registry_path: Path) -> None:
@@ -383,7 +424,8 @@ def build_planned_run_records(
     registry_path: Path,
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
-    planned_at = args.planned_at or utc_now()
+    if args.planned_at is None:
+        raise RuntimeError("planned_at must be set before building planned-run records")
     records = []
     for entry, decision in [(entry, "selected") for entry in selected] + [
         (entry, "skipped") for entry in skipped
@@ -395,7 +437,7 @@ def build_planned_run_records(
                 decision=decision,
                 registry_path=registry_path,
                 planner_run_id=args.planner_run_id,
-                planned_at=planned_at,
+                planned_at=args.planned_at,
                 run_budget=policy["run_budget"],
                 retry_policy=policy.get("retry_policy")
                 if isinstance(policy.get("retry_policy"), dict)
@@ -527,6 +569,14 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
             label="generated planned_at",
         )
     )
+    args.planned_at = planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if args.planner_run_id is None:
+        args.planner_run_id = _derive_planner_run_id(
+            planned_at=args.planned_at,
+            registry_path=registry_path,
+            workspace_ids=args.workspace_ids,
+            args=args,
+        )
 
     try:
         resolved_workspaces = resolve_workspaces(
@@ -601,7 +651,7 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
     )
     selection_explanation = build_scheduler_selection_explanation(
         planner_run_id=args.planner_run_id,
-        planned_at=planned_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        planned_at=args.planned_at,
         registry_path=str(registry_path),
         selected_workspaces=selected,
         skipped_workspaces=skipped,
