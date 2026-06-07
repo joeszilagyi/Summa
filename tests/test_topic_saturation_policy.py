@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.common import topic_saturation
-from tools.source_db_tools import canonical_store
+from tools.source_db_tools import authority_reconciliation, canonical_store
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +107,8 @@ def add_cycle(
     cycle_depth: int,
     event_index: int,
     review_state: str | None = None,
-) -> None:
+    artifact_hash: str | None = None,
+) -> str:
     event_timestamp = f"2026-06-04T12:0{event_index}:00Z"
     note = {
         "subject_id": subject_id,
@@ -115,6 +116,8 @@ def add_cycle(
         "cycle_depth": cycle_depth,
         "prompt_bundle_id": "general.sources.v1",
     }
+    if artifact_hash is not None:
+        note["artifact_hash"] = artifact_hash
     provenance = canonical_store.record_provenance_event(
         conn,
         object_namespace="gather_candidate_batch",
@@ -139,6 +142,7 @@ def add_cycle(
             created_at=event_timestamp,
             record_last_updated=event_timestamp,
         )
+    return provenance.event_key
 
 
 def evaluate(db_path: Path, *, subject_id: str, policy_path: Path, workspace_id: str | None = None) -> dict[str, object]:
@@ -199,6 +203,114 @@ def test_active_topic_with_reviewable_yield_stays_runnable(tmp_path: Path) -> No
     assert result["state"] == "active"
     assert result["scheduler_action"] == "run"
     assert result["recent_yield_summary"]["new_reviewable_records"] == 2  # type: ignore[index]
+
+
+def test_rejected_source_access_does_not_count_as_useful_yield(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_key = add_cycle(
+                conn,
+                subject_id="rejected_source_access_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                artifact_hash="rejected-source-access",
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=event_key,
+                source_lead_id="source-lead:rejected-source-access:001",
+                original_locator="https://example.test/rejected-source-access",
+                review_state="rejected",
+                workspace_id="rejected_source_access_subject",
+                first_seen_at=FIXED_TIMESTAMP,
+                last_seen_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        event = topic_saturation.load_recent_gather_events(
+            conn,
+            subject_id="rejected_source_access_subject",
+            limit=1,
+        )[0]
+        cycle = topic_saturation.cycle_yield(
+            conn,
+            event=event,
+            policy=topic_saturation.load_policy(policy),
+        )
+    finally:
+        conn.close()
+
+    assert cycle["new_accepted_records"] == 0
+    assert cycle["new_reviewable_records"] == 0
+    assert cycle["family_counts"]["source_access"] == 0
+    assert cycle["useful_yield"] == 0.0
+    assert cycle["low_yield"] is True
+
+
+def test_authority_reconciliation_counts_toward_useful_yield(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_key = add_cycle(
+                conn,
+                subject_id="authority_reconciliation_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+            )
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="authority:Jane-Smith",
+                review_state="accepted",
+                confidence_score=1.0,
+                created_at=FIXED_TIMESTAMP,
+            )
+            entity = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=event_key,
+                entity_label="Jane Smith",
+                normalized_label="jane smith",
+                entity_type="person",
+                review_state="proposed",
+                confidence_score=0.8,
+                workspace_id="authority_reconciliation_subject",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            authority_reconciliation.propose_candidate(
+                conn,
+                detected_entity_id=entity.row_id,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_id=authority_id,
+                match_method="exact_identifier",
+                match_score=0.95,
+                evidence_context="fixture authority reconciliation",
+                review_state="proposed",
+                created_at=FIXED_TIMESTAMP,
+            )
+        event = topic_saturation.load_recent_gather_events(
+            conn,
+            subject_id="authority_reconciliation_subject",
+            limit=1,
+        )[0]
+        cycle = topic_saturation.cycle_yield(
+            conn,
+            event=event,
+            policy=topic_saturation.load_policy(policy),
+        )
+    finally:
+        conn.close()
+
+    assert cycle["family_counts"]["authority_reconciliation"] == 1
+    assert cycle["useful_yield"] > 0.0
 
 
 def test_saturated_topic_with_consecutive_low_yield_is_deprioritized(tmp_path: Path) -> None:

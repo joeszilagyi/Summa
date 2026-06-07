@@ -184,16 +184,40 @@ def _count_by_provenance_and_states(
     return int(row["count"])
 
 
-def source_access_count_for_event(conn: sqlite3.Connection, event_key: str) -> int:
+def source_access_count_for_event(
+    conn: sqlite3.Connection,
+    event_key: str,
+    *,
+    states: list[str] | None = None,
+) -> int:
     ids: set[int] = set()
+    state_clause = ""
+    source_state_clause = ""
+    state_params: tuple[Any, ...] = ()
+    if states:
+        placeholders = ", ".join("?" for _ in states)
+        state_clause = f" AND access.review_state IN ({placeholders})"
+        source_state_clause = f" AND review_state IN ({placeholders})"
+        state_params = tuple(states)
     for row in conn.execute(
-        """
+        f"""
         SELECT access.source_access_id
         FROM source_access AS access
         INNER JOIN work ON work.work_id = access.work_id
         WHERE work.provenance_event_ref=?
+        {state_clause}
         """,
-        (event_key,),
+        (event_key, *state_params),
+    ).fetchall():
+        ids.add(int(row["source_access_id"]))
+    for row in conn.execute(
+        f"""
+        SELECT source_access_id
+        FROM source_access
+        WHERE provenance_event_ref=?
+        {source_state_clause}
+        """,
+        (event_key, *state_params),
     ).fetchall():
         ids.add(int(row["source_access_id"]))
     note_row = conn.execute(
@@ -203,11 +227,42 @@ def source_access_count_for_event(conn: sqlite3.Connection, event_key: str) -> i
     artifact_hash = parse_note_text(note_row["note_text"]).get("artifact_hash") if note_row is not None else None
     if isinstance(artifact_hash, str) and artifact_hash:
         for row in conn.execute(
-            "SELECT source_access_id FROM source_access WHERE source_lead_id LIKE ?",
-            (f"source-lead:{artifact_hash}:%",),
+            f"""
+            SELECT source_access_id
+            FROM source_access
+            WHERE source_lead_id LIKE ?
+            {source_state_clause}
+            """,
+            (f"source-lead:{artifact_hash}:%", *state_params),
         ).fetchall():
             ids.add(int(row["source_access_id"]))
     return len(ids)
+
+
+def authority_reconciliation_count_for_event(
+    conn: sqlite3.Connection,
+    event_key: str,
+    *,
+    states: list[str] | None = None,
+) -> int:
+    state_clause = ""
+    state_params: tuple[Any, ...] = ()
+    if states:
+        placeholders = ", ".join("?" for _ in states)
+        state_clause = f" AND reconciliation.review_state IN ({placeholders})"
+        state_params = tuple(states)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM authority_reconciliation AS reconciliation
+        INNER JOIN extraction_detected_entity AS entity
+          ON entity.detected_entity_id = reconciliation.detected_entity_id
+        WHERE entity.provenance_event_ref=?
+        {state_clause}
+        """,
+        (event_key, *state_params),
+    ).fetchone()
+    return int(row["count"])
 
 
 def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Policy) -> dict[str, Any]:
@@ -215,6 +270,7 @@ def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Poli
     raw = policy.raw
     accepted_states = list(raw["accepted_review_states"])
     reviewable_states = list(raw["reviewable_review_states"])
+    useful_states = list(dict.fromkeys(accepted_states + reviewable_states))
     family_counts = {table: 0 for table in USEFUL_FAMILY_TABLES}
     family_counts.update(
         {
@@ -224,19 +280,21 @@ def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Poli
             "source_relationship": _count_by_provenance(conn, "source_relationship", event_key),
             "capture_event": _count_by_provenance(conn, "capture_event", event_key),
             "extraction_record": _count_by_provenance(conn, "extraction_record", event_key),
-            "source_access": source_access_count_for_event(conn, event_key),
-            "authority_reconciliation": 0,
+            "source_access": source_access_count_for_event(conn, event_key, states=useful_states),
+            "authority_reconciliation": authority_reconciliation_count_for_event(
+                conn,
+                event_key,
+                states=useful_states,
+            ),
         }
     )
     accepted_records = sum(
         _count_by_provenance_and_states(conn, table, event_key, accepted_states)
         for table in REVIEW_STATE_TABLES
-        if table != "source_access"
     )
     reviewable_records = sum(
         _count_by_provenance_and_states(conn, table, event_key, reviewable_states)
         for table in REVIEW_STATE_TABLES
-        if table != "source_access"
     )
     weights = raw["family_weights"]
     useful_yield = (
