@@ -299,7 +299,12 @@ def ensure_safe_index_target(source_db_path: Path, index_path: Path) -> None:
         ) from exc
 
 
-def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) -> None:
+def validate_projection_index_file(
+    index_path: Path,
+    payload: dict[str, Any],
+    *,
+    expected_records_digest: str | None = None,
+) -> None:
     try:
         conn = connect_read_only(index_path)
         try:
@@ -337,7 +342,10 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: source fingerprint mismatch"
                 )
-            expected_records_digest = projection_records_digest(payload["records"])
+            if expected_records_digest is None:
+                expected_records_digest = projection_records_digest(payload["records"])
+            else:
+                expected_records_digest = str(expected_records_digest)
             if str(metadata["projection_records_digest"]) != expected_records_digest:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
@@ -701,6 +709,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
         ) as handle:
             temp_path = Path(handle.name)
         conn = sqlite3.connect(temp_path)
+        records_digest = projection_records_digest(payload["records"])
         conn.executescript(
             """
             PRAGMA journal_mode=DELETE;
@@ -766,7 +775,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                 None if payload["source"]["schema_version"] is None else str(payload["source"]["schema_version"]),
                 payload["profile"],
                 payload["generated_at"],
-                projection_records_digest(payload["records"]),
+                records_digest,
                 int(bool(payload["policy"]["raw_payload_indexed"])),
                 int(bool(payload["policy"]["full_text_indexed"])),
                 int(bool(payload["policy"]["private_paths_exposed"])),
@@ -819,7 +828,7 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
         conn.commit()
         conn.close()
         conn = None
-        validate_projection_index_file(temp_path, payload)
+        validate_projection_index_file(temp_path, payload, expected_records_digest=records_digest)
         temp_path.replace(index_path)
         temp_path = None
     finally:
