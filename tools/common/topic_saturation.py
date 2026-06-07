@@ -6,6 +6,7 @@ delete records, or apply review decisions.
 
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -127,33 +128,64 @@ def parse_note_text(note_text: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limit: int) -> list[dict[str, Any]]:
+def load_recent_gather_events_for_subjects(
+    conn: sqlite3.Connection,
+    *,
+    subject_ids: list[str],
+    limit: int,
+) -> dict[str, list[dict[str, Any]]]:
+    unique_subject_ids = list(dict.fromkeys(subject_ids))
+    if not unique_subject_ids:
+        return {}
     rows = conn.execute(
-        """
+        f"""
+        WITH requested_subjects(subject_id) AS (
+          VALUES {", ".join("(?)" for _ in unique_subject_ids)}
+        ),
+        ranked_events AS (
+          SELECT
+            requested_subjects.subject_id AS subject_id,
+            provenance_event.provenance_event_id AS provenance_event_id,
+            provenance_event.provenance_event_key_v1 AS provenance_event_key_v1,
+            provenance_event.run_id AS run_id,
+            provenance_event.event_timestamp AS event_timestamp,
+            CASE WHEN json_valid(provenance_event.note_text) THEN json_extract(provenance_event.note_text, '$.facet') END AS facet,
+            CASE WHEN json_valid(provenance_event.note_text) THEN json_extract(provenance_event.note_text, '$.cycle_depth') END AS cycle_depth,
+            CASE WHEN json_valid(provenance_event.note_text) THEN json_extract(provenance_event.note_text, '$.artifact_hash') END AS artifact_hash,
+            row_number() OVER (
+              PARTITION BY requested_subjects.subject_id
+              ORDER BY provenance_event.event_timestamp DESC, provenance_event.provenance_event_id DESC
+            ) AS rn
+          FROM provenance_event
+          INNER JOIN requested_subjects
+            ON requested_subjects.subject_id = provenance_event.source_object_id
+          WHERE provenance_event.event_type='gather_candidate_batch_ingest'
+            AND provenance_event.source_object_namespace=?
+        )
         SELECT
+          subject_id,
           provenance_event_id,
           provenance_event_key_v1,
           run_id,
           event_timestamp,
-          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.facet') END AS facet,
-          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.cycle_depth') END AS cycle_depth,
-          CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.artifact_hash') END AS artifact_hash
-        FROM provenance_event
-        WHERE event_type='gather_candidate_batch_ingest'
-          AND source_object_namespace=?
-          AND source_object_id=?
-        ORDER BY event_timestamp DESC, provenance_event_id DESC
-        LIMIT ?
+          facet,
+          cycle_depth,
+          artifact_hash
+        FROM ranked_events
+        WHERE rn <= ?
+        ORDER BY subject_id, event_timestamp DESC, provenance_event_id DESC
         """,
-        (GATHER_EVENT_SOURCE_NAMESPACE, subject_id, limit),
+        tuple(unique_subject_ids) + (GATHER_EVENT_SOURCE_NAMESPACE, limit),
     ).fetchall()
-    events: list[dict[str, Any]] = []
+    events_by_subject: dict[str, list[dict[str, Any]]] = {subject_id: [] for subject_id in unique_subject_ids}
     for row in rows:
+        subject_id = str(row["subject_id"])
         facet = row["facet"]
         cycle_depth = row["cycle_depth"]
         artifact_hash = row["artifact_hash"]
-        events.append(
+        events_by_subject.setdefault(subject_id, []).append(
             {
+                "subject_id": subject_id,
                 "provenance_event_id": int(row["provenance_event_id"]),
                 "event_key": str(row["provenance_event_key_v1"]),
                 "run_id": None if row["run_id"] is None else str(row["run_id"]),
@@ -163,7 +195,16 @@ def load_recent_gather_events(conn: sqlite3.Connection, *, subject_id: str, limi
                 "_artifact_hash": artifact_hash if isinstance(artifact_hash, str) else None,
             }
         )
-    return events
+    return events_by_subject
+
+
+def load_recent_gather_events(
+    conn: sqlite3.Connection, *, subject_id: str, limit: int
+) -> list[dict[str, Any]]:
+    return load_recent_gather_events_for_subjects(conn, subject_ids=[subject_id], limit=limit).get(
+        subject_id,
+        [],
+    )
 
 
 def _count_by_provenance(conn: sqlite3.Connection, table: str, event_key: str) -> int:
@@ -402,6 +443,90 @@ def _public_cycle_event(event: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in event.items() if key != "_artifact_hash"}
 
 
+def _disabled_saturation_result(
+    *,
+    workspace_id: str,
+    subject_id: str,
+    policy: Policy,
+    evaluated_at: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "workspace_id": workspace_id,
+        "subject_id": subject_id,
+        "policy_id": policy.policy_id,
+        "evaluated_at": evaluated_at,
+        "enabled": False,
+        "state": "active",
+        "scheduler_action": "run",
+        "reason_codes": ["policy_disabled"],
+        "lookback_cycles": policy.lookback_cycles,
+        "cycles_considered": [],
+        "recent_yield_summary": empty_summary(),
+        "next_eligible_cycle": None,
+        "warnings": [],
+    }
+
+
+def _evaluate_saturation_result(
+    conn: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    subject_id: str,
+    policy: Policy,
+    evaluated_at: str,
+    cycles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summary = summarize_cycles(cycles)
+    warnings: list[str] = []
+    reason_codes: list[str] = []
+    if len(cycles) < policy.lookback_cycles:
+        state = "active_bootstrap"
+        scheduler_action = "run"
+        reason_codes.append("insufficient_history")
+    else:
+        low_streak = consecutive_low_yield(cycles)
+        backlog = scoped_backlog_count(
+            conn,
+            subject_id=subject_id,
+            states=list(policy.raw["backlog_review_states"]),
+        )
+        summary["review_backlog_count"] = backlog
+        if backlog >= int(policy.raw["review_backlog_pressure_threshold"]):
+            reason_codes.append("review_backlog_pressure")
+        if low_streak >= int(policy.raw["max_consecutive_low_yield_cycles"]):
+            action = str(policy.raw["scheduler_action_on_saturated"])
+            state = "cooldown" if action == "cooldown" else "saturated"
+            scheduler_action = action
+            reason_codes.append("consecutive_low_yield")
+        else:
+            state = "active"
+            scheduler_action = "run"
+            reason_codes.append("recent_useful_yield")
+    if not cycles:
+        summary["review_backlog_count"] = scoped_backlog_count(
+            conn,
+            subject_id=subject_id,
+            states=list(policy.raw["backlog_review_states"]),
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "workspace_id": workspace_id,
+        "subject_id": subject_id,
+        "policy_id": policy.policy_id,
+        "evaluated_at": evaluated_at,
+        "enabled": True,
+        "state": state,
+        "scheduler_action": scheduler_action,
+        "reason_codes": reason_codes,
+        "lookback_cycles": policy.lookback_cycles,
+        "cycles_considered": cycles,
+        "recent_yield_summary": summary,
+        "next_eligible_cycle": next_eligible_cycle(cycles, policy=policy, state=state),
+        "warnings": warnings,
+    }
+
+
 def cycle_yields(
     conn: sqlite3.Connection,
     *,
@@ -501,6 +626,64 @@ def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Poli
     }
 
 
+def evaluate_saturations(
+    conn: sqlite3.Connection,
+    *,
+    workspace_subject_pairs: list[tuple[str, str]],
+    policy: Policy,
+    evaluated_at: str,
+) -> dict[str, dict[str, Any]]:
+    if not workspace_subject_pairs:
+        return {}
+    if not policy.enabled:
+        return {
+            workspace_id: _disabled_saturation_result(
+                workspace_id=workspace_id,
+                subject_id=subject_id,
+                policy=policy,
+                evaluated_at=evaluated_at,
+            )
+            for workspace_id, subject_id in workspace_subject_pairs
+        }
+
+    unique_subject_ids = list(dict.fromkeys(subject_id for _, subject_id in workspace_subject_pairs))
+    events_by_subject = load_recent_gather_events_for_subjects(
+        conn,
+        subject_ids=unique_subject_ids,
+        limit=policy.lookback_cycles,
+    )
+    ordered_events = [
+        event
+        for subject_id in unique_subject_ids
+        for event in events_by_subject.get(subject_id, [])
+    ]
+    cycles = cycle_yields(conn, events=ordered_events, policy=policy)
+    cycles_by_subject: dict[str, list[dict[str, Any]]] = {subject_id: [] for subject_id in unique_subject_ids}
+    for cycle in cycles:
+        subject_id = cycle.get("subject_id")
+        if isinstance(subject_id, str):
+            cycles_by_subject.setdefault(subject_id, []).append(cycle)
+
+    results_by_subject = {
+        subject_id: _evaluate_saturation_result(
+            conn,
+            workspace_id=subject_id,
+            subject_id=subject_id,
+            policy=policy,
+            evaluated_at=evaluated_at,
+            cycles=cycles_by_subject.get(subject_id, []),
+        )
+        for subject_id in unique_subject_ids
+    }
+    results: dict[str, dict[str, Any]] = {}
+    for workspace_id, subject_id in workspace_subject_pairs:
+        subject_result = results_by_subject[subject_id]
+        result = copy.deepcopy(subject_result)
+        result["workspace_id"] = workspace_id
+        results[workspace_id] = result
+    return results
+
+
 def is_low_yield(
     *,
     mode: str,
@@ -564,72 +747,22 @@ def evaluate_saturation(
     evaluated_at: str,
 ) -> dict[str, Any]:
     if not policy.enabled:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "workspace_id": workspace_id,
-            "subject_id": subject_id,
-            "policy_id": policy.policy_id,
-            "evaluated_at": evaluated_at,
-            "enabled": False,
-            "state": "active",
-            "scheduler_action": "run",
-            "reason_codes": ["policy_disabled"],
-            "lookback_cycles": policy.lookback_cycles,
-            "cycles_considered": [],
-            "recent_yield_summary": empty_summary(),
-            "next_eligible_cycle": None,
-            "warnings": [],
-        }
+        return _disabled_saturation_result(
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+            policy=policy,
+            evaluated_at=evaluated_at,
+        )
     events = load_recent_gather_events(conn, subject_id=subject_id, limit=policy.lookback_cycles)
     cycles = cycle_yields(conn, events=events, policy=policy)
-    summary = summarize_cycles(cycles)
-    warnings: list[str] = []
-    reason_codes: list[str] = []
-    if len(cycles) < policy.lookback_cycles:
-        state = "active_bootstrap"
-        scheduler_action = "run"
-        reason_codes.append("insufficient_history")
-    else:
-        low_streak = consecutive_low_yield(cycles)
-        backlog = scoped_backlog_count(
-            conn,
-            subject_id=subject_id,
-            states=list(policy.raw["backlog_review_states"]),
-        )
-        summary["review_backlog_count"] = backlog
-        if backlog >= int(policy.raw["review_backlog_pressure_threshold"]):
-            reason_codes.append("review_backlog_pressure")
-        if low_streak >= int(policy.raw["max_consecutive_low_yield_cycles"]):
-            action = str(policy.raw["scheduler_action_on_saturated"])
-            state = "cooldown" if action == "cooldown" else "saturated"
-            scheduler_action = action
-            reason_codes.append("consecutive_low_yield")
-        else:
-            state = "active"
-            scheduler_action = "run"
-            reason_codes.append("recent_useful_yield")
-    if not cycles:
-        summary["review_backlog_count"] = scoped_backlog_count(
-            conn,
-            subject_id=subject_id,
-            states=list(policy.raw["backlog_review_states"]),
-        )
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "workspace_id": workspace_id,
-        "subject_id": subject_id,
-        "policy_id": policy.policy_id,
-        "evaluated_at": evaluated_at,
-        "enabled": True,
-        "state": state,
-        "scheduler_action": scheduler_action,
-        "reason_codes": reason_codes,
-        "lookback_cycles": policy.lookback_cycles,
-        "cycles_considered": cycles,
-        "recent_yield_summary": summary,
-        "next_eligible_cycle": next_eligible_cycle(cycles, policy=policy, state=state),
-        "warnings": warnings,
-    }
+    return _evaluate_saturation_result(
+        conn,
+        workspace_id=workspace_id,
+        subject_id=subject_id,
+        policy=policy,
+        evaluated_at=evaluated_at,
+        cycles=cycles,
+    )
 
 
 def empty_summary() -> dict[str, Any]:

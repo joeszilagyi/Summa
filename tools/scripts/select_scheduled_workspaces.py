@@ -533,6 +533,60 @@ def workspace_allows_unresolved_subject_manifest(workspace: dict[str, Any]) -> b
     return extensions.get("allow_unresolved_subject_manifest") is True
 
 
+def resolve_saturation_subject_id(workspace: dict[str, Any]) -> str | None:
+    subject_id = workspace.get("resolved_default_subject_id")
+    if isinstance(subject_id, str) and subject_id:
+        return subject_id
+    return load_subject_id_from_manifest(
+        workspace.get("resolved_default_subject_manifest") or workspace.get("default_subject_manifest"),
+        allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
+    )
+
+
+def attach_saturation_batch(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+    *,
+    policy: topic_saturation.Policy | None,
+    conn: sqlite3.Connection | None,
+    planned_at: str,
+) -> None:
+    if policy is None or conn is None:
+        return
+
+    workspace_subject_pairs: list[tuple[str, str]] = []
+    subject_id_by_workspace_id: dict[str, str | None] = {}
+    for workspace, entry in entries:
+        workspace_id = str(workspace["workspace_id"])
+        subject_id = resolve_saturation_subject_id(workspace)
+        subject_id_by_workspace_id[workspace_id] = subject_id
+        if subject_id is None:
+            entry["saturation"] = {
+                "schema_version": topic_saturation.SCHEMA_VERSION,
+                "workspace_id": entry.get("workspace_id"),
+                "subject_id": None,
+                "policy_id": policy.policy_id,
+                "state": "not_evaluated",
+                "scheduler_action": "run",
+                "reason_codes": ["subject_unresolved"],
+                "recent_yield_summary": topic_saturation.empty_summary(),
+            }
+            continue
+        workspace_subject_pairs.append((workspace_id, subject_id))
+
+    saturation_by_workspace_id = topic_saturation.evaluate_saturations(
+        conn,
+        workspace_subject_pairs=workspace_subject_pairs,
+        policy=policy,
+        evaluated_at=planned_at,
+    )
+    for workspace, entry in entries:
+        workspace_id = str(workspace["workspace_id"])
+        subject_id = subject_id_by_workspace_id.get(workspace_id)
+        if subject_id is None:
+            continue
+        entry["saturation"] = copy.deepcopy(saturation_by_workspace_id[workspace_id])
+
+
 def attach_saturation(
     entry: dict[str, Any],
     *,
@@ -541,32 +595,11 @@ def attach_saturation(
     conn: sqlite3.Connection | None,
     planned_at: str,
 ) -> None:
-    if policy is None or conn is None:
-        return
-    subject_id = workspace.get("resolved_default_subject_id")
-    if not isinstance(subject_id, str) or not subject_id:
-        subject_id = load_subject_id_from_manifest(
-            entry.get("resolved_default_subject_manifest"),
-            allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
-        )
-    if subject_id is None:
-        entry["saturation"] = {
-            "schema_version": topic_saturation.SCHEMA_VERSION,
-            "workspace_id": entry.get("workspace_id"),
-            "subject_id": None,
-            "policy_id": policy.policy_id,
-            "state": "not_evaluated",
-            "scheduler_action": "run",
-            "reason_codes": ["subject_unresolved"],
-            "recent_yield_summary": topic_saturation.empty_summary(),
-        }
-        return
-    entry["saturation"] = topic_saturation.evaluate_saturation(
-        conn,
-        workspace_id=str(workspace["workspace_id"]),
-        subject_id=subject_id,
+    attach_saturation_batch(
+        [(workspace, entry)],
         policy=policy,
-        evaluated_at=planned_at,
+        conn=conn,
+        planned_at=planned_at,
     )
 
 
@@ -672,21 +705,23 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
 
     saturation_policy, saturation_conn = saturation_context(args)
     try:
-        eligible: list[dict[str, Any]] = []
-        deprioritized: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
+        prepared_entries: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for workspace in resolved_workspaces:
             try:
                 entry = workspace_output_entry(workspace)
             except (KeyError, TypeError) as exc:
                 raise SelectionError(f"workspace record is invalid: {exc}") from exc
-            attach_saturation(
-                entry,
-                workspace=workspace,
-                policy=saturation_policy,
-                conn=saturation_conn,
-                planned_at=planned_at,
-            )
+            prepared_entries.append((workspace, entry))
+        attach_saturation_batch(
+            prepared_entries,
+            policy=saturation_policy,
+            conn=saturation_conn,
+            planned_at=planned_at,
+        )
+        eligible: list[dict[str, Any]] = []
+        deprioritized: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for workspace, entry in prepared_entries:
             reasons = scheduler_ineligibility_reasons(workspace, include_manual=args.include_manual)
             reasons.extend(
                 scheduler_policy_ineligibility_reasons(

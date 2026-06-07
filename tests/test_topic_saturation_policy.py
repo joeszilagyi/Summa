@@ -206,6 +206,48 @@ def test_active_topic_with_reviewable_yield_stays_runnable(tmp_path: Path) -> No
     assert result["recent_yield_summary"]["new_reviewable_records"] == 2  # type: ignore[index]
 
 
+def test_evaluate_saturations_batches_multiple_subjects_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            add_cycle(conn, subject_id="subject.one", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
+            add_cycle(conn, subject_id="subject.two", run_id="run-2", cycle_depth=1, event_index=2, review_state="needs_review")
+    finally:
+        conn.close()
+
+    cycle_call_count = {"count": 0}
+    original_cycle_yields = topic_saturation.cycle_yields
+
+    def counting_cycle_yields(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        cycle_call_count["count"] += 1
+        return original_cycle_yields(*args, **kwargs)
+
+    monkeypatch.setattr(topic_saturation, "cycle_yields", counting_cycle_yields)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        results = topic_saturation.evaluate_saturations(
+            conn,
+            workspace_subject_pairs=[
+                ("workspace.one", "subject.one"),
+                ("workspace.two", "subject.two"),
+            ],
+            policy=topic_saturation.load_policy(policy),
+            evaluated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        conn.close()
+
+    assert cycle_call_count["count"] == 1
+    assert set(results) == {"workspace.one", "workspace.two"}
+    assert results["workspace.one"]["subject_id"] == "subject.one"
+    assert results["workspace.two"]["subject_id"] == "subject.two"
+
+
 def test_rejected_source_access_does_not_count_as_useful_yield(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     policy = write_policy(tmp_path, lookback_cycles=1)

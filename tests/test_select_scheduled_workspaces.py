@@ -391,6 +391,75 @@ def test_selector_uses_cached_subject_id_for_saturation_without_reloading_manife
     assert payload["selected_workspaces"][0]["workspace_id"] == "selected_workspace"
 
 
+def test_selector_batches_saturation_evaluation_across_workspaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    selector.canonical_store.init_canonical_store(
+        db_path,
+        applied_at="2026-01-01T00:00:00Z",
+        applied_by="pytest.selector",
+    )
+
+    selected_root = tmp_path / "workspaces" / "selected"
+    other_root = tmp_path / "workspaces" / "other"
+    selected_root.mkdir(parents=True)
+    other_root.mkdir(parents=True)
+    selected_manifest = write_manifest(selected_root, subject_id="subject.selected")
+    other_manifest = write_manifest(other_root, subject_id="subject.other")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=selected_root,
+                manifest_path=selected_manifest,
+            ),
+            workspace_record(
+                workspace_id="other_workspace",
+                workspace_root=other_root,
+                manifest_path=other_manifest,
+            ),
+        ],
+    )
+
+    call_count = {"count": 0}
+    original_evaluate_saturations = selector.topic_saturation.evaluate_saturations
+
+    def counting_evaluate_saturations(*args: object, **kwargs: object) -> dict[str, object]:
+        call_count["count"] += 1
+        return original_evaluate_saturations(*args, **kwargs)
+
+    monkeypatch.setattr(selector.topic_saturation, "evaluate_saturations", counting_evaluate_saturations)
+
+    payload = selector.build_selection_payload(
+        selector.argparse.Namespace(
+            registry=str(registry_path),
+            workspace_ids=[],
+            include_manual=False,
+            limit=None,
+            format="json",
+            planned_runs_jsonl=None,
+            planner_run_id="planner-fixture",
+            planned_at="2026-01-01T00:00:00Z",
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+            db=str(db_path),
+            saturation_policy=str(REPO_ROOT / "config" / "topic_saturation_policy.v1.json"),
+            include_saturated=False,
+            ignore_saturation=False,
+        )
+    )
+
+    assert call_count["count"] == 1
+    assert payload["selected_count"] == 2
+    assert {workspace["workspace_id"] for workspace in payload["selected_workspaces"]} == {
+        "selected_workspace",
+        "other_workspace",
+    }
+
+
 @pytest.mark.parametrize(
     ("initial_text", "expected_first_line"),
     [
