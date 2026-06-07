@@ -194,6 +194,7 @@ def load_matching_rows(
     offset: int,
 ) -> tuple[list[sqlite3.Row], int]:
     scope_clause, scope_params = build_scope_clause(scope)
+    fts_scope_clause = scope_clause.replace("sp.", "")
     score_expression = sql_score_expression().replace(
         "bm25(search_projection_fts)",
         "matches.score",
@@ -204,7 +205,7 @@ def load_matching_rows(
           sp.*,
           matches.score,
           matches.match_snippet,
-          (
+            (
             SELECT COUNT(*)
             FROM search_projection_fts
             JOIN search_projection AS sf_match USING (projection_id)
@@ -216,7 +217,7 @@ def load_matching_rows(
             bm25(search_projection_fts) AS score,
             snippet(search_projection_fts, 4, '', '', '...', 120) AS match_snippet
           FROM search_projection_fts
-          WHERE search_projection_fts MATCH ?{scope_clause}
+          WHERE search_projection_fts MATCH ?{fts_scope_clause}
         ) AS matches
         JOIN search_projection AS sp USING (projection_id)
         ORDER BY {score_expression} ASC, sp.object_type ASC, sp.object_pk ASC
