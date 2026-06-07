@@ -891,6 +891,57 @@ def test_scheduled_runner_partial_child_output_exit_code(tmp_path: Path) -> None
     assert result["recoverability"] == "retryable"
 
 
+def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "partial_subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="partial_subject", workspace=workspace, manifest=manifest)],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = command[command.index("--run-id") + 1]
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": "partial",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command, 5, "", "x" * 5000 + " end-marker"
+        )
+
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_PARTIAL_OUTPUT
+    result = payload["workspace_results"][0]
+    assert result["failure_reason_code"] == "topic_cycle_partial_output"
+    assert "truncated" in result["failure_reason"]
+    assert len(result["failure_reason"]) < 2100
+    assert result["failure_reason"].endswith("chars omitted)")
+
+
 def test_scheduled_runner_uses_child_stdout_manifest_when_available(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "stdout_subject")
     selection = write_selection(
