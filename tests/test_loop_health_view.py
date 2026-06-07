@@ -156,11 +156,24 @@ def add_cycle(
         )
 
 
-def add_review_decision(conn, *, suffix: str, timestamp: str) -> None:
+def add_review_decision(conn, *, suffix: str, timestamp: str, workspace_id: str = "fixture_subject") -> None:
+    target_provenance = fixture_event(conn, suffix=f"review-target-{suffix}", timestamp=timestamp)
+    claim = canonical_store.record_source_claim(
+        conn,
+        provenance_event_ref=target_provenance.event_key,
+        source_claim_key_v1=f"claim:{workspace_id}:{suffix}:decision",
+        about_object_ref=f"subject:{workspace_id}",
+        claim_text=f"Decision target {suffix}.",
+        claim_type="fixture_claim",
+        review_state="rejected",
+        workspace_id=workspace_id,
+        created_at=timestamp,
+        record_last_updated=timestamp,
+    )
     canonical_store.record_provenance_event(
         conn,
         object_namespace="source_claim",
-        object_id=suffix,
+        object_id=str(claim.row_id),
         event_type="review_decision_reject_claim",
         actor_type="human",
         actor_id="pytest",
@@ -172,7 +185,7 @@ def add_review_decision(conn, *, suffix: str, timestamp: str) -> None:
     canonical_store.record_review_state_history(
         conn,
         target_namespace="source_claim",
-        target_id=suffix,
+        target_id=claim.row_id,
         previous_state="needs_review",
         new_state="rejected",
         changed_by="pytest",
@@ -335,6 +348,46 @@ def test_review_lagging_status_when_resolution_falls_behind(tmp_path: Path) -> N
     assert summary["health_status"] == "review_lagging"
     assert summary["ingestion_resolution"]["resolution_coverage"] == 0.1667  # type: ignore[index]
     assert any("review decisions" in warning for warning in summary["warnings"])  # type: ignore[index]
+
+
+def test_workspace_scoped_summary_ignores_other_workspace_activity(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            add_cycle(conn, run_id="run-1", cycle_depth=1, timestamp="2026-06-04T09:00:00Z", reviewable_claims=1)
+            add_cycle(conn, run_id="run-2", cycle_depth=2, timestamp="2026-06-04T10:00:00Z", reviewable_claims=2)
+            add_review_decision(conn, suffix="local", timestamp="2026-06-04T10:30:00Z")
+
+            add_cycle(
+                conn,
+                subject_id="other_workspace",
+                run_id="foreign-run",
+                cycle_depth=1,
+                timestamp="2026-06-04T11:00:00Z",
+                reviewable_claims=9,
+                contradictions=2,
+            )
+            add_review_decision(
+                conn,
+                suffix="foreign",
+                timestamp="2026-06-04T11:30:00Z",
+                workspace_id="other_workspace",
+            )
+    finally:
+        conn.close()
+
+    scoped = canonical_store.connect_existing_read_only(db_path)
+    try:
+        summary = loop_health.build_loop_health_summary(scoped, workspace_id="fixture_subject", now=FIXED_NOW)
+    finally:
+        scoped.close()
+
+    assert summary["cycle_ids_considered"] == ["run-1", "run-2"]  # type: ignore[index]
+    assert summary["aggregate_metrics"]["new_reviewable_records"] == 3  # type: ignore[index]
+    assert summary["review_backlog"]["pending_review_count"] == 3  # type: ignore[index]
+    assert summary["contradictions"]["new_contradictions"] == 0  # type: ignore[index]
+    assert summary["ingestion_resolution"]["review_decision_applied_count"] == 1  # type: ignore[index]
 
 
 def test_resolution_metrics_are_unavailable_without_f29_apply_records(tmp_path: Path) -> None:
