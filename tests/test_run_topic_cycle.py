@@ -943,6 +943,23 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
             "capture_events": "capture-hash",
             "extraction_records": "extraction-hash",
         },
+        manifest={
+            "schema_version": "source-acquisition-run-manifest.v1",
+            "run_id": "cycle-832",
+            "created_at": "2026-06-03T12:34:56Z",
+            "status": "completed",
+            "artifacts": {
+                "execution_record": "execution-record.json",
+                "capture_events": "capture-events.jsonl",
+                "extraction_records": "extraction-records.jsonl",
+                "manifest": "manifest.json",
+                "denial_record": None,
+                "network_safety_report": None,
+            },
+            "canonical_persistence_attempted": False,
+        },
+        denial_record=None,
+        network_safety_report=None,
     )
     load_calls = {"count": 0}
     validate_calls = {"count": 0}

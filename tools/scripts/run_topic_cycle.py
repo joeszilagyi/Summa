@@ -804,6 +804,13 @@ def gather_stage(
     stage = StageRecord(name="run_gather")
     stage.started_at = utc_now()
     gather_run_id = f"{manifest['run_id']}.gather"
+    gather_facet = args.facet
+    if feedback_plan is not None:
+        next_action = manifest.get("next_action")
+        if isinstance(next_action, dict):
+            selected_facet = next_action.get("selected_facet")
+            if isinstance(selected_facet, str) and selected_facet.strip():
+                gather_facet = selected_facet.strip()
     command = [
         sys.executable,
         str(REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"),
@@ -812,7 +819,7 @@ def gather_stage(
         "--workspace",
         str(workspace),
         "--facet",
-        args.facet,
+        gather_facet,
         "--phase",
         args.phase,
         "--mode",
