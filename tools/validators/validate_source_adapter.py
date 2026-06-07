@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ipaddress
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,10 @@ from common import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+PROJECT_ROOT = REPO_ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from tools.common.network_safety_gate import normalized_allowlist_url  # noqa: E402
 
 from tools.common.source_adapter_contract import (  # noqa: E402
     ALLOWED_PRESERVE_FIELDS,
@@ -45,6 +50,7 @@ from tools.source_db_tools import rights_retention  # noqa: E402
 VALIDATOR_NAME = "source_adapter"
 CONTRACT_VERSION = "1"
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+HOSTNAME_PATTERN = re.compile(r"^(?:(?=[a-z0-9])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.)*(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.?$")
 
 REQUIRED_KEYS = {
     "schema_version",
@@ -229,8 +235,39 @@ def validate_boolean(
 
 
 def is_http_url(value: str) -> bool:
+    return normalize_http_url(value) is not None
+
+
+def _is_valid_http_host(hostname: str) -> bool:
+    if hostname.endswith("."):
+        hostname = hostname[:-1]
+    if any(ch.isspace() for ch in hostname):
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 0x7F for ch in hostname):
+        return False
+    if "[" in hostname or "]" in hostname:
+        return False
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        return bool(HOSTNAME_PATTERN.fullmatch(hostname))
+
+
+def normalize_http_url(value: str) -> str | None:
+    if any(ch.isspace() for ch in value):
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 0x7F for ch in value):
+        return None
     parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    host = parsed.hostname
+    if not isinstance(host, str) or not _is_valid_http_host(host):
+        return None
+    if parsed.username or parsed.password:
+        return None
+    return normalized_allowlist_url(value)
 
 
 def validate_url_field(

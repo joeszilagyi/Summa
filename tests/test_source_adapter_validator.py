@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -314,6 +315,84 @@ def test_source_adapter_validator_rejects_remote_manifest_globs(tmp_path: Path) 
 
     assert proc.returncode == EXIT_VALIDATION_FAILED, proc.stdout + proc.stderr
     assert "LOCATOR_FIELD_NOT_ALLOWED" in proc.stdout
+
+
+def test_source_adapter_validator_rejects_invalid_remote_manifest_url_hostnames(tmp_path: Path) -> None:
+    target = tmp_path / "source_adapter.json"
+    target.write_text(
+        json.dumps(
+            {
+                "schema_version": "source-adapter.v1",
+                "adapter_id": "invalid_manifest_url_hostnames",
+                "display_name": "Invalid manifest URL fixture",
+                "workspace_id": "alpha_subject",
+                "description": "Validate hostname and URL strictness for remote URL manifest.",
+                "input_family": "remote_url_manifest",
+                "locator": {
+                    "manifest_url": "https://exa mple.com/manifest.jsonl",
+                },
+                "content_profile": {
+                    "content_kinds": ["url_observation"],
+                    "hazard_flags": [],
+                },
+                "provenance": {
+                    "discovery_provenance": "validator test",
+                    "acquisition_method": "manual_list",
+                    "source_description": "Invalid hostname in manifest URL.",
+                },
+                "rights_and_storage": {
+                    "payload_storage_policy_class": "external_later",
+                    "metadata_storage_policy_class": "tracked_derived",
+                    "rights_posture": "quote_limited",
+                },
+                "automation_posture": "operator_review_required",
+                "normalized_handoff": {
+                    "record_family": "url_observation",
+                    "batch_unit": "per_reference",
+                    "preserve_fields": [
+                        "original_locator",
+                        "discovery_provenance",
+                        "rights_posture",
+                    ],
+                    "source_specific_fields": [
+                        "manifest_url",
+                    ],
+                },
+                "transform_lineage": [
+                    {
+                        "step_id": "manifest",
+                        "step_kind": "read_manifest_snapshot",
+                        "description": "Read remote manifest.",
+                        "deterministic": True,
+                        "review_required": False,
+                    },
+                    {
+                        "step_id": "handoff",
+                        "step_kind": "emit_handoff",
+                        "description": "Emit URL observations.",
+                        "deterministic": True,
+                        "review_required": True,
+                    },
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(target)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+
+    assert proc.returncode == EXIT_VALIDATION_FAILED, proc.stdout + proc.stderr
+    assert "INVALID_REMOTE_URL" in proc.stdout
 
 
 def test_source_adapter_validator_accepts_structured_locator_hints(tmp_path: Path) -> None:

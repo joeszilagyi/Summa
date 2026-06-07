@@ -9,7 +9,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,8 +23,6 @@ from tools.common.source_adapter_handoff import (  # noqa: E402
     build_remote_url_manifest_handoff_record,
     validate_source_adapter_handoff_record,
 )
-from tools.common.network_safety_gate import normalized_allowlist_url
-
 import validate_source_adapter  # noqa: E402
 
 
@@ -105,20 +102,8 @@ def load_adapter(adapter_path: Path) -> dict[str, Any]:
     return payload
 
 
-def is_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
 def normalize_http_url(raw_url: str) -> str | None:
-    if any(ch.isspace() for ch in raw_url):
-        return None
-    if not is_http_url(raw_url):
-        return None
-    parsed = urlparse(raw_url)
-    if not (parsed.hostname or ""):
-        return None
-    return normalized_allowlist_url(raw_url)
+    return validate_source_adapter.normalize_http_url(raw_url)
 
 
 def validate_manifest_entry(entry: Any, *, line_number: int) -> list[str]:
