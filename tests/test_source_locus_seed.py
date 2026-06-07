@@ -281,3 +281,167 @@ def test_seed_database_streams_jsonl_records_without_materializing_list(
         "locus:stream_topic:archive:two",
     ]
     assert report["source_locus_export"] is None
+
+
+def test_export_source_loci_uses_sql_aggregates_and_paged_fetches(
+    monkeypatch,
+) -> None:
+    class FakeCursor:
+        def __init__(
+            self,
+            *,
+            one: dict[str, object] | None = None,
+            rows: list[dict[str, object]] | None = None,
+        ) -> None:
+            self._one = one
+            self._rows = rows or []
+            self.fetchmany_sizes: list[int] = []
+            self._index = 0
+
+        def fetchone(self) -> dict[str, object]:
+            if self._one is None:
+                raise AssertionError("expected a single aggregate row")
+            return self._one
+
+        def fetchmany(self, size: int) -> list[dict[str, object]]:
+            self.fetchmany_sizes.append(size)
+            rows = self._rows[self._index : self._index + size]
+            self._index += len(rows)
+            return rows
+
+        def fetchall(self) -> list[dict[str, object]]:
+            raise AssertionError("export_source_loci should not fetchall source_locus rows")
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.row_cursor = FakeCursor(
+                rows=[
+                    {
+                        "locus_id": "locus:stream_topic:archive:one",
+                        "topic_id": "stream_topic",
+                        "display_name": "Streamed Archive One",
+                        "locus_type": "archive",
+                        "query_family": "archives",
+                        "parent_locus_id": None,
+                        "parent_org_id": None,
+                        "jurisdiction_place_id": None,
+                        "languages_json": "[\"en\"]",
+                        "time_coverage_start": None,
+                        "time_coverage_end": None,
+                        "access_class": "public_catalog_or_web",
+                        "access_url": None,
+                        "catalog_url": None,
+                        "archive_url": None,
+                        "access_notes": None,
+                        "rights_posture": "metadata_only",
+                        "refetchability_status": "not_checked",
+                        "discovery_method": "manual_seed",
+                        "discovery_source": "pytest",
+                        "discovered_at": FIXED_TIMESTAMP,
+                        "discovered_by": "pytest",
+                        "confidence_score": 0.5,
+                        "review_state": "accepted",
+                        "productivity_queries_run": 0,
+                        "productivity_leads_returned": 0,
+                        "productivity_unique_leads": 0,
+                        "productivity_captures_made": 0,
+                        "productivity_works_promoted": 0,
+                        "productivity_score": 0.0,
+                        "last_queried_at": None,
+                        "last_productive_at": None,
+                        "cooldown_until": None,
+                        "is_deprecated": 0,
+                        "deprecation_reason": None,
+                        "notes": None,
+                        "record_last_updated": FIXED_TIMESTAMP,
+                    },
+                    {
+                        "locus_id": "locus:stream_topic:archive:two",
+                        "topic_id": "stream_topic",
+                        "display_name": "Streamed Archive Two",
+                        "locus_type": "archive",
+                        "query_family": "archives",
+                        "parent_locus_id": None,
+                        "parent_org_id": None,
+                        "jurisdiction_place_id": None,
+                        "languages_json": "[\"en\"]",
+                        "time_coverage_start": None,
+                        "time_coverage_end": None,
+                        "access_class": "public_catalog_or_web",
+                        "access_url": None,
+                        "catalog_url": None,
+                        "archive_url": None,
+                        "access_notes": None,
+                        "rights_posture": "metadata_only",
+                        "refetchability_status": "not_checked",
+                        "discovery_method": "manual_seed",
+                        "discovery_source": "pytest",
+                        "discovered_at": FIXED_TIMESTAMP,
+                        "discovered_by": "pytest",
+                        "confidence_score": 0.5,
+                        "review_state": "needs_review",
+                        "productivity_queries_run": 0,
+                        "productivity_leads_returned": 0,
+                        "productivity_unique_leads": 0,
+                        "productivity_captures_made": 0,
+                        "productivity_works_promoted": 0,
+                        "productivity_score": 0.0,
+                        "last_queried_at": None,
+                        "last_productive_at": None,
+                        "cooldown_until": None,
+                        "is_deprecated": 1,
+                        "deprecation_reason": "temporary",
+                        "notes": None,
+                        "record_last_updated": FIXED_TIMESTAMP,
+                    },
+                ]
+            )
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> FakeCursor:
+            del params
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            if normalized.startswith("SELECT COUNT(*) AS total_loci"):
+                return FakeCursor(
+                    one={
+                        "total_loci": 2,
+                        "review_needed_loci": 1,
+                        "deprecated_loci": 1,
+                        "unknown_loci": 0,
+                    }
+                )
+            if normalized.startswith("SELECT review_state, COUNT(*) AS count FROM source_locus"):
+                return FakeCursor(
+                    rows=[
+                        {"review_state": "accepted", "count": 1},
+                        {"review_state": "needs_review", "count": 1},
+                    ]
+                )
+            if normalized.startswith("SELECT locus_type, COUNT(*) AS count FROM source_locus"):
+                return FakeCursor(rows=[{"locus_type": "archive", "count": 2}])
+            if normalized.startswith("SELECT * FROM source_locus"):
+                return self.row_cursor
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    fake_conn = FakeConnection()
+    monkeypatch.setattr(source_locus_seed, "ensure_schema", lambda _conn: None)
+
+    payload = source_locus_seed.export_source_loci(fake_conn, "stream_topic", page_size=1)
+
+    assert fake_conn.row_cursor.fetchmany_sizes[:3] == [1, 1, 1]
+    assert payload["counts"] == {
+        "total_loci": 2,
+        "review_needed_loci": 1,
+        "deprecated_loci": 1,
+        "unknown_loci": 0,
+        "by_review_state": {"accepted": 1, "needs_review": 1},
+        "by_type": {"archive": 2},
+    }
+    assert [record["locus_id"] for record in payload["source_loci"]] == [
+        "locus:stream_topic:archive:one",
+        "locus:stream_topic:archive:two",
+    ]
