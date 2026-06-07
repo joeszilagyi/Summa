@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.source_db_tools import canonical_store, canonical_write_spool  # noqa: E402
-from tools.common.atomic_write import atomic_write_json
+from tools.common.atomic_write import atomic_write_json, stable_json_text
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -147,6 +147,7 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                             record,
                             db_path=db_path,
                             dry_run=False,
+                            record_path=record_path,
                         )
                 result_item["status"] = "dry_run" if args.dry_run else "replayed"
                 result_item["result_refs"] = _result_refs(result)
@@ -219,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(output_path, report)
     if args.format == "json":
-        print(json.dumps(report, indent=2, sort_keys=True))
+        sys.stdout.write(stable_json_text(report))
     else:
         print(render_text(report), end="")
     return exit_code

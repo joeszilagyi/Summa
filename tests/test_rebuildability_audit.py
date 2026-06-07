@@ -358,6 +358,42 @@ def test_cli_and_wrapper_help_exit_zero() -> None:
         assert "usage:" in (proc.stdout + proc.stderr).lower()
 
 
+def test_audit_main_uses_stable_json_text_for_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    report_path = tmp_path / "report.json"
+    calls: list[dict[str, Any]] = []
+
+    def fake_stable_json_text(payload: Any) -> str:
+        calls.append(dict(payload))
+        return "SAFE JSON\n"
+
+    monkeypatch.setattr(audit, "stable_json_text", fake_stable_json_text)
+
+    exit_code = audit.main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(report_path),
+            "--replay-mode",
+            "validate_only",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert calls
+    assert captured.out == "SAFE JSON\n"
+    report = load_json(report_path)
+    assert_rebuildability_report_schema(report)
+
+
 def test_validation_only_discovers_and_validates_artifacts(tmp_path: Path) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     report_path = tmp_path / "report.json"

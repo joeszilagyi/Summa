@@ -708,3 +708,49 @@ def test_replay_main_writes_report_with_atomic_json_writer(tmp_path: Path, monke
     assert writes == [output.resolve()]
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["records_replayed"] == 1
+
+
+def test_replay_main_uses_stable_json_text_for_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spool_dir = tmp_path / "spool"
+    spool_proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(tmp_path / "missing.sqlite"),
+            "--batch",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ],
+    )
+    assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
+    record_path, _ = first_spool_record(spool_dir)
+    db_path = bootstrap_db(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def fake_stable_json_text(payload: object) -> str:
+        calls.append(dict(payload))
+        return "SAFE JSON\n"
+
+    monkeypatch.setattr(replay_script, "stable_json_text", fake_stable_json_text)
+
+    exit_code = replay_script.main(
+        [
+            "--db",
+            str(db_path),
+            "--spool-path",
+            str(record_path),
+            "--started-at",
+            FIXED_TIMESTAMP,
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert calls
+    assert captured.out == "SAFE JSON\n"

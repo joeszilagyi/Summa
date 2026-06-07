@@ -181,6 +181,22 @@ def test_execution_validation_rejects_invalid_execution_status(tmp_path: Path) -
     assert any(error["code"] == "INVALID_EXECUTION_STATUS" for error in report.get("errors", []))
 
 
+def test_execution_validation_rejects_unknown_execution_fields(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    execution_record = json.loads((run_dir / "execution-record.json").read_text(encoding="utf-8"))
+    execution_record["unexpected_secret"] = "hidden"
+    (run_dir / "execution-record.json").write_text(
+        json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "UNKNOWN_EXECUTION_FIELD" for error in report.get("errors", []))
+
+
 def test_execution_validation_rejects_invalid_capture_status(tmp_path: Path) -> None:
     run_dir = copy_execution_fixture(tmp_path)
 
@@ -201,6 +217,26 @@ def test_execution_validation_rejects_invalid_capture_status(tmp_path: Path) -> 
     assert any(error["code"] == "INVALID_CAPTURE_STATUS" for error in report.get("errors", []))
 
 
+def test_execution_validation_rejects_unknown_capture_fields(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    capture_events = [
+        json.loads(line)
+        for line in (run_dir / "capture-events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    capture_events[0]["private_note"] = "hidden"
+    run_dir.joinpath("capture-events.jsonl").write_text(
+        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in capture_events),
+        encoding="utf-8",
+    )
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "UNKNOWN_CAPTURE_FIELD" for error in report.get("errors", []))
+
+
 def test_execution_validation_rejects_invalid_extraction_status(tmp_path: Path) -> None:
     run_dir = copy_execution_fixture(tmp_path)
 
@@ -219,3 +255,23 @@ def test_execution_validation_rejects_invalid_extraction_status(tmp_path: Path) 
 
     assert proc.returncode == validator.EXIT_VALIDATION_FAILED
     assert any(error["code"] == "INVALID_EXTRACTION_STATUS" for error in report.get("errors", []))
+
+
+def test_execution_validation_rejects_unknown_extraction_fields(tmp_path: Path) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    extraction_records[0]["hidden"] = "secret"
+    run_dir.joinpath("extraction-records.jsonl").write_text(
+        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in extraction_records),
+        encoding="utf-8",
+    )
+
+    proc, report = run_validator(run_dir, tmp_path=tmp_path)
+
+    assert proc.returncode == validator.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "UNKNOWN_EXTRACTION_FIELD" for error in report.get("errors", []))
