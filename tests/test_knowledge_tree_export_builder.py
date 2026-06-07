@@ -6,11 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.publication_fixture_store import (
+    FIXED_TIMESTAMP,
+    PRIVATE_SENTINEL,
+    UNREVIEWED_SENTINEL,
+    create_populated_canonical_store,
+    create_sparse_canonical_store,
+)
+from tools.common.publication_builder import table_fingerprint
 from tools.validators.validate_knowledge_tree_export import EXIT_PASS as EXIT_EXPORT_PASS
 from tools.validators.validate_knowledge_tree_export import validate_knowledge_tree_export
-
-from tests.publication_fixture_store import FIXED_TIMESTAMP, PRIVATE_SENTINEL, UNREVIEWED_SENTINEL, create_populated_canonical_store, create_sparse_canonical_store
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "build_knowledge_tree_export.py"
@@ -190,6 +195,21 @@ def test_export_builder_records_logical_and_storage_fingerprints(tmp_path: Path)
     assert payload_alt["notes"]["builder"]["canonical_store_storage_fingerprint"] == builder_notes["canonical_store_storage_fingerprint"]
     assert payload_alt["notes"]["builder"]["canonical_store_table_fingerprints"] == table_fingerprints
     assert payload_alt["notes"]["builder"]["canonical_store_query_fingerprints"] == query_fingerprints
+
+
+def test_table_fingerprint_handles_sqlite_row_mapping(tmp_path: Path) -> None:
+    db_path = tmp_path / "fingerprint.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("CREATE TABLE demo (demo_id INTEGER PRIMARY KEY, label TEXT, is_public INTEGER)")
+        conn.execute("INSERT INTO demo (label, is_public) VALUES (?, ?)", ("alpha", 1))
+        conn.commit()
+        fingerprint = table_fingerprint(conn, "demo")
+    finally:
+        conn.close()
+
+    assert fingerprint.startswith("sha256:")
 
 
 def test_export_builder_uses_logical_fingerprint_for_publication_inputs(tmp_path: Path) -> None:

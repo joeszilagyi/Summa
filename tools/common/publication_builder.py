@@ -184,7 +184,7 @@ def _normalize_fingerprint_value(value: Any) -> Any:
 
 
 def _row_to_fingerprint_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return {key: _normalize_fingerprint_value(row[key]) for key in row}
+    return {key: _normalize_fingerprint_value(value) for key, value in dict(row).items()}
 
 
 def actual_tables(conn: sqlite3.Connection) -> set[str]:
