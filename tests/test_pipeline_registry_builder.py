@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import importlib.util
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "tools" / "pipeline_registry" / "build_pipeline_registry.py"
+
+spec = importlib.util.spec_from_file_location("pipeline_registry_builder_for_tests", BUILDER)
+assert spec is not None
+builder = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules[spec.name] = builder
+spec.loader.exec_module(builder)
 
 
 def run_builder(*args: str) -> subprocess.CompletedProcess[str]:
@@ -41,3 +51,36 @@ def test_pipeline_registry_builder_smoke(tmp_path: Path) -> None:
     assert surface_count > 0
     assert artifact_count > 0
     assert current_surface_count > 0
+
+
+def test_collect_current_files_uses_inventory_file_when_git_is_missing(tmp_path: Path) -> None:
+    repo_root = tmp_path / "archive"
+    repo_root.mkdir()
+    inventory = tmp_path / "inventory.txt"
+    inventory.write_text(
+        "\n".join(
+            [
+                "# archive inventory",
+                "",
+                "tools/scripts/build_release_readiness_bundle.py",
+                "config/release_readiness_report.schema.json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    files = builder.collect_current_files(repo_root, inventory_file=inventory)
+
+    assert files == [
+        "config/release_readiness_report.schema.json",
+        "tools/scripts/build_release_readiness_bundle.py",
+    ]
+
+
+def test_collect_current_files_requires_inventory_file_without_git(tmp_path: Path) -> None:
+    repo_root = tmp_path / "archive"
+    repo_root.mkdir()
+
+    with pytest.raises(SystemExit, match="inventory-file"):
+        builder.collect_current_files(repo_root)

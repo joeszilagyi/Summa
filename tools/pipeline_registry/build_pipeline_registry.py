@@ -64,13 +64,6 @@ IGNORED_SURFACE_PATH_PARTS = (
     "__pycache__",
 )
 
-IGNORED_REPO_PATH_PARTS = (
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-)
-
 GIT_LS_FILES_TIMEOUT_SECONDS = 30
 
 PATH_KINDS = {
@@ -390,9 +383,40 @@ def validate_references(rows_by_table: dict[str, list[dict[str, Any]]]) -> None:
         )
 
 
-def collect_current_files(repo_root: Path) -> list[str]:
+def load_inventory_file(inventory_file: Path) -> list[str]:
+    if not inventory_file.exists():
+        raise SystemExit(f"inventory file does not exist: {inventory_file}")
+    if not inventory_file.is_file():
+        raise SystemExit(f"inventory file is not a file: {inventory_file}")
+
+    files: list[str] = []
+    with inventory_file.open("r", encoding="utf-8") as handle:
+        for lineno, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            path = PurePosixPath(line)
+            if path.is_absolute() or ".." in path.parts:
+                raise SystemExit(
+                    f"invalid repo-relative path in inventory file {inventory_file}:{lineno}: {line!r}"
+                )
+            normalized = path.as_posix()
+            if normalized in {"", "."}:
+                raise SystemExit(
+                    f"invalid repo-relative path in inventory file {inventory_file}:{lineno}: {line!r}"
+                )
+            files.append(normalized)
+    return sorted(files)
+
+
+def collect_current_files(repo_root: Path, *, inventory_file: Path | None = None) -> list[str]:
+    if inventory_file is not None:
+        return load_inventory_file(inventory_file)
     if not (repo_root / ".git").exists():
-        return collect_repo_files_fallback(repo_root)
+        raise SystemExit(
+            "git metadata is unavailable; supply --inventory-file with a newline-delimited "
+            "repo-relative file inventory instead of scanning the filesystem"
+        )
 
     try:
         result = subprocess.run(
@@ -432,18 +456,6 @@ def collect_current_files(repo_root: Path) -> list[str]:
         "git ls-files failed while collecting repo inventory"
         + (f": {stderr}" if stderr else "")
     )
-
-
-def collect_repo_files_fallback(repo_root: Path) -> list[str]:
-    files = []
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        relative_path = path.relative_to(repo_root)
-        if any(part in IGNORED_REPO_PATH_PARTS for part in relative_path.parts):
-            continue
-        files.append(relative_path.as_posix())
-    return sorted(files)
 
 
 def load_previous_repo_file_rows(output_db: Path) -> dict[str, dict[str, Any]]:
@@ -576,6 +588,7 @@ def build_db(
     contracts_dir: Path,
     output_db: Path,
     schema_path: Path,
+    inventory_file: Path | None = None,
 ) -> dict[str, Any]:
     if not repo_root.is_dir():
         raise SystemExit(f"repo root does not exist or is not a directory: {repo_root}")
@@ -605,7 +618,7 @@ def build_db(
         table_rows["repo_path_rule"],
         key=lambda row: (row["priority"], row["rule_key"]),
     )
-    current_files = collect_current_files(repo_root)
+    current_files = collect_current_files(repo_root, inventory_file=inventory_file)
     previous_repo_rows = load_previous_repo_file_rows(output_db)
     repo_file_rows = build_repo_file_rows(
         current_paths=current_files,
@@ -688,6 +701,7 @@ def check_db(
     contracts_dir: Path,
     output_db: Path,
     schema_path: Path,
+    inventory_file: Path | None = None,
 ) -> dict[str, Any]:
     if output_db.exists() and output_db.is_dir():
         raise SystemExit(f"output db path is a directory: {output_db}")
@@ -703,6 +717,7 @@ def check_db(
             contracts_dir=contracts_dir,
             output_db=temp_output_db,
             schema_path=schema_path,
+            inventory_file=inventory_file,
         )
 
     summary["mode"] = "check"
@@ -738,6 +753,14 @@ def parse_args() -> argparse.Namespace:
         help="repository root whose current tracked and untracked files are inventoried",
     )
     parser.add_argument(
+        "--inventory-file",
+        default=None,
+        help=(
+            "Optional newline-delimited repo-relative file inventory to use when Git metadata "
+            "is unavailable."
+        ),
+    )
+    parser.add_argument(
         "--contracts-dir",
         default=str(contracts_dir),
         help="directory containing pipeline registry JSONL contracts",
@@ -768,6 +791,7 @@ def main() -> int:
         contracts_dir=Path(args.contracts_dir),
         output_db=Path(args.output_db),
         schema_path=Path(args.schema),
+        inventory_file=None if args.inventory_file is None else Path(args.inventory_file),
     )
     if not args.check:
         summary["mode"] = "build"

@@ -44,11 +44,12 @@ python3 tools/pipeline_registry/build_pipeline_registry.py --check
 Successful builds write to a temporary SQLite file in the destination directory
 and atomically replace the target DB only after validation and insertion finish.
 
-Archive checkouts without a `.git` directory are supported. In that mode the
-builder falls back to a filesystem inventory so contract coverage and path-rule
-classification can still be checked from a source archive. Git-specific departed
-file history is only available when a previous generated registry DB or a Git
-checkout is available.
+Archive checkouts without a `.git` directory are supported when you supply
+`--inventory-file` with a newline-delimited list of repo-relative paths. That
+explicit inventory replaces the Git file list so contract coverage and
+path-rule classification can still be checked from a source archive without
+walking the entire filesystem. Git-specific departed file history is only
+available when a previous generated registry DB or a Git checkout is available.
 
 ## What the builder validates
 
