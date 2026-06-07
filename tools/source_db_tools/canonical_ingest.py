@@ -528,6 +528,8 @@ def ingest_candidate_batch(
 
     work_refs: dict[str, str] = {}
     entity_candidates: list[dict[str, Any]] = []
+    claim_work_items: set[tuple[str | None, str | None, str]] = set()
+    relationship_work_items: set[tuple[str | None, str, str, str | None]] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise CanonicalIngestError("candidate rows must be JSON objects")
@@ -558,6 +560,16 @@ def ingest_candidate_batch(
                     workspace_id=workspace_id,
                 )
                 _bump(report, "inserted" if result.created else "updated", "source_relationship")
+                relationship_work_items.add(
+                    (
+                        workspace_id,
+                        str(structured["from_object_ref"]),
+                        str(structured["predicate"]).strip(),
+                        None
+                        if structured.get("to_object_ref") is None
+                        else str(structured.get("to_object_ref")),
+                    )
+                )
             relationship_written = True
 
         if candidate_type == "work":
@@ -720,6 +732,7 @@ def ingest_candidate_batch(
                         "inserted" if claim_result.created else "updated",
                         "source_claim",
                     )
+                    claim_work_items.add((workspace_id, work_refs[candidate_id], work_claim_type))
             handled = True
 
         elif candidate_type == "source_lead":
@@ -830,6 +843,13 @@ def ingest_candidate_batch(
                     record_last_updated=created_at,
                 )
                 _bump(report, "inserted" if result.created else "updated", "source_claim")
+                claim_work_items.add(
+                    (
+                        workspace_id,
+                        _structured_about_object_ref(structured),
+                        _structured_claim_type(candidate_type, structured),
+                    )
+                )
             handled = True
             if candidate_type == "unknown":
                 _append_warning(
@@ -859,6 +879,14 @@ def ingest_candidate_batch(
                 changed_at=created_at,
                 entity_candidates=entity_candidates,
                 source_run_id=str(batch.get("run_id") or ""),
+                claim_work_items=sorted(
+                    claim_work_items,
+                    key=lambda item: tuple("" if part is None else str(part) for part in item),
+                ),
+                relationship_work_items=sorted(
+                    relationship_work_items,
+                    key=lambda item: tuple("" if part is None else str(part) for part in item),
+                ),
             )
         except canonical_reconciliation.CanonicalReconciliationError as exc:
             raise CanonicalIngestError(f"candidate-batch reconciliation failed: {exc}") from exc
@@ -925,6 +953,8 @@ def ingest_execution_artifacts(
 
     capture_id_map: dict[str, int] = {}
     entity_candidates: list[dict[str, Any]] = []
+    claim_work_items: list[tuple[str | None, str | None, str]] = []
+    relationship_work_items: list[tuple[str | None, str, str, str | None]] = []
     for record in capture_events:
         original_locator = record.get("original_locator")
         locator_text = (
@@ -1052,6 +1082,8 @@ def ingest_execution_artifacts(
                 changed_at=created_at,
                 entity_candidates=entity_candidates,
                 source_run_id=str(execution_record.get("run_id") or ""),
+                claim_work_items=claim_work_items,
+                relationship_work_items=relationship_work_items,
             )
         except canonical_reconciliation.CanonicalReconciliationError as exc:
             raise CanonicalIngestError(f"execution-artifact reconciliation failed: {exc}") from exc

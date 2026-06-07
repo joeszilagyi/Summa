@@ -1831,6 +1831,129 @@ def test_relational_constraint_pass_uses_fetched_relationship_rows(
     assert report["relational_contradictions_detected"] == 1
 
 
+def test_reconciliation_pass_uses_incremental_work_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="claims-with-contradictions",
+                object_id="incremental-pass",
+                event_type="structured-claim-setup",
+                actor_type="pytest",
+                actor_id="pytest.claims",
+                tool_name="tests.test_canonical_dedup_and_contradiction",
+                run_id="structured-contradiction-incremental-pass",
+                event_timestamp=FIXED_TIMESTAMP,
+                note_text="fixture incremental pass setup",
+                provenance_event_key_v1="prov:incremental-pass",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                source_claim_key_v1="claim:incremental-pass:quantity:work:example:10",
+                about_object_ref="work:example",
+                claim_text=json.dumps(
+                    {
+                        "claim_type": "quantity",
+                        "about_object_ref": "work:example",
+                        "value": 10,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                claim_type="quantity",
+                review_state="proposed",
+                confidence_score=0.96,
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            canonical_store.record_source_relationship(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+                review_state="proposed",
+                workspace_id="fixture_subject",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+    finally:
+        conn.close()
+
+    claim_calls: list[list[tuple[str | None, str | None, str]]] = []
+    relationship_calls: list[list[tuple[str | None, str, str, str | None]]] = []
+    original_claim_loader = canonical_reconciliation._claim_rows_for_work_items
+    original_relationship_loader = canonical_reconciliation._relationship_rows_for_work_items
+
+    def counting_claim_loader(
+        conn: sqlite3.Connection,
+        *,
+        provenance_event_ref: str,
+        claim_work_items: list[tuple[str | None, str | None, str]],
+    ) -> list[sqlite3.Row]:
+        claim_calls.append(list(claim_work_items))
+        return original_claim_loader(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            claim_work_items=claim_work_items,
+        )
+
+    def counting_relationship_loader(
+        conn: sqlite3.Connection,
+        *,
+        provenance_event_ref: str,
+        relationship_work_items: list[tuple[str | None, str, str, str | None]],
+    ) -> list[sqlite3.Row]:
+        relationship_calls.append(list(relationship_work_items))
+        return original_relationship_loader(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            relationship_work_items=relationship_work_items,
+        )
+
+    monkeypatch.setattr(canonical_reconciliation, "_claim_rows_for_work_items", counting_claim_loader)
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "_relationship_rows_for_work_items",
+        counting_relationship_loader,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_reconciliation.run_reconciliation_pass_for_ingest(
+                conn,
+                provenance_event_ref="prov:incremental-pass",
+                workspace_id="fixture_subject",
+                changed_at=FIXED_TIMESTAMP,
+                source_run_id="manual-pass",
+                claim_work_items=[("fixture_subject", "work:example", "quantity")],
+                relationship_work_items=[
+                    (
+                        "fixture_subject",
+                        "authority:person-a",
+                        "taught_by",
+                        "authority:person-b",
+                    )
+                ],
+            )
+    finally:
+        conn.close()
+
+    assert claim_calls == [[("fixture_subject", "work:example", "quantity")]]
+    assert relationship_calls == [
+        [("fixture_subject", "authority:person-a", "taught_by", "authority:person-b")]
+    ]
+    assert report["claims_contradicted"] == 0
+    assert report["relationships_contradicted"] == 0
+
+
 def test_structured_contradiction_group_caches_peer_claim_lookups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

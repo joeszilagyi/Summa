@@ -1156,6 +1156,87 @@ def _claims_for_ref_and_type(
     return list(rows)
 
 
+def _claim_rows_for_work_items(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    claim_work_items: list[tuple[str | None, str | None, str]],
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    seen_keys: set[tuple[str | None, str | None, str]] = set()
+    for workspace_id, about_object_ref, claim_type in claim_work_items:
+        if about_object_ref is None or not claim_type.strip():
+            continue
+        key = (workspace_id, about_object_ref, claim_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        clauses = [
+            "provenance_event_ref=?",
+            "about_object_ref=?",
+            "claim_type=?",
+        ]
+        params: list[Any] = [provenance_event_ref, about_object_ref, claim_type]
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT *
+                FROM source_claim
+                WHERE {" AND ".join(clauses)}
+                ORDER BY source_claim_id
+                """,
+                tuple(params),
+            ).fetchall()
+        )
+    return rows
+
+
+def _relationship_rows_for_work_items(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    relationship_work_items: list[tuple[str | None, str, str, str | None]],
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    seen_keys: set[tuple[str | None, str, str, str | None]] = set()
+    for workspace_id, from_object_ref, predicate, to_object_ref in relationship_work_items:
+        if not from_object_ref.strip() or not predicate.strip():
+            continue
+        key = (workspace_id, from_object_ref, predicate, to_object_ref)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        clauses = [
+            "provenance_event_ref=?",
+            "from_object_ref=?",
+            "predicate=?",
+        ]
+        params: list[Any] = [provenance_event_ref, from_object_ref, predicate]
+        if to_object_ref is None:
+            clauses.append("to_object_ref IS NULL")
+        else:
+            clauses.append("to_object_ref=?")
+            params.append(to_object_ref)
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT *
+                FROM source_relationship
+                WHERE {" AND ".join(clauses)}
+                ORDER BY source_relationship_id
+                """,
+                tuple(params),
+            ).fetchall()
+        )
+    return rows
+
+
 def _cached_claims_for_ref_and_type(
     conn: sqlite3.Connection,
     *,
@@ -1615,24 +1696,28 @@ def run_relational_constraint_pass(
     changed_at: str,
     source_run_id: str | None = None,
     skip_structured_claim_counterparts: bool = False,
+    relationship_rows: list[sqlite3.Row] | None = None,
 ) -> dict[str, int]:
-    params: list[Any] = [CONTRADICTION_PREDICATE]
-    clauses = ["predicate<>?"]
-    if provenance_event_ref is not None:
-        clauses.append("provenance_event_ref=?")
-        params.append(provenance_event_ref)
-    if workspace_id is not None:
-        clauses.append("workspace_id=?")
-        params.append(workspace_id)
-    rows = conn.execute(
-        f"""
-        SELECT *
-        FROM source_relationship
-        WHERE {" AND ".join(clauses)}
-        ORDER BY source_relationship_id
-        """,
-        tuple(params),
-    ).fetchall()
+    if relationship_rows is None:
+        params: list[Any] = [CONTRADICTION_PREDICATE]
+        clauses = ["predicate<>?"]
+        if provenance_event_ref is not None:
+            clauses.append("provenance_event_ref=?")
+            params.append(provenance_event_ref)
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM source_relationship
+            WHERE {" AND ".join(clauses)}
+            ORDER BY source_relationship_id
+            """,
+            tuple(params),
+        ).fetchall()
+    else:
+        rows = relationship_rows
     counts = {
         "relational_constraints_checked": 0,
         "relational_constraints_skipped": 0,
@@ -1911,6 +1996,8 @@ def run_reconciliation_pass_for_ingest(
     changed_at: str,
     entity_candidates: list[dict[str, Any]] | None = None,
     source_run_id: str | None = None,
+    claim_work_items: list[tuple[str | None, str | None, str]] | None = None,
+    relationship_work_items: list[tuple[str | None, str, str, str | None]] | None = None,
 ) -> dict[str, int]:
     counts = {
         "work_deduped": 0,
@@ -1991,15 +2078,22 @@ def run_reconciliation_pass_for_ingest(
             if result.created:
                 counts["authority_reconciled"] += 1
 
-    claim_rows = conn.execute(
-        """
-        SELECT *
-        FROM source_claim
-        WHERE provenance_event_ref=?
-        ORDER BY source_claim_id
-        """,
-        (provenance_event_ref,),
-    ).fetchall()
+    if claim_work_items is None:
+        claim_rows = conn.execute(
+            """
+            SELECT *
+            FROM source_claim
+            WHERE provenance_event_ref=?
+            ORDER BY source_claim_id
+            """,
+            (provenance_event_ref,),
+        ).fetchall()
+    else:
+        claim_rows = _claim_rows_for_work_items(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            claim_work_items=claim_work_items,
+        )
     grouped_claim_rows: dict[tuple[str | None, str | None, str], list[sqlite3.Row]] = {}
     for claim_row in claim_rows:
         about_object_ref = (
@@ -2035,6 +2129,15 @@ def run_reconciliation_pass_for_ingest(
             if relationship_row is not None:
                 seen_relationship_rows.add(int(relationship_row["source_relationship_id"]))
     counts["relationships_contradicted"] = len(seen_relationship_rows)
+    relationship_rows: list[sqlite3.Row] | None
+    if relationship_work_items is None:
+        relationship_rows = None
+    else:
+        relationship_rows = _relationship_rows_for_work_items(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            relationship_work_items=relationship_work_items,
+        )
     relational_counts = run_relational_constraint_pass(
         conn,
         provenance_event_ref=provenance_event_ref,
@@ -2042,6 +2145,7 @@ def run_reconciliation_pass_for_ingest(
         changed_at=changed_at,
         source_run_id=source_run_id,
         skip_structured_claim_counterparts=True,
+        relationship_rows=relationship_rows,
     )
     counts["relational_constraints_checked"] = relational_counts["relational_constraints_checked"]
     counts["relational_constraints_skipped"] = relational_counts["relational_constraints_skipped"]

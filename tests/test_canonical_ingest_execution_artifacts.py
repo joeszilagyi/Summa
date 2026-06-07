@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -9,8 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.source_db_tools import canonical_ingest, canonical_store
-
+from tools.source_db_tools import canonical_ingest, canonical_reconciliation, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTION_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "execution_run"
@@ -132,6 +132,59 @@ def test_execution_artifact_ingest_writes_capture_and_extraction_rows(tmp_path: 
     assert extraction_row["capture_event_id"] == capture_row["capture_event_id"]
     assert capture_row["provenance_event_ref"] == report["provenance_event"]["event_key"]
     assert extraction_row["provenance_event_ref"] == report["provenance_event"]["event_key"]
+
+
+def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    run_dir = copy_execution_fixture(tmp_path)
+    execution_record, capture_events, extraction_records, paths, input_hashes = (
+        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        captured.update(kwargs)
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_execution_artifacts(
+                conn,
+                execution_record,
+                capture_events,
+                extraction_records,
+                paths=paths,
+                input_hashes=input_hashes,
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert captured["provenance_event_ref"] == report["provenance_event"]["event_key"]
+    assert captured["source_run_id"] == str(execution_record.get("run_id") or "")
+    assert captured["claim_work_items"] == []
+    assert captured["relationship_work_items"] == []
 
 
 def test_execution_artifact_validation_happens_before_write(tmp_path: Path) -> None:
@@ -267,17 +320,16 @@ def test_execution_artifact_missing_capture_reference_rolls_back_in_strict_mode(
     extraction_records[0]["capture_id"] = "capture-9999"
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        with pytest.raises(canonical_ingest.CanonicalIngestError, match="unknown capture_id"):
-            with conn:
-                canonical_ingest.ingest_execution_artifacts(
-                    conn,
-                    execution_record,
-                    capture_events,
-                    extraction_records,
-                    paths=paths,
-                    input_hashes=input_hashes,
-                    db_path=db_path,
-                )
+        with pytest.raises(canonical_ingest.CanonicalIngestError, match="unknown capture_id"), conn:
+            canonical_ingest.ingest_execution_artifacts(
+                conn,
+                execution_record,
+                capture_events,
+                extraction_records,
+                paths=paths,
+                input_hashes=input_hashes,
+                db_path=db_path,
+            )
         counts = canonical_store.canonical_family_counts(conn)
     finally:
         conn.close()
