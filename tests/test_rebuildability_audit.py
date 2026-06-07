@@ -487,14 +487,14 @@ def test_compare_existing_reports_matching_meaningful_state(tmp_path: Path) -> N
     assert table_count(existing_db, "capture_event") == before["capture_event"]
 
 
-def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path, monkeypatch) -> None:
+def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
-    data_dir = tmp_path / "data"
+    data_dir = runs_dir / "data"
     data_dir.mkdir(parents=True)
     actual = data_dir / "candidate-batch.json"
     actual.write_text("{\"schema_version\":\"demo\"}\n", encoding="utf-8")
-    alias = data_dir / ".." / "data" / "candidate-batch.json"
+    alias = runs_dir / "topic-cycle" / "cycle-001" / ".." / ".." / "data" / "candidate-batch.json"
     cycle_dir.mkdir(parents=True)
     (cycle_dir / "topic-cycle-run.json").write_text(
         json.dumps(
@@ -528,18 +528,61 @@ def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path, m
         )
     ]
 
-    original_exists = Path.exists
-
-    def fake_exists(self: Path) -> bool:
-        if self == alias:
-            return False
-        return original_exists(self)
-
-    monkeypatch.setattr(Path, "exists", fake_exists)
-
     missing = audit.find_missing_artifacts(artifacts, runs_dir)
 
     assert missing == []
+
+
+def test_find_missing_artifacts_rejects_absolute_refs_outside_runs_root(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir(parents=True)
+    outside_ref = outside_dir / "escaped-candidate-batch.json"
+    outside_ref.write_text("{\"schema_version\":\"demo\"}\n", encoding="utf-8")
+    cycle_dir.mkdir(parents=True)
+    (cycle_dir / "topic-cycle-run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-001",
+                "status": "completed",
+                "stages": [
+                    {
+                        "name": "ingest_candidate_batch",
+                        "status": "passed",
+                        "artifacts": {"candidate_batch": str(outside_ref)},
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts = [
+        audit.Artifact(
+            artifact_type="topic_cycle_manifest",
+            path=cycle_dir / "topic-cycle-run.json",
+            hash=None,
+            schema_id="topic-cycle-run.v1",
+            run_id="cycle-001",
+            stage="cycle",
+            validation_status="valid",
+            replay_status="pending",
+        )
+    ]
+
+    missing = audit.find_missing_artifacts(artifacts, runs_dir)
+
+    assert missing == [
+        {
+            "referenced_by": "topic-cycle/cycle-001/topic-cycle-run.json",
+            "stage": "ingest_candidate_batch",
+            "artifact_key": "candidate_batch",
+            "missing_path": str(outside_ref.resolve()),
+        }
+    ]
 
 
 def test_missing_manifest_artifact_reports_not_rebuildable(tmp_path: Path) -> None:

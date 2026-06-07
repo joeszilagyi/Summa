@@ -435,6 +435,7 @@ def discover_artifacts(runs_dir: Path) -> list[Artifact]:
 
 def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[dict[str, Any]]:
     missing: list[dict[str, Any]] = []
+    runs_root = runs_dir.resolve()
     existing_paths = {artifact.path.resolve() for artifact in artifacts}
     for artifact in artifacts:
         if artifact.artifact_type != "topic_cycle_manifest":
@@ -459,6 +460,18 @@ def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[di
                         candidate = (artifact.path.parent / candidate).resolve()
                     else:
                         candidate = candidate.resolve()
+                    try:
+                        candidate.relative_to(runs_root)
+                    except ValueError:
+                        missing.append(
+                            {
+                                "referenced_by": artifact.path.relative_to(runs_dir).as_posix(),
+                                "stage": stage.get("name"),
+                                "artifact_key": key,
+                                "missing_path": str(candidate),
+                            }
+                        )
+                        continue
                     if candidate.exists() or candidate in existing_paths:
                         continue
                     missing.append(
@@ -923,7 +936,15 @@ def main(argv: list[str] | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output, report)
     if args.format == "json":
-        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                report,
+                ensure_ascii=False,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
         print(render_text(report), end="")
     return exit_code
