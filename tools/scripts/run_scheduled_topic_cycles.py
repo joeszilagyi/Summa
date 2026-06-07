@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -39,6 +41,7 @@ EXIT_USAGE_ERROR = 2
 EXIT_VALIDATION_FAILED = 3
 EXIT_SAFETY_DENIAL = 4
 EXIT_TRANSIENT_ACQUISITION_FAILED = 5
+EXIT_TRANSIENT_ACQUISITION_FAILURE = EXIT_TRANSIENT_ACQUISITION_FAILED
 EXIT_INTEGRITY_FAILURE = 6
 EXIT_PARTIAL_OUTPUT = 7
 EXIT_INTERNAL_CRASH = 8
@@ -415,224 +418,155 @@ def run_scheduled_cycles(
         if code > exit_code:
             exit_code = code
 
-    attempted_index = 0
-    for record in records:
-        workspace_id = str(record.get("workspace_id") or "")
-        result: dict[str, Any] = {
-            "workspace_id": workspace_id,
-            "planned_run_id": record.get("planned_run_id"),
-            "decision": record.get("decision"),
-            "cycle_run_id": None,
-            "cycle_event_id": None,
-            "cycle_manifest_path": None,
-            "attempt_number": None,
-            "max_attempts": None,
-            "runtime_budget_seconds": None,
-            "runtime_consumed_seconds": 0.0,
-            "outcome": "skipped",
-            "failure_reason": None,
-            "failure_reason_code": None,
-            "error_code": None,
-            "stage": None,
-            "recoverability": None,
-            "affected_record_id": None,
-            "saturation": record.get("saturation")
-            if isinstance(record.get("saturation"), dict)
-            else None,
-            "saturation_override": bool(record.get("saturation_override", False)),
-            "scheduler_failure_state_record": None,
-            "ledger_path": None,
-        }
-        raw_run_budget = record.get("run_budget")
-        run_budget: dict[str, Any] = raw_run_budget if isinstance(raw_run_budget, dict) else {}
-        result["max_attempts"] = run_budget.get("max_attempts")
-        result["runtime_budget_seconds"] = run_budget.get("max_runtime_seconds")
-        if not planned_record_selected(record):
-            result["outcome"] = "deferred"
-            _set_failure(
-                result=result,
-                reason_code="selection_not_selected",
-                reason=record.get("skipped_reason") or "planned-run decision was not selected",
-                stage="selection_filter",
-                recoverability="non_retryable",
-            )
-            manifest["deferred_workspace_count"] += 1
-            manifest["workspace_results"].append(result)
-            continue
-        workspace_root = record.get("resolved_workspace_root")
-        subject_manifest = record.get("resolved_default_subject_manifest")
-        if not isinstance(workspace_root, str) or not isinstance(subject_manifest, str):
-            result["outcome"] = "failed"
-            _set_failure(
-                result=result,
-                reason_code="selection_record_invalid",
-                reason="planned-run record is missing resolved workspace or subject manifest",
-                stage="input_validation",
-                recoverability="non_retryable",
-            )
-            manifest["failed_workspace_count"] += 1
-            manifest["workspace_results"].append(result)
-            _update_global_exit_code(EXIT_VALIDATION_FAILED)
-            continue
-        saturation = result.get("saturation")
-        if (
-            isinstance(saturation, dict)
-            and saturation.get("scheduler_action") in {"halt", "cooldown"}
-            and not result["saturation_override"]
-        ):
-            result["outcome"] = "deferred"
-            _set_failure(
-                result=result,
-                reason_code="selection_saturated",
-                reason=(
-                    "saturation policy deferred workspace: "
-                    f"{saturation.get('state')} ({', '.join(saturation.get('reason_codes', []))})"
-                ),
-                stage="saturation_check",
-                recoverability="retryable",
-            )
-            manifest["deferred_workspace_count"] += 1
-            manifest["workspace_results"].append(result)
-            continue
-        ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
-        result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
-        prior_attempts = terminal_attempt_count(ledger_path, workspace_id=workspace_id)
-        result["attempt_number"] = prior_attempts + 1
-        attempt_refusal = max_attempts_exceeded(record, prior_attempts=prior_attempts)
-        if attempt_refusal is not None:
-            result["outcome"] = "deferred"
-            _set_failure(
-                result=result,
-                reason_code="selection_run_budget_exceeded",
-                reason=attempt_refusal,
-                stage="attempt_budget_check",
-                recoverability="retryable",
-            )
-            manifest["deferred_workspace_count"] += 1
-            manifest["workspace_results"].append(result)
-            continue
-        runtime_budget = get_runtime_budget_seconds(record)
-        child_run_id = _format_run_id(
-            run_id=run_id, workspace_id=workspace_id, attempt_number=result["attempt_number"], token=_next_workspace_token()
-        )
-        child_run_dir = run_dir / workspace_id / child_run_id
-        child_started_at = offset_timestamp(started_at, seconds=10 + attempted_index * 20)
-        child_ended_at = offset_timestamp(started_at, seconds=20 + attempted_index * 20)
-        command = [
-            sys.executable,
-            str(runner),
-            "--workspace",
-            workspace_root,
-            "--subject",
-            subject_manifest,
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(child_run_dir),
-            "--run-id",
-            child_run_id,
-            "--timestamp",
-            child_started_at,
-            "--mode",
-            args.mode,
-            "--format",
-            "json",
-        ]
-        if args.candidate_batch_fixture:
-            command.extend(
-                ["--candidate-batch-fixture", str(resolve_path(args.candidate_batch_fixture))]
-            )
-        if args.execution_run_fixture:
-            command.extend(
-                ["--execution-run-fixture", str(resolve_path(args.execution_run_fixture))]
-            )
-        if args.build_next_feedback_plan:
-            command.append("--build-next-feedback-plan")
-        try:
-            with acquire_workspace_lock(
+    workspace_results: list[dict[str, Any] | None] = [None] * len(records)
+    workspace_locks: dict[str, threading.Lock] = {}
+
+    def _run_single_cycle(
+        *,
+        workspace_id: str,
+        runtime_budget: int | None,
+        workspace_root: str,
+        subject_manifest: str,
+        cycle_runner: Path,
+        db_path: str,
+        attempt_number: int,
+        mode: str,
+        run_id: str,
+        candidate_batch_fixture: str | None,
+        execution_run_fixture: str | None,
+        build_next_feedback_plan: bool,
+        child_started_at: str,
+        child_ended_at: str,
+        ledger_path: Path,
+        result: dict[str, Any],
+        workspace_lock_root: Path,
+        workspace_mutex: threading.Lock,
+    ) -> tuple[dict[str, Any], int, int, int, int, int]:
+        proc: subprocess.CompletedProcess[str] | None = None
+        result["runtime_consumed_seconds"] = 0.0
+        attempted_delta = 0
+        completed_delta = 0
+        failed_delta = 0
+        deferred_delta = 0
+        code_delta = EXIT_SUCCESS
+        with workspace_mutex:
+            child_run_id = _format_run_id(
+                run_id=run_id,
                 workspace_id=workspace_id,
-                command=f"scheduled-topic-cycle:{child_run_id}",
-                lock_root=resolve_path(args.workspace_lock_root),
-                wait=False,
-            ):
-                append_ledger_event(
-                    ledger_path=ledger_path,
+                attempt_number=attempt_number,
+                token=_next_workspace_token(),
+            )
+            child_run_dir = run_dir / workspace_id / child_run_id
+            command = [
+                sys.executable,
+                str(cycle_runner),
+                "--workspace",
+                workspace_root,
+                "--subject",
+                subject_manifest,
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(child_run_dir),
+                "--run-id",
+                child_run_id,
+                "--timestamp",
+                child_started_at,
+                "--mode",
+                mode,
+                "--format",
+                "json",
+            ]
+            if candidate_batch_fixture:
+                command.extend(["--candidate-batch-fixture", candidate_batch_fixture])
+            if execution_run_fixture:
+                command.extend(["--execution-run-fixture", execution_run_fixture])
+            if build_next_feedback_plan:
+                command.append("--build-next-feedback-plan")
+            try:
+                with acquire_workspace_lock(
                     workspace_id=workspace_id,
-                    run_id=child_run_id,
-                    event_type="command_start",
-                    occurred_at=child_started_at,
-                )
-                manifest["attempted_workspace_count"] += 1
-                start = monotonic()
-                timeout_seconds = float(runtime_budget) if runtime_budget is not None else None
-                try:
-                    proc = invoke_cycle(cycle_invoker, command, timeout_seconds=timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    elapsed = round(monotonic() - start, 6)
-                    result["runtime_consumed_seconds"] = elapsed
-                    result["cycle_run_id"] = child_run_id
-                    result["cycle_manifest_path"] = manifest_relative_path(
-                        child_run_dir / "topic-cycle-run.json", run_dir=run_dir
-                    )
-                    result["outcome"] = "failed"
-                    _set_failure(
-                        result=result,
-                        reason_code="runtime_budget_timeout",
-                        reason=(
-                            f"cycle exceeded run_budget.max_runtime_seconds {runtime_budget} before completion"
-                        ),
-                        stage="child_cycle_exec",
-                        recoverability="retryable",
-                    )
-                    manifest["failed_workspace_count"] += 1
-                    _update_global_exit_code(EXIT_INTEGRITY_FAILURE)
+                    command=f"scheduled-topic-cycle:{child_run_id}",
+                    lock_root=workspace_lock_root,
+                    wait=False,
+                ):
                     append_ledger_event(
                         ledger_path=ledger_path,
                         workspace_id=workspace_id,
                         run_id=child_run_id,
-                        event_type="command_failure",
-                        occurred_at=child_ended_at,
-                        artifact_refs=[
-                            {
-                                "artifact_type": "topic_cycle_manifest",
-                                "path": result["cycle_manifest_path"],
-                            }
-                        ],
-                        failure={"message": result["failure_reason"]},
+                        event_type="command_start",
+                        occurred_at=child_started_at,
                     )
-                    result["scheduler_failure_state_record"] = manifest_relative_path(
-                        ledger_path, run_dir=run_dir
-                    )
-                    manifest["workspace_results"].append(result)
-                    attempted_index += 1
-                    continue
-        except WorkspaceLockError as exc:
-            result["outcome"] = "deferred"
-            _set_failure(
-                result=result,
-                reason_code="workspace_lock_unavailable",
-                reason=str(exc),
-                stage="workspace_lock",
-                recoverability="retryable",
-            )
-            manifest["deferred_workspace_count"] += 1
-            _update_global_exit_code(EXIT_TRANSIENT_ACQUISITION_FAILURE)
-            manifest["workspace_results"].append(result)
-            continue
-        except Exception as exc:
-            result["outcome"] = "failed"
-            _set_failure(
-                result=result,
-                reason_code="internal_scheduler_error",
-                reason=str(exc),
-                stage="scheduler_execution",
-                recoverability="non_retryable",
-            )
-            manifest["failed_workspace_count"] += 1
-            _update_global_exit_code(EXIT_INTERNAL_CRASH)
-            manifest["workspace_results"].append(result)
-            continue
-        elapsed = round(monotonic() - start, 6)
+                    attempted_delta += 1
+                    start = monotonic()
+                    timeout_seconds = float(runtime_budget) if runtime_budget is not None else None
+                    try:
+                        proc = invoke_cycle(cycle_invoker, command, timeout_seconds=timeout_seconds)
+                    except subprocess.TimeoutExpired:
+                        elapsed = round(monotonic() - start, 6)
+                        result["runtime_consumed_seconds"] = elapsed
+                        result["cycle_run_id"] = child_run_id
+                        result["cycle_manifest_path"] = manifest_relative_path(
+                            child_run_dir / "topic-cycle-run.json", run_dir=run_dir
+                        )
+                        result["outcome"] = "failed"
+                        _set_failure(
+                            result=result,
+                            reason_code="runtime_budget_timeout",
+                            reason=(
+                                f"cycle exceeded run_budget.max_runtime_seconds {runtime_budget} before completion"
+                            ),
+                            stage="child_cycle_exec",
+                            recoverability="retryable",
+                        )
+                        failed_delta += 1
+                        code_delta = EXIT_INTEGRITY_FAILURE
+                        _update_global_exit_code(code_delta)
+                        append_ledger_event(
+                            ledger_path=ledger_path,
+                            workspace_id=workspace_id,
+                            run_id=child_run_id,
+                            event_type="command_failure",
+                            occurred_at=child_ended_at,
+                            artifact_refs=[
+                                {
+                                    "artifact_type": "topic_cycle_manifest",
+                                    "path": result["cycle_manifest_path"],
+                                }
+                            ],
+                            failure={"message": result["failure_reason"]},
+                        )
+                        result["scheduler_failure_state_record"] = manifest_relative_path(
+                            ledger_path, run_dir=run_dir
+                        )
+                        return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+                    elapsed = round(monotonic() - start, 6)
+            except WorkspaceLockError as exc:
+                result["outcome"] = "deferred"
+                _set_failure(
+                    result=result,
+                    reason_code="workspace_lock_unavailable",
+                    reason=str(exc),
+                    stage="workspace_lock",
+                    recoverability="retryable",
+                )
+                deferred_delta += 1
+                code_delta = EXIT_TRANSIENT_ACQUISITION_FAILURE
+                _update_global_exit_code(code_delta)
+                return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+            except Exception as exc:
+                result["outcome"] = "failed"
+                _set_failure(
+                    result=result,
+                    reason_code="internal_scheduler_error",
+                    reason=str(exc),
+                    stage="scheduler_execution",
+                    recoverability="non_retryable",
+                )
+                failed_delta += 1
+                code_delta = EXIT_INTERNAL_CRASH
+                _update_global_exit_code(code_delta)
+                return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
         result["cycle_manifest_path"] = manifest_relative_path(
@@ -652,6 +586,7 @@ def run_scheduled_cycles(
                 cycle_event_id = child_manifest.get("cycle_event_id")
                 if isinstance(cycle_event_id, str) and cycle_event_id:
                     result["cycle_event_id"] = cycle_event_id
+
         artifact_refs = [
             {"artifact_type": "topic_cycle_manifest", "path": result["cycle_manifest_path"]}
         ]
@@ -666,8 +601,9 @@ def run_scheduled_cycles(
                 stage="runtime_budget_check",
                 recoverability="retryable",
             )
-            manifest["failed_workspace_count"] += 1
-            _update_global_exit_code(EXIT_INTEGRITY_FAILURE)
+            failed_delta += 1
+            code_delta = EXIT_INTEGRITY_FAILURE
+            _update_global_exit_code(code_delta)
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -677,10 +613,10 @@ def run_scheduled_cycles(
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
-        elif proc.returncode == 0:
+        elif proc is not None and proc.returncode == 0:
             result["outcome"] = "completed"
-            manifest["completed_workspace_count"] += 1
-            _update_global_exit_code(EXIT_SUCCESS)
+            completed_delta += 1
+            code_delta = EXIT_SUCCESS
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -693,6 +629,7 @@ def run_scheduled_cycles(
         else:
             result["outcome"] = "failed"
             is_partial = child_status == "partial"
+            assert proc is not None
             _set_failure(
                 result=result,
                 reason_code="topic_cycle_partial_output" if is_partial else "topic_cycle_failed",
@@ -700,8 +637,9 @@ def run_scheduled_cycles(
                 stage="child_cycle_exec",
                 recoverability="retryable" if is_partial else "non_retryable",
             )
-            manifest["failed_workspace_count"] += 1
-            _update_global_exit_code(EXIT_PARTIAL_OUTPUT if is_partial else EXIT_INTEGRITY_FAILURE)
+            failed_delta += 1
+            code_delta = EXIT_PARTIAL_OUTPUT if is_partial else EXIT_INTEGRITY_FAILURE
+            _update_global_exit_code(code_delta)
             append_ledger_event(
                 ledger_path=ledger_path,
                 workspace_id=workspace_id,
@@ -712,8 +650,161 @@ def run_scheduled_cycles(
                 failure={"message": result["failure_reason"]},
             )
         result["scheduler_failure_state_record"] = manifest_relative_path(ledger_path, run_dir=run_dir)
-        manifest["workspace_results"].append(result)
-        attempted_index += 1
+        return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+
+    attempted_index = 0
+    pending: list[tuple[int, Any]] = []
+    max_workers = min(4, len(records)) if len(records) > 0 else 1
+    workspace_lock_root = resolve_path(args.workspace_lock_root)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for record_index, record in enumerate(records):
+            workspace_id = str(record.get("workspace_id") or "")
+            result: dict[str, Any] = {
+                "workspace_id": workspace_id,
+                "planned_run_id": record.get("planned_run_id"),
+                "decision": record.get("decision"),
+                "cycle_run_id": None,
+                "cycle_event_id": None,
+                "cycle_manifest_path": None,
+                "attempt_number": None,
+                "max_attempts": None,
+                "runtime_budget_seconds": None,
+                "runtime_consumed_seconds": 0.0,
+                "outcome": "skipped",
+                "failure_reason": None,
+                "failure_reason_code": None,
+                "error_code": None,
+                "stage": None,
+                "recoverability": None,
+                "affected_record_id": None,
+                "saturation": record.get("saturation")
+                if isinstance(record.get("saturation"), dict)
+                else None,
+                "saturation_override": bool(record.get("saturation_override", False)),
+                "scheduler_failure_state_record": None,
+                "ledger_path": None,
+            }
+            raw_run_budget = record.get("run_budget")
+            run_budget: dict[str, Any] = raw_run_budget if isinstance(raw_run_budget, dict) else {}
+            result["max_attempts"] = run_budget.get("max_attempts")
+            result["runtime_budget_seconds"] = run_budget.get("max_runtime_seconds")
+            if not planned_record_selected(record):
+                result["outcome"] = "deferred"
+                _set_failure(
+                    result=result,
+                    reason_code="selection_not_selected",
+                    reason=record.get("skipped_reason") or "planned-run decision was not selected",
+                    stage="selection_filter",
+                    recoverability="non_retryable",
+                )
+                manifest["deferred_workspace_count"] += 1
+                workspace_results[record_index] = result
+                continue
+            workspace_root = record.get("resolved_workspace_root")
+            subject_manifest = record.get("resolved_default_subject_manifest")
+            if not isinstance(workspace_root, str) or not isinstance(subject_manifest, str):
+                result["outcome"] = "failed"
+                _set_failure(
+                    result=result,
+                    reason_code="selection_record_invalid",
+                    reason="planned-run record is missing resolved workspace or subject manifest",
+                    stage="input_validation",
+                    recoverability="non_retryable",
+                )
+                manifest["failed_workspace_count"] += 1
+                _update_global_exit_code(EXIT_VALIDATION_FAILED)
+                workspace_results[record_index] = result
+                continue
+            saturation = result.get("saturation")
+            if (
+                isinstance(saturation, dict)
+                and saturation.get("scheduler_action") in {"halt", "cooldown"}
+                and not result["saturation_override"]
+            ):
+                result["outcome"] = "deferred"
+                _set_failure(
+                    result=result,
+                    reason_code="selection_saturated",
+                    reason=(
+                        "saturation policy deferred workspace: "
+                        f"{saturation.get('state')} ({', '.join(saturation.get('reason_codes', []))})"
+                    ),
+                    stage="saturation_check",
+                    recoverability="retryable",
+                )
+                manifest["deferred_workspace_count"] += 1
+                workspace_results[record_index] = result
+                continue
+            ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+            result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
+            prior_attempts = terminal_attempt_count(ledger_path, workspace_id=workspace_id)
+            result["attempt_number"] = prior_attempts + 1
+            attempt_refusal = max_attempts_exceeded(record, prior_attempts=prior_attempts)
+            if attempt_refusal is not None:
+                result["outcome"] = "deferred"
+                _set_failure(
+                    result=result,
+                    reason_code="selection_run_budget_exceeded",
+                    reason=attempt_refusal,
+                    stage="attempt_budget_check",
+                    recoverability="retryable",
+                )
+                manifest["deferred_workspace_count"] += 1
+                workspace_results[record_index] = result
+                continue
+            runtime_budget = get_runtime_budget_seconds(record)
+            child_started_at = offset_timestamp(started_at, seconds=10 + attempted_index * 20)
+            child_ended_at = offset_timestamp(started_at, seconds=20 + attempted_index * 20)
+            attempted_index += 1
+            future = executor.submit(
+                _run_single_cycle,
+                workspace_id=workspace_id,
+                runtime_budget=runtime_budget,
+                workspace_root=workspace_root,
+                subject_manifest=subject_manifest,
+                cycle_runner=runner,
+                db_path=str(db_path),
+                attempt_number=result["attempt_number"],
+                mode=args.mode,
+                run_id=run_id,
+                candidate_batch_fixture=(
+                    str(resolve_path(args.candidate_batch_fixture))
+                    if args.candidate_batch_fixture
+                    else None
+                ),
+                execution_run_fixture=(
+                    str(resolve_path(args.execution_run_fixture))
+                    if args.execution_run_fixture
+                    else None
+                ),
+                build_next_feedback_plan=args.build_next_feedback_plan,
+                child_started_at=child_started_at,
+                child_ended_at=child_ended_at,
+                ledger_path=ledger_path,
+                result=result,
+                workspace_lock_root=workspace_lock_root,
+                workspace_mutex=workspace_locks.setdefault(workspace_id, threading.Lock()),
+            )
+            pending.append((record_index, future))
+        for record_index, future in pending:
+            (
+                result,
+                run_exit_code,
+                attempted_delta,
+                completed_delta,
+                failed_delta,
+                deferred_delta,
+            ) = future.result()
+            manifest["attempted_workspace_count"] += attempted_delta
+            manifest["completed_workspace_count"] += completed_delta
+            manifest["failed_workspace_count"] += failed_delta
+            manifest["deferred_workspace_count"] += deferred_delta
+            if run_exit_code > exit_code:
+                exit_code = run_exit_code
+            workspace_results[record_index] = result
+    manifest["workspace_results"] = [
+        result for result in workspace_results if result is not None
+    ]
     manifest["ended_at"] = utc_now()
     if manifest["failed_workspace_count"]:
         manifest["status"] = "failed"
