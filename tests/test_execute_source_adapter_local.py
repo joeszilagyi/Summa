@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tools.scripts import execute_source_adapter as source_executor
 
 
@@ -200,3 +202,8 @@ def test_compute_git_snapshot_hash_is_order_insensitive() -> None:
     )
 
     assert left == right
+
+
+def test_normalize_created_at_rejects_invalid_timestamp() -> None:
+    with pytest.raises(source_executor.SourceAcquisitionError, match="created_at must be an RFC3339 date-time"):
+        source_executor.normalize_created_at("not-a-timestamp")
