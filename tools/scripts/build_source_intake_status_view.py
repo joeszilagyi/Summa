@@ -51,6 +51,19 @@ def parse_args() -> argparse.Namespace:
         help="Directory to scan for source_adapter JSON manifests.",
     )
     parser.add_argument(
+        "--workspace-id",
+        action="append",
+        default=[],
+        dest="workspace_ids",
+        help="Optional workspace_id to include. Repeat to narrow the status view.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Optional maximum number of adapter entries to include after filtering and sorting.",
+    )
+    parser.add_argument(
         "--format",
         choices=("json", "text"),
         default="json",
@@ -103,6 +116,24 @@ def collect_adapter_paths(args: argparse.Namespace) -> list[Path]:
             seen.add(resolved)
             paths.append(resolved)
     return paths
+
+
+def selected_adapter_paths(args: argparse.Namespace) -> list[Path]:
+    paths = collect_adapter_paths(args)
+    requested = {workspace_id for workspace_id in args.workspace_ids if isinstance(workspace_id, str) and workspace_id.strip()}
+    if not requested:
+        return paths
+
+    selected: list[tuple[str, Path]] = []
+    for path in paths:
+        adapter_status, payload, _ = load_json_object(path)
+        if adapter_status != "ok" or payload is None:
+            continue
+        workspace_id = string_value(payload.get("workspace_id"))
+        if workspace_id in requested:
+            selected.append((workspace_id, path))
+    selected.sort(key=lambda item: (item[0], str(item[1])))
+    return [path for _, path in selected]
 
 
 def load_json_object(path: Path) -> tuple[str, dict[str, Any] | None, str | None]:
@@ -358,16 +389,22 @@ def count_by(entries: list[dict[str, Any]], field_path: tuple[str, ...]) -> dict
 def build_source_intake_status_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not args.adapter and not args.root:
         raise SourceIntakeStatusError("at least one --adapter or --root is required")
-    paths = collect_adapter_paths(args)
+    if args.limit < 0:
+        raise SourceIntakeStatusError("--limit must be greater than or equal to zero")
+    paths = selected_adapter_paths(args)
     entries = sorted(
         [adapter_entry(path) for path in paths],
         key=lambda entry: (entry["workspace_id"] or "", entry["adapter_id"] or "", entry["adapter_path"]),
     )
+    if args.limit:
+        entries = entries[: args.limit]
     return {
         "schema_version": SCHEMA_VERSION,
         "inputs": {
             "adapter_paths": [str(resolve_path(raw_path)) for raw_path in args.adapter],
             "roots": [str(resolve_path(raw_root)) for raw_root in args.root],
+            "workspace_ids": list(args.workspace_ids),
+            "limit": args.limit,
             "scan_patterns": list(ADAPTER_SCAN_PATTERNS),
         },
         "counts": {
@@ -393,8 +430,12 @@ def text_value(value: Any) -> str:
 
 
 def render_text(payload: dict[str, Any]) -> str:
+    return "\n".join(iter_text_lines(payload)) + "\n"
+
+
+def iter_text_lines(payload: dict[str, Any]):
     counts = payload["counts"]
-    lines = [
+    yield from [
         f"schema_version={payload['schema_version']}",
         f"total_adapters={counts['total_adapters']}",
         f"contract_pass={counts['contract_pass']}",
@@ -405,13 +446,12 @@ def render_text(payload: dict[str, Any]) -> str:
         f"failed={counts['failed']}",
     ]
     for index, adapter in enumerate(payload["adapters"]):
-        lines.append(f"adapter[{index}].adapter_path={adapter['adapter_path']}")
-        lines.append(f"adapter[{index}].adapter_id={text_value(adapter['adapter_id'])}")
-        lines.append(f"adapter[{index}].workspace_id={text_value(adapter['workspace_id'])}")
-        lines.append(f"adapter[{index}].intake_state={adapter['intake_state']}")
-        lines.append(f"adapter[{index}].contract_status={adapter['contract_status']}")
-        lines.append(f"adapter[{index}].locator_status={adapter['locator']['locator_status']}")
-    return "\n".join(lines) + "\n"
+        yield f"adapter[{index}].adapter_path={adapter['adapter_path']}"
+        yield f"adapter[{index}].adapter_id={text_value(adapter['adapter_id'])}"
+        yield f"adapter[{index}].workspace_id={text_value(adapter['workspace_id'])}"
+        yield f"adapter[{index}].intake_state={adapter['intake_state']}"
+        yield f"adapter[{index}].contract_status={adapter['contract_status']}"
+        yield f"adapter[{index}].locator_status={adapter['locator']['locator_status']}"
 
 
 def main() -> int:
@@ -425,7 +465,8 @@ def main() -> int:
     if args.format == "json":
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     else:
-        sys.stdout.write(render_text(payload))
+        for line in iter_text_lines(payload):
+            sys.stdout.write(line + "\n")
     return 0
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import importlib.util
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +16,12 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "source_adapter
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_adapter.py"
 SOURCE_INTAKE_VIEW = REPO_ROOT / "tools" / "scripts" / "build_source_intake_status_view.py"
 SOURCE_ADAPTER_SCHEMA = REPO_ROOT / "config" / "source_adapter.schema.json"
+
+source_intake_spec = importlib.util.spec_from_file_location("source_intake_status_view_for_tests", SOURCE_INTAKE_VIEW)
+assert source_intake_spec is not None
+source_intake_status_view = importlib.util.module_from_spec(source_intake_spec)
+assert source_intake_spec.loader is not None
+source_intake_spec.loader.exec_module(source_intake_status_view)
 
 sys.path.insert(0, str(REPO_ROOT))
 from tools.common.source_adapter_contract import (  # noqa: E402
@@ -261,6 +269,99 @@ def test_source_intake_status_view_round_trips_valid_and_invalid_adapters(tmp_pa
     assert invalid_entry["contract_status"] == "fail"
     assert invalid_entry["intake_state"] == "failed"
     assert invalid_entry["validation"]["error_count"] == 1
+
+
+def test_source_intake_status_view_filters_workspace_ids_before_validation(tmp_path: Path, monkeypatch) -> None:
+    adapter_paths = []
+    for workspace_id in ("alpha", "beta", "gamma"):
+        path = tmp_path / f"{workspace_id}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "source-adapter.v1",
+                    "adapter_id": f"{workspace_id}_adapter",
+                    "display_name": workspace_id.title(),
+                    "workspace_id": workspace_id,
+                    "input_family": "remote_url_manifest",
+                    "locator": {"manifest_url": f"https://example.invalid/{workspace_id}.jsonl"},
+                    "content_profile": {"content_kinds": ["url_observation"], "hazard_flags": []},
+                    "provenance": {
+                        "discovery_provenance": "test",
+                        "acquisition_method": "manual_list",
+                        "source_description": "fixture",
+                    },
+                    "rights_and_storage": {
+                        "payload_storage_policy_class": "external_later",
+                        "metadata_storage_policy_class": "tracked_derived",
+                        "rights_posture": "quote_limited",
+                    },
+                    "automation_posture": "operator_review_required",
+                    "normalized_handoff": {
+                        "record_family": "url_observation",
+                        "batch_unit": "per_reference",
+                        "preserve_fields": ["original_locator"],
+                        "source_specific_fields": ["manifest_url"],
+                    },
+                    "transform_lineage": [
+                        {
+                            "step_id": "handoff",
+                            "step_kind": "emit_handoff",
+                            "description": "Emit handoff.",
+                            "deterministic": True,
+                            "review_required": True,
+                        }
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        adapter_paths.append(path)
+
+    calls: list[Path] = []
+
+    def fake_adapter_entry(path: Path) -> dict[str, object]:
+        calls.append(path)
+        return {
+            "adapter_path": str(path),
+            "adapter_status": "ok",
+            "contract_status": "pass",
+            "intake_state": "configured",
+            "status_detail": None,
+            "adapter_id": f"{path.stem}_adapter",
+            "display_name": path.stem.title(),
+            "workspace_id": "beta",
+            "input_family": "remote_url_manifest",
+            "locator": {"locator_status": "configured_remote"},
+            "content_profile": {"content_kinds": [], "hazard_flags": []},
+            "rights_and_storage": {},
+            "automation_posture": None,
+            "normalized_handoff": {"record_family": None, "batch_unit": None, "preserve_fields": [], "source_specific_fields": []},
+            "transform_lineage": {"step_count": 0, "review_required_step_count": 0, "final_step_kind": None},
+            "review_required_reasons": [],
+            "public_use_blockers": [],
+            "public_export_eligibility": None,
+            "quote_eligibility": None,
+            "validation": {"counts": {}, "error_count": 0, "warning_count": 0, "errors": [], "warnings": []},
+        }
+
+    monkeypatch.setattr(source_intake_status_view, "adapter_entry", fake_adapter_entry)
+
+    payload = source_intake_status_view.build_source_intake_status_payload(
+        argparse.Namespace(
+            adapter=[str(adapter_paths[0]), str(adapter_paths[1]), str(adapter_paths[2])],
+            root=[],
+            workspace_ids=["beta"],
+            limit=1,
+            format="json",
+        )
+    )
+
+    assert calls == [adapter_paths[1]]
+    assert payload["counts"]["total_adapters"] == 1
+    assert payload["adapters"][0]["workspace_id"] == "beta"
 
 
 def test_source_adapter_schema_locator_families_match_validator_contract() -> None:
