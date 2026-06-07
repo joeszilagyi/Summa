@@ -65,7 +65,7 @@ def test_broken_internal_link_is_detected() -> None:
         _, manifest_path, _, _ = build_site(Path(tmp))
         home_path = manifest_path.parent / "index.html"
         home_body = home_path.read_text(encoding="utf-8")
-        home_path.write_text(home_body.replace("facets/records.html", "facets/missing.html", 1), encoding="utf-8")
+        home_path.write_text(home_body.replace("facets/records.html", "/facets/missing.html", 1), encoding="utf-8")
 
         result, exit_code = validator.validate_static_knowledge_tree_output(manifest_path)
 

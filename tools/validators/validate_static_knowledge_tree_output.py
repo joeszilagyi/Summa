@@ -134,13 +134,18 @@ def normalize_internal_reference(current_route: str, raw_value: str) -> str | No
     if not path_value:
         return current_route
     if path_value.startswith("/"):
-        return None
-    current_dir = str(PurePosixPath(current_route).parent)
-    normalized = posixpath.normpath(posixpath.join(current_dir, path_value))
+        normalized = posixpath.normpath(path_value.lstrip("/"))
+        if not normalized or normalized == ".":
+            normalized = "index.html"
+    else:
+        current_dir = str(PurePosixPath(current_route).parent)
+        normalized = posixpath.normpath(posixpath.join(current_dir, path_value))
     if normalized == ".":
         return current_route
     if normalized.startswith("../") or normalized == "..":
         return None
+    if normalized.startswith("/"):
+        normalized = normalized.lstrip("/")
     return normalized
 
 
