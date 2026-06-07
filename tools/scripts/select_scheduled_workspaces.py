@@ -130,6 +130,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSONL path to append planned-run records for every selected and skipped workspace.",
     )
     parser.add_argument(
+        "--relaxed-planned-runs-write",
+        action="store_true",
+        help="Skip fsync when appending planned-run records for scratch or test runs.",
+    )
+    parser.add_argument(
         "--planner-run-id",
         default=None,
         help="Identifier for this selector planning pass. Defaults to a generated ID.",
@@ -553,7 +558,12 @@ def saturation_ineligibility_reasons(
     return []
 
 
-def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> None:
+def append_planned_run_records(
+    path: Path,
+    records: list[dict[str, Any]],
+    *,
+    sync: bool = True,
+) -> None:
     def read_existing_ids(path: Path) -> set[str]:
         existing: set[str] = set()
         if not path.exists() or path.stat().st_size == 0:
@@ -591,7 +601,8 @@ def append_planned_run_records(path: Path, records: list[dict[str, Any]]) -> Non
             seen_ids.add(planned_run_id)
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         handle.flush()
-        os.fsync(handle.fileno())
+        if sync:
+            os.fsync(handle.fileno())
 
 
 def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -706,7 +717,11 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
     for record in planned_records:
         record["selection_explanation_id"] = selection_explanation["explanation_id"]
     if args.planned_runs_jsonl is not None:
-        append_planned_run_records(args.planned_runs_jsonl, planned_records)
+        append_planned_run_records(
+            args.planned_runs_jsonl,
+            planned_records,
+            sync=not args.relaxed_planned_runs_write,
+        )
 
     return {
         "registry_path": str(registry_path),
