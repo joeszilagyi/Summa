@@ -601,14 +601,57 @@ def db_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
     return record
 
 
-def export_source_loci(conn: sqlite3.Connection, topic_id: str | None = None) -> dict[str, Any]:
+def export_source_loci(
+    conn: sqlite3.Connection,
+    topic_id: str | None = None,
+    *,
+    page_size: int = 500,
+) -> dict[str, Any]:
     ensure_schema(conn)
     params: tuple[Any, ...] = ()
     where = ""
     if topic_id:
         where = "WHERE topic_id=?"
         params = (topic_id,)
-    rows = conn.execute(
+    counts_row = conn.execute(
+        f"""
+        SELECT
+          COUNT(*) AS total_loci,
+          COALESCE(SUM(CASE WHEN review_state IN ('needs_review', 'demoted') THEN 1 ELSE 0 END), 0) AS review_needed_loci,
+          COALESCE(SUM(CASE WHEN is_deprecated THEN 1 ELSE 0 END), 0) AS deprecated_loci,
+          COALESCE(SUM(CASE WHEN locus_type = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_loci
+        FROM source_locus
+        {where}
+        """,
+        params,
+    ).fetchone()
+    by_review_state = {
+        row["review_state"]: int(row["count"])
+        for row in conn.execute(
+            f"""
+            SELECT review_state, COUNT(*) AS count
+            FROM source_locus
+            {where}
+            GROUP BY review_state
+            ORDER BY review_state
+            """,
+            params,
+        )
+    }
+    by_type = {
+        row["locus_type"]: int(row["count"])
+        for row in conn.execute(
+            f"""
+            SELECT locus_type, COUNT(*) AS count
+            FROM source_locus
+            {where}
+            GROUP BY locus_type
+            ORDER BY locus_type
+            """,
+            params,
+        )
+    }
+    cursor = conn.execute(
         f"""
         SELECT *
         FROM source_locus
@@ -616,21 +659,21 @@ def export_source_loci(conn: sqlite3.Connection, topic_id: str | None = None) ->
         ORDER BY topic_id, is_deprecated, review_state, display_name, locus_id
         """,
         params,
-    ).fetchall()
-    records = [db_row_to_record(row) for row in rows]
-    by_review_state: dict[str, int] = {}
-    by_type: dict[str, int] = {}
-    for record in records:
-        by_review_state[record["review_state"]] = by_review_state.get(record["review_state"], 0) + 1
-        by_type[record["locus_type"]] = by_type.get(record["locus_type"], 0) + 1
+    )
+    records: list[dict[str, Any]] = []
+    while True:
+        rows = cursor.fetchmany(page_size)
+        if not rows:
+            break
+        records.extend(db_row_to_record(row) for row in rows)
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "topic_id": topic_id,
         "counts": {
-            "total_loci": len(records),
-            "review_needed_loci": sum(1 for record in records if record["review_state"] in {"needs_review", "demoted"}),
-            "deprecated_loci": sum(1 for record in records if record["is_deprecated"]),
-            "unknown_loci": sum(1 for record in records if record["locus_type"] == "unknown"),
+            "total_loci": int(counts_row["total_loci"]),
+            "review_needed_loci": int(counts_row["review_needed_loci"]),
+            "deprecated_loci": int(counts_row["deprecated_loci"]),
+            "unknown_loci": int(counts_row["unknown_loci"]),
             "by_review_state": by_review_state,
             "by_type": by_type,
         },
