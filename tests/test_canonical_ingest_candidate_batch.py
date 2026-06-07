@@ -77,6 +77,7 @@ class ProvenanceLookupCountingProxy:
         self._conn = conn
         self.provenance_lookup_count = 0
         self.prior_state_like_count = 0
+        self.prior_state_count_query_count = 0
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._conn, name)
@@ -93,6 +94,8 @@ class ProvenanceLookupCountingProxy:
             normalized_sql = " ".join(sql.split()).upper()
             if normalized_sql.startswith("SELECT PROVENANCE_EVENT_ID FROM PROVENANCE_EVENT"):
                 self.provenance_lookup_count += 1
+            if normalized_sql.startswith("SELECT COUNT(*) AS COUNT"):
+                self.prior_state_count_query_count += 1
             if "NOTE_TEXT LIKE" in normalized_sql:
                 self.prior_state_like_count += 1
         return self._conn.execute(sql, params)
@@ -350,7 +353,9 @@ def test_candidate_batch_unknown_candidate_is_preserved_with_warning(tmp_path: P
     assert "unknown candidate type preserved as a source claim" in warning_messages
 
 
-def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp_path: Path) -> None:
+def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
     subject_id = str(batch["subject"]["subject_id"])
@@ -378,6 +383,9 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
                 batch_hash=batch_hash,
                 db_path=db_path,
             )
+        proxy.prior_state_count_query_count = 0
+        proxy.prior_state_like_count = 0
+        monkeypatch.setattr(canonical_store, "validate_existing_store", lambda *args, **kwargs: None)
         prior_state = canonical_store.load_gather_prior_state(proxy, subject_id=subject_id)
     finally:
         conn.close()
@@ -388,6 +396,7 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
         record["entity_label"] for record in prior_state["records"]["entities"]
     } >= {"Alpha Example"}
     assert proxy.prior_state_like_count == 0
+    assert proxy.prior_state_count_query_count == 0
 
 
 def test_candidate_batch_dry_run_reports_intended_writes_without_mutation(tmp_path: Path) -> None:

@@ -2687,6 +2687,17 @@ def _fetch_scoped_work_ids(conn: sqlite3.Connection, *, subject_id: str) -> list
     return [int(row["work_id"]) for row in rows]
 
 
+def _fetch_rows_with_total(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[Any, ...],
+) -> tuple[int, list[sqlite3.Row]]:
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return 0, []
+    return int(rows[0]["total_count"]), rows
+
+
 def _state_label(
     review_state: Any,
     confidence_score: Any,
@@ -2736,25 +2747,11 @@ def load_gather_prior_state(
         work_scope = f"({work_scope} OR work_id IN ({', '.join('?' for _ in work_ids)}))"
         work_scope_params.extend(work_ids)
 
-    work_total = conn.execute(
+    work_total, work_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM work
-        WHERE {work_scope}
-          AND review_state NOT IN ({excluded_placeholders})
-          AND (
-            review_state IN ({established_placeholders})
-            OR COALESCE(confidence_score, 0.0) >= ?
-          )
-        """,
-        tuple(work_scope_params)
-        + excluded_params
-        + established_params
-        + (high_confidence_threshold,),
-    ).fetchone()
-    work_rows = conn.execute(
-        f"""
-        SELECT work_id, work_type, title, review_state, confidence_score,
+        SELECT COUNT(*) OVER () AS total_count,
+               work_id, work_type, title, review_state, confidence_score,
                provenance_event_ref, first_seen_at, last_seen_at, created_at, record_last_updated
         FROM work
         WHERE {work_scope}
@@ -2776,28 +2773,13 @@ def load_gather_prior_state(
         + (high_confidence_threshold,)
         + established_params
         + (per_family_limit,),
-    ).fetchall()
+    )
 
-    entity_total = conn.execute(
+    entity_total, entity_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM extraction_detected_entity entity
-        LEFT JOIN extraction_record extraction
-          ON extraction.extraction_id = entity.extraction_id
-        LEFT JOIN capture_event capture
-          ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id) = ?
-          AND entity.review_state NOT IN ({excluded_placeholders})
-          AND (
-            entity.review_state IN ({established_placeholders})
-            OR COALESCE(entity.confidence_score, 0.0) >= ?
-          )
-        """,
-        (subject_key,) + excluded_params + established_params + (high_confidence_threshold,),
-    ).fetchone()
-    entity_rows = conn.execute(
-        f"""
-        SELECT entity.detected_entity_id, entity.entity_label, entity.normalized_label,
+        SELECT COUNT(*) OVER () AS total_count,
+               entity.detected_entity_id, entity.entity_label, entity.normalized_label,
                entity.entity_type, entity.review_state, entity.confidence_score,
                entity.provenance_event_ref, entity.extraction_id, entity.capture_event_id,
                COALESCE(extraction.created_at, capture.captured_at, entity.record_last_updated) AS activity_at
@@ -2825,7 +2807,7 @@ def load_gather_prior_state(
         + (high_confidence_threshold,)
         + established_params
         + (per_family_limit,),
-    ).fetchall()
+    )
 
     claim_scope = "workspace_id=?"
     claim_scope_params: list[Any] = [subject_key]
@@ -2834,18 +2816,11 @@ def load_gather_prior_state(
             f"({claim_scope} OR about_object_ref IN ({', '.join('?' for _ in work_refs)}))"
         )
         claim_scope_params.extend(work_refs)
-    claim_total = conn.execute(
+    claim_total, claim_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_claim
-        WHERE {claim_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(claim_scope_params) + lead_params,
-    ).fetchone()
-    claim_rows = conn.execute(
-        f"""
-        SELECT source_claim_id, about_object_ref, claim_text, claim_type, review_state,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_claim_id, about_object_ref, claim_text, claim_type, review_state,
                confidence_score, provenance_event_ref, created_at
         FROM source_claim
         WHERE {claim_scope}
@@ -2858,25 +2833,18 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(claim_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
     access_scope = "workspace_id=?"
     access_scope_params: list[Any] = [subject_key]
     if work_ids:
         access_scope = f"({access_scope} OR work_id IN ({', '.join('?' for _ in work_ids)}))"
         access_scope_params.extend(work_ids)
-    access_total = conn.execute(
+    access_total, access_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_access
-        WHERE {access_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(access_scope_params) + lead_params,
-    ).fetchone()
-    access_rows = conn.execute(
-        f"""
-        SELECT source_access_id, work_id, source_lead_id, original_locator, canonical_url,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_access_id, work_id, source_lead_id, original_locator, canonical_url,
                citation_hint, review_state, authority_level, workspace_id,
                first_seen_at, last_seen_at
         FROM source_access
@@ -2888,7 +2856,7 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(access_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
     relationship_scope = "workspace_id=?"
     relationship_scope_params: list[Any] = [subject_key]
@@ -2897,18 +2865,11 @@ def load_gather_prior_state(
         relationship_scope = f"({relationship_scope} OR from_object_ref IN ({placeholders}) OR to_object_ref IN ({placeholders}))"
         relationship_scope_params.extend(work_refs)
         relationship_scope_params.extend(work_refs)
-    relationship_total = conn.execute(
+    relationship_total, relationship_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_relationship
-        WHERE {relationship_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(relationship_scope_params) + lead_params,
-    ).fetchone()
-    relationship_rows = conn.execute(
-        f"""
-        SELECT source_relationship_id, from_object_ref, to_object_ref, predicate,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_relationship_id, from_object_ref, to_object_ref, predicate,
                target_label, review_state, confidence_score, provenance_event_ref, created_at
         FROM source_relationship
         WHERE {relationship_scope}
@@ -2920,19 +2881,13 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(relationship_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
-    extraction_total = conn.execute(
+    extraction_total, extraction_rows = _fetch_rows_with_total(
+        conn,
         """
-        SELECT COUNT(*) AS count
-        FROM extraction_record
-        WHERE workspace_id=?
-        """,
-        (subject_key,),
-    ).fetchone()
-    extraction_rows = conn.execute(
-        """
-        SELECT extraction_id, capture_event_id, summary_short, extraction_status, review_state,
+        SELECT COUNT(*) OVER () AS total_count,
+               extraction_id, capture_event_id, summary_short, extraction_status, review_state,
                created_at, provenance_event_ref
         FROM extraction_record
         WHERE workspace_id=?
@@ -2940,21 +2895,13 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         (subject_key, per_family_limit),
-    ).fetchall()
+    )
 
-    previous_total = conn.execute(
+    previous_total, previous_rows = _fetch_rows_with_total(
+        conn,
         """
-        SELECT COUNT(*) AS count
-        FROM provenance_event
-        WHERE event_type='gather_candidate_batch_ingest'
-          AND source_object_namespace=?
-          AND source_object_id=?
-        """,
-        (GATHER_PRIOR_STATE_SOURCE_NAMESPACE, subject_key),
-    ).fetchone()
-    previous_rows = conn.execute(
-        """
-        SELECT provenance_event_id, run_id, event_timestamp,
+        SELECT COUNT(*) OVER () AS total_count,
+               provenance_event_id, run_id, event_timestamp,
                CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.cycle_depth') END AS cycle_depth
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
@@ -2964,7 +2911,7 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         (GATHER_PRIOR_STATE_SOURCE_NAMESPACE, subject_key, max_previous_runs),
-    ).fetchall()
+    )
 
     previous_runs: list[dict[str, Any]] = []
     for row in previous_rows:
@@ -2993,37 +2940,37 @@ def load_gather_prior_state(
         },
         "record_counts": {
             "works": {
-                "total": int(work_total["count"]),
+                "total": int(work_total),
                 "selected": len(work_rows),
                 "rendered": 0,
             },
             "entities": {
-                "total": int(entity_total["count"]),
+                "total": int(entity_total),
                 "selected": len(entity_rows),
                 "rendered": 0,
             },
             "source_claims": {
-                "total": int(claim_total["count"]),
+                "total": int(claim_total),
                 "selected": len(claim_rows),
                 "rendered": 0,
             },
             "source_access": {
-                "total": int(access_total["count"]),
+                "total": int(access_total),
                 "selected": len(access_rows),
                 "rendered": 0,
             },
             "relationships": {
-                "total": int(relationship_total["count"]),
+                "total": int(relationship_total),
                 "selected": len(relationship_rows),
                 "rendered": 0,
             },
             "extraction_summaries": {
-                "total": int(extraction_total["count"]),
+                "total": int(extraction_total),
                 "selected": len(extraction_rows),
                 "rendered": 0,
             },
             "previous_runs": {
-                "total": int(previous_total["count"]),
+                "total": int(previous_total),
                 "selected": len(previous_runs),
                 "rendered": 0,
             },
