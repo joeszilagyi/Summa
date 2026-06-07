@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tools.scripts import select_scheduled_workspaces as selector
+from tools.source_db_tools import canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
@@ -298,6 +299,96 @@ def test_selector_can_allow_unresolved_subject_manifest_when_explicitly_enabled(
         str(manifest_path),
         allow_unresolved=True,
     ) is None
+
+
+def test_selector_uses_cached_subject_id_for_saturation_without_reloading_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at="2026-01-01T00:00:00Z",
+        applied_by="pytest.selector",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="gather_candidate_batch",
+                object_id="run-1",
+                event_type="gather_candidate_batch_ingest",
+                tool_name="tests/test_select_scheduled_workspaces.py",
+                run_id="run-1",
+                event_timestamp="2026-01-01T00:00:00Z",
+                source_object_namespace="topic_subject",
+                source_object_id="subject.selected",
+                note_text=json.dumps(
+                    {
+                        "subject_id": "subject.selected",
+                        "facet": "sources",
+                        "cycle_depth": 1,
+                    },
+                    sort_keys=True,
+                ),
+                provenance_event_key_v1="prov:selected:run-1",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=event.event_key,
+                source_claim_key_v1="claim:selected:run-1",
+                about_object_ref="subject:selected_workspace",
+                claim_text="Reviewable claim",
+                claim_type="fixture_claim",
+                review_state="needs_review",
+                workspace_id="selected_workspace",
+                created_at="2026-01-01T00:00:00Z",
+                record_last_updated="2026-01-01T00:00:00Z",
+            )
+    finally:
+        conn.close()
+
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    def fail_if_reloaded(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("subject manifest should have been cached during registry validation")
+
+    monkeypatch.setattr(selector, "load_subject_id_from_manifest", fail_if_reloaded)
+
+    payload = selector.build_selection_payload(
+        selector.argparse.Namespace(
+            registry=str(registry_path),
+            workspace_ids=[],
+            include_manual=False,
+            limit=None,
+            format="json",
+            planned_runs_jsonl=None,
+            planner_run_id="planner-fixture",
+            planned_at="2026-01-01T00:00:00Z",
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+            db=str(db_path),
+            saturation_policy=str(REPO_ROOT / "config" / "topic_saturation_policy.v1.json"),
+            include_saturated=False,
+            ignore_saturation=False,
+        )
+    )
+
+    assert payload["selected_count"] == 1
+    assert payload["selected_workspaces"][0]["workspace_id"] == "selected_workspace"
 
 
 @pytest.mark.parametrize(

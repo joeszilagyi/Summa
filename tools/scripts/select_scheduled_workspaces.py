@@ -543,10 +543,12 @@ def attach_saturation(
 ) -> None:
     if policy is None or conn is None:
         return
-    subject_id = load_subject_id_from_manifest(
-        entry.get("resolved_default_subject_manifest"),
-        allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
-    )
+    subject_id = workspace.get("resolved_default_subject_id")
+    if not isinstance(subject_id, str) or not subject_id:
+        subject_id = load_subject_id_from_manifest(
+            entry.get("resolved_default_subject_manifest"),
+            allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
+        )
     if subject_id is None:
         entry["saturation"] = {
             "schema_version": topic_saturation.SCHEMA_VERSION,

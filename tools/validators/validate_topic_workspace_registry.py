@@ -737,6 +737,10 @@ def validate_workspace_record(
             )
             return workspace_id if isinstance(workspace_id, str) else None, resolved_root
 
+        subject_id = manifest_payload.get("subject_id")
+        if isinstance(subject_id, str) and subject_id:
+            workspace["resolved_default_subject_id"] = subject_id
+
         manifest_domain_pack = manifest_payload.get("domain_pack")
         if manifest_domain_pack != domain_pack:
             add_error(
