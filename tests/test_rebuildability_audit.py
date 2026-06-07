@@ -867,3 +867,45 @@ def test_deterministic_with_fixed_timestamp_and_kept_temp_db(tmp_path: Path) -> 
     assert first_proc.returncode == 0, first_proc.stdout + first_proc.stderr
     assert second_proc.returncode == 0, second_proc.stdout + second_proc.stderr
     assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+
+def test_main_writes_report_with_atomic_json_writer(tmp_path: Path, monkeypatch) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    output = tmp_path / "audit-report.json"
+    writes: list[Path] = []
+    original_write_text = audit.Path.write_text
+
+    def fake_atomic_write(path: Path, payload: object) -> None:
+        writes.append(path)
+        # Preserve a real artifact for downstream checks.
+        output.parent.mkdir(parents=True, exist_ok=True)
+        original_write_text(
+            output,
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def reject_direct_write(_self: object, *args: object, **kwargs: object) -> None:
+        raise AssertionError("direct write_text should not be used")
+
+    monkeypatch.setattr(audit, "atomic_write_json", fake_atomic_write)
+    monkeypatch.setattr(audit.Path, "write_text", reject_direct_write)
+
+    exit_code = audit.main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "--output",
+            str(output),
+            "--replay-mode",
+            "validate_only",
+            "--generated-at",
+            FIXED_TIMESTAMP,
+        ]
+    )
+
+    assert exit_code == 1
+    assert writes == [output.resolve()]
+    assert output.is_file()
+    report = load_json(output)
+    assert_rebuildability_report_schema(report)
