@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.common.atomic_write import _fsync_directory, atomic_write_json, atomic_write_jsonl
+from tools.common.atomic_write import (
+    _fsync_directory,
+    atomic_write_bytes,
+    atomic_write_json,
+    atomic_write_jsonl,
+)
 from tools.validators.common import write_json
 
 
@@ -124,6 +129,33 @@ def test_atomic_write_jsonl_cleans_temp_files_when_replace_fails(
 
     with pytest.raises(exc_type, match=expected_message):
         atomic_write_jsonl(output, [{"b": 2, "a": 1}])
+
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "exc_type, expected_message",
+    [
+        (OSError, "cross-device link"),
+        (PermissionError, "permission denied"),
+    ],
+)
+def test_atomic_write_bytes_cleans_temp_files_when_replace_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    exc_type: type[BaseException],
+    expected_message: str,
+) -> None:
+    output = tmp_path / "artifact.bin"
+
+    def fail_replace(self: Path, target: Path) -> None:  # type: ignore[override]
+        raise exc_type(expected_message)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(exc_type, match=expected_message):
+        atomic_write_bytes(output, b"payload")
 
     assert not output.exists()
     assert list(tmp_path.iterdir()) == []

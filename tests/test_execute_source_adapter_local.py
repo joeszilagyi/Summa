@@ -183,6 +183,43 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
 
 
+def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    output = tmp_path / "local-source-execution"
+
+    first_proc = run_executor(tmp_path, handoff=handoff)
+    assert first_proc.returncode == source_executor.EXIT_STATE_UNSAFE, first_proc.stdout + first_proc.stderr
+    stale_artifact = output / "extracted-text" / "extraction-0002.txt"
+    assert stale_artifact.exists()
+
+    single_handoff = tmp_path / "local-source-handoff-one.jsonl"
+    single_handoff.write_text(handoff.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+
+    second_proc = run_executor(tmp_path, handoff=single_handoff)
+    assert second_proc.returncode == source_executor.EXIT_STATE_UNSAFE, second_proc.stdout + second_proc.stderr
+    assert not stale_artifact.exists()
+    assert (output / "manifest.json").exists()
+
+
+def test_publish_output_dir_swaps_staged_tree_into_place(tmp_path: Path) -> None:
+    output = tmp_path / "local-source-execution"
+    output.mkdir()
+    (output / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+    staging = tmp_path / ".local-source-execution.staging"
+    staging.mkdir()
+    (staging / "manifest.json").write_text("fresh\n", encoding="utf-8")
+    (staging / "extracted-text").mkdir()
+    (staging / "extracted-text" / "extraction-0001.txt").write_text("fresh\n", encoding="utf-8")
+
+    source_executor.publish_output_dir(staging, output)
+
+    assert (output / "manifest.json").read_text(encoding="utf-8") == "fresh\n"
+    assert (output / "extracted-text" / "extraction-0001.txt").read_text(encoding="utf-8") == "fresh\n"
+    assert not (output / "stale.txt").exists()
+    assert not staging.exists()
+
+
 def test_compute_git_snapshot_hash_is_order_insensitive() -> None:
     left = source_executor.compute_git_snapshot_hash(
         [
