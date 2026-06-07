@@ -663,7 +663,7 @@ def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     report = load_json(report_path)
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "incomplete_support"
     discovered = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
     assert discovered["gather_candidate_batch"]["schema_id"] == "gather-candidate-batch.v0"
     assert discovered["source_acquisition_execution"]["schema_id"] == "source-acquisition-execution.v0"
