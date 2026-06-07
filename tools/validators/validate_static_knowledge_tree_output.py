@@ -40,7 +40,6 @@ if str(REPO_ROOT) not in sys.path:
 
 import tools.validators.validate_knowledge_tree_build_manifest as validate_knowledge_tree_build_manifest  # noqa: E402
 
-
 VALIDATOR_NAME = "static_knowledge_tree_output"
 CONTRACT_VERSION = "1"
 FIXTURE_PATH = "tests/fixtures/static_knowledge_tree_builder/valid_full/inputs/knowledge_tree_export.json"
@@ -125,9 +124,7 @@ def is_external_reference(value: str) -> bool:
     if not stripped or stripped.startswith("#") or stripped.startswith("//"):
         return True
     split = urlsplit(stripped)
-    if split.scheme:
-        return True
-    return False
+    return bool(split.scheme)
 
 
 def normalize_internal_reference(current_route: str, raw_value: str) -> str | None:
