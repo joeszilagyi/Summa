@@ -157,6 +157,29 @@ def fts_matches(index_db: Path, query: str) -> list[str]:
     return [row[0] for row in rows]
 
 
+def test_fetch_rows_in_batches_streams_with_fetchmany() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.calls = 0
+            self._batches = [
+                [1, 2],
+                [3],
+                [],
+            ]
+
+        def fetchmany(self, batch_size: int) -> list[int]:
+            assert batch_size == 2
+            self.calls += 1
+            return self._batches.pop(0)
+
+    cursor = FakeCursor()
+
+    batches = list(builder.fetch_rows_in_batches(cursor, batch_size=2))
+
+    assert batches == [[1, 2], [3]]
+    assert cursor.calls == 3
+
+
 def test_public_projection_excludes_superseded_blocked_and_local_only_fields(tmp_path: Path) -> None:
     db = create_search_db(tmp_path)
     ledger = create_correction_ledger(tmp_path)
