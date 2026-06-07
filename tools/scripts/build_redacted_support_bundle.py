@@ -54,6 +54,21 @@ def redacted_text(value: str) -> str:
     return local_doctor.redact(value)
 
 
+def schema_inventory_path(repo_root: Path) -> Path:
+    return repo_root / "runtime" / "config" / "schema_inventory.json"
+
+
+def load_schema_inventory(repo_root: Path) -> dict[str, Any] | None:
+    path = schema_inventory_path(repo_root)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def tail_text(path: Path, *, line_count: int) -> str | None:
     if line_count <= 0:
         return None
@@ -100,6 +115,9 @@ def load_or_build_doctor_report(repo_root: Path, doctor_report: Path | None, reg
 
 
 def schema_versions(repo_root: Path) -> dict[str, Any]:
+    inventory = load_schema_inventory(repo_root)
+    if inventory is not None:
+        return inventory
     versions = []
     for path in sorted((repo_root / "config").glob("**/*.schema.json")):
         try:

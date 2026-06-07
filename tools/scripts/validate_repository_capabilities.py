@@ -13,6 +13,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INDEX = REPO_ROOT / "config" / "repository_capabilities.v1.json"
 PROFILE_ROOT = REPO_ROOT / "config" / "standards_profiles"
+SCHEMA_INVENTORY_PATH = REPO_ROOT / "runtime" / "config" / "schema_inventory.json"
 
 VALID_STATUSES = {
     "live",
@@ -88,6 +89,33 @@ def load_package_scripts() -> dict[str, str]:
     if not isinstance(scripts, dict):
         return {}
     return {str(key): str(value) for key, value in scripts.items()}
+
+
+def build_schema_inventory(repo_root: Path) -> dict[str, Any]:
+    schemas = []
+    for path in sorted((repo_root / "config").glob("**/*.schema.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            schemas.append({"path": path.relative_to(repo_root).as_posix(), "status": "unreadable"})
+            continue
+        schemas.append(
+            {
+                "path": path.relative_to(repo_root).as_posix(),
+                "title": payload.get("title"),
+                "id": payload.get("$id"),
+                "status": "readable",
+            }
+        )
+    return {"schema_count": len(schemas), "schemas": schemas}
+
+
+def write_schema_inventory(repo_root: Path) -> dict[str, Any]:
+    inventory = build_schema_inventory(repo_root)
+    inventory_path = repo_root / "runtime" / "config" / "schema_inventory.json"
+    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    inventory_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return inventory
 
 
 def relative_existing_path(value: Any) -> Path | None:
@@ -389,12 +417,14 @@ def main(argv: list[str] | None = None) -> int:
             },
             "errors": [{"code": "load_failed", "message": str(exc)}],
             "warnings": [],
-        }
+    }
 
     if args.format == "json":
-        print(json.dumps(report, indent=2, sort_keys=True))
+        print(json.dumps(report, allow_nan=False, indent=2, sort_keys=True))
     else:
         print(render_text_report(report), end="")
+    if report["status"] == "pass":
+        write_schema_inventory(REPO_ROOT)
     return 0 if report["status"] == "pass" else 1
 
 
