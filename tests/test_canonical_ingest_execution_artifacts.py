@@ -257,6 +257,48 @@ def test_execution_artifact_dry_run_reports_intended_writes_without_mutation(tmp
     assert all(count == 0 for count in counts.values())
 
 
+def test_execution_artifact_dry_run_reuses_capture_ids_for_all_extractions(
+    tmp_path: Path,
+) -> None:
+    class CountingCaptureEvents(list[dict[str, object]]):
+        def __init__(self, values: list[dict[str, object]]) -> None:
+            super().__init__(values)
+            self.iteration_count = 0
+
+        def __iter__(self):  # type: ignore[override]
+            self.iteration_count += 1
+            return super().__iter__()
+
+    db_path = bootstrap_db(tmp_path)
+    run_dir = copy_execution_fixture(tmp_path)
+    execution_record, capture_events, extraction_records, paths, input_hashes = (
+        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    )
+    capture_events = CountingCaptureEvents(capture_events)
+    extraction_records = extraction_records + extraction_records
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        report = canonical_ingest.ingest_execution_artifacts(
+            conn,
+            execution_record,
+            capture_events,
+            extraction_records,
+            paths=paths,
+            input_hashes=input_hashes,
+            dry_run=True,
+            db_path=db_path,
+        )
+        counts = canonical_store.canonical_family_counts(conn)
+    finally:
+        conn.close()
+
+    assert report["status"] == "dry_run"
+    assert report["counts"]["intended"]["capture_event"] == 1
+    assert report["counts"]["intended"]["extraction_record"] == 2
+    assert capture_events.iteration_count == 2
+    assert all(count == 0 for count in counts.values())
+
+
 def test_execution_artifact_hostile_fixture_preserves_status_and_flags(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = build_hostile_execution_run(tmp_path)
