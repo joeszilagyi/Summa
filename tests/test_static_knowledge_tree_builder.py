@@ -227,3 +227,27 @@ def test_builder_cli_emits_json_payload(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["status"] == "published"
     assert payload["manifest_path"] == str((publish_root / "build-manifest.json").resolve())
+
+
+def test_default_build_id_is_deterministic_from_inputs(tmp_path: Path) -> None:
+    publish_root_a = tmp_path / "public-site-a"
+    publish_root_b = tmp_path / "public-site-b"
+
+    payload_a = builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root_a,
+    )
+    payload_b = builder.build_static_knowledge_tree(
+        export_fixture(),
+        presentation_fixture(),
+        publish_root_b,
+    )
+
+    assert payload_a["build_id"] == payload_b["build_id"]
+    assert payload_a["build_id"].startswith("build-")
+
+    manifest_a = json.loads((publish_root_a / "build-manifest.json").read_text(encoding="utf-8"))
+    manifest_b = json.loads((publish_root_b / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest_a["export_sha256"] == manifest_b["export_sha256"]
+    assert manifest_a["presentation_sha256"] == manifest_b["presentation_sha256"]

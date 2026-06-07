@@ -126,7 +126,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--build-id",
-        help="Optional build identifier. Defaults to a UTC timestamp plus a short random suffix.",
+        help=(
+            "Optional build identifier. Defaults to a deterministic hash derived from the input"
+            " export and presentation artifacts."
+        ),
     )
     parser.add_argument(
         "--built-at",
@@ -145,9 +148,10 @@ def now_rfc3339() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def default_build_id() -> str:
-    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"build-{stamp}-{uuid.uuid4().hex[:8]}"
+def default_build_id(*, export_sha256: str, presentation_sha256: str) -> str:
+    digest_input = f"{export_sha256}|{presentation_sha256}".encode("utf-8")
+    digest = hashlib.sha256(digest_input).hexdigest()
+    return f"build-{digest[:16]}"
 
 
 def resolve_path(raw_path: str) -> Path:
@@ -647,7 +651,12 @@ def build_static_knowledge_tree(
     presentation_payload = ensure_valid_presentation(resolved_presentation)
     validate_cross_artifact_consistency(export_payload, presentation_payload)
 
-    effective_build_id = build_id or default_build_id()
+    export_sha256 = hash_file(resolved_export)
+    presentation_sha256 = hash_file(resolved_presentation)
+    effective_build_id = build_id or default_build_id(
+        export_sha256=export_sha256,
+        presentation_sha256=presentation_sha256,
+    )
     effective_built_at = built_at or now_rfc3339()
 
     stage_parent = Path(
