@@ -32,6 +32,8 @@ from tools.common.source_adapter_handoff import (  # noqa: E402
 
 import validate_source_adapter  # noqa: E402
 
+GIT_COMMAND_TIMEOUT_SECONDS = 10
+
 
 class LocalGitRepoAdapterError(RuntimeError):
     """Raised when local Git adapter planning inputs are invalid."""
@@ -99,13 +101,23 @@ def git_environment(repo_path: Path) -> dict[str, str]:
 
 def git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = git_environment(repo_path)
-    return subprocess.run(
-        ["git", "-C", str(repo_path), *args],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
+    command = ["git", "-C", str(repo_path), *args]
+    try:
+        return subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            command,
+            returncode=124,
+            stdout="",
+            stderr=f"git {' '.join(args)} timed out after {GIT_COMMAND_TIMEOUT_SECONDS} seconds",
+        )
 
 
 def matches_any_glob(relative_path: str, patterns: list[str]) -> bool:
@@ -139,26 +151,32 @@ def inspect_repo(
 
     top_level_proc = git(repo_path, "rev-parse", "--show-toplevel")
     if top_level_proc.returncode != 0:
-        return None, [f"local git repo path is not a git repository: {repo_path}"]
+        detail = top_level_proc.stderr.strip() or "git rev-parse --show-toplevel failed"
+        return None, [f"local git repo path is not a git repository: {repo_path}: {detail}"]
     top_level = Path(top_level_proc.stdout.strip()).resolve()
 
     inspected_ref = configured_ref or "HEAD"
     commit_proc = git(repo_path, "rev-parse", "--verify", f"{inspected_ref}^{{commit}}")
     if commit_proc.returncode != 0:
-        return None, [f"configured ref could not be resolved to a commit: {inspected_ref}"]
+        detail = commit_proc.stderr.strip() or "git rev-parse --verify failed"
+        return None, [f"configured ref could not be resolved to a commit: {inspected_ref}: {detail}"]
     commit = commit_proc.stdout.strip()
 
     branch_proc = git(repo_path, "symbolic-ref", "--short", "HEAD")
     current_branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else None
 
     status_proc = git(repo_path, "status", "--porcelain")
+    if status_proc.returncode != 0:
+        detail = status_proc.stderr.strip() or "git status failed"
+        return None, [f"git status failed for repository: {top_level}: {detail}"]
     repo_state = "dirty" if status_proc.stdout.strip() else "clean"
     if repo_state == "dirty":
         blockers.append("git working tree has local modifications or untracked files")
 
     ls_files_proc = git(repo_path, "ls-files")
     if ls_files_proc.returncode != 0:
-        return None, [f"git ls-files failed for repository: {top_level}"]
+        detail = ls_files_proc.stderr.strip() or "git ls-files failed"
+        return None, [f"git ls-files failed for repository: {top_level}: {detail}"]
     tracked_paths = [line for line in ls_files_proc.stdout.splitlines() if line.strip()]
     candidate_paths = []
     skipped_paths: list[dict[str, Any]] = []

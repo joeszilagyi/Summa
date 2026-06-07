@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,6 +211,81 @@ def test_git_environment_isolation_removes_polluting_runtime_variables(monkeypat
     assert env["GIT_OPTIONAL_LOCKS"] == "0"
 
 
+def test_git_helper_times_out_with_structured_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured["kwargs"] = kwargs
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(plan_local_git_repo_adapter.subprocess, "run", fake_run)
+
+    result = plan_local_git_repo_adapter.git(repo_root, "status", "--porcelain")
+
+    assert result.returncode == 124
+    assert result.stderr == "git status --porcelain timed out after 10 seconds"
+    run_kwargs = captured["kwargs"]
+    assert isinstance(run_kwargs, dict)
+    assert run_kwargs["timeout"] == plan_local_git_repo_adapter.GIT_COMMAND_TIMEOUT_SECONDS
+    env = run_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+def test_local_git_repo_reports_status_timeout_as_blocker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=False)
+    repo_dir = scenario_dir / "repo"
+
+    def fake_git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        command = " ".join(args)
+        if args[:2] == ("rev-parse", "--show-toplevel"):
+            return subprocess.CompletedProcess(
+                ["git", "-C", str(repo_path), *args],
+                returncode=0,
+                stdout=f"{repo_path.resolve()}\n",
+                stderr="",
+            )
+        if args[:3] == ("rev-parse", "--verify", "main^{commit}"):
+            return subprocess.CompletedProcess(
+                ["git", "-C", str(repo_path), *args],
+                returncode=0,
+                stdout="abc123\n",
+                stderr="",
+            )
+        if args[:3] == ("symbolic-ref", "--short", "HEAD"):
+            return subprocess.CompletedProcess(
+                ["git", "-C", str(repo_path), *args],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            )
+        if args[:2] == ("status", "--porcelain"):
+            return subprocess.CompletedProcess(
+                ["git", "-C", str(repo_path), *args],
+                returncode=124,
+                stdout="",
+                stderr=f"git {command} timed out after 10 seconds",
+            )
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(plan_local_git_repo_adapter, "git", fake_git)
+
+    repo_details, blockers = plan_local_git_repo_adapter.inspect_repo(
+        repo_dir,
+        locator={},
+        configured_ref="main",
+        include_globs=["**/*.md"],
+        exclude_globs=[],
+    )
+
+    assert repo_details is None
+    assert blockers == [
+        f"git status failed for repository: {repo_dir.resolve()}: git status --porcelain timed out after 10 seconds"
+    ]
+
+
 def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path) -> None:
     scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
     adapter_path = write_adapter(scenario_dir)
@@ -275,7 +351,11 @@ def test_local_git_repo_reports_non_repo_path_clearly(tmp_path: Path) -> None:
     assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["repo_state"] == "invalid"
-    assert payload["blockers"] == [f"local git repo path is not a git repository: {(scenario_dir / 'plain').resolve()}"]
+    assert payload["blockers"] == [
+        f"local git repo path is not a git repository: {(scenario_dir / 'plain').resolve()}: "
+        "fatal: not a git repository (or any parent up to mount point /)\n"
+        "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
+    ]
     assert payload["handoff_record_count"] == 0
 
 
