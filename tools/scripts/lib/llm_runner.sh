@@ -158,7 +158,6 @@ _llm_runner_exec_claude() {
   local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
     printf '%s' "$prompt_text" | claude -p \
-      --dangerously-skip-permissions \
       --model "$LLM_RUNNER_CLAUDE_MODEL" \
       --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
   ) >"$stdout_file" 2>"$stderr_file"
