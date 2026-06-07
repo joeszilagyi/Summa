@@ -181,6 +181,37 @@ def table_columns(
     return columns
 
 
+def grouped_rows_by_key(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[object, ...],
+    *,
+    key_field: str,
+) -> dict[Any, list[sqlite3.Row]]:
+    grouped: dict[Any, list[sqlite3.Row]] = {}
+    for row in conn.execute(sql, params):
+        grouped.setdefault(row[key_field], []).append(row)
+    return grouped
+
+
+def public_values_from_rows(
+    rows: list[sqlite3.Row],
+    *,
+    include_private: bool,
+    value_getter,
+) -> tuple[list[str], int]:
+    values: list[str] = []
+    excluded_count = 0
+    for row in rows:
+        if not include_private and not _row_is_public(row):
+            excluded_count += 1
+            continue
+        value = value_getter(row)
+        if value:
+            values.append(value)
+    return values, excluded_count
+
+
 def validate_profile_mappings(
     conn: sqlite3.Connection, profile: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -534,27 +565,99 @@ def build_dcmi_export(
     records: list[dict[str, Any]] = []
     report_bits = new_report_bits(profile)
     record_privacy_exclusion(report_bits, "work", excluded_count)
+    work_ids = [int(row["work_id"]) for row in rows]
+    work_refs = [f"work:{row['work_id']}" for row in rows]
+    source_access_by_work: dict[Any, list[sqlite3.Row]] = {}
+    source_claim_by_work_ref: dict[Any, list[sqlite3.Row]] = {}
+    source_relationship_by_work_ref: dict[Any, list[sqlite3.Row]] = {}
+    provenance_by_key: dict[Any, dict[str, Any]] = {}
+    if work_ids:
+        work_id_placeholders = ", ".join("?" for _ in work_ids)
+        source_access_by_work = grouped_rows_by_key(
+            conn,
+            (
+                "SELECT work_id, canonical_url, original_locator, public_blocker, publication_state "
+                f"FROM source_access WHERE work_id IN ({work_id_placeholders}) "
+                "ORDER BY work_id, source_access_id"
+            ),
+            tuple(work_ids),
+            key_field="work_id",
+        )
+        source_claim_by_work_ref = grouped_rows_by_key(
+            conn,
+            (
+                "SELECT about_object_ref, public_summary, public_blocker, publication_state "
+                f"FROM source_claim WHERE about_object_ref IN ({', '.join('?' for _ in work_refs)}) "
+                "ORDER BY source_claim_id"
+            ),
+            tuple(work_refs),
+            key_field="about_object_ref",
+        )
+        source_relationship_by_work_ref = grouped_rows_by_key(
+            conn,
+            (
+                "SELECT from_object_ref, target_label, predicate, public_blocker, publication_state "
+                f"FROM source_relationship WHERE from_object_ref IN ({', '.join('?' for _ in work_refs)}) "
+                "ORDER BY source_relationship_id"
+            ),
+            tuple(work_refs),
+            key_field="from_object_ref",
+        )
+        provenance_refs = list(
+            dict.fromkeys(
+                nonblank(row["provenance_event_ref"])
+                for row in rows
+                if nonblank(row["provenance_event_ref"])
+            )
+        )
+        if provenance_refs:
+            provenance_placeholders = ", ".join("?" for _ in provenance_refs)
+            for row in conn.execute(
+                (
+                    "SELECT provenance_event_key_v1, event_type, event_timestamp, tool_name, actor_type, actor_id "
+                    f"FROM provenance_event WHERE provenance_event_key_v1 IN ({provenance_placeholders}) "
+                    "ORDER BY provenance_event_id"
+                ),
+                tuple(provenance_refs),
+            ):
+                provenance_by_key[row["provenance_event_key_v1"]] = {
+                    "event_type": row["event_type"],
+                    "event_timestamp": row["event_timestamp"],
+                    "tool_name": row["tool_name"],
+                    "actor_type": row["actor_type"],
+                    "actor_id": row["actor_id"],
+                }
     for row in rows:
+        work_ref = f"work:{row['work_id']}"
+        work_id_value = int(row["work_id"])
         metadata: dict[str, Any] = {}
         title = nonblank(row["title"])
         if title:
             metadata["dcterms:title"] = title
             satisfy(report_bits, "dcmi.title")
         else:
-            missing(report_bits, "dcmi.title", f"work:{row['work_id']} missing title")
+            missing(report_bits, "dcmi.title", f"{work_ref} missing title")
         identifier = nonblank(row["work_key_v1"])
         if identifier:
             metadata["dcterms:identifier"] = [identifier]
             satisfy(report_bits, "dcmi.identifier.work")
         else:
-            missing(
-                report_bits, "dcmi.identifier.work", f"work:{row['work_id']} missing work_key_v1"
-            )
+            missing(report_bits, "dcmi.identifier.work", f"{work_ref} missing work_key_v1")
         if value := nonblank(row["work_type"]):
             metadata["dcterms:type"] = value
             optional(report_bits, "dcmi.type")
-        urls, excluded_count = source_urls_for_work(
-            conn, int(row["work_id"]), include_private=include_private
+        urls, excluded_count = public_values_from_rows(
+            source_access_by_work.get(work_id_value, []),
+            include_private=include_private,
+            value_getter=lambda source_row: (
+                value
+                if (
+                    value := nonblank(source_row["canonical_url"])
+                    or nonblank(source_row["original_locator"])
+                )
+                and value.startswith(("http://", "https://"))
+                else None
+            ),
         )
         record_privacy_exclusion(report_bits, "source_access", excluded_count)
         if urls:
@@ -563,15 +666,19 @@ def build_dcmi_export(
         if value := nonblank(row["first_seen_at"]):
             metadata["dcterms:date"] = value
             optional(report_bits, "dcmi.date")
-        descriptions, excluded_count = descriptions_for_work(
-            conn, int(row["work_id"]), include_private=include_private
+        descriptions, excluded_count = public_values_from_rows(
+            source_claim_by_work_ref.get(work_ref, []),
+            include_private=include_private,
+            value_getter=lambda claim_row: nonblank(claim_row["public_summary"]),
         )
         record_privacy_exclusion(report_bits, "source_claim", excluded_count)
         if descriptions:
             metadata["dcterms:description"] = descriptions
             optional(report_bits, "dcmi.description")
-        subjects, excluded_count = subjects_for_work(
-            conn, int(row["work_id"]), include_private=include_private
+        subjects, excluded_count = public_values_from_rows(
+            source_relationship_by_work_ref.get(work_ref, []),
+            include_private=include_private,
+            value_getter=lambda rel_row: nonblank(rel_row["target_label"]),
         )
         record_privacy_exclusion(report_bits, "source_relationship", excluded_count)
         if subjects:
@@ -580,11 +687,15 @@ def build_dcmi_export(
         if value := nonblank(row["rights_posture"]):
             metadata["dcterms:rights"] = value
             optional(report_bits, "dcmi.rights")
-        if provenance := provenance_summary(conn, row["provenance_event_ref"]):
+        if provenance_ref := nonblank(row["provenance_event_ref"]):
+            provenance = provenance_by_key.get(provenance_ref)
+        else:
+            provenance = None
+        if provenance:
             metadata["dcterms:provenance"] = provenance
             optional(report_bits, "dcmi.provenance")
         records.append(
-            {"record_type": "work", "summa_ref": f"work:{row['work_id']}", "metadata": metadata}
+            {"record_type": "work", "summa_ref": work_ref, "metadata": metadata}
         )
     payload = base_export_payload(
         profile, generated_at=generated_at, include_private=include_private
