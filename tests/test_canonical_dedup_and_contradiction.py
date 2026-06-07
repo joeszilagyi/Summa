@@ -1777,6 +1777,60 @@ def test_relational_constraint_pass_caches_endpoint_facts_per_object_ref(
     ]
 
 
+def test_relational_constraint_pass_uses_fetched_relationship_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:rel.birth.row-reuse",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:rel.death.row-reuse",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1938,
+                },
+            ),
+            relationship_candidate(
+                "cand:rel.taught-by.row-reuse",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-row-reuse",
+    )
+
+    def forbidden_loader(*args: object, **kwargs: object) -> sqlite3.Row:
+        raise AssertionError("_load_relationship_row should not be called by the pass path")
+
+    monkeypatch.setattr(canonical_reconciliation, "_load_relationship_row", forbidden_loader)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-row-reuse.json", db_path=db_path)
+        with conn:
+            report = canonical_reconciliation.run_relational_constraint_pass(
+                conn,
+                changed_at=FIXED_TIMESTAMP,
+                source_run_id="manual-pass",
+            )
+    finally:
+        conn.close()
+
+    assert report["relational_constraints_checked"] == 1
+    assert report["relational_contradictions_detected"] == 1
+
+
 def test_quantity_conflict_creates_deterministic_contradiction(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(
