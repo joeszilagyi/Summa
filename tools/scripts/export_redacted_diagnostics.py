@@ -76,7 +76,9 @@ REVIEW_TABLES = (
 )
 ARTIFACT_SUFFIXES = {".json", ".jsonl", ".txt", ".log", ".sqlite", ".db", ".csv", ".html"}
 MAX_WORKSPACE_ARTIFACTS = 500
+MAX_SOURCE_ACCESS_RECORD_DETAILS = 100
 MAX_SPOOL_RECORD_DETAILS = 100
+GRAPH_CLOSURE_REPORT_FILENAME = "graph-closure-report.json"
 
 
 class DiagnosticExportError(RuntimeError):
@@ -119,8 +121,38 @@ def table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row["name"]) for row in rows}
 
 
-def count_by(conn: sqlite3.Connection, table_name: str, column: str) -> dict[str, int]:
-    if not table_exists(conn, table_name) or column not in table_columns(conn, table_name):
+class SchemaIntrospectionCache:
+    def __init__(self, table_names: set[str]) -> None:
+        self._table_names = table_names
+        self._columns: dict[str, set[str]] = {}
+
+    @classmethod
+    def from_connection(cls, conn: sqlite3.Connection) -> "SchemaIntrospectionCache":
+        return cls(canonical_store.actual_tables(conn))
+
+    def table_names(self) -> list[str]:
+        return sorted(self._table_names)
+
+    def table_exists(self, table_name: str) -> bool:
+        return table_name in self._table_names
+
+    def table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
+        columns = self._columns.get(table_name)
+        if columns is None:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            columns = {str(row["name"]) for row in rows}
+            self._columns[table_name] = columns
+        return columns
+
+
+def count_by(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column: str,
+    schema_cache: SchemaIntrospectionCache | None = None,
+) -> dict[str, int]:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
+    if not cache.table_exists(table_name) or column not in cache.table_columns(conn, table_name):
         return {}
     rows = conn.execute(
         f"""
@@ -133,8 +165,11 @@ def count_by(conn: sqlite3.Connection, table_name: str, column: str) -> dict[str
     return {str(row["value"]): int(row["count"]) for row in rows}
 
 
-def count_table(conn: sqlite3.Connection, table_name: str) -> int:
-    if not table_exists(conn, table_name):
+def count_table(
+    conn: sqlite3.Connection, table_name: str, schema_cache: SchemaIntrospectionCache | None = None
+) -> int:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
+    if not cache.table_exists(table_name):
         return 0
     row = conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
     return int(row["count"])
@@ -276,12 +311,16 @@ def db_metadata(db_path: Path, redactor: Redactor) -> dict[str, Any]:
 
 
 def build_canonical_summary(
-    conn: sqlite3.Connection, db_path: Path, redactor: Redactor
+    conn: sqlite3.Connection,
+    db_path: Path,
+    redactor: Redactor,
+    schema_cache: SchemaIntrospectionCache | None = None,
 ) -> dict[str, Any]:
-    tables = sorted(canonical_store.actual_tables(conn))
-    table_counts = {table: count_table(conn, table) for table in tables}
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
+    tables = cache.table_names()
+    table_counts = {table: count_table(conn, table, cache) for table in tables}
     source_domains = Counter[str]()
-    if table_exists(conn, "source_access"):
+    if cache.table_exists("source_access"):
         for row in conn.execute(
             "SELECT original_locator, canonical_url FROM source_access ORDER BY source_access_id"
         ):
@@ -295,30 +334,30 @@ def build_canonical_summary(
         "table_row_counts": table_counts,
         "source_access_locator_counts": dict(sorted(source_domains.items())),
         "capture_counts": {
-            "by_method": count_by(conn, "capture_event", "capture_method"),
-            "by_mime_type": count_by(conn, "capture_event", "mime_type"),
-            "by_review_state": count_by(conn, "capture_event", "review_state"),
+            "by_method": count_by(conn, "capture_event", "capture_method", cache),
+            "by_mime_type": count_by(conn, "capture_event", "mime_type", cache),
+            "by_review_state": count_by(conn, "capture_event", "review_state", cache),
         },
         "extraction_counts": {
-            "by_status": count_by(conn, "extraction_record", "extraction_status"),
-            "by_encoding_handling": count_by(conn, "extraction_record", "encoding_handling"),
-            "by_truncation_status": count_by(conn, "extraction_record", "truncation_status"),
+            "by_status": count_by(conn, "extraction_record", "extraction_status", cache),
+            "by_encoding_handling": count_by(conn, "extraction_record", "encoding_handling", cache),
+            "by_truncation_status": count_by(conn, "extraction_record", "truncation_status", cache),
         },
         "detected_entity_counts": {
-            "by_type": count_by(conn, "extraction_detected_entity", "entity_type"),
-            "by_review_state": count_by(conn, "extraction_detected_entity", "review_state"),
+            "by_type": count_by(conn, "extraction_detected_entity", "entity_type", cache),
+            "by_review_state": count_by(conn, "extraction_detected_entity", "review_state", cache),
         },
         "authority_reconciliation_counts": {
-            "by_review_state": count_by(conn, "authority_reconciliation", "review_state"),
-            "by_method": count_by(conn, "authority_reconciliation", "method"),
+            "by_review_state": count_by(conn, "authority_reconciliation", "review_state", cache),
+            "by_method": count_by(conn, "authority_reconciliation", "method", cache),
         },
         "provenance_counts": {
-            "by_event_type": count_by(conn, "provenance_event", "event_type"),
-            "by_tool_name": count_by(conn, "provenance_event", "tool_name"),
+            "by_event_type": count_by(conn, "provenance_event", "event_type", cache),
+            "by_tool_name": count_by(conn, "provenance_event", "tool_name", cache),
         },
         "cycle_counts": {
-            "by_status": count_by(conn, "cycle_event", "status"),
-            "by_mode": count_by(conn, "cycle_event", "mode"),
+            "by_status": count_by(conn, "cycle_event", "status", cache),
+            "by_mode": count_by(conn, "cycle_event", "mode", cache),
         },
         "content_policy": {
             "payload_bytes": "excluded",
@@ -329,23 +368,32 @@ def build_canonical_summary(
     }
 
 
-def build_review_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+def build_review_state_summary(
+    conn: sqlite3.Connection, schema_cache: SchemaIntrospectionCache | None = None
+) -> dict[str, Any]:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
     return {
         "schema_version": "redacted-diagnostic-review-state-summary.v1",
         "tables": {
             table: count_by(
-                conn, table, "review_state" if table != "review_state_history" else "new_state"
+                conn,
+                table,
+                "review_state" if table != "review_state_history" else "new_state",
+                cache,
             )
             for table in REVIEW_TABLES
-            if table_exists(conn, table)
+            if cache.table_exists(table)
         },
-        "history_count": count_table(conn, "review_state_history"),
+        "history_count": count_table(conn, "review_state_history", cache),
     }
 
 
-def build_relationship_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+def build_relationship_summary(
+    conn: sqlite3.Connection, schema_cache: SchemaIntrospectionCache | None = None
+) -> dict[str, Any]:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
     contradiction_count = 0
-    if table_exists(conn, "source_relationship"):
+    if cache.table_exists("source_relationship"):
         row = conn.execute(
             "SELECT COUNT(*) AS count FROM source_relationship WHERE predicate=?",
             ("contradicts",),
@@ -353,15 +401,32 @@ def build_relationship_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         contradiction_count = int(row["count"])
     return {
         "schema_version": "redacted-diagnostic-relationship-summary.v1",
-        "predicate_counts": count_by(conn, "source_relationship", "predicate"),
-        "review_state_counts": count_by(conn, "source_relationship", "review_state"),
+        "predicate_counts": count_by(conn, "source_relationship", "predicate", cache),
+        "review_state_counts": count_by(conn, "source_relationship", "review_state", cache),
         "contradiction_count": contradiction_count,
     }
 
 
-def build_source_access_summary(conn: sqlite3.Connection, redactor: Redactor) -> dict[str, Any]:
+def _counter_dict(counter: Counter[str]) -> dict[str, int]:
+    return dict(sorted(counter.items()))
+
+
+def build_source_access_summary(
+    conn: sqlite3.Connection,
+    redactor: Redactor,
+    schema_cache: SchemaIntrospectionCache | None = None,
+) -> dict[str, Any]:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
     rows: list[dict[str, Any]] = []
-    if table_exists(conn, "source_access"):
+    total_count = 0
+    domain_counts = Counter[str]()
+    source_locus_counts = Counter[str]()
+    status_counts = {
+        "review_state": Counter[str](),
+        "publication_state": Counter[str](),
+        "refetchability_status": Counter[str](),
+    }
+    if cache.table_exists("source_access"):
         for row in conn.execute(
             """
             SELECT source_access_id, source_locus_id, source_lead_id, original_locator,
@@ -371,48 +436,51 @@ def build_source_access_summary(conn: sqlite3.Connection, redactor: Redactor) ->
             ORDER BY source_access_id
             """
         ):
-            locator = str(row["canonical_url"] or row["original_locator"])
-            rows.append(
-                {
-                    "source_access_id": row["source_access_id"],
-                    "source_locus_present": bool(row["source_locus_id"]),
-                    "source_lead_present": bool(row["source_lead_id"]),
-                    "locator": redactor.redact_url(locator),
-                    "access_class": row["access_class"],
-                    "refetchability_status": row["refetchability_status"],
-                    "rights_posture": row["rights_posture"],
-                    "review_state": row["review_state"],
-                    "publication_state": row["publication_state"],
-                    "has_public_blocker": bool(row["public_blocker"]),
-                    "workspace_id": row["workspace_id"],
-                }
-            )
+            total_count += 1
+            locator = str(row["canonical_url"] or row["original_locator"] or "")
+            domain = redactor.redact_url(locator) if locator else None
+            domain_counts[domain or "[omitted]"] += 1
+            source_locus_id = row["source_locus_id"]
+            if source_locus_id is None or not str(source_locus_id).strip():
+                source_locus_counts["[missing]"] += 1
+            elif redactor.internal_full_fidelity:
+                source_locus_counts[str(source_locus_id)] += 1
+            else:
+                source_locus_counts[redactor.token("source-locus", str(source_locus_id))] += 1
+            for key in status_counts:
+                value = row[key]
+                status_counts[key][_count_value(value)] += 1
+            if len(rows) < MAX_SOURCE_ACCESS_RECORD_DETAILS:
+                rows.append(
+                    {
+                        "source_access_id": row["source_access_id"],
+                        "source_locus_present": bool(row["source_locus_id"]),
+                        "source_lead_present": bool(row["source_lead_id"]),
+                        "locator": redactor.redact_url(locator),
+                        "access_class": row["access_class"],
+                        "refetchability_status": row["refetchability_status"],
+                        "rights_posture": row["rights_posture"],
+                        "review_state": row["review_state"],
+                        "publication_state": row["publication_state"],
+                        "has_public_blocker": bool(row["public_blocker"]),
+                        "workspace_id": row["workspace_id"],
+                    }
+                )
     return {
         "schema_version": "redacted-diagnostic-source-access-summary.v1",
-        "count": len(rows),
+        "count": total_count,
+        "detail_record_limit": MAX_SOURCE_ACCESS_RECORD_DETAILS,
+        "records_truncated": total_count > len(rows),
         "records": rows,
+        "aggregate_counts": {
+            "by_domain": _counter_dict(domain_counts),
+            "by_source_locus_id": _counter_dict(source_locus_counts),
+            "by_status": {key: _counter_dict(counter) for key, counter in status_counts.items()},
+        },
         "url_redaction": redactor.url_mode
         if not redactor.internal_full_fidelity
         else "internal_full_fidelity",
     }
-
-
-def parse_ref_family(value: str | None) -> str | None:
-    if not value or ":" not in value:
-        return None
-    return value.split(":", 1)[0]
-
-
-def bucket_degree(value: int) -> str:
-    if value == 0:
-        return "0"
-    if value == 1:
-        return "1"
-    if value <= 3:
-        return "2-3"
-    if value <= 10:
-        return "4-10"
-    return "11+"
 
 
 def component_sizes(edges: Iterable[tuple[str, str]]) -> list[int]:
@@ -440,31 +508,88 @@ def component_sizes(edges: Iterable[tuple[str, str]]) -> list[int]:
 
 
 def build_graph_shape(
-    conn: sqlite3.Connection, graph_closure_report: Mapping[str, Any] | None
+    conn: sqlite3.Connection,
+    graph_closure_report: Mapping[str, Any] | None,
+    schema_cache: SchemaIntrospectionCache | None = None,
+    *,
+    include_connected_components: bool = False,
 ) -> dict[str, Any]:
-    edges: list[tuple[str, str]] = []
-    edge_predicates = Counter[str]()
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
+    edge_predicates = count_by(conn, "source_relationship", "predicate", cache)
     node_families = Counter[str]()
     for table in GRAPH_NODE_TABLES:
-        if table_exists(conn, table):
-            node_families[table] = count_table(conn, table)
-    if table_exists(conn, "source_relationship"):
-        for row in conn.execute(
-            "SELECT from_object_ref, to_object_ref, predicate FROM source_relationship ORDER BY source_relationship_id"
-        ):
-            from_ref = str(row["from_object_ref"])
-            to_ref = row["to_object_ref"]
-            edge_predicates[str(row["predicate"])] += 1
-            if isinstance(to_ref, str) and to_ref.strip():
-                edges.append((from_ref, to_ref))
-    degree_counts = Counter[str]()
-    raw_degrees = Counter[str]()
-    for left, right in edges:
-        raw_degrees[left] += 1
-        raw_degrees[right] += 1
-    for degree in raw_degrees.values():
-        degree_counts[bucket_degree(degree)] += 1
-    component_summary = component_sizes(edges)
+        if cache.table_exists(table):
+            node_families[table] = count_table(conn, table, cache)
+    edge_ref_family_counts = {"from": {}, "to": {}}
+    degree_distribution: dict[str, int] = {}
+    component_summary: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "connected-component analysis disabled",
+    }
+    if cache.table_exists("source_relationship"):
+        for column, key in (("from_object_ref", "from"), ("to_object_ref", "to")):
+            rows = conn.execute(
+                f"""
+                SELECT SUBSTR(TRIM({column}), 1, INSTR(TRIM({column}), ':') - 1) AS family,
+                       COUNT(*) AS count
+                FROM source_relationship
+                WHERE {column} IS NOT NULL
+                  AND TRIM({column}) <> ''
+                  AND INSTR(TRIM({column}), ':') > 0
+                GROUP BY family
+                ORDER BY family
+                """
+            ).fetchall()
+            edge_ref_family_counts[key] = {str(row["family"]): int(row["count"]) for row in rows}
+        rows = conn.execute(
+            """
+            WITH edge_nodes AS (
+                SELECT TRIM(from_object_ref) AS node_ref
+                FROM source_relationship
+                WHERE from_object_ref IS NOT NULL AND TRIM(from_object_ref) <> ''
+                UNION ALL
+                SELECT TRIM(to_object_ref) AS node_ref
+                FROM source_relationship
+                WHERE to_object_ref IS NOT NULL AND TRIM(to_object_ref) <> ''
+            ),
+            degrees AS (
+                SELECT node_ref, COUNT(*) AS degree
+                FROM edge_nodes
+                GROUP BY node_ref
+            )
+            SELECT CASE
+                WHEN degree = 0 THEN '0'
+                WHEN degree = 1 THEN '1'
+                WHEN degree <= 3 THEN '2-3'
+                WHEN degree <= 10 THEN '4-10'
+                ELSE '11+'
+            END AS bucket,
+            COUNT(*) AS count
+            FROM degrees
+            GROUP BY bucket
+            ORDER BY bucket
+            """
+        ).fetchall()
+        degree_distribution = {str(row["bucket"]): int(row["count"]) for row in rows}
+        if include_connected_components:
+            edges: list[tuple[str, str]] = []
+            for row in conn.execute(
+                """
+                SELECT from_object_ref, to_object_ref
+                FROM source_relationship
+                ORDER BY source_relationship_id
+                """
+            ):
+                from_ref = str(row["from_object_ref"])
+                to_ref = row["to_object_ref"]
+                if isinstance(to_ref, str) and to_ref.strip():
+                    edges.append((from_ref, to_ref))
+            component_sizes_result = component_sizes(edges)
+            component_summary = {
+                "status": "computed",
+                "component_count": len(component_sizes_result),
+                "largest_component_sizes": component_sizes_result[:10],
+            }
     raw_closure_summary = (
         graph_closure_report.get("summary") if isinstance(graph_closure_report, Mapping) else None
     )
@@ -476,20 +601,11 @@ def build_graph_shape(
         "node_counts_by_family": dict(sorted(node_families.items())),
         "edge_counts_by_predicate": dict(sorted(edge_predicates.items())),
         "edge_ref_family_counts": {
-            "from": dict(
-                sorted(Counter(filter(None, (parse_ref_family(left) for left, _ in edges))).items())
-            ),
-            "to": dict(
-                sorted(
-                    Counter(filter(None, (parse_ref_family(right) for _, right in edges))).items()
-                )
-            ),
+            "from": dict(sorted(edge_ref_family_counts["from"].items())),
+            "to": dict(sorted(edge_ref_family_counts["to"].items())),
         },
-        "degree_distribution": dict(sorted(degree_counts.items())),
-        "component_summary": {
-            "component_count": len(component_summary),
-            "largest_component_sizes": component_summary[:10],
-        },
+        "degree_distribution": dict(sorted(degree_distribution.items())),
+        "component_summary": component_summary,
         "graph_closure": {
             "status": graph_closure_report.get("status")
             if isinstance(graph_closure_report, Mapping)
@@ -503,19 +619,37 @@ def build_graph_shape(
 
 
 def build_graph_closure_summary(
-    db_path: Path, generated_at: str, redactor: Redactor
+    db_path: Path,
+    generated_at: str,
+    redactor: Redactor,
+    *,
+    workspace: Path | None = None,
+    live_graph_closure: bool = False,
 ) -> dict[str, Any]:
+    def unavailable(reason: str) -> dict[str, Any]:
+        return {
+            "schema_version": "redacted-diagnostic-graph-closure-summary.v1",
+            "status": "unavailable",
+            "error_summary": redactor.redact_text(reason),
+        }
+
+    if not live_graph_closure:
+        cached_report = load_graph_closure_report(workspace)
+        if cached_report is None:
+            return unavailable("cached graph closure report not found; live audit disabled")
+        if cached_report.get("schema_version") != canonical_graph_closure.REPORT_SCHEMA_VERSION:
+            return unavailable("cached graph closure report missing or invalid")
+        redacted = redactor.redact_json(cached_report)
+        assert isinstance(redacted, dict)
+        return redacted
+
     try:
         report = canonical_graph_closure.audit_canonical_graph_closure(
             db_path,
             generated_at=generated_at,
         )
     except Exception as exc:
-        return {
-            "schema_version": "redacted-diagnostic-graph-closure-summary.v1",
-            "status": "unavailable",
-            "error_summary": redactor.redact_text(str(exc)),
-        }
+        return unavailable(str(exc))
     report = redactor.redact_json(report)
     assert isinstance(report, dict)
     return report
@@ -530,11 +664,9 @@ def summarize_workspace_artifacts(workspace: Path | None, redactor: Redactor) ->
             "truncated": False,
         }
     artifacts: list[dict[str, Any]] = []
-    for path in sorted(workspace.rglob("*")):
+    for path in _iter_workspace_artifact_paths(workspace):
         if len(artifacts) >= MAX_WORKSPACE_ARTIFACTS:
             break
-        if not path.is_file() or path.suffix.lower() not in ARTIFACT_SUFFIXES:
-            continue
         try:
             size = path.stat().st_size
             digest = hash_file(path)
@@ -587,6 +719,19 @@ def _iter_named_paths(workspace: Path, *names: str) -> list[Path]:
     return sorted(paths, key=lambda item: item.as_posix())
 
 
+def load_graph_closure_report(workspace: Path | None) -> dict[str, Any] | None:
+    if workspace is None:
+        return None
+    paths = _iter_named_paths(workspace, GRAPH_CLOSURE_REPORT_FILENAME)
+    if not paths:
+        return None
+    path = max(paths, key=lambda item: (item.stat().st_mtime_ns, item.as_posix()))
+    payload = load_json_object(path)
+    if payload is None:
+        return None
+    return payload
+
+
 def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dict[str, Any]:
     if workspace is None:
         return {
@@ -635,14 +780,17 @@ def summarize_cycle_manifests(workspace: Path | None, redactor: Redactor) -> dic
     }
 
 
-def build_cycle_ledger_summary(conn: sqlite3.Connection, redactor: Redactor) -> dict[str, Any]:
-    if not table_exists(conn, "cycle_event"):
+def build_cycle_ledger_summary(
+    conn: sqlite3.Connection, redactor: Redactor, schema_cache: SchemaIntrospectionCache | None = None
+) -> dict[str, Any]:
+    cache = schema_cache or SchemaIntrospectionCache.from_connection(conn)
+    if not cache.table_exists("cycle_event"):
         return {
             "schema_version": "redacted-diagnostic-cycle-ledger-summary.v1",
             "ledger_present": False,
         }
     artifacts: list[dict[str, Any]] = []
-    if table_exists(conn, "cycle_artifact_ref"):
+    if cache.table_exists("cycle_artifact_ref"):
         for row in conn.execute(
             """
             SELECT artifact_type, artifact_path, artifact_hash, byte_count,
@@ -666,12 +814,14 @@ def build_cycle_ledger_summary(conn: sqlite3.Connection, redactor: Redactor) -> 
     return {
         "schema_version": "redacted-diagnostic-cycle-ledger-summary.v1",
         "ledger_present": True,
-        "cycle_counts": count_by(conn, "cycle_event", "status"),
-        "stage_counts": count_by(conn, "cycle_stage_event", "status"),
-        "tool_failure_counts": count_by(conn, "cycle_tool_failure", "failure_kind"),
-        "operator_override_counts": count_by(conn, "cycle_operator_override", "override_kind"),
-        "candidate_considered_count": count_table(conn, "cycle_candidate_considered"),
-        "candidate_excluded_count": count_table(conn, "cycle_candidate_excluded"),
+        "cycle_counts": count_by(conn, "cycle_event", "status", cache),
+        "stage_counts": count_by(conn, "cycle_stage_event", "status", cache),
+        "tool_failure_counts": count_by(conn, "cycle_tool_failure", "failure_kind", cache),
+        "operator_override_counts": count_by(
+            conn, "cycle_operator_override", "override_kind", cache
+        ),
+        "candidate_considered_count": count_table(conn, "cycle_candidate_considered", cache),
+        "candidate_excluded_count": count_table(conn, "cycle_candidate_excluded", cache),
         "artifact_refs": artifacts,
     }
 
@@ -713,6 +863,24 @@ def build_spool_summary(workspace: Path | None, redactor: Redactor) -> dict[str,
         "spool_records": records,
         "spool_records_truncated": len(spool_paths) > MAX_SPOOL_RECORD_DETAILS,
     }
+
+
+def _iter_workspace_artifact_paths(workspace: Path) -> Iterable[Path]:
+    for root, dirs, files in os.walk(workspace):
+        dirs.sort()
+        files.sort()
+        root_path = Path(root)
+        for name in files:
+            path = root_path / name
+            if path.suffix.lower() in ARTIFACT_SUFFIXES and path.is_file():
+                yield path
+
+
+def _count_value(value: Any) -> str:
+    if value is None:
+        return "[blank]"
+    text = str(value).strip()
+    return text or "[blank]"
 
 
 def build_local_doctor_summary(repo_root: Path, redactor: Redactor) -> dict[str, Any]:
@@ -922,21 +1090,42 @@ def export_bundle(args: argparse.Namespace) -> dict[str, Any]:
 
         conn = canonical_store.connect_existing_read_only(db_path)
         try:
+            schema_cache = SchemaIntrospectionCache.from_connection(conn)
             graph_closure_summary: dict[str, Any] | None = None
             if args.include_graph_closure:
-                graph_closure_summary = build_graph_closure_summary(db_path, generated_at, redactor)
+                workspace = Path(args.workspace).expanduser().resolve() if args.workspace else None
+                graph_closure_summary = build_graph_closure_summary(
+                    db_path,
+                    generated_at,
+                    redactor,
+                    workspace=workspace,
+                    live_graph_closure=bool(args.live_graph_closure),
+                )
                 write_json(stage_root / "graph-closure-summary.json", graph_closure_summary)
                 included.append("graph-closure-summary.json")
             else:
                 omitted.append({"section": "graph_closure", "reason": "Disabled by operator flag."})
 
             sections = {
-                "canonical-summary.json": build_canonical_summary(conn, db_path, redactor),
-                "graph-shape.json": build_graph_shape(conn, graph_closure_summary),
-                "review-state-summary.json": build_review_state_summary(conn),
-                "relationship-summary.json": build_relationship_summary(conn),
-                "source-access-summary.json": build_source_access_summary(conn, redactor),
-                "cycle-ledger-summary.json": build_cycle_ledger_summary(conn, redactor),
+                "canonical-summary.json": build_canonical_summary(
+                    conn, db_path, redactor, schema_cache
+                ),
+                "graph-shape.json": build_graph_shape(
+                    conn,
+                    graph_closure_summary,
+                    schema_cache,
+                    include_connected_components=bool(
+                        args.live_graph_closure and args.include_graph_closure
+                    ),
+                ),
+                "review-state-summary.json": build_review_state_summary(conn, schema_cache),
+                "relationship-summary.json": build_relationship_summary(conn, schema_cache),
+                "source-access-summary.json": build_source_access_summary(
+                    conn, redactor, schema_cache
+                ),
+                "cycle-ledger-summary.json": build_cycle_ledger_summary(
+                    conn, redactor, schema_cache
+                ),
             }
             for name, payload in sections.items():
                 write_json(stage_root / name, payload)
@@ -1055,6 +1244,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--include-graph-closure", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--live-graph-closure",
+        action="store_true",
+        help="Run the live canonical graph closure audit instead of using a cached report.",
     )
     parser.add_argument("--include-local-doctor-summary", action="store_true")
     parser.add_argument(

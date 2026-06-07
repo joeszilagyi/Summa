@@ -52,8 +52,10 @@ The export writes a directory JSON bundle:
 - `leak-scan-report.json`
 
 The summaries include table row counts, review-state counts, relationship
-predicate counts, graph-shape counts, source-access locator classes, cycle
-status counts, artifact hashes, and graph-closure counts. They do not copy
+predicate counts, graph-shape counts, source-access locator/domain/status
+aggregates, cycle status counts, artifact hashes, and graph-closure counts.
+The graph-closure section prefers a cached `graph-closure-report.json` when
+available; pass `--live-graph-closure` to force the live audit. They do not copy
 source payload files, complete extracted text, prompt bodies, operator notes, or
 local database snapshots.
 
