@@ -385,6 +385,26 @@ def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failu
         scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
 
 
+def test_runtime_ledger_load_events_tolerates_truncated_terminal_json_without_newline(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    first_event = build_success_event(
+        workspace_id="workspace-a",
+        run_id="success-run-1",
+        occurred_at="2026-06-01T01:00:00Z",
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps(first_event, ensure_ascii=False, sort_keys=True) + "\n"
+        + "{\"bad\": \"json_fragment",
+        encoding="utf-8",
+    )
+
+    events = runtime_ledger.load_events(ledger_path)
+    assert events == [first_event]
+
+
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

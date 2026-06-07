@@ -104,27 +104,30 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:
-    raw_text = ledger_path.read_text(encoding="utf-8")
-    lines = raw_text.splitlines()
-    has_trailing_newline = raw_text.endswith("\n")
+    has_trailing_newline = False
+    if ledger_path.exists() and ledger_path.stat().st_size > 0:
+        with ledger_path.open("rb") as handle:
+            handle.seek(-1, os.SEEK_END)
+            has_trailing_newline = handle.read(1) == b"\n"
     events: list[dict[str, Any]] = []
-    for line_number, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
-            if line_number == len(lines) and not has_trailing_newline:
-                break
-            raise RuntimeLedgerError(
-                f"runtime ledger {ledger_path} contains invalid JSON on line {line_number}"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise RuntimeLedgerError(
-                f"runtime ledger {ledger_path} contains a non-object record on line {line_number}"
-            )
-        events.append(payload)
+    with ledger_path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                if (not has_trailing_newline) and not raw_line.endswith("\n"):
+                    break
+                raise RuntimeLedgerError(
+                    f"runtime ledger {ledger_path} contains invalid JSON on line {line_number}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise RuntimeLedgerError(
+                    f"runtime ledger {ledger_path} contains a non-object record on line {line_number}"
+                )
+            events.append(payload)
     return events
 
 
