@@ -662,14 +662,27 @@ def build_rico_export(
     generated_at: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     base = safe_base_uri(base_uri)
-    rows, excluded_count = work_rows(
-        conn, work_id=work_id, subject_id=subject_id, include_private=include_private
-    )
     report_bits = new_report_bits(profile)
-    record_privacy_exclusion(report_bits, "work", excluded_count)
     nodes: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
-    for row in rows:
+    where = []
+    params: list[Any] = []
+    if work_id is not None:
+        where.append("work_id=?")
+        params.append(work_id)
+    if subject_id is not None:
+        where.append("workspace_id=?")
+        params.append(subject_id)
+    work_sql = (
+        "SELECT * FROM work" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY work_id"
+    )
+    work_excluded_count = 0
+    work_included_count = 0
+    for row in conn.execute(work_sql, tuple(params)):
+        if not include_private and not _row_is_public(row):
+            work_excluded_count += 1
+            continue
+        work_included_count += 1
         work_ref = f"work:{row['work_id']}"
         title = nonblank(row["title"])
         node = {
@@ -685,12 +698,14 @@ def build_rico_export(
             satisfy(report_bits, "rico.record_title")
         else:
             missing(report_bits, "rico.record_title", f"{work_ref} missing title")
-    auth_rows = conn.execute(
-        "SELECT * FROM authority_record ORDER BY authority_record_id"
-    ).fetchall()
-    auth_rows, excluded_count = _split_public_rows(auth_rows, include_private=include_private)
-    record_privacy_exclusion(report_bits, "authority_record", excluded_count)
-    for row in auth_rows:
+    record_privacy_exclusion(report_bits, "work", work_excluded_count)
+    if work_id is not None and work_included_count == 0:
+        raise StandardsProfileError(f"work not found or not public under current export policy: {work_id}")
+    auth_excluded_count = 0
+    for row in conn.execute("SELECT * FROM authority_record ORDER BY authority_record_id"):
+        if not include_private and not _row_is_public(row):
+            auth_excluded_count += 1
+            continue
         nodes.append(
             {
                 "id": node_uri(base, "authority", row["authority_record_id"]),
@@ -701,12 +716,14 @@ def build_rico_export(
             }
         )
         optional(report_bits, "rico.agent")
-    rel_rows = conn.execute(
+    record_privacy_exclusion(report_bits, "authority_record", auth_excluded_count)
+    rel_excluded_count = 0
+    for row in conn.execute(
         "SELECT * FROM source_relationship ORDER BY source_relationship_id"
-    ).fetchall()
-    rel_rows, excluded_count = _split_public_rows(rel_rows, include_private=include_private)
-    record_privacy_exclusion(report_bits, "source_relationship", excluded_count)
-    for row in rel_rows:
+    ):
+        if not include_private and not _row_is_public(row):
+            rel_excluded_count += 1
+            continue
         relations.append(
             {
                 "id": node_uri(base, "relationship", row["source_relationship_id"]),
@@ -719,9 +736,10 @@ def build_rico_export(
             }
         )
         optional(report_bits, "rico.relation")
+    record_privacy_exclusion(report_bits, "source_relationship", rel_excluded_count)
     for row in conn.execute(
         "SELECT provenance_event_id, event_type, event_timestamp FROM provenance_event ORDER BY provenance_event_id"
-    ).fetchall():
+    ):
         nodes.append(
             {
                 "id": node_uri(base, "event", row["provenance_event_id"]),
