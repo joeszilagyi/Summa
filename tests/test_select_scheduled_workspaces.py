@@ -361,6 +361,42 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
     ]
 
 
+def test_selector_canonicalizes_planned_at_across_payloads(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planned-at",
+            "2026-01-01T00:00:00.250000+00:00",
+            "--planner-run-id",
+            "planner-fractional",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    expected_at = "2026-01-01T00:00:00Z"
+
+    assert payload["planned_run_records"][0]["planned_at"] == expected_at
+    assert payload["selection_explanation"]["created_at"] == expected_at
+
+
 def test_selector_records_limit_deferred_workspace(tmp_path: Path) -> None:
     first_root = tmp_path / "workspaces" / "first"
     second_root = tmp_path / "workspaces" / "second"
