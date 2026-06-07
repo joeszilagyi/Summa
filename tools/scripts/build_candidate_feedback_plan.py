@@ -1276,20 +1276,39 @@ def build_deferred_candidates(
     selected_next_action: dict[str, Any],
     facet_scores: list[dict[str, Any]],
     lead_scores: list[dict[str, Any]],
+    all_facet_scores: list[dict[str, Any]],
+    all_lead_scores: list[dict[str, Any]],
     max_deferred: int,
 ) -> list[dict[str, Any]]:
     deferred: list[dict[str, Any]] = []
+    deferred_from_retained = 0
     selected_facet = selected_next_action.get("selected_facet")
     selected_facet_id = f"facet:{selected_facet}" if isinstance(selected_facet, str) else None
     for item in facet_scores:
         if selected_facet_id is not None and item.get("candidate_id") == selected_facet_id:
             continue
+        reason = "lower_score_than_selected"
+        if deferred_from_retained >= max_deferred:
+            reason = "not_retained_due_to_limit"
+        elif "repeated_low_yield" in item["reason_codes"]:
+            reason = "repeated_low_yield"
         deferred.append(
             {
                 "candidate_id": item["candidate_id"],
                 "candidate_kind": "facet",
                 "score": item["score"],
-                "reason": "lower_score_than_selected",
+                "reason": reason,
+            }
+        )
+        if reason != "not_retained_due_to_limit":
+            deferred_from_retained += 1
+    for item in all_facet_scores[len(facet_scores) :]:
+        deferred.append(
+            {
+                "candidate_id": item["candidate_id"],
+                "candidate_kind": "facet",
+                "score": item["score"],
+                "reason": "not_retained_due_to_limit",
             }
         )
     selected_object_ref = selected_next_action.get("selected_object_ref")
@@ -1297,7 +1316,9 @@ def build_deferred_candidates(
         if item["object_ref"] == selected_object_ref:
             continue
         reason = "lower_score_than_selected"
-        if "repeated_low_yield" in item["reason_codes"]:
+        if deferred_from_retained >= max_deferred:
+            reason = "not_retained_due_to_limit"
+        elif "repeated_low_yield" in item["reason_codes"]:
             reason = "repeated_low_yield"
         deferred.append(
             {
@@ -1307,7 +1328,18 @@ def build_deferred_candidates(
                 "reason": reason,
             }
         )
-    return deferred[:max_deferred]
+        if reason != "not_retained_due_to_limit":
+            deferred_from_retained += 1
+    for item in all_lead_scores[len(lead_scores) :]:
+        deferred.append(
+            {
+                "candidate_id": item["candidate_id"],
+                "candidate_kind": "lead",
+                "score": item["score"],
+                "reason": "not_retained_due_to_limit",
+            }
+        )
+    return deferred
 
 
 def build_plan(
@@ -1354,17 +1386,19 @@ def build_plan(
         weights=DEFAULT_SCORING_WEIGHTS,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
-    facet_scores = aggregate_facet_scores(
+    all_facet_scores = aggregate_facet_scores(
         enabled_facets=list(subject["enabled_facets"]),
         bundles=bundles,
         history=history,
         lead_candidates=lead_candidates,
         weights=DEFAULT_SCORING_WEIGHTS,
-    )[: args.max_facet_candidates]
-    lead_scores = aggregate_lead_scores(
+    )
+    facet_scores = all_facet_scores[: args.max_facet_candidates]
+    all_lead_scores = aggregate_lead_scores(
         enabled_facets=list(subject["enabled_facets"]),
         lead_candidates=lead_candidates,
-    )[: args.max_lead_candidates]
+    )
+    lead_scores = all_lead_scores[: args.max_lead_candidates]
     previous_run_ids = sorted_previous_run_ids(history)
     cycle_depth = next_cycle_depth(history)
     next_action = select_next_action(
@@ -1386,6 +1420,8 @@ def build_plan(
         selected_next_action=next_action,
         facet_scores=facet_scores,
         lead_scores=lead_scores,
+        all_facet_scores=all_facet_scores,
+        all_lead_scores=all_lead_scores,
         max_deferred=args.max_deferred_candidates,
     )
 
@@ -1433,8 +1469,11 @@ def build_plan(
         "counts": {
             "gather_runs_considered": len(history),
             "facet_candidates": len(facet_scores),
+            "facet_candidates_total": len(all_facet_scores),
             "lead_candidates": len(lead_scores),
+            "lead_candidates_total": len(all_lead_scores),
             "productive_leads": sum(1 for item in lead_scores if float(item["score"]) > 0.0),
+            "productive_leads_total": sum(1 for item in all_lead_scores if float(item["score"]) > 0.0),
             "deferred_candidates": len(deferred),
         },
         "facet_scores": facet_scores,

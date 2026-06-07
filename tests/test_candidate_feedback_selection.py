@@ -760,6 +760,44 @@ def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_p
     )
 
 
+def test_candidate_feedback_planner_records_total_counts_and_limit_exclusions(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    result, _output_path, payload = build_plan(
+        tmp_path,
+        db_path,
+        manifest_path,
+        extra_args=[
+            "--max-facet-candidates",
+            "1",
+            "--max-lead-candidates",
+            "1",
+            "--max-deferred-candidates",
+            "1",
+        ],
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert payload["counts"]["facet_candidates_total"] > payload["counts"]["facet_candidates"]
+    assert payload["counts"]["lead_candidates_total"] > payload["counts"]["lead_candidates"]
+    assert payload["counts"]["productive_leads_total"] >= payload["counts"]["productive_leads"]
+    assert any(
+        item["reason"] == "not_retained_due_to_limit"
+        for item in payload["deferred"]
+    )
+    assert any(
+        item["reason"] == "not_retained_due_to_limit"
+        for item in payload["selection_explanation"]["excluded_candidates"]
+    )
+
+
 def test_gather_skips_live_llm_when_feedback_plan_selects_a_deterministic_lead(
     tmp_path: Path,
 ) -> None:
