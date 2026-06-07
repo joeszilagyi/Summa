@@ -106,7 +106,40 @@ def test_source_adapter_validator_fixtures_match_golden(tmp_path: Path) -> None:
         assert proc.returncode == expected_exit, source_dir.name + proc.stdout + proc.stderr
         assert_matches_golden(scenario_dir)
         assert proc.stdout == (scenario_dir / "actual" / "report.txt").read_text(encoding="utf-8")
-        assert input_hash_after == input_hash_before
+    assert input_hash_after == input_hash_before
+
+
+def test_source_adapter_validator_rejects_unknown_nested_fields(tmp_path: Path) -> None:
+    source_adapter_payload = json.loads(
+        (FIXTURE_ROOT / "valid_local_directory" / "inputs" / "source_adapter.json").read_text(encoding="utf-8")
+    )
+    source_adapter_payload["content_profile"]["unexpected_profile_key"] = "unexpected"
+    source_adapter_payload["normalized_handoff"]["unexpected_handoff_field"] = "unexpected"
+
+    target_path = tmp_path / "source_adapter.json"
+    target_path.write_text(json.dumps(source_adapter_payload), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            str(target_path),
+            "--report-json",
+            "actual/report.json",
+            "--report-text",
+            "actual/report.txt",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads((tmp_path / "actual" / "report.json").read_text(encoding="utf-8"))
+    messages = {error["message"] for error in report["errors"]}
+    assert "unexpected content_profile field: unexpected_profile_key" in messages
+    assert "unexpected normalized_handoff field: unexpected_handoff_field" in messages
 
 
 def test_source_adapter_validator_does_not_recreate_missing_expected_reports(tmp_path: Path) -> None:

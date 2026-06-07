@@ -286,6 +286,13 @@ def validate_content_profile(payload: dict[str, Any], errors: list[dict[str, Any
     if not isinstance(content_profile, dict):
         add_error(errors, code="CONTENT_PROFILE_NOT_OBJECT", message="content_profile must be an object")
         return
+    unknown_content_profile_keys = sorted(set(content_profile) - CONTENT_PROFILE_REQUIRED_KEYS)
+    for key in unknown_content_profile_keys:
+        add_error(
+            errors,
+            code="UNKNOWN_CONTENT_PROFILE_FIELD",
+            message=f"unexpected content_profile field: {key}",
+        )
     for key in sorted(CONTENT_PROFILE_REQUIRED_KEYS):
         if key not in content_profile:
             add_error(errors, code="MISSING_CONTENT_PROFILE_KEY", message=f"missing required content_profile key: {key}")
@@ -354,6 +361,9 @@ def validate_normalized_handoff(payload: dict[str, Any], errors: list[dict[str, 
     if not isinstance(handoff, dict):
         add_error(errors, code="HANDOFF_NOT_OBJECT", message="normalized_handoff must be an object")
         return
+    allowed_handoff_keys = HANDOFF_REQUIRED_KEYS
+    for key in sorted(set(handoff) - allowed_handoff_keys):
+        add_error(errors, code="UNKNOWN_HANDOFF_FIELD", message=f"unexpected normalized_handoff field: {key}")
     for key in sorted(HANDOFF_REQUIRED_KEYS):
         if key not in handoff:
             add_error(errors, code="MISSING_HANDOFF_KEY", message=f"missing required normalized_handoff key: {key}")
