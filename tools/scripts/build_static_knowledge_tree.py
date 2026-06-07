@@ -108,6 +108,10 @@ code {
 class StaticKnowledgeTreeBuildError(RuntimeError):
     """Raised when the static knowledge tree cannot be built or published."""
 
+    def __init__(self, message: str, *, report: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.report = report or {}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -623,6 +627,7 @@ def publish_stage_dir(
     after_backup_hook: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     backup_root: Path | None = None
+    backup_restored = False
     publish_root.parent.mkdir(parents=True, exist_ok=True)
     try:
         if publish_root.exists():
@@ -637,10 +642,19 @@ def publish_stage_dir(
         if backup_root is not None and backup_root.exists() and not publish_root.exists():
             backup_root.replace(publish_root)
             _fsync_directory(publish_root.parent)
-        raise StaticKnowledgeTreeBuildError(f"atomic publish failed: {exc}") from exc
+            backup_restored = True
+        raise StaticKnowledgeTreeBuildError(
+            f"atomic publish failed: {exc}",
+            report={
+                "backup_root": str(backup_root) if backup_root is not None else None,
+                "backup_restored": backup_restored,
+                "publish_root": str(publish_root),
+                "stage_root": str(stage_root),
+            },
+        ) from exc
     return {
         "backup_root": str(backup_root) if backup_root is not None else None,
-        "backup_restored": False,
+        "backup_restored": backup_restored,
     }
 
 
