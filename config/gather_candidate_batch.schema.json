@@ -674,6 +674,9 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "next_action": {
+          "type": "object"
         }
       }
     },

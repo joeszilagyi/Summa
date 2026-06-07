@@ -338,7 +338,7 @@ def test_execute_remote_fetches_emits_denied_evidence_rows(tmp_path: Path) -> No
         assert extraction_records[1]["failure_reason"] == "network_gate_action_missing"
         assert extraction_records[2]["failure_reason"] == "unsupported_request_method"
         assert text_artifacts["extracted-text/extraction-0001.txt"] == "remote fixture text\n"
-        assert "payloads/capture-0001.bin" in binary_artifacts
+        assert binary_artifacts == {}
     finally:
         server.shutdown()
 
@@ -372,8 +372,20 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: P
         "execution_allowed": True,
         "counts": {"errors": 0, "warnings": 0},
         "planned_actions": [
-            {"url": "https://example.test/one", "status": "refused", "method": "GET"},
-            {"url": "https://example.test/two", "status": "refused", "method": "GET"},
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/one",
+                "status": "refused",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/two",
+                "status": "refused",
+                "method": "GET",
+            },
         ],
         "checks": {
             "network_policy": {
@@ -455,18 +467,30 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
     gate_request_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
 
-    wrong_order_report = {
+    wrong_method_report = {
         **base_gate_report,
         "planned_actions": [
-            {"url": "https://example.test/two", "status": "planned", "method": "GET"},
-            {"url": "https://example.test/one", "status": "planned", "method": "GET"},
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/one",
+                "status": "planned",
+                "method": "POST",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/two",
+                "status": "planned",
+                "method": "GET",
+            },
         ],
     }
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: wrong_order_report)
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: wrong_method_report)
 
     with pytest.raises(
         source_executor.SourceAcquisitionError,
-        match="planned action order does not match handoff order",
+        match="missing planned actions for: https://example.test/one",
     ):
         source_executor.execute_remote_url_manifest(
             records=records,
@@ -485,9 +509,27 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
     extra_action_report = {
         **base_gate_report,
         "planned_actions": [
-            {"url": "https://example.test/one", "status": "planned", "method": "GET"},
-            {"url": "https://example.test/two", "status": "planned", "method": "GET"},
-            {"url": "https://example.test/extra", "status": "planned", "method": "GET"},
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/two",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-3",
+                "action_kind": "fetch_payload",
+                "url": "https://example.test/extra",
+                "status": "planned",
+                "method": "GET",
+            },
         ],
     }
     monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: extra_action_report)
@@ -540,8 +582,9 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert captures[0]["content_hash"] == hashlib.sha256(b"remote fixture text\n").hexdigest()
         assert captures[0]["byte_count"] == len(b"remote fixture text\n")
         assert captures[0]["content_length_header"] == str(len(b"remote fixture text\n"))
-        assert captures[0]["transient_payload_path"] == "payloads/capture-0001.bin"
-        assert (output / captures[0]["transient_payload_path"]).read_bytes() == b"remote fixture text\n"
+        assert captures[0]["transient_payload_path"] is None
+        assert captures[0]["payload_retention_policy"] == "hash_only"
+        assert not (output / "payloads").exists()
         assert extractions[0]["capture_id"] == captures[0]["capture_id"]
         assert extractions[0]["status"] == "completed"
         assert (output / extractions[0]["extracted_text_path"]).read_text(encoding="utf-8") == "remote fixture text\n"
@@ -835,7 +878,9 @@ def test_remote_partial_failure_remains_coherent_and_validator_clean(tmp_path: P
         assert captures[1]["status"] == "failed"
         assert extractions[0]["status"] == "completed"
         assert extractions[1]["status"] == "failed"
-        assert (output / captures[0]["transient_payload_path"]).read_bytes() == b"remote fixture text\n"
+        assert captures[0]["transient_payload_path"] is None
+        assert captures[0]["payload_retention_policy"] == "hash_only"
+        assert not (output / "payloads").exists()
         assert captures[1]["failure_reason"] == "http_status_404"
         assert extractions[1]["failure_reason"] == "http_status_404"
 

@@ -885,7 +885,9 @@ def planned_actions_for_records(
             original_locator = record["preserved"]["original_locator"]
             actions.append(
                 {
+                    "action_id": f"fetch-{record['sequence']}",
                     "action_kind": "fetch_payload",
+                    "method": "GET",
                     "sequence": record["sequence"],
                     "url": original_locator["entry_url"],
                     "manifest_url": record["source_specific"]["manifest_url"],
@@ -1350,27 +1352,48 @@ def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]
 def ensure_gate_request_matches_handoff(
     gate_report: dict[str, Any], *, expected_urls: list[str]
 ) -> None:
-    planned_urls = [
-        str(action.get("url"))
-        for action in gate_report.get("planned_actions", [])
-        if isinstance(action, dict) and isinstance(action.get("url"), str)
+    expected_actions = [
+        {
+            "action_id": f"fetch-{index}",
+            "action_kind": "fetch_payload",
+            "method": "GET",
+            "url": url,
+        }
+        for index, url in enumerate(dict.fromkeys(expected_urls), start=1)
     ]
-    expected_unique = list(dict.fromkeys(expected_urls))
-    planned_unique = list(dict.fromkeys(planned_urls))
-    missing = [url for url in expected_unique if url not in planned_unique]
-    if missing:
-        raise SourceAcquisitionError(
-            f"network safety gate request is missing planned actions for: {missing[0]}"
-        )
-    extra = [url for url in planned_unique if url not in expected_unique]
-    if extra:
-        raise SourceAcquisitionError(
-            f"network safety gate request includes unexpected planned actions for: {extra[0]}"
-        )
-    if planned_unique != expected_unique:
-        raise SourceAcquisitionError(
-            "network safety gate request planned action order does not match handoff order"
-        )
+    planned_actions = [
+        {
+            "action_id": str(action.get("action_id")),
+            "action_kind": str(action.get("action_kind")),
+            "method": str(action.get("method")).upper(),
+            "url": str(action.get("url")),
+        }
+        for action in gate_report.get("planned_actions", [])
+        if isinstance(action, dict)
+        and isinstance(action.get("action_id"), str)
+        and isinstance(action.get("action_kind"), str)
+        and isinstance(action.get("method"), str)
+        and isinstance(action.get("url"), str)
+    ]
+    expected_set = {
+        (action["action_id"], action["action_kind"], action["method"], action["url"])
+        for action in expected_actions
+    }
+    planned_set = {
+        (action["action_id"], action["action_kind"], action["method"], action["url"])
+        for action in planned_actions
+    }
+    missing = sorted(expected_set - planned_set)
+    extra = sorted(planned_set - expected_set)
+    if missing or extra or len(planned_actions) != len(expected_actions):
+        details: list[str] = []
+        if missing:
+            details.append(f"missing planned actions for: {missing[0][3]}")
+        if extra:
+            details.append(f"includes unexpected planned actions for: {extra[0][3]}")
+        if not details:
+            details.append("planned action set does not exactly match handoff order")
+        raise SourceAcquisitionError("network safety gate request " + "; ".join(details))
 
 
 def build_denial_record(
@@ -1606,7 +1629,6 @@ def execute_remote_fetches(
     capture_events: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
-    binary_artifacts: dict[str, bytes] = {}
     failed = False
     summary = {
         "urls_planned": len(records),
@@ -1754,10 +1776,7 @@ def execute_remote_fetches(
         content_type = extract_content_type(fetch_result.get("headers"))
         content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
         byte_count = len(payload) if fetch_result["status"] == "captured" else 0
-        payload_path = None
         if fetch_result["status"] == "captured":
-            payload_path = f"payloads/{capture_id}.bin"
-            binary_artifacts[payload_path] = payload
             summary["bytes_captured"] += byte_count
             summary["urls_succeeded"] += 1
         else:
@@ -1792,8 +1811,8 @@ def execute_remote_fetches(
             "content_type": content_type,
             "captured_at": created_at,
             "capture_method": "remote_url_fetch",
-            "transient_payload_path": payload_path,
-            "payload_retention_policy": "transient_run_artifact",
+            "transient_payload_path": None,
+            "payload_retention_policy": "hash_only",
             "network_access_attempted": True,
             "rights_posture": record["preserved"].get("rights_posture"),
             "status": "completed" if fetch_result["status"] == "captured" else "failed",
@@ -1851,7 +1870,7 @@ def execute_remote_fetches(
                 },
             )
         )
-    return capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary
+    return capture_events, extraction_records, text_artifacts, {}, failed, summary
 
 
 def execute_remote_url_manifest(

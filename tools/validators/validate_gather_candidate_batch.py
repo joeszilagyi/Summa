@@ -346,6 +346,10 @@ def _read_text_if_present(path_value: Any) -> str | None:
         return None
 
 
+def render_json_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def parse_stamp_footer(text: str) -> dict[str, str] | None:
     footer_delimiter = "\n---\n"
     footer_prefix = f"{footer_delimiter}RUN_META_VERSION: "
@@ -606,14 +610,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="prior_state.context_hash does not match prior_state.context_text",
                     path="$.prior_state.context_hash",
                 )
-            if isinstance(prompt_text, str):
-                if context_text not in prompt_text:
-                    add_error(
-                        errors,
-                        code="PRIOR_STATE_PROMPT_MISMATCH",
-                        message="prior_state.context_text does not appear in rendered_prompt",
-                        path="$.prior_state.context_text",
-                    )
         record_counts = prior_state.get("record_counts")
         if isinstance(record_counts, dict):
             for family_key, counts in record_counts.items():
@@ -673,22 +669,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
             )
 
     if isinstance(feedback_plan, dict):
-        if isinstance(prompt_text, str):
-            if "NEXT ACTION SELECTION" not in prompt_text:
-                add_error(
-                    errors,
-                    code="FEEDBACK_PLAN_PROMPT_BLOCK_REQUIRED",
-                    message="feedback-guided batches must include a NEXT ACTION SELECTION block in rendered_prompt",
-                    path="$.prompt.rendered_prompt",
-                )
-            next_action_id = feedback_plan.get("next_action_id")
-            if isinstance(next_action_id, str) and next_action_id not in prompt_text:
-                add_error(
-                    errors,
-                    code="FEEDBACK_PLAN_PROMPT_MISMATCH",
-                    message="feedback_plan.next_action_id does not appear in rendered_prompt",
-                    path="$.feedback_plan.next_action_id",
-                )
         if isinstance(feedback_plan.get("plan_hash"), str) and not SHA256_PATTERN.fullmatch(
             feedback_plan["plan_hash"]
         ):
@@ -791,6 +771,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
             recorded_blocks = wrapping.get("blocks")
             if not isinstance(recorded_blocks, list):
                 return
+            file_blocks = [block for block in parsed_blocks if block.source_ref.startswith("file:")]
             if wrapping.get("source_block_count") != len(recorded_blocks):
                 add_error(
                     errors,
@@ -798,14 +779,14 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="source_block_count must equal the number of recorded blocks",
                     path="$.source_text_wrapping.source_block_count",
                 )
-            if len(parsed_blocks) != len(recorded_blocks):
+            if len(file_blocks) != len(recorded_blocks):
                 add_error(
                     errors,
                     code="PROMPT_WRAPPER_BLOCK_COUNT_MISMATCH",
                     message="rendered prompt wrapped block count must equal source_text_wrapping.blocks length",
                     path="$.source_text_wrapping.blocks",
                 )
-            for index, actual in enumerate(parsed_blocks):
+            for index, actual in enumerate(file_blocks):
                 if index >= len(recorded_blocks):
                     break
                 expected = recorded_blocks[index]
@@ -848,6 +829,98 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="recorded byte_count does not match the wrapped source text",
                         path=f"$.source_text_wrapping.blocks[{index}].byte_count",
                     )
+
+            parsed_metadata_blocks = {
+                block.source_ref: block for block in parsed_blocks if block.source_ref.startswith("metadata:")
+            }
+            subject_payload = payload.get("subject")
+            if isinstance(subject_payload, dict):
+                expected_subject = {
+                    "subject_id": subject_payload.get("subject_id"),
+                    "display_name": subject_payload.get("display_name"),
+                    "domain_pack": subject_payload.get("domain_pack"),
+                    "scope_statement": subject_payload.get("scope_statement"),
+                    "enabled_facets": subject_payload.get("enabled_facets"),
+                    "query_families": subject_payload.get("query_families"),
+                }
+                expected_subject_text = render_json_payload(expected_subject)
+                actual_subject_block = parsed_metadata_blocks.get("metadata:subject")
+                if actual_subject_block is None:
+                    add_error(
+                        errors,
+                        code="UNTRUSTED_SUBJECT_METADATA_MISSING",
+                        message="rendered prompt must include an untrusted subject metadata block",
+                        path="$.prompt.rendered_prompt",
+                    )
+                else:
+                    if actual_subject_block.provenance != "subject manifest metadata":
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_SUBJECT_METADATA_PROVENANCE_MISMATCH",
+                            message="subject metadata provenance must match the wrapped prompt contract",
+                            path="$.prompt.rendered_prompt",
+                        )
+                    if actual_subject_block.source_text != expected_subject_text:
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_SUBJECT_METADATA_MISMATCH",
+                            message="subject metadata block must serialize the rendered subject payload as inert JSON",
+                            path="$.prompt.rendered_prompt",
+                        )
+
+            if isinstance(feedback_plan, dict):
+                next_action = feedback_plan.get("next_action")
+                if isinstance(next_action, dict):
+                    expected_next_action_text = render_json_payload(next_action)
+                    actual_next_action_block = parsed_metadata_blocks.get("metadata:feedback-plan")
+                    if actual_next_action_block is None:
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_MISSING",
+                            message="rendered prompt must include an untrusted feedback-plan metadata block",
+                            path="$.prompt.rendered_prompt",
+                        )
+                    else:
+                        if actual_next_action_block.provenance != "candidate feedback plan next action":
+                            add_error(
+                                errors,
+                                code="UNTRUSTED_FEEDBACK_PLAN_METADATA_PROVENANCE_MISMATCH",
+                                message="feedback-plan metadata provenance must match the wrapped prompt contract",
+                                path="$.prompt.rendered_prompt",
+                            )
+                        if actual_next_action_block.source_text != expected_next_action_text:
+                            add_error(
+                                errors,
+                                code="UNTRUSTED_FEEDBACK_PLAN_METADATA_MISMATCH",
+                                message="feedback-plan metadata block must serialize the next_action payload as inert JSON",
+                                path="$.prompt.rendered_prompt",
+                            )
+
+            if isinstance(prior_state, dict):
+                actual_prior_state_block = parsed_metadata_blocks.get("metadata:prior-state")
+                expected_prior_state_text = render_json_payload(prior_state)
+                if actual_prior_state_block is None:
+                    add_error(
+                        errors,
+                        code="UNTRUSTED_PRIOR_STATE_METADATA_MISSING",
+                        message="rendered prompt must include an untrusted prior-state metadata block",
+                        path="$.prompt.rendered_prompt",
+                    )
+                else:
+                    if actual_prior_state_block.provenance != "prior canonical state context":
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_PRIOR_STATE_METADATA_PROVENANCE_MISMATCH",
+                            message="prior-state metadata provenance must match the wrapped prompt contract",
+                            path="$.prompt.rendered_prompt",
+                        )
+                    if actual_prior_state_block.source_text != expected_prior_state_text:
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_PRIOR_STATE_METADATA_MISMATCH",
+                            message="prior-state metadata block must serialize the prior state payload as inert JSON",
+                            path="$.prompt.rendered_prompt",
+                        )
 
     candidates = payload.get("candidates")
     if isinstance(candidates, list):
