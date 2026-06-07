@@ -423,6 +423,32 @@ def test_runtime_ledger_append_event_does_not_call_fsync(tmp_path: Path, monkeyp
     assert len(events) == 1
 
 
+def test_runtime_ledger_append_event_updates_metadata_sidecar(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "metadata.runtime-ledger.jsonl"
+    first = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="append-metadata-1",
+        event_type="command_start",
+        command="pytest-fixture",
+    )
+    second = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="append-metadata-2",
+        event_type="command_end",
+        command="pytest-fixture",
+        status="pass",
+    )
+
+    runtime_ledger.append_event(ledger_path, first)
+    runtime_ledger.append_event(ledger_path, second)
+
+    metadata_path = runtime_ledger.ledger_metadata_path(ledger_path)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    assert metadata["schema_version"] == runtime_ledger.LEDGER_METADATA_SCHEMA_VERSION
+    assert metadata["line_count"] == 2
+
+
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

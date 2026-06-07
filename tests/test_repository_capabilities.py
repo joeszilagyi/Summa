@@ -240,3 +240,28 @@ def test_validator_report_passes_for_checked_in_index() -> None:
         list((REPO_ROOT / "tools" / "scripts").glob("Index_*.sh"))
     )
     assert report["counts"]["standards_profiles"] >= 4
+
+
+def test_validator_writes_schema_inventory_sidecar(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    schema_path = repo_root / "config" / "example.schema.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(
+        json.dumps({"$id": "example.schema.json", "title": "Example schema"}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    validator = importlib.import_module("tools.scripts.validate_repository_capabilities")
+    inventory = validator.write_schema_inventory(repo_root)
+
+    assert inventory["schema_count"] == 1
+    assert inventory["schemas"] == [
+        {
+            "path": "config/example.schema.json",
+            "title": "Example schema",
+            "id": "example.schema.json",
+            "status": "readable",
+        }
+    ]
+    sidecar = repo_root / "runtime" / "config" / "schema_inventory.json"
+    assert sidecar.is_file()

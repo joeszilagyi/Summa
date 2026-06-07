@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 import sys
+from functools import lru_cache
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,8 +19,6 @@ MANIFEST_SCHEMA_VERSION = "crown-jewel-backup-manifest.v1"
 STATUS_PRESENT = "present"
 STATUS_MISSING_ALLOWED = "missing_allowed"
 STATUS_MISSING_REQUIRED = "missing_required"
-MANIFEST_VALIDATION_TMP_PREFIX = ".crown_jewel_backup_manifest.validation."
-MANIFEST_VALIDATION_TMP_SUFFIX = ".tmp.json"
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
@@ -88,8 +86,8 @@ def validate_policy_or_raise(policy_path: Path) -> dict[str, Any]:
     return load_json_object(policy_path, label="crown-jewel store policy")
 
 
-def validate_manifest_or_raise(manifest_path: Path) -> None:
-    result, exit_code = validate_crown_jewel_backup_manifest.validate_crown_jewel_backup_manifest(manifest_path)
+def validate_manifest_payload_or_raise(manifest: dict[str, Any]) -> None:
+    result, exit_code = validate_crown_jewel_backup_manifest.validate_crown_jewel_backup_manifest_payload(manifest)
     if exit_code != validate_crown_jewel_backup_manifest.EXIT_PASS:
         errors = result.get("errors", [])
         if errors:
@@ -104,16 +102,25 @@ def repo_relative_path(path: Path, repo_root: Path) -> str:
         return str(path.resolve())
 
 
+@lru_cache(maxsize=1024)
+def cached_glob_matches(repo_root_value: str, pattern: str) -> tuple[str, ...]:
+    repo_root = Path(repo_root_value)
+    try:
+        candidates = repo_root.glob(pattern)
+    except ValueError as exc:
+        raise BackupPlanError(f"invalid path glob in store policy: {pattern!r}") from exc
+    matched = []
+    for candidate in candidates:
+        if candidate.exists():
+            matched.append(repo_relative_path(candidate, repo_root))
+    return tuple(sorted(matched))
+
+
 def resolve_matched_paths(repo_root: Path, path_globs: list[str]) -> list[str]:
     matched: set[str] = set()
+    repo_root_value = str(repo_root.resolve())
     for pattern in path_globs:
-        try:
-            candidates = repo_root.glob(pattern)
-        except ValueError as exc:
-            raise BackupPlanError(f"invalid path glob in store policy: {pattern!r}") from exc
-        for candidate in candidates:
-            if candidate.exists():
-                matched.add(repo_relative_path(candidate, repo_root))
+        matched.update(cached_glob_matches(repo_root_value, pattern))
     return sorted(matched)
 
 
@@ -183,27 +190,7 @@ def plan_backup_manifest(
         "store_entries": store_entries,
     }
 
-    manifest_parent = repo_root / "runtime" / "config"
-    manifest_parent.mkdir(parents=True, exist_ok=True)
-
-    temp_manifest = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=manifest_parent,
-            prefix=MANIFEST_VALIDATION_TMP_PREFIX,
-            suffix=MANIFEST_VALIDATION_TMP_SUFFIX,
-            delete=False,
-        ) as temp_file:
-            temp_manifest = Path(temp_file.name)
-            json.dump(manifest, temp_file, ensure_ascii=False, indent=2, sort_keys=True)
-            temp_file.write("\n")
-            temp_file.flush()
-        validate_manifest_or_raise(temp_manifest)
-    finally:
-        if temp_manifest is not None:
-            temp_manifest.unlink(missing_ok=True)
+    validate_manifest_payload_or_raise(manifest)
 
     return manifest
 

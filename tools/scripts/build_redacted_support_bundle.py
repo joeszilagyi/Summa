@@ -54,6 +54,21 @@ def redacted_text(value: str) -> str:
     return local_doctor.redact(value)
 
 
+def schema_inventory_path(repo_root: Path) -> Path:
+    return repo_root / "runtime" / "config" / "schema_inventory.json"
+
+
+def load_schema_inventory(repo_root: Path) -> dict[str, Any] | None:
+    path = schema_inventory_path(repo_root)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def tail_text(path: Path, *, line_count: int) -> str | None:
     if line_count <= 0:
         return None
@@ -100,6 +115,9 @@ def load_or_build_doctor_report(repo_root: Path, doctor_report: Path | None, reg
 
 
 def schema_versions(repo_root: Path) -> dict[str, Any]:
+    inventory = load_schema_inventory(repo_root)
+    if inventory is not None:
+        return inventory
     versions = []
     for path in sorted((repo_root / "config").glob("**/*.schema.json")):
         try:
@@ -138,19 +156,33 @@ def config_summary(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def ledger_line_count(path: Path) -> int:
+    metadata_path = path.with_name(path.name + ".meta.json")
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = None
+        if isinstance(metadata, dict):
+            line_count = metadata.get("line_count")
+            if isinstance(line_count, int) and not isinstance(line_count, bool):
+                return line_count
+    return sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
+
+
 def ledger_summary(repo_root: Path) -> dict[str, Any]:
     ledger_root = repo_root / "runtime" / "ledgers"
     if not ledger_root.exists():
         return {"ledger_root_present": False, "ledgers": []}
     ledgers = []
     for path in sorted(ledger_root.glob("*")):
-        if path.name == ".gitkeep" or not path.is_file():
+        if path.name == ".gitkeep" or path.name.endswith(".meta.json") or not path.is_file():
             continue
         ledgers.append(
             {
                 "name": path.name,
                 "size_bytes": path.stat().st_size,
-                "line_count": sum(1 for _ in path.open("r", encoding="utf-8", errors="replace")),
+                "line_count": ledger_line_count(path),
             }
         )
     return {"ledger_root_present": True, "ledgers": ledgers}

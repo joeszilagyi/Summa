@@ -108,6 +108,76 @@ def test_redacted_support_bundle_scans_manifest_after_writing_it(tmp_path: Path,
     assert scan_calls == [False, True]
 
 
+def test_schema_versions_prefers_inventory_sidecar(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    inventory = {
+        "schema_count": 1,
+        "schemas": [
+            {
+                "path": "config/example.schema.json",
+                "title": "Example schema",
+                "id": "example.schema.json",
+                "status": "readable",
+            }
+        ],
+    }
+    inventory_path = repo_root / "runtime" / "config" / "schema_inventory.json"
+    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def fail_glob(*args: object, **kwargs: object):
+        raise AssertionError("schema_versions should not glob schema files when inventory is present")
+
+    monkeypatch.setattr(Path, "glob", fail_glob)
+
+    payload = support_builder.schema_versions(repo_root)
+
+    assert payload == inventory
+
+
+def test_ledger_summary_prefers_metadata_sidecar(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    ledger_path = repo_root / "runtime" / "ledgers" / "workspace.runtime-ledger.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text('{"event_id":"event-1"}\n', encoding="utf-8")
+    metadata_path = ledger_path.with_name(ledger_path.name + ".meta.json")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime-ledger-metadata.v1",
+                "ledger_path": str(ledger_path),
+                "line_count": 37,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    original_open = Path.open
+
+    def fail_ledger_open(self: Path, *args: object, **kwargs: object):
+        if self == ledger_path and args and args[0] == "r":
+            raise AssertionError("ledger_summary should not scan the ledger when metadata is present")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_ledger_open)
+
+    summary = support_builder.ledger_summary(repo_root)
+
+    assert summary == {
+        "ledger_root_present": True,
+        "ledgers": [
+            {
+                "name": ledger_path.name,
+                "size_bytes": ledger_path.stat().st_size,
+                "line_count": 37,
+            }
+        ],
+    }
+
+
 def test_redacted_recent_log_reads_tail_without_read_text(tmp_path: Path, monkeypatch) -> None:
     log_path = tmp_path / "runtime" / "logs" / "index-actions.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)

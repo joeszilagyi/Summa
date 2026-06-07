@@ -13,6 +13,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "runtime-ledger.v1"
+LEDGER_METADATA_SCHEMA_VERSION = "runtime-ledger-metadata.v1"
 DEFAULT_LEDGER_ROOT = Path("runtime") / "ledgers"
 EVENT_TYPES = {
     "command_start",
@@ -41,6 +42,10 @@ def new_run_id(prefix: str = "run") -> str:
 
 def default_ledger_path(repo_root: Path, workspace_id: str) -> Path:
     return repo_root / DEFAULT_LEDGER_ROOT / f"{workspace_id}.runtime-ledger.jsonl"
+
+
+def ledger_metadata_path(ledger_path: Path) -> Path:
+    return ledger_path.with_name(ledger_path.name + ".meta.json")
 
 
 def build_event(
@@ -100,6 +105,27 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
     with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(line)
         handle.flush()
+    metadata_path = ledger_metadata_path(ledger_path)
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    else:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    line_count = metadata.get("line_count")
+    if isinstance(line_count, int) and not isinstance(line_count, bool):
+        next_line_count = line_count + 1
+    else:
+        next_line_count = sum(1 for _ in ledger_path.open("r", encoding="utf-8"))
+    metadata = {
+        "schema_version": LEDGER_METADATA_SCHEMA_VERSION,
+        "ledger_path": str(ledger_path),
+        "line_count": next_line_count,
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:
