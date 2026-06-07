@@ -223,41 +223,45 @@ def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Pa
     assert proc.returncode != 0
     assert "handoff adapter_path does not match trusted adapter manifest" in (proc.stdout + proc.stderr)
 
-    assert [capture["source_reference"]["relative_path"] for capture in captures] == [
-        "oversize/big.pdf",
-        "prompt_notes.pdf",
-    ]
-    assert [capture["status"] for capture in captures] == ["completed", "completed"]
-    assert captures[0]["capture_method"] == "local_directory_walk"
-    assert captures[0]["byte_count"] == (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").stat().st_size
-    assert captures[0]["content_hash"] == hashlib.sha256(
-        (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").read_bytes()
-    ).hexdigest()
-    assert captures[1]["content_hash"] == hashlib.sha256(
-        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_bytes()
-    ).hexdigest()
 
-    assert extractions[0]["status"] == "skipped"
-    assert extractions[0]["failure_reason"] == "oversized_payload"
-    assert extractions[0]["extracted_text_path"] is None
-    assert extractions[1]["status"] == "completed"
-    assert extractions[1]["failure_reason"] is None
-    assert extractions[1]["extracted_text_path"] == "extracted-text/extraction-0002.txt"
-    assert (output / extractions[1]["extracted_text_path"]).read_text(encoding="utf-8") == (
-        FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"
-    ).read_text(encoding="utf-8")
-    assert extractions[1]["byte_count_out"] == len(
-        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_text(encoding="utf-8").encode("utf-8")
+def test_execute_local_source_anchors_root_to_adapter_manifest(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    record = json.loads(handoff.read_text(encoding="utf-8").splitlines()[0])
+    record["preserved"]["original_locator"]["adapter_local_path"] = "."
+    record["relative_path"] = "source_adapter.json"
+    record["resolved_source_path"] = str(FIXTURE_ROOT / "source_adapter.json")
+    mutated_handoff = tmp_path / "local-source-handoff-root-mismatch.jsonl"
+    mutated_handoff.write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
-    validator_proc = subprocess.run(
-        [sys.executable, str(VALIDATOR), str(output)],
+    output = tmp_path / "local-source-execution"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(mutated_handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
         check=False,
     )
-    assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+
+    assert proc.returncode != 0
+    assert "escapes the allowed root" in (proc.stdout + proc.stderr)
 
 
 def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) -> None:
