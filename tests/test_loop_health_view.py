@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tools.source_db_tools import canonical_store, loop_health
+from tools.source_db_tools import cycle_evidence_ledger
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -388,6 +389,78 @@ def test_workspace_scoped_summary_ignores_other_workspace_activity(tmp_path: Pat
     assert summary["review_backlog"]["pending_review_count"] == 3  # type: ignore[index]
     assert summary["contradictions"]["new_contradictions"] == 0  # type: ignore[index]
     assert summary["ingestion_resolution"]["review_decision_applied_count"] == 1  # type: ignore[index]
+
+
+def test_loop_health_uses_persisted_cycle_event_metrics_when_available(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            cycle_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="cycle-ledger-metrics",
+                workspace_id="fixture_subject",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at="2026-06-04T10:00:00Z",
+                status="running",
+            )
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn,
+                cycle_event_id=cycle_id,
+                status="completed",
+                ended_at="2026-06-04T10:05:00Z",
+                row_count_delta={
+                    "cycle_id": "cycle-ledger-metrics",
+                    "cycle_depth": 1,
+                    "event_timestamp": "2026-06-04T10:00:00Z",
+                    "started_at": "2026-06-04T10:00:00Z",
+                    "ended_at": "2026-06-04T10:05:00Z",
+                    "final_status": "completed",
+                    "facet": "sources",
+                    "gather_candidate_count": None,
+                    "candidate_ingest_count": 2,
+                    "execution_capture_count": 0,
+                    "execution_extraction_count": 0,
+                    "new_work_count": 1,
+                    "new_source_claim_count": 1,
+                    "new_detected_entity_count": 0,
+                    "new_source_relationship_count": 0,
+                    "new_authority_reconciliation_count": None,
+                    "new_contradiction_count": 0,
+                    "new_reviewable_count": 2,
+                    "new_accepted_count": 1,
+                    "new_rejected_or_resolved_count": None,
+                    "review_backlog_delta": None,
+                    "feedback_selected_action": None,
+                    "yield_score": 3,
+                    "warning_count": 0,
+                    "failure_stage": None,
+                    "table_counts": {
+                        "work": 1,
+                        "source_claim": 1,
+                        "extraction_detected_entity": 0,
+                        "source_relationship": 0,
+                        "capture_event": 0,
+                        "extraction_record": 0,
+                    },
+                },
+            )
+    finally:
+        conn.close()
+
+    summary = summarize(db_path)
+
+    assert summary["cycle_ids_considered"] == ["cycle-ledger-metrics"]  # type: ignore[index]
+    assert summary["health_status"] == "healthy"
+    assert summary["aggregate_metrics"]["new_reviewable_records"] == 2  # type: ignore[index]
+    assert summary["aggregate_metrics"]["new_accepted_records"] == 1  # type: ignore[index]
+    assert summary["contradictions"]["new_contradictions"] == 0  # type: ignore[index]
 
 
 def test_resolution_metrics_are_unavailable_without_f29_apply_records(tmp_path: Path) -> None:

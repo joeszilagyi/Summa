@@ -888,3 +888,137 @@ def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candi
     }
     assert [row["candidate_ref_id"] for row in excluded_rows] == ["candidate-3"]
     assert excluded_rows[0]["candidate_kind"] == "feedback_candidate"
+
+
+def test_record_topic_cycle_manifest_persists_cycle_metrics_for_loop_health(
+    tmp_path: Path,
+) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        manifest_path = tmp_path / "topic-cycle-run.json"
+        candidate_batch_path = tmp_path / "gather-candidate-batch.json"
+        candidate_batch_path.write_text("candidate-batch\n", encoding="utf-8")
+        manifest_path.write_text('{"schema_version":"topic-cycle-run.v1"}\n', encoding="utf-8")
+
+        gather_event = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="gather_candidate_batch",
+            object_id="cycle-evidence-metrics.gather",
+            event_type="gather_candidate_batch_ingest",
+            tool_name="pytest",
+            run_id="cycle-evidence-metrics.gather",
+            event_timestamp=FIXED_TIMESTAMP,
+            note_text=json.dumps(
+                {
+                    "subject_id": "fixture-subject",
+                    "workspace_id": "fixture-workspace",
+                    "facet": "sources",
+                },
+                sort_keys=True,
+            ),
+            provenance_event_key_v1="prov:cycle-evidence:metrics:gather",
+        )
+        canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:cycle-evidence-metrics",
+            provenance_event_ref=gather_event.event_key,
+            work_type="article",
+            title="Cycle Evidence Metrics",
+            review_state="accepted",
+            workspace_id="fixture-workspace",
+            first_seen_at=FIXED_TIMESTAMP,
+            last_seen_at=FIXED_TIMESTAMP,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=gather_event.event_key,
+            source_claim_key_v1="claim:cycle-evidence-metrics",
+            about_object_ref="work:cycle-evidence-metrics",
+            claim_text="Cycle evidence metric claim.",
+            claim_type="fixture_claim",
+            review_state="needs_review",
+            workspace_id="fixture-workspace",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=gather_event.event_key,
+            from_object_ref="work:cycle-evidence-metrics",
+            to_object_ref="claim:cycle-evidence-metrics",
+            predicate="contradicts",
+            review_state="needs_review",
+            workspace_id="fixture-workspace",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        manifest = {
+            "schema_version": "topic-cycle-run.v1",
+            "run_id": "cycle-evidence-metrics",
+            "workspace": {"path": str(tmp_path / "workspace"), "workspace_id": "fixture-workspace"},
+            "subject": {"subject_id": "fixture-subject"},
+            "domain_pack": {"domain_pack_id": "general.v1"},
+            "status": "completed",
+            "mode": "local",
+            "started_at": FIXED_TIMESTAMP,
+            "ended_at": FIXED_TIMESTAMP,
+            "cycle_depth": 1,
+            "previous_run_ids": [],
+            "warnings": [],
+            "operator_overrides": [],
+            "stages": [
+                {
+                    "name": "run_gather",
+                    "status": "passed",
+                    "artifacts": {"candidate_batch": str(candidate_batch_path)},
+                },
+                {
+                    "name": "ingest_candidate_batch",
+                    "status": "passed",
+                    "artifacts": {"candidate_batch": str(candidate_batch_path)},
+                    "evidence": {
+                        "candidate_batch": {
+                            "schema_version": "gather-candidate-batch.v1",
+                            "facet": {"name": "sources"},
+                            "candidates": [
+                                {
+                                    "candidate_id": "candidate-1",
+                                    "candidate_type": "source_lead",
+                                    "origin": {"source": "fixture"},
+                                }
+                            ],
+                            "artifact_path": str(candidate_batch_path),
+                        }
+                    },
+                },
+            ],
+            "cycle_evidence_ledger": {"status": "pending"},
+        }
+
+        event_id = cycle_evidence_ledger.record_topic_cycle_manifest(
+            conn,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            manifest_hash="manifest-hash",
+            canonical_db_ref=str(db_path),
+        )
+        row = conn.execute(
+            "SELECT row_count_delta_json FROM cycle_event WHERE cycle_event_id=?",
+            (event_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    metrics = json.loads(row["row_count_delta_json"])
+    assert metrics["facet"] == "sources"
+    assert metrics["new_work_count"] == 1
+    assert metrics["new_source_claim_count"] == 1
+    assert metrics["new_source_relationship_count"] == 1
+    assert metrics["new_contradiction_count"] == 1
+    assert metrics["new_reviewable_count"] == 2
+    assert metrics["new_accepted_count"] == 1

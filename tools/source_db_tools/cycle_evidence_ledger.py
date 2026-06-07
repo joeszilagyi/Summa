@@ -14,6 +14,31 @@ from tools.common.candidate_feedback_contract import deferred_candidate_retryabl
 
 SCHEMA_VERSION = "cycle-evidence-ledger.v1"
 DEFAULT_PRIVACY_CLASSIFICATION = "local_operator"
+PENDING_REVIEW_STATES = frozenset(
+    {
+        "",
+        "ambiguous",
+        "machine_extracted",
+        "needs_review",
+        "proposed",
+        "unreviewed",
+    }
+)
+ACCEPTED_REVIEW_STATES = frozenset({"accepted", "approved", "curated", "reviewed"})
+PER_CYCLE_TABLES = (
+    "work",
+    "source_claim",
+    "extraction_detected_entity",
+    "source_relationship",
+    "capture_event",
+    "extraction_record",
+)
+REVIEWABLE_PER_CYCLE_TABLES = (
+    "work",
+    "source_claim",
+    "source_relationship",
+    "extraction_detected_entity",
+)
 _ID_PREFIXES = {
     "cycle": "cycle",
     "stage": "cycle-stage",
@@ -79,6 +104,148 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _load_json_mapping(raw_text: Any) -> dict[str, Any]:
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return {}
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _safe_count(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
+    row = conn.execute(sql, params).fetchone()
+    return int(row[0] if row is not None else 0)
+
+
+def _state_placeholders(states: frozenset[str]) -> str:
+    return ", ".join("?" for _ in states)
+
+
+def _review_state_count(
+    conn: sqlite3.Connection,
+    table_name: str,
+    *,
+    provenance_event_ref: str,
+    states: frozenset[str],
+) -> int:
+    placeholders = _state_placeholders(states)
+    return _safe_count(
+        conn,
+        f"""
+        SELECT COUNT(*)
+        FROM {table_name}
+        WHERE provenance_event_ref=?
+          AND COALESCE(review_state, '') IN ({placeholders})
+        """,
+        (provenance_event_ref, *sorted(states)),
+    )
+
+
+def _count_for_event(conn: sqlite3.Connection, table_name: str, event_key: str) -> int:
+    return _safe_count(
+        conn,
+        f"SELECT COUNT(*) FROM {table_name} WHERE provenance_event_ref=?",
+        (event_key,),
+    )
+
+
+def _load_gather_event(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT provenance_event_key_v1, event_timestamp
+        FROM provenance_event
+        WHERE event_type='gather_candidate_batch_ingest'
+          AND run_id=?
+        ORDER BY event_timestamp DESC, provenance_event_id DESC
+        LIMIT 1
+        """,
+        (f"{run_id}.gather",),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "event_key": str(row["provenance_event_key_v1"]),
+        "event_timestamp": str(row["event_timestamp"]),
+    }
+
+
+def _cycle_metrics_from_event(
+    conn: sqlite3.Connection,
+    *,
+    event_key: str,
+    run_id: str,
+    started_at: str,
+    ended_at: str | None,
+    cycle_depth: int | None,
+    facet: str | None,
+    status: str,
+) -> dict[str, Any]:
+    table_counts = {table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES}
+    accepted_counts = {
+        table_name: _review_state_count(
+            conn,
+            table_name,
+            provenance_event_ref=event_key,
+            states=ACCEPTED_REVIEW_STATES,
+        )
+        for table_name in REVIEWABLE_PER_CYCLE_TABLES
+    }
+    reviewable_counts = {
+        table_name: _review_state_count(
+            conn,
+            table_name,
+            provenance_event_ref=event_key,
+            states=PENDING_REVIEW_STATES,
+        )
+        for table_name in REVIEWABLE_PER_CYCLE_TABLES
+    }
+    contradiction_count = _safe_count(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM source_relationship
+        WHERE provenance_event_ref=? AND predicate='contradicts'
+        """,
+        (event_key,),
+    )
+    new_reviewable = sum(reviewable_counts.values())
+    new_accepted = sum(accepted_counts.values())
+    metrics = {
+        "cycle_id": run_id or event_key,
+        "cycle_depth": cycle_depth,
+        "event_timestamp": started_at,
+        "started_at": started_at,
+        "ended_at": ended_at or started_at,
+        "final_status": status,
+        "facet": facet,
+        "gather_candidate_count": None,
+        "candidate_ingest_count": table_counts["work"]
+        + table_counts["source_claim"]
+        + table_counts["extraction_detected_entity"]
+        + table_counts["source_relationship"],
+        "execution_capture_count": table_counts["capture_event"],
+        "execution_extraction_count": table_counts["extraction_record"],
+        "new_work_count": table_counts["work"],
+        "new_source_claim_count": table_counts["source_claim"],
+        "new_detected_entity_count": table_counts["extraction_detected_entity"],
+        "new_source_relationship_count": table_counts["source_relationship"],
+        "new_authority_reconciliation_count": None,
+        "new_contradiction_count": contradiction_count,
+        "new_reviewable_count": new_reviewable,
+        "new_accepted_count": new_accepted,
+        "new_rejected_or_resolved_count": None,
+        "review_backlog_delta": None,
+        "feedback_selected_action": None,
+        "yield_score": new_reviewable + new_accepted,
+        "warning_count": 0,
+        "failure_stage": None,
+        "table_counts": table_counts,
+    }
+    return metrics
 
 
 def _bool_int(value: bool) -> int:
@@ -207,7 +374,7 @@ def record_cycle_event_start(
             f"run_id={run_id_text}",
             existing_row,
             expected,
-            ignore=frozenset({"record_last_updated", "status"}),
+            ignore=frozenset({"record_last_updated", "status", "row_count_delta_json"}),
         )
         return str(existing_row["cycle_event_id"])
     return str(row[0])
@@ -1289,6 +1456,32 @@ def record_topic_cycle_manifest(
                 retryable=True,
             )
 
+    gather_event = _load_gather_event(conn, run_id)
+    facet = None
+    ingest_stage = _stage_by_name(stages, "ingest_candidate_batch")
+    if isinstance(ingest_stage, Mapping):
+        candidate_batch_payload = _stage_evidence_payload(ingest_stage, "candidate_batch")
+        if isinstance(candidate_batch_payload, Mapping):
+            facet_payload = candidate_batch_payload.get("facet")
+            if isinstance(facet_payload, Mapping):
+                facet_value = facet_payload.get("name")
+                if isinstance(facet_value, str) and facet_value.strip():
+                    facet = facet_value.strip()
+    row_count_delta = None
+    if gather_event is not None:
+        row_count_delta = _cycle_metrics_from_event(
+            conn,
+            event_key=gather_event["event_key"],
+            run_id=run_id,
+            started_at=_optional_text(manifest.get("started_at")) or now_rfc3339(),
+            ended_at=_optional_text(manifest.get("ended_at")),
+            cycle_depth=manifest.get("cycle_depth")
+            if isinstance(manifest.get("cycle_depth"), int)
+            else None,
+            facet=facet,
+            status=status,
+        )
+
     manifest_artifact_id = record_cycle_artifact_ref(
         conn,
         cycle_event_id=event_id,
@@ -1308,6 +1501,7 @@ def record_topic_cycle_manifest(
         topic_cycle_manifest_path=str(manifest_path),
         topic_cycle_manifest_hash=manifest_hash,
         final_feedback_plan_ref=final_feedback_plan_ref,
+        row_count_delta=row_count_delta,
         warning_count=warning_count,
         error_count=error_count,
     )

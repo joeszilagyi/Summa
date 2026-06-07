@@ -99,6 +99,10 @@ def _normalize_now(value: str | None) -> tuple[str, dt.datetime]:
 
 
 def _load_note(raw_text: Any) -> dict[str, Any]:
+    return _load_json_mapping(raw_text)
+
+
+def _load_json_mapping(raw_text: Any) -> dict[str, Any]:
     if not isinstance(raw_text, str) or not raw_text.strip():
         return {}
     try:
@@ -115,6 +119,77 @@ def _safe_count(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()
 
 def _state_placeholders(states: frozenset[str]) -> str:
     return ",".join("?" for _ in states)
+
+
+def _load_cycle_events_from_ledger(
+    conn: sqlite3.Connection,
+    *,
+    subject_id: str | None,
+    workspace_id: str | None,
+    lookback_cycles: int,
+) -> list[dict[str, Any]]:
+    if workspace_id is not None:
+        rows = conn.execute(
+            """
+            SELECT cycle_event_id, run_id, workspace_id, subject_key, cycle_depth,
+                   started_at, ended_at, status, row_count_delta_json, metadata_json
+            FROM cycle_event
+            WHERE workspace_id=? OR (workspace_id IS NULL AND subject_key=?)
+            ORDER BY started_at DESC, cycle_event_id DESC
+            LIMIT ?
+            """,
+            (workspace_id, workspace_id, lookback_cycles),
+        ).fetchall()
+    elif subject_id is not None:
+        rows = conn.execute(
+            """
+            SELECT cycle_event_id, run_id, workspace_id, subject_key, cycle_depth,
+                   started_at, ended_at, status, row_count_delta_json, metadata_json
+            FROM cycle_event
+            WHERE subject_key=?
+            ORDER BY started_at DESC, cycle_event_id DESC
+            LIMIT ?
+            """,
+            (subject_id, lookback_cycles),
+        ).fetchall()
+    else:
+        return []
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        metrics = _load_json_mapping(row["row_count_delta_json"])
+        if not metrics:
+            continue
+        metadata = _load_json_mapping(row["metadata_json"])
+        event = dict(metrics)
+        event.setdefault("cycle_id", row["run_id"] or row["cycle_event_id"])
+        event.setdefault("run_id", row["run_id"])
+        event.setdefault("cycle_depth", row["cycle_depth"])
+        event.setdefault("started_at", row["started_at"])
+        event.setdefault("ended_at", row["ended_at"] or row["started_at"])
+        event.setdefault("final_status", row["status"])
+        event.setdefault("facet", metadata.get("facet"))
+        event.setdefault("event_timestamp", row["started_at"])
+        event.setdefault("gather_candidate_count", None)
+        event.setdefault("candidate_ingest_count", 0)
+        event.setdefault("execution_capture_count", 0)
+        event.setdefault("execution_extraction_count", 0)
+        event.setdefault("new_work_count", 0)
+        event.setdefault("new_source_claim_count", 0)
+        event.setdefault("new_detected_entity_count", 0)
+        event.setdefault("new_source_relationship_count", 0)
+        event.setdefault("new_authority_reconciliation_count", None)
+        event.setdefault("new_contradiction_count", 0)
+        event.setdefault("new_reviewable_count", 0)
+        event.setdefault("new_accepted_count", 0)
+        event.setdefault("new_rejected_or_resolved_count", None)
+        event.setdefault("review_backlog_delta", None)
+        event.setdefault("feedback_selected_action", None)
+        event.setdefault("yield_score", 0)
+        event.setdefault("warning_count", 0)
+        event.setdefault("failure_stage", None)
+        event.setdefault("table_counts", {})
+        events.append(event)
+    return list(reversed(events))
 
 
 def _review_state_count(
@@ -148,9 +223,20 @@ def _count_for_event(conn: sqlite3.Connection, table_name: str, event_key: str) 
 def _load_cycle_events(
     conn: sqlite3.Connection,
     *,
-    scope_id: str | None,
+    subject_id: str | None,
+    workspace_id: str | None,
     lookback_cycles: int,
 ) -> list[dict[str, Any]]:
+    ledger_events = _load_cycle_events_from_ledger(
+        conn,
+        subject_id=subject_id,
+        workspace_id=workspace_id,
+        lookback_cycles=lookback_cycles,
+    )
+    if ledger_events:
+        return ledger_events
+
+    scope_id = _scope_identifier(subject_id=subject_id, workspace_id=workspace_id)
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, event_type, run_id,
@@ -654,8 +740,16 @@ def build_loop_health_summary(
         raise LoopHealthError("lookback_cycles must be at least 1")
     evaluated_at, now_dt = _normalize_now(now)
     scope_id = _scope_identifier(subject_id=subject_id, workspace_id=workspace_id)
-    events = _load_cycle_events(conn, scope_id=scope_id, lookback_cycles=lookback_cycles)
-    per_cycle = [_per_cycle_metrics(conn, event) for event in events]
+    events = _load_cycle_events(
+        conn,
+        subject_id=subject_id,
+        workspace_id=workspace_id,
+        lookback_cycles=lookback_cycles,
+    )
+    if events and "event_key" in events[0]:
+        per_cycle = [_per_cycle_metrics(conn, event) for event in events]
+    else:
+        per_cycle = events
     backlog = _backlog_metrics_scoped(conn, workspace_id=scope_id, now=now_dt)
     contradictions = _contradiction_metrics(conn, per_cycle=per_cycle, workspace_id=scope_id)
     resolution_available, resolution_count = _resolution_count(
