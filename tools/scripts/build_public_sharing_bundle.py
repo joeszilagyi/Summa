@@ -108,8 +108,12 @@ def clear_backup_journal(journal_path: Path) -> None:
     journal_path.unlink(missing_ok=True)
 
 
-def resolve_existing_file(path: Path, *, label: str) -> Path:
-    resolved = resolve_path(path)
+def resolve_existing_file(path: Path, *, label: str, base_dir: Path | None = None) -> Path:
+    resolved = path.expanduser()
+    if not resolved.is_absolute():
+        resolved = ((base_dir or Path.cwd()) / resolved).resolve()
+    else:
+        resolved = resolved.resolve()
     if not resolved.exists():
         raise PublicSharingBundleError(f"{label} path does not exist: {resolved}")
     if not resolved.is_file():
@@ -280,8 +284,16 @@ def build_bundle(
     build_manifest = ensure_static_output_passes(resolved_manifest)
     output_root = resolve_output_root(build_manifest, resolved_manifest)
 
-    export_path = resolve_existing_file(Path(str(build_manifest["export_path"])), label="export")
-    presentation_path = resolve_existing_file(Path(str(build_manifest["presentation_path"])), label="presentation")
+    export_path = resolve_existing_file(
+        Path(str(build_manifest["export_path"])),
+        label="export",
+        base_dir=resolved_manifest.parent,
+    )
+    presentation_path = resolve_existing_file(
+        Path(str(build_manifest["presentation_path"])),
+        label="presentation",
+        base_dir=resolved_manifest.parent,
+    )
     export_payload = load_json(export_path, label="export")
     presentation_payload = load_json(presentation_path, label="presentation")
 
@@ -416,7 +428,9 @@ def main() -> int:
         return 1
 
     if args.format == "json":
-        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps(report, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n"
+        )
     else:
         sys.stdout.write(render_text(report))
     return 0
