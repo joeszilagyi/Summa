@@ -764,6 +764,75 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
 
 
+def test_feedback_plan_stage_hashes_output_once_without_rehashing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    run_dir = tmp_path / "feedback-plan-run"
+    run_dir.mkdir()
+    output_path = run_dir / "feedback" / "candidate-feedback-plan.pre.json"
+    payload = {
+        "schema_version": "candidate-feedback-plan.v1",
+        "selection_explanation": {
+            "explanation_id": "feedback-plan-explanation",
+            "selection_kind": "feedback_next_action",
+        },
+        "next_action": {"selected_facet": "sources"},
+        "deferred": [],
+        "counts": {"selected": 1},
+    }
+
+    def fake_run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        output_index = command.index("--output-json") + 1
+        path = Path(command[output_index])
+        assert path == output_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    def fake_validate_candidate_feedback_plan(path: Path):
+        assert path == output_path
+        return ({"errors": [], "warnings": [], "counts": {}}, module.EXIT_FEEDBACK_PASS)
+
+    hashed_paths: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        if path != output_path:
+            raise AssertionError(f"unexpected hash_file call: {path}")
+        hashed_paths.append(path)
+        return "feedback-hash"
+
+    monkeypatch.setattr(module, "run_command", fake_run_command)
+    monkeypatch.setattr(module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+
+    args = SimpleNamespace(degraded_spool=False)
+    manifest = {
+        "run_id": "cycle-feedback-plan",
+        "started_at": "2026-06-03T12:34:56Z",
+        "stages": [],
+        "selection_explanations": [],
+        "next_action": None,
+    }
+    runtime = {"subject_manifest_path": str(tmp_path / "subject-manifest.json")}
+
+    result = module.build_feedback_plan_stage(
+        args=args,
+        manifest=manifest,
+        workspace=tmp_path,
+        db_path=tmp_path / "canonical.sqlite",
+        run_dir=run_dir,
+        runtime=runtime,
+        when="pre",
+    )
+
+    assert result == output_path
+    assert hashed_paths == [output_path]
+    assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["sha256"] == "feedback-hash"  # type: ignore[index]
+
+
 def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Path, monkeypatch) -> None:
     module = load_run_topic_cycle_module()
 

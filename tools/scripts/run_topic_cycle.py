@@ -411,6 +411,7 @@ def attach_feedback_selection_explanation(
     payload: dict[str, Any],
     path: Path,
     when: str,
+    sha256: str | None = None,
 ) -> None:
     explanation = payload.get("selection_explanation")
     if not isinstance(explanation, dict):
@@ -428,15 +429,17 @@ def attach_feedback_selection_explanation(
             "source": "feedback_plan",
             "when": when,
             "path": str(path),
-            "sha256": hash_file(path),
+            "sha256": hash_file(path) if sha256 is None else sha256,
         }
     )
 
 
-def record_feedback_plan_reference(manifest: dict[str, Any], *, path: Path, when: str) -> None:
+def record_feedback_plan_reference(
+    manifest: dict[str, Any], *, path: Path, when: str, sha256: str | None = None
+) -> None:
     record = {
         "path": str(path),
-        "sha256": hash_file(path),
+        "sha256": hash_file(path) if sha256 is None else sha256,
         "when": when,
     }
     if when == "post":
@@ -696,6 +699,7 @@ def build_feedback_plan_stage(
         }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "candidate feedback plan failed validation")
+        feedback_hash = hash_file(output)
         stage.evidence = {
             "artifact_schema_ids": {
                 "feedback_plan": payload.get("schema_version"),
@@ -710,10 +714,10 @@ def build_feedback_plan_stage(
         }
         stage.artifacts = {
             "feedback_plan": str(output),
-            "feedback_plan_sha256": hash_file(output),
+            "feedback_plan_sha256": feedback_hash,
         }
         stage.counts = payload.get("counts")
-        record_feedback_plan_reference(manifest, path=output, when=when)
+        record_feedback_plan_reference(manifest, path=output, when=when, sha256=feedback_hash)
         if when != "post" or manifest.get("next_action") is None:
             manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
@@ -721,6 +725,7 @@ def build_feedback_plan_stage(
             payload=payload,
             path=output,
             when=when,
+            sha256=feedback_hash,
         )
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -775,13 +780,15 @@ def resolve_feedback_plan(
                 "artifact_path": str(path),
             },
         }
-        record_feedback_plan_reference(manifest, path=path, when="pre")
+        feedback_hash = hash_file(path)
+        record_feedback_plan_reference(manifest, path=path, when="pre", sha256=feedback_hash)
         manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
             manifest,
             payload=payload,
             path=path,
             when="pre",
+            sha256=feedback_hash,
         )
         finish_stage(stage)
         add_stage(manifest, stage)
