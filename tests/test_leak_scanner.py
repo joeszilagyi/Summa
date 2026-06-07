@@ -76,6 +76,26 @@ def test_clean_public_bundle_fixture_passes(tmp_path: Path) -> None:
     assert report["findings"] == []
 
 
+def test_scan_directory_counts_files_without_rescanning(tmp_path: Path, monkeypatch) -> None:
+    root = stage_fixture(tmp_path, "public_bundle_clean")
+    expected_files = sum(1 for path in root.rglob("*") if path.is_file())
+    call_count = 0
+    original_rglob = Path.rglob
+
+    def wrapped_rglob(self: Path, pattern: str):
+        nonlocal call_count
+        if self == root and pattern == "*":
+            call_count += 1
+        return original_rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", wrapped_rglob)
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["counts"]["files_scanned"] == expected_files
+    assert call_count == 1
+
+
 def test_support_bundle_profile_disables_secret_and_private_path_scans(tmp_path: Path) -> None:
     root = tmp_path / "support-bundle"
     root.mkdir()

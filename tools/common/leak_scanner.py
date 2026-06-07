@@ -241,9 +241,11 @@ def scan_directory(
         raise LeakScannerError("; ".join(item["message"] for item in allowlist_errors[:5]))
 
     raw_findings: list[dict[str, Any]] = []
+    files_scanned = 0
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
+        files_scanned += 1
         rel_path = path.relative_to(root).as_posix()
         if PROFILES[profile]["scan_runtime_log_paths"] and RUNTIME_LOG_PATH_RE.search(rel_path):
             raw_findings.append(
@@ -267,7 +269,7 @@ def scan_directory(
         "profile": profile,
         "status": "pass" if not findings else "fail",
         "counts": {
-            "files_scanned": sum(1 for path in root.rglob("*") if path.is_file()),
+            "files_scanned": files_scanned,
             "findings": len(findings),
             "suppressed_findings": len(suppressed),
             "allowlist_entries": len(normalized_allowlist.get("entries", [])),
