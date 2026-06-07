@@ -425,3 +425,20 @@ def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_p
 
     assert batch["run_id"] == "run-id-valid"
     assert batch_hash == hashlib.sha256(valid_text.encode("utf-8")).hexdigest()
+
+
+def test_candidate_structured_payload_rejects_duplicate_json_keys() -> None:
+    candidate = {
+        "text": '{"candidate_id":"w1","candidate_type":"work","text":"body","from_object_ref":"a","predicate":"b","candidate_id":"w2"}'
+    }
+
+    assert canonical_ingest._candidate_structured_payload(candidate) is None
+
+
+def test_candidate_structured_payload_rejects_non_standard_json_constants() -> None:
+    candidate = {
+        "text": '{"candidate_id":"w1","candidate_type":"work","value": NaN}'
+    }
+
+    assert canonical_ingest._candidate_structured_payload(candidate) is None
+

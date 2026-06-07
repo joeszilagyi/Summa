@@ -211,10 +211,17 @@ def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] |
     if not isinstance(raw_text, str):
         return None
     try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
+        parsed = json.loads(
+            raw_text,
+            object_pairs_hook=_no_duplicate_object_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError):
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
 
 
 def _structured_claim_text(candidate: dict[str, Any], structured: dict[str, Any] | None) -> str:
