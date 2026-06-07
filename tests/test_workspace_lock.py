@@ -69,6 +69,36 @@ def test_workspace_lock_cli_waits_for_release(tmp_path: Path) -> None:
     assert "already held" in proc.stderr
 
 
+def test_workspace_lock_cli_times_out_wrapped_command_and_releases_lock(tmp_path: Path) -> None:
+    lock_root = tmp_path / "locks"
+    lock_path = lock_path_for("workspace_timeout", lock_root)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(LOCK_TOOL),
+            "--workspace-id",
+            "workspace_timeout",
+            "--lock-root",
+            str(lock_root),
+            "--command-timeout-seconds",
+            "0.1",
+            "--",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(1)",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 124, proc.stdout + proc.stderr
+    assert "command timed out after 0.1 seconds" in proc.stderr
+    assert not lock_path.exists()
+
+
 def test_workspace_lock_quarantines_stale_file(tmp_path: Path) -> None:
     lock_root = tmp_path / "locks"
     lock_root.mkdir()

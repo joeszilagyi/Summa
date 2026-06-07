@@ -202,6 +202,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--lock-root", default=str(DEFAULT_LOCK_ROOT))
     parser.add_argument("--command-name", default="workspace-lock")
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        default=0,
+        help="Optional timeout for the wrapped command. Zero disables the timeout.",
+    )
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--timeout-seconds", type=float, default=0)
     parser.add_argument("--stale-after-seconds", type=int, default=3600)
@@ -227,7 +233,16 @@ def main() -> int:
             if args.print_path:
                 print(path)
             if command:
-                return subprocess.run(command, check=False).returncode
+                timeout_seconds = args.command_timeout_seconds if args.command_timeout_seconds > 0 else None
+                try:
+                    return subprocess.run(command, check=False, timeout=timeout_seconds).returncode
+                except subprocess.TimeoutExpired:
+                    timeout_text = f"{args.command_timeout_seconds:g}" if args.command_timeout_seconds > 0 else "0"
+                    print(
+                        f"Error: command timed out after {timeout_text} seconds: {' '.join(command)}",
+                        file=sys.stderr,
+                    )
+                    return 124
             return 0
     except WorkspaceLockError as exc:
         print(f"Error: {exc}", file=sys.stderr)
