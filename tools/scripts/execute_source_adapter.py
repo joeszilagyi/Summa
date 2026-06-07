@@ -11,8 +11,10 @@ import csv
 import hashlib
 import json
 import mimetypes
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -29,6 +31,7 @@ for candidate in (REPO_ROOT, VALIDATORS_DIR):
         sys.path.insert(0, candidate_text)
 
 from tools.common.atomic_write import (  # noqa: E402
+    atomic_write_bytes,
     atomic_write_json,
     atomic_write_jsonl,
     atomic_write_text,
@@ -288,7 +291,7 @@ def prepare_output_dir(output_dir: Path, *, run_id: str) -> None:
                 raise SourceAcquisitionError(
                     f"output path already contains artifacts for run_id={manifest_payload.get('run_id')!r}, expected {run_id!r}"
                 )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
 
 
 def make_capture_id(index: int) -> str:
@@ -747,8 +750,36 @@ def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes])
             raise SourceAcquisitionError(
                 f"binary artifact path escapes output directory: {relative_path}"
             ) from exc
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
+        atomic_write_bytes(target, payload)
+
+
+def clear_directory_contents(path: Path) -> None:
+    if not path.exists():
+        return
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def publish_output_dir(staging_dir: Path, output_dir: Path) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise SourceAcquisitionError(f"output path exists and is not a directory: {output_dir}")
+    if output_dir.exists():
+        backup_dir = Path(
+            tempfile.mkdtemp(prefix=f".{output_dir.name}.previous.", dir=output_dir.parent)
+        )
+        shutil.rmtree(backup_dir)
+        output_dir.replace(backup_dir)
+        try:
+            staging_dir.replace(output_dir)
+        except Exception:
+            backup_dir.replace(output_dir)
+            raise
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        return
+    staging_dir.replace(output_dir)
 
 
 def write_execution_artifacts(
@@ -762,6 +793,7 @@ def write_execution_artifacts(
     text_artifacts: dict[str, str],
     binary_artifacts: dict[str, bytes] | None = None,
 ) -> None:
+    clear_directory_contents(output_dir)
     atomic_write_json(output_dir / "execution-record.json", execution_record)
     atomic_write_jsonl(output_dir / "capture-events.jsonl", capture_events)
     atomic_write_jsonl(output_dir / "extraction-records.jsonl", extraction_records)
@@ -2163,17 +2195,23 @@ def main() -> int:
         else:
             raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
 
-        write_execution_artifacts(
-            output_dir=output_dir,
-            execution_record=execution_record,
-            capture_events=capture_events,
-            extraction_records=extraction_records,
-            denial_record=denial_record,
-            gate_report=gate_report,
-            text_artifacts=text_artifacts,
-            binary_artifacts=binary_artifacts,
-        )
-        validate_emitted_artifacts(output_dir)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{output_dir.name}.staging.",
+            dir=output_dir.parent,
+        ) as staging_root:
+            staging_dir = Path(staging_root)
+            write_execution_artifacts(
+                output_dir=staging_dir,
+                execution_record=execution_record,
+                capture_events=capture_events,
+                extraction_records=extraction_records,
+                denial_record=denial_record,
+                gate_report=gate_report,
+                text_artifacts=text_artifacts,
+                binary_artifacts=binary_artifacts,
+            )
+            validate_emitted_artifacts(staging_dir)
+            publish_output_dir(staging_dir, output_dir)
 
         sys.stdout.write(
             json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

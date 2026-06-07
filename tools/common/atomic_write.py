@@ -57,6 +57,32 @@ def atomic_write_text(path: Path, body: str, *, encoding: str = "utf-8") -> None
             temp_path.unlink(missing_ok=True)
 
 
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+        temp_path = None
+        try:
+            _fsync_directory(path.parent)
+        except OSError:
+            pass
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
 def atomic_write_json(path: Path, payload: Any) -> None:
     atomic_write_text(path, stable_json_text(payload))
 

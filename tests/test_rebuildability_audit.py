@@ -103,6 +103,7 @@ def stage_runs_dir(tmp_path: Path) -> Path:
     execution_dir.parent.mkdir(parents=True)
     cycle_dir.mkdir(parents=True)
     shutil.copy2(CANDIDATE_BATCH, gather_dir / "gather-candidate-batch.json")
+    shutil.copy2(CANDIDATE_BATCH.parent / "rendered-prompt.txt", gather_dir / "rendered-prompt.txt")
     shutil.copytree(EXECUTION_RUN, execution_dir)
     (cycle_dir / "topic-cycle-run.json").write_text(
         json.dumps(
@@ -371,10 +372,10 @@ def test_validation_only_discovers_and_validates_artifacts(tmp_path: Path) -> No
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     report = load_json(report_path)
     assert_rebuildability_report_schema(report)
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "incomplete_support"
     types = {item["artifact_type"] for item in report["artifacts_discovered"]}
     assert {
         "gather_candidate_batch",
@@ -382,6 +383,9 @@ def test_validation_only_discovers_and_validates_artifacts(tmp_path: Path) -> No
         "topic_cycle_manifest",
     } <= types
     assert report["replay_plan"]["replayable_artifact_count"] == 2
+    assert {item["artifact_type"] for item in report["missing_replay_support"]} == {
+        "topic_cycle_manifest"
+    }
     assert report["temp_rebuild_db"] is None
 
 
@@ -657,9 +661,9 @@ def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -
         ]
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     report = load_json(report_path)
-    assert report["final_status"] == "validation_only"
+    assert report["final_status"] == "incomplete_support"
     discovered = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
     assert discovered["gather_candidate_batch"]["schema_id"] == "gather-candidate-batch.v0"
     assert discovered["source_acquisition_execution"]["schema_id"] == "source-acquisition-execution.v0"
@@ -669,6 +673,12 @@ def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -
     assert discovered["network_safety_gate_report"]["schema_id"] == "network-safety-gate-report.v0"
     assert discovered["rebuildability_report"]["schema_id"] == "canonical-rebuildability-report.v0"
     assert report["artifacts_validated"] == len(report["artifacts_discovered"])
+    expected_missing = {
+        artifact_type
+        for artifact_type, item in discovered.items()
+        if item["replay_status"] == "reference_only"
+    }
+    assert {item["artifact_type"] for item in report["missing_replay_support"]} == expected_missing
 
 
 def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path) -> None:

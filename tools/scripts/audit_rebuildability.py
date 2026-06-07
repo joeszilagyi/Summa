@@ -668,6 +668,10 @@ def final_status(
     comparison_status: str | None,
 ) -> str:
     if mode == "validate_only":
+        if invalid_count or missing_count:
+            return "not_rebuildable"
+        if missing_support_count:
+            return "incomplete_support"
         return "validation_only"
     if invalid_count or missing_count or replay_errors:
         return "not_rebuildable"
@@ -754,8 +758,6 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "reason": "reference artifact lacks a complete canonical replay recipe",
             }
             for artifact in reference_only
-            if artifact.artifact_type
-            in {"review_decision_apply_result", "publication_artifact", "release_readiness_report"}
         ],
         "warnings": [],
         "errors": [artifact.failure_reason for artifact in invalid if artifact.failure_reason],
@@ -774,7 +776,7 @@ def audit(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             graph_closure_status=None,
             comparison_status=None,
         )
-        return report, 0 if not invalid and not missing else 1
+        return report, 0 if report["final_status"] == "validation_only" else 1
 
     temp_dir: Path | None = None
     try:
