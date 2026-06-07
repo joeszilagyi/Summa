@@ -19,6 +19,9 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "scripts"):
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.candidate_feedback_contract import (  # noqa: E402
+    ACCEPTED_REVIEW_STATES,
+    CANDIDATE_FEEDBACK_SCORE_MAX,
+    CANDIDATE_FEEDBACK_SCORE_MIN,
     DEFAULT_MAX_DEFERRED_CANDIDATES,
     DEFAULT_MAX_FACET_CANDIDATES,
     DEFAULT_MAX_LEAD_CANDIDATES,
@@ -51,6 +54,11 @@ ENTITY_FACET_PREFIXES = {
     "topic": "topics",
     "product": "products",
 }
+FACET_SCORE_SIGNAL_CAP = 5
+LEAD_SCORE_SIGNAL_CAP = 3
+RELATED_SCORE_SIGNAL_CAP = 3
+SOURCE_DIVERSITY_BONUS_STEP = 0.25
+QUESTION_TERMS = frozenset({"what", "which", "who", "whom", "whose", "where", "when", "why", "how", "whether"})
 
 
 def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
@@ -61,7 +69,7 @@ def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
         return 0, 1, None
     if not status:
         return 0, 0, None
-    return 0, 0, status
+    return 0, 1, status
 
 
 def _pick_facet_for_entity_type(entity_type: str, enabled_facets: list[str]) -> str:
@@ -254,6 +262,49 @@ def truncate_text(value: str, *, max_length: int = 160) -> str:
     if len(text) <= max_length:
         return text
     return text[: max_length - 3].rstrip() + "..."
+
+
+def bounded_candidate_score(value: float) -> float:
+    return round(
+        max(CANDIDATE_FEEDBACK_SCORE_MIN, min(CANDIDATE_FEEDBACK_SCORE_MAX, float(value))),
+        4,
+    )
+
+
+def capped_count(value: int, cap: int) -> int:
+    return min(max(int(value), 0), cap)
+
+
+def accepted_review_placeholder_sql() -> tuple[str, tuple[str, ...]]:
+    placeholders = ", ".join("?" for _ in sorted(ACCEPTED_REVIEW_STATES))
+    return placeholders, tuple(sorted(ACCEPTED_REVIEW_STATES))
+
+
+def open_question_quality_bonus(*, claim_text: str, claim_type: str, provenance_payload: dict[str, Any]) -> float:
+    text = " ".join(str(claim_text or "").split())
+    if not text:
+        return -0.75
+    words = [word.strip(".,;:!?()[]{}\"'").casefold() for word in text.split()]
+    words = [word for word in words if word]
+    word_count = len(words)
+    if word_count == 0:
+        return -0.75
+    question_terms = sum(1 for word in words[:4] if word in QUESTION_TERMS)
+    bonus = min(max(word_count - 4, 0), 10) * 0.08
+    bonus += min(sum(1 for word in words if len(word) > 4 and word not in QUESTION_TERMS), 4) * 0.05
+    if "?" in text:
+        bonus += 0.25
+    if question_terms:
+        bonus += 0.25 * min(question_terms, 2)
+    if word_count >= 8:
+        bonus += 0.15
+    if word_count <= 3:
+        bonus -= 0.4
+    if "open_question" in claim_type.casefold():
+        bonus += 0.15
+    if provenance_payload.get("facet") == "open_questions":
+        bonus += 0.1
+    return bonus
 
 
 def safe_source_access_label(row: sqlite3.Row) -> str:
@@ -498,7 +549,7 @@ def extraction_outcome_counts(
             unknown_statuses.add(unknown_status)
     if warnings is not None and unknown_statuses:
         warnings.extend(
-            f"unknown extraction_status treated as neutral for source-access lead scoring: {status!r}"
+            f"unknown extraction_status treated as failure for source-access lead scoring: {status!r}"
             for status in sorted(unknown_statuses)
         )
     return {
@@ -521,6 +572,7 @@ def load_source_access_leads(
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     scope_sql, scope_params = lead_scope_sql(subject_id, work_ids, table_alias="access")
+    accepted_placeholders, accepted_states = accepted_review_placeholder_sql()
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
         f"""
@@ -563,20 +615,32 @@ def load_source_access_leads(
             related_works = 1
             related_claims = int(
                 conn.execute(
-                    "SELECT COUNT(*) AS count FROM source_claim WHERE about_object_ref=?",
-                    (work_ref(int(row["work_id"])),),
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM source_claim
+                    WHERE about_object_ref=?
+                      AND review_state IN ({accepted_placeholders})
+                    """,
+                    (work_ref(int(row["work_id"])), *accepted_states),
                 ).fetchone()["count"]
             )
         related_entities = 0
         if metrics["capture_ids"]:
-            placeholders = ", ".join("?" for _ in metrics["capture_ids"])
+            capture_placeholders = ", ".join("?" for _ in metrics["capture_ids"])
             related_entities = int(
                 conn.execute(
-                    f"SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE capture_event_id IN ({placeholders})",
-                    tuple(metrics["capture_ids"]),
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM extraction_detected_entity
+                    WHERE capture_event_id IN ({capture_placeholders})
+                      AND review_state IN ({accepted_placeholders})
+                    """,
+                    tuple(metrics["capture_ids"]) + accepted_states,
                 ).fetchone()["count"]
             )
-        related_yield = related_works + related_claims + related_entities
+        related_claims_score = capped_count(related_claims, RELATED_SCORE_SIGNAL_CAP)
+        related_entities_score = capped_count(related_entities, RELATED_SCORE_SIGNAL_CAP)
+        related_yield = related_works + related_claims_score + related_entities_score
         zero_yield_attempts = metrics["capture_count"] if related_yield == 0 else 0
         signals = {
             "open_lead": 1,
@@ -590,11 +654,11 @@ def load_source_access_leads(
         score = (
             weights["open_lead"] * signals["open_lead"]
             + weights["work_yield"] * signals["related_works"]
-            + weights["claim_yield"] * signals["related_claims"]
-            + weights["entity_yield"] * signals["related_entities"]
-            + weights["successful_extraction"] * signals["successful_extractions"]
-            - weights["failed_extraction_penalty"] * signals["failed_extractions"]
-            - weights["zero_yield_penalty"] * signals["zero_yield_attempts"]
+            + weights["claim_yield"] * related_claims_score
+            + weights["entity_yield"] * related_entities_score
+            + weights["successful_extraction"] * capped_count(signals["successful_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["failed_extraction_penalty"] * capped_count(signals["failed_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["zero_yield_penalty"] * capped_count(signals["zero_yield_attempts"], LEAD_SCORE_SIGNAL_CAP)
         )
         reason_codes = ["open_lead_yield"]
         if signals["related_works"] or signals["related_claims"] or signals["related_entities"]:
@@ -620,6 +684,8 @@ def load_source_access_leads(
             }
             - {None}
         )
+        if related_run_ids:
+            score += SOURCE_DIVERSITY_BONUS_STEP * min(max(len(related_run_ids) - 1, 0), 4)
         leads.append(
             {
                 "candidate_id": f"source_access:{int(row['source_access_id'])}",
@@ -628,7 +694,7 @@ def load_source_access_leads(
                 "facet": facet,
                 "review_state": str(row["review_state"]),
                 "label": safe_source_access_label(row),
-                "score": round(score, 4),
+                "score": bounded_candidate_score(score),
                 "selected": False,
                 "reason_codes": reason_codes,
                 "rationale": "; ".join(rationale_bits),
@@ -671,7 +737,11 @@ def load_open_question_leads(
         provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
         if not claim_is_open_question(row, provenance or {}):
             continue
-        score = weights["open_lead"] + weights["claim_yield"]
+        score = weights["open_lead"] + weights["claim_yield"] + open_question_quality_bonus(
+            claim_text=str(row["claim_text"] or ""),
+            claim_type=str(row["claim_type"] or ""),
+            provenance_payload=provenance or {},
+        )
         leads.append(
             {
                 "candidate_id": f"source_claim:{int(row['source_claim_id'])}",
@@ -680,7 +750,7 @@ def load_open_question_leads(
                 "facet": "open_questions",
                 "review_state": str(row["review_state"]),
                 "label": truncate_text(str(row["claim_text"]), max_length=160),
-                "score": round(score, 4),
+                "score": bounded_candidate_score(score),
                 "selected": False,
                 "reason_codes": ["open_lead_yield", "open_question_candidate"],
                 "rationale": "Open-question claim remains unresolved and can guide the next gather cycle.",
@@ -738,7 +808,7 @@ def load_entity_leads(
         success, failed, unknown_status = classify_extraction_status(row["extraction_status"])
         if unknown_status is not None and warnings is not None:
             warnings.append(
-                f"unknown extraction_status treated as neutral for detected entity lead scoring: {unknown_status!r}"
+                f"unknown extraction_status treated as failure for detected entity lead scoring: {unknown_status!r}"
             )
         score = (
             weights["open_lead"]
@@ -755,7 +825,7 @@ def load_entity_leads(
                 "facet": facet,
                 "review_state": str(row["review_state"]),
                 "label": truncate_text(str(row["entity_label"]), max_length=120),
-                "score": round(score, 4),
+                "score": bounded_candidate_score(score),
                 "selected": False,
                 "reason_codes": ["open_lead_yield", f"{facet}_candidate"],
                 "rationale": f"{facet} facet still has an unresolved detected entity lead.",
@@ -815,7 +885,7 @@ def load_work_leads(
                 "facet": "works",
                 "review_state": str(row["review_state"]),
                 "label": truncate_text(str(row["title"] or f"work:{int(row['work_id'])}")),
-                "score": round(score, 4),
+                "score": bounded_candidate_score(score),
                 "selected": False,
                 "reason_codes": ["open_lead_yield", "unreviewed_work_candidate"],
                 "rationale": "Unreviewed work records can be expanded with a focused works gather pass.",
@@ -894,31 +964,47 @@ def aggregate_facet_scores(
     facet_scores: list[dict[str, Any]] = []
     for facet in enabled_facets:
         signal_bucket = metrics[facet]
+        capped_productive_runs = capped_count(signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP)
+        capped_open_leads = capped_count(signal_bucket["open_leads"], FACET_SCORE_SIGNAL_CAP)
+        capped_works = capped_count(signal_bucket["works"], FACET_SCORE_SIGNAL_CAP)
+        capped_claims = capped_count(signal_bucket["claims"], FACET_SCORE_SIGNAL_CAP)
+        capped_entities = capped_count(signal_bucket["entities"], FACET_SCORE_SIGNAL_CAP)
+        capped_relationships = capped_count(signal_bucket["relationships"], FACET_SCORE_SIGNAL_CAP)
+        capped_successful_extractions = capped_count(
+            signal_bucket["successful_extractions"], FACET_SCORE_SIGNAL_CAP
+        )
+        capped_failed_extractions = capped_count(signal_bucket["failed_extractions"], FACET_SCORE_SIGNAL_CAP)
+        distinct_run_ids = {
+            str(event["run_id"])
+            for event in history_by_facet[facet]
+            if isinstance(event.get("run_id"), str) and event.get("run_id")
+        }
         apply_recent_low_yield_penalty = bool(
             last_run_zero_yield[facet]
-            and signal_bucket["productive_runs"] == 0
-            and signal_bucket["open_leads"] == 0
+            and capped_productive_runs == 0
+            and capped_open_leads == 0
         )
         score = (
-            weights["productive_run"] * signal_bucket["productive_runs"]
-            + weights["open_lead"] * signal_bucket["open_leads"]
-            + weights["work_yield"] * signal_bucket["works"]
-            + weights["claim_yield"] * signal_bucket["claims"]
-            + weights["entity_yield"] * signal_bucket["entities"]
-            + weights["relationship_yield"] * signal_bucket["relationships"]
-            + weights["successful_extraction"] * signal_bucket["successful_extractions"]
-            - weights["failed_extraction_penalty"] * signal_bucket["failed_extractions"]
-            - weights["zero_yield_penalty"] * signal_bucket["zero_yield_runs"]
+            weights["productive_run"] * capped_productive_runs
+            + weights["open_lead"] * capped_open_leads
+            + weights["work_yield"] * capped_works
+            + weights["claim_yield"] * capped_claims
+            + weights["entity_yield"] * capped_entities
+            + weights["relationship_yield"] * capped_relationships
+            + weights["successful_extraction"] * capped_successful_extractions
+            - weights["failed_extraction_penalty"] * capped_failed_extractions
+            - weights["zero_yield_penalty"] * capped_count(signal_bucket["zero_yield_runs"], FACET_SCORE_SIGNAL_CAP)
             - (weights["recent_low_yield_penalty"] if apply_recent_low_yield_penalty else 0.0)
+            + SOURCE_DIVERSITY_BONUS_STEP * min(max(len(distinct_run_ids) - 1, 0), 4)
         )
         if no_prior_history:
             score += weights["bootstrap_bias"] * (len(enabled_facets) - facet_order[facet])
         reason_codes: list[str] = []
         if no_prior_history:
             reason_codes.append("bootstrap_no_prior_productivity")
-        if signal_bucket["productive_runs"]:
+        if capped_productive_runs:
             reason_codes.append("productive_history")
-        if signal_bucket["open_leads"]:
+        if capped_open_leads:
             reason_codes.append("open_lead_yield")
         if signal_bucket["zero_yield_runs"]:
             reason_codes.append("repeated_zero_yield")
@@ -936,7 +1022,7 @@ def aggregate_facet_scores(
                 "candidate_id": f"facet:{facet}",
                 "facet": facet,
                 "prompt_bundle_id": bundles[facet]["bundle_id"],
-                "score": round(score, 4),
+                "score": bounded_candidate_score(score),
                 "selected": False,
                 "supporting_facet": False,
                 "reason_codes": reason_codes,
@@ -1059,7 +1145,7 @@ def select_next_action(
         "selected_source_lead_id": selected_source_lead_id,
         "selected_label": selected_label,
         "selected_review_state": selected_review_state,
-        "selection_score": round(score, 4),
+        "selection_score": bounded_candidate_score(score),
         "scoring_policy_id": SCORING_POLICY_ID,
         "rationale": rationale,
         "reason_codes": reason_codes,

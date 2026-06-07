@@ -542,6 +542,31 @@ def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None
     assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:z", "lead:b"]
 
 
+def test_candidate_feedback_validator_rejects_out_of_range_selection_score(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+    payload["next_action"]["selection_score"] = 101.0
+    mutated_path = planner_output_path(tmp_path, "candidate-feedback-plan-out-of-range.json")
+    mutated_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    report, exit_code = validator.validate_candidate_feedback_plan(mutated_path)
+
+    assert exit_code != validator.EXIT_PASS, report
+    assert any(
+        "next_action.selection_score must be a finite number between" in error["message"]
+        for error in report["errors"]
+    )
+
+
 def validate_plan(path: Path) -> dict[str, object]:
     report, exit_code = validator.validate_candidate_feedback_plan(path)
     assert exit_code == validator.EXIT_PASS, report
@@ -722,7 +747,7 @@ def test_candidate_feedback_planner_deprioritizes_low_yield_locus_but_keeps_it_d
     )
 
 
-def test_unknown_extraction_status_is_neutral_for_source_access_leads(tmp_path: Path) -> None:
+def test_unknown_extraction_status_is_failure_for_source_access_leads(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     subject_id = "feedback_subject"
@@ -749,14 +774,14 @@ def test_unknown_extraction_status_is_neutral_for_source_access_leads(tmp_path: 
 
     source_access_lead = next(item for item in payload["lead_scores"] if item["object_ref"] == high_ref)
     assert source_access_lead["signals"]["successful_extractions"] == 0
-    assert source_access_lead["signals"]["failed_extractions"] == 0
+    assert source_access_lead["signals"]["failed_extractions"] == 1
     assert any(
-        "unknown extraction_status treated as neutral for source-access lead scoring" in warning
+        "unknown extraction_status treated as failure for source-access lead scoring" in warning
         for warning in payload["warnings"]
     )
 
 
-def test_unknown_extraction_status_is_neutral_for_entity_leads(tmp_path: Path) -> None:
+def test_unknown_extraction_status_is_failure_for_entity_leads(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     subject_id = "feedback_subject"
@@ -782,11 +807,115 @@ def test_unknown_extraction_status_is_neutral_for_entity_leads(tmp_path: Path) -
 
     detected_entity_lead = next(item for item in payload["lead_scores"] if item["lead_kind"] == "detected_entity")
     assert detected_entity_lead["signals"]["successful_extractions"] == 0
-    assert detected_entity_lead["signals"]["failed_extractions"] == 0
+    assert detected_entity_lead["signals"]["failed_extractions"] == 1
     assert any(
-        "unknown extraction_status treated as neutral for detected entity lead scoring" in warning
+        "unknown extraction_status treated as failure for detected entity lead scoring" in warning
         for warning in payload["warnings"]
     )
+
+
+def test_source_access_leads_ignore_unreviewed_related_records_but_count_accepted_ones(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+    high_ref = source_access_ref(db_path, citation_hint="High yield source lead")
+
+    _baseline_result, _baseline_path, baseline_payload = build_plan(tmp_path, db_path, manifest_path)
+    baseline_lead = next(item for item in baseline_payload["lead_scores"] if item["object_ref"] == high_ref)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE source_claim
+                SET review_state='accepted'
+                WHERE claim_text='High lead produced a concrete follow-up claim.'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE extraction_detected_entity
+                SET review_state='accepted'
+                WHERE entity_label='High Yield Person'
+                """
+            )
+    finally:
+        conn.close()
+
+    _result, _output_path, updated_payload = build_plan(tmp_path, db_path, manifest_path)
+    updated_lead = next(item for item in updated_payload["lead_scores"] if item["object_ref"] == high_ref)
+
+    assert baseline_lead["signals"]["related_claims"] == 0
+    assert baseline_lead["signals"]["related_entities"] == 0
+    assert updated_lead["signals"]["related_claims"] == 1
+    assert updated_lead["signals"]["related_entities"] == 1
+    assert updated_lead["score"] > baseline_lead["score"]
+
+
+def test_open_question_leads_reward_more_specific_questions(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            prov = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="open-question-specificity",
+                event_type="feedback_test",
+                actor_type="pytest",
+                actor_id="pytest.candidate_feedback_selection",
+                tool_name="tests.test_candidate_feedback_selection",
+                run_id="open-question-specificity",
+                event_timestamp=FIXED_CREATED_AT,
+                note_text="open question specificity fixture",
+                provenance_event_key_v1="prov:feedback:open-question-specificity",
+            )
+            generic_claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=prov.event_key,
+                source_claim_key_v1=f"claim:{subject_id}:open-question-generic",
+                claim_text="Why?",
+                claim_type="open_question",
+                workspace_id=subject_id,
+                review_state="proposed",
+                created_at=FIXED_CREATED_AT,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+            specific_claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=prov.event_key,
+                source_claim_key_v1=f"claim:{subject_id}:open-question-specific",
+                claim_text="Which overlooked local archives might add missing detail?",
+                claim_type="open_question",
+                workspace_id=subject_id,
+                review_state="proposed",
+                created_at=FIXED_CREATED_AT,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+    finally:
+        conn.close()
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+    generic_lead = next(
+        item for item in payload["lead_scores"] if item["object_ref"] == f"source_claim:{generic_claim.row_id}"
+    )
+    specific_lead = next(
+        item for item in payload["lead_scores"] if item["object_ref"] == f"source_claim:{specific_claim.row_id}"
+    )
+
+    assert specific_lead["score"] > generic_lead["score"]
 
 
 def test_candidate_feedback_includes_entity_leads_without_extraction_records(tmp_path: Path) -> None:

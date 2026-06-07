@@ -106,3 +106,26 @@ def test_selection_explanation_requires_exclusion_reasons() -> None:
     assert "excluded_candidates[0].reason must be a non-blank string" in (
         validate_selection_explanation(explanation)
     )
+
+
+def test_selection_explanation_rejects_out_of_range_scores() -> None:
+    selected = candidate_record(
+        candidate_id="candidate:selected",
+        candidate_type="facet",
+        label="selected",
+        score=101.0,
+        selected=True,
+        rationale="selected by fixture policy",
+    )
+    explanation = build_selection_explanation(
+        selection_kind="feedback_next_action",
+        created_at="2026-06-03T12:34:56Z",
+        selected_candidate=selected,
+        considered_candidates=[selected],
+        excluded_candidates=[],
+        policy={"policy_id": "fixture-policy.v1"},
+    )
+
+    errors = validate_selection_explanation(explanation)
+
+    assert any("selected_candidate.score must be a finite number between" in error for error in errors)
