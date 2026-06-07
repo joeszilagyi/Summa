@@ -164,6 +164,10 @@ def test_export_builder_records_logical_and_storage_fingerprints(tmp_path: Path)
     assert isinstance(table_fingerprints, dict)
     assert "authority_record" in table_fingerprints
     assert table_fingerprints["authority_record"].startswith("sha256:")
+    query_fingerprints = builder_notes["canonical_store_query_fingerprints"]
+    assert isinstance(query_fingerprints, dict)
+    assert query_fingerprints["public_works"].startswith("sha256:")
+    assert query_fingerprints["public_works"] != builder_notes["canonical_store_storage_fingerprint"]
 
     # Rebuild once more from the same DB to ensure all logical/source fingerprints remain stable.
     output_path_alt = tmp_path / "knowledge_tree_export_alt.json"
@@ -180,3 +184,44 @@ def test_export_builder_records_logical_and_storage_fingerprints(tmp_path: Path)
     assert payload_alt["notes"]["builder"]["canonical_store_fingerprint"] == source["fingerprint"]
     assert payload_alt["notes"]["builder"]["canonical_store_storage_fingerprint"] == builder_notes["canonical_store_storage_fingerprint"]
     assert payload_alt["notes"]["builder"]["canonical_store_table_fingerprints"] == table_fingerprints
+    assert payload_alt["notes"]["builder"]["canonical_store_query_fingerprints"] == query_fingerprints
+
+
+def test_export_builder_uses_logical_fingerprint_for_publication_inputs(tmp_path: Path) -> None:
+    db_path = create_populated_canonical_store(tmp_path)
+    output_path = tmp_path / "knowledge_tree_export.json"
+    vacuumed_output_path = tmp_path / "knowledge_tree_export_vacuum.json"
+
+    first = run_cli(
+        "--db",
+        str(db_path),
+        "--output",
+        str(output_path),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    payload = load_export(output_path)
+    source = payload["input_sources"][0]
+    builder_notes = payload["notes"]["builder"]
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("VACUUM")
+    conn.close()
+
+    second = run_cli(
+        "--db",
+        str(db_path),
+        "--output",
+        str(vacuumed_output_path),
+        "--generated-at",
+        FIXED_TIMESTAMP,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    vacuumed_payload = load_export(vacuumed_output_path)
+    vacuumed_source = vacuumed_payload["input_sources"][0]
+    vacuumed_notes = vacuumed_payload["notes"]["builder"]
+
+    assert vacuumed_source["fingerprint"] == source["fingerprint"]
+    assert vacuumed_notes["canonical_store_fingerprint"] == builder_notes["canonical_store_fingerprint"]
+    assert vacuumed_notes["canonical_store_storage_fingerprint"] != source["fingerprint"]

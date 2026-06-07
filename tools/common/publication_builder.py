@@ -214,6 +214,15 @@ def table_fingerprint(conn: sqlite3.Connection, table: str) -> str:
     return database_fingerprint(payload)
 
 
+def query_fingerprint(label: str, rows: list[dict[str, Any]]) -> str:
+    return database_fingerprint(
+        {
+            "label": label,
+            "rows": rows,
+        }
+    )
+
+
 def database_fingerprint(payload: dict[str, Any]) -> str:
     canonical_json = json.dumps(
         payload,
@@ -673,6 +682,22 @@ def read_publication_snapshot(
                 }
             )
     timeline_events.sort(key=lambda item: (item["timestamp"], item["text"]))
+    publication_query_fingerprints = {
+        "public_authorities": query_fingerprint("public_authorities", public_authorities),
+        "public_claims": query_fingerprint("public_claims", public_claims),
+        "public_detected_entities": query_fingerprint(
+            "public_detected_entities", public_detected_entities
+        ),
+        "public_provenance_events": query_fingerprint(
+            "public_provenance_events", public_provenance_events
+        ),
+        "public_relationships": query_fingerprint("public_relationships", public_relationships),
+        "public_sources": query_fingerprint("public_sources", public_sources),
+        "public_topics": query_fingerprint("public_topics", public_topics),
+        "public_work_subjects": query_fingerprint("public_work_subjects", public_work_subjects),
+        "public_works": query_fingerprint("public_works", public_works),
+        "timeline_events": query_fingerprint("timeline_events", timeline_events),
+    }
 
     validation_summary = {
         "public_authorities": len(public_authorities),
@@ -758,6 +783,7 @@ def read_publication_snapshot(
         "timeline_events": timeline_events,
         "validation_summary": validation_summary,
         "search_artifacts": search_artifacts,
+        "publication_query_fingerprints": publication_query_fingerprints,
     }
 
 
