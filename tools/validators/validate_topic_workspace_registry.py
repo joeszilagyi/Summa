@@ -524,8 +524,18 @@ def load_domain_pack(
         return None
 
     try:
-        payload = json.loads(pack_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = json.loads(
+            pack_path.read_text(encoding="utf-8"),
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        DuplicateJsonKeyError,
+        NonStandardJsonConstantError,
+        json.JSONDecodeError,
+    ):
         add_error(
             errors,
             code="DOMAIN_PACK_INVALID",

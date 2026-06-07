@@ -138,6 +138,35 @@ def test_validator_reads_default_subject_manifest_once(tmp_path: Path, monkeypat
     assert read_counts["manifest"] == 1
 
 
+def test_validator_rejects_invalid_domain_pack_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.validator")
+    registry_path = write_registry(
+        tmp_path,
+        workspace_record(
+            workspace_root=workspace_root,
+            manifest_path=manifest_path,
+        ),
+    )
+    domain_pack_path = validate_topic_workspace_registry.DOMAIN_PACK_ROOT / "general.v1.json"
+    original_read_text = Path.read_text
+
+    def bad_domain_pack_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == domain_pack_path:
+            return (
+                '{"schema_version":"domain-pack.v1","pack_id":"general.v1","pack_id":"duplicate"}'
+            )
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", bad_domain_pack_read_text)
+
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+
+    assert exit_code == validate_topic_workspace_registry.EXIT_VALIDATION_FAILED
+    assert any(error["code"] == "DOMAIN_PACK_INVALID" for error in result["errors"])
+
+
 def test_validator_rejects_invalid_scheduler_policy_shape(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

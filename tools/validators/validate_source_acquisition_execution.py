@@ -39,6 +39,7 @@ except ModuleNotFoundError:
 VALIDATOR_NAME = "source_acquisition_execution"
 CONTRACT_VERSION = "1"
 EXECUTION_SCHEMA_VERSION = "source-acquisition-execution.v1"
+RUN_MANIFEST_SCHEMA_VERSION = "source-acquisition-run-manifest.v1"
 CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
 EXTRACTION_SCHEMA_VERSION = "source-extraction-record.v1"
 SUPPORTED_EXECUTION_SCHEMA_VERSIONS = {EXECUTION_SCHEMA_VERSION, "source-acquisition-execution.v0"}
@@ -72,6 +73,32 @@ EXECUTION_RECORD_ALLOWED_KEYS = {
     "output_artifacts",
     "canonical_persistence_attempted",
     "verification_status",
+    "network_gate_request_hash",
+    "remote_live_fetch_enabled",
+    "timeout_seconds",
+    "max_response_bytes",
+    "urls_planned",
+    "urls_attempted",
+    "urls_succeeded",
+    "urls_failed",
+    "urls_denied",
+    "bytes_captured",
+}
+OUTPUT_ARTIFACT_ALLOWED_KEYS = {
+    "execution_record",
+    "capture_events",
+    "extraction_records",
+    "manifest",
+    "denial_record",
+    "network_safety_report",
+}
+RUN_MANIFEST_ALLOWED_KEYS = {
+    "schema_version",
+    "run_id",
+    "created_at",
+    "status",
+    "artifacts",
+    "canonical_persistence_attempted",
 }
 CAPTURE_RECORD_ALLOWED_KEYS = {
     "schema_version",
@@ -154,6 +181,9 @@ class ExecutionArtifactReceipt:
     extraction_records: list[dict[str, Any]]
     paths: dict[str, Path]
     input_hashes: dict[str, str]
+    manifest: dict[str, Any]
+    denial_record: dict[str, Any] | None
+    network_safety_report: dict[str, Any] | None
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -274,6 +304,9 @@ def resolve_execution_artifact_paths(target: Path) -> dict[str, Path]:
         "execution_record": execution_path,
         "capture_events": run_dir / "capture-events.jsonl",
         "extraction_records": run_dir / "extraction-records.jsonl",
+        "manifest": run_dir / "manifest.json",
+        "denial_record": run_dir / "denial-record.json",
+        "network_safety_report": run_dir / "network-safety-report.json",
     }
 
 
@@ -288,6 +321,22 @@ def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
     extraction_records, extraction_records_hash = _load_jsonl_records(
         paths["extraction_records"], label="extraction records"
     )
+    manifest, manifest_hash = _load_json_object(paths["manifest"], label="manifest")
+    output_artifacts = execution_record.get("output_artifacts")
+    if not isinstance(output_artifacts, dict):
+        output_artifacts = {}
+    denial_record = None
+    denial_record_hash = None
+    if output_artifacts.get("denial_record") is not None:
+        denial_record, denial_record_hash = _load_json_object(
+            paths["denial_record"], label="denial record"
+        )
+    network_safety_report = None
+    network_safety_report_hash = None
+    if output_artifacts.get("network_safety_report") is not None:
+        network_safety_report, network_safety_report_hash = _load_json_object(
+            paths["network_safety_report"], label="network safety report"
+        )
     return ExecutionArtifactReceipt(
         execution_record=execution_record,
         capture_events=capture_events,
@@ -297,7 +346,21 @@ def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
             "execution_record": execution_record_hash,
             "capture_events": capture_events_hash,
             "extraction_records": extraction_records_hash,
+            "manifest": manifest_hash,
+            **(
+                {"denial_record": denial_record_hash}
+                if denial_record_hash is not None
+                else {}
+            ),
+            **(
+                {"network_safety_report": network_safety_report_hash}
+                if network_safety_report_hash is not None
+                else {}
+            ),
         },
+        manifest=manifest,
+        denial_record=denial_record,
+        network_safety_report=network_safety_report,
     )
 
 
@@ -325,6 +388,7 @@ def validate_execution_artifact_receipt(receipt: ExecutionArtifactReceipt) -> tu
         receipt.capture_events,
         expected_run_id=expected_run_id,
         expected_input_handoff_hash=expected_input_handoff_hash,
+        artifact_root=receipt.paths["run_dir"],
         errors=errors,
     )
     capture_ids = {
@@ -344,6 +408,24 @@ def validate_execution_artifact_receipt(receipt: ExecutionArtifactReceipt) -> tu
         artifact_root=receipt.paths["run_dir"],
         errors=errors,
     )
+    validate_run_manifest(
+        receipt.manifest,
+        execution_record=receipt.execution_record,
+        errors=errors,
+    )
+    if receipt.denial_record is not None:
+        validate_denial_record(
+            receipt.denial_record,
+            expected_run_id=expected_run_id,
+            expected_input_handoff_hash=expected_input_handoff_hash,
+            errors=errors,
+        )
+    if receipt.network_safety_report is not None:
+        validate_network_safety_report(
+            receipt.network_safety_report,
+            execution_record=receipt.execution_record,
+            errors=errors,
+        )
 
     if errors:
         counts["rejected"] = 1
@@ -445,6 +527,48 @@ def _require_rfc3339(
 ) -> None:
     if not isinstance(value, str) or not is_rfc3339_datetime(value):
         add_error(errors, code=code, message=message, path=path)
+
+
+def _resolve_artifact_path(
+    raw_path: str,
+    *,
+    artifact_root_resolved: Path,
+) -> Path | None:
+    artifact_path = (artifact_root_resolved / raw_path).resolve()
+    try:
+        artifact_path.relative_to(artifact_root_resolved)
+    except ValueError:
+        return None
+    return artifact_path
+
+
+def _require_artifact_path(
+    value: Any,
+    *,
+    artifact_root_resolved: Path,
+    errors: list[dict[str, Any]],
+    path: str,
+    code_missing: str,
+    code_invalid: str,
+    code_missing_file: str,
+    message_missing: str,
+    message_invalid: str,
+    message_missing_file: str,
+) -> Path | None:
+    if value is None:
+        add_error(errors, code=code_missing, message=message_missing, path=path)
+        return None
+    if not isinstance(value, str) or not value.strip():
+        add_error(errors, code=code_invalid, message=message_invalid, path=path)
+        return None
+    artifact_path = _resolve_artifact_path(value, artifact_root_resolved=artifact_root_resolved)
+    if artifact_path is None:
+        add_error(errors, code=code_invalid, message=message_invalid, path=path)
+        return None
+    if not artifact_path.is_file():
+        add_error(errors, code=code_missing_file, message=message_missing_file, path=path)
+        return None
+    return artifact_path
 
 
 def validate_execution_record(
@@ -566,6 +690,75 @@ def validate_execution_record(
         code="INVALID_HANDOFF_HASH",
         message="input_handoff_hash must be a 64-character lowercase SHA-256 hex digest",
     )
+    output_artifacts = payload.get("output_artifacts")
+    if not isinstance(output_artifacts, dict):
+        add_error(
+            errors,
+            code="INVALID_OUTPUT_ARTIFACTS",
+            message="output_artifacts must be an object",
+            path="$.output_artifacts",
+        )
+    else:
+        _reject_unknown_fields(
+            output_artifacts,
+            allowed=OUTPUT_ARTIFACT_ALLOWED_KEYS,
+            errors=errors,
+            path_prefix="$.output_artifacts",
+            code="UNKNOWN_OUTPUT_ARTIFACT_FIELD",
+            label="output_artifacts",
+        )
+        for key in ("execution_record", "capture_events", "extraction_records", "manifest"):
+            _require_string(
+                output_artifacts.get(key),
+                errors=errors,
+                path=f"$.output_artifacts.{key}",
+                code="STRING_REQUIRED",
+                message=f"output_artifacts.{key} must be a non-blank string",
+            )
+        for key in ("denial_record", "network_safety_report"):
+            if output_artifacts.get(key) is not None:
+                _require_string(
+                    output_artifacts.get(key),
+                    errors=errors,
+                    path=f"$.output_artifacts.{key}",
+                    code="STRING_REQUIRED",
+                    message=f"output_artifacts.{key} must be null or a non-blank string",
+                )
+    if payload.get("network_gate_request_hash") is not None:
+        _require_sha256_or_null(
+            payload.get("network_gate_request_hash"),
+            errors=errors,
+            path="$.network_gate_request_hash",
+            code="INVALID_NETWORK_GATE_REQUEST_HASH",
+            message="network_gate_request_hash must be a 64-character lowercase SHA-256 hex digest",
+        )
+    if payload.get("remote_live_fetch_enabled") is not None:
+        _require_bool(
+            payload.get("remote_live_fetch_enabled"),
+            errors=errors,
+            path="$.remote_live_fetch_enabled",
+            code="BOOL_REQUIRED",
+            message="remote_live_fetch_enabled must be boolean",
+        )
+    for key in ("timeout_seconds",):
+        value = payload.get(key)
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0):
+            add_error(
+                errors,
+                code="INVALID_TIMEOUT_SECONDS",
+                message="timeout_seconds must be a positive number",
+                path=f"$.{key}",
+            )
+    for key in ("max_response_bytes", "urls_planned", "urls_attempted", "urls_succeeded", "urls_failed", "urls_denied", "bytes_captured"):
+        value = payload.get(key)
+        if value is not None:
+            _require_nonnegative_int(
+                value,
+                errors=errors,
+                path=f"$.{key}",
+                code="COUNT_REQUIRED",
+                message=f"{key} must be a non-negative integer",
+            )
     if payload.get("adapter_type") == "remote_url_manifest":
         if payload.get("status") in {"denied", "dry_run"} and payload.get("network_access_attempted") is not False:
             add_error(
@@ -588,8 +781,10 @@ def validate_capture_events(
     *,
     expected_run_id: str,
     expected_input_handoff_hash: str,
+    artifact_root: Path,
     errors: list[dict[str, Any]],
 ) -> None:
+    artifact_root_resolved = artifact_root.resolve()
     seen_capture_ids: set[str] = set()
     for index, record in enumerate(records):
         base = f"$[{index}]"
@@ -738,6 +933,33 @@ def validate_capture_events(
                         code="REMOTE_CAPTURE_HASH_REQUIRED",
                         message="completed remote capture event must include content_hash",
                         path=f"{base}.content_hash",
+                    )
+        transient_payload_path = record.get("transient_payload_path")
+        if transient_payload_path is not None:
+            if not isinstance(transient_payload_path, str) or not transient_payload_path.strip():
+                add_error(
+                    errors,
+                    code="INVALID_TRANSIENT_PAYLOAD_PATH",
+                    message="transient_payload_path must be null or a non-blank string",
+                    path=f"{base}.transient_payload_path",
+                )
+            else:
+                artifact_path = _resolve_artifact_path(
+                    transient_payload_path, artifact_root_resolved=artifact_root_resolved
+                )
+                if artifact_path is None:
+                    add_error(
+                        errors,
+                        code="TRANSIENT_PAYLOAD_PATH_INVALID",
+                        message="transient_payload_path escapes the artifact root",
+                        path=f"{base}.transient_payload_path",
+                    )
+                elif not artifact_path.is_file():
+                    add_error(
+                        errors,
+                        code="TRANSIENT_PAYLOAD_ARTIFACT_MISSING",
+                        message="transient_payload_path points to a missing artifact",
+                        path=f"{base}.transient_payload_path",
                     )
 
 
@@ -928,6 +1150,199 @@ def validate_extraction_records(
                     message="extracted text artifact byte_count does not match byte_count_out",
                     path=f"{base}.byte_count_out",
                 )
+
+
+def validate_run_manifest(
+    manifest: dict[str, Any],
+    *,
+    execution_record: dict[str, Any],
+    errors: list[dict[str, Any]],
+) -> None:
+    _reject_unknown_fields(
+        manifest,
+        allowed=RUN_MANIFEST_ALLOWED_KEYS,
+        errors=errors,
+        path_prefix="$",
+        code="UNKNOWN_MANIFEST_FIELD",
+        label="run manifest",
+    )
+    if manifest.get("schema_version") != RUN_MANIFEST_SCHEMA_VERSION:
+        add_error(
+            errors,
+            code="INVALID_MANIFEST_SCHEMA_VERSION",
+            message=f"schema_version must be {RUN_MANIFEST_SCHEMA_VERSION!r}",
+            path="$.schema_version",
+        )
+    _require_string(
+        manifest.get("run_id"),
+        errors=errors,
+        path="$.run_id",
+        code="STRING_REQUIRED",
+        message="run_id must be a non-blank string",
+    )
+    _require_rfc3339(
+        manifest.get("created_at"),
+        errors=errors,
+        path="$.created_at",
+        code="INVALID_CREATED_AT",
+        message="created_at must be an RFC3339 date-time",
+    )
+    _require_enum(
+        manifest.get("status"),
+        errors=errors,
+        path="$.status",
+        code="INVALID_MANIFEST_STATUS",
+        message=f"status must be one of {sorted(SUPPORTED_EXECUTION_STATUSES)!r}",
+        allowed=SUPPORTED_EXECUTION_STATUSES,
+    )
+    _require_bool(
+        manifest.get("canonical_persistence_attempted"),
+        errors=errors,
+        path="$.canonical_persistence_attempted",
+        code="BOOL_REQUIRED",
+        message="canonical_persistence_attempted must be boolean",
+    )
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        add_error(
+            errors,
+            code="INVALID_MANIFEST_ARTIFACTS",
+            message="manifest.artifacts must be an object",
+            path="$.artifacts",
+        )
+    output_artifacts = execution_record.get("output_artifacts")
+    if not isinstance(output_artifacts, dict):
+        output_artifacts = {}
+    if manifest.get("run_id") != execution_record.get("run_id"):
+        add_error(
+            errors,
+            code="MANIFEST_RUN_ID_MISMATCH",
+            message="manifest run_id does not match execution-record.json",
+            path="$.run_id",
+        )
+    if manifest.get("status") != execution_record.get("status"):
+        add_error(
+            errors,
+            code="MANIFEST_STATUS_MISMATCH",
+            message="manifest status does not match execution-record.json",
+            path="$.status",
+        )
+    if isinstance(artifacts, dict) and artifacts != output_artifacts:
+        add_error(
+            errors,
+            code="MANIFEST_ARTIFACTS_MISMATCH",
+            message="manifest.artifacts does not match execution-record.json output_artifacts",
+            path="$.artifacts",
+        )
+
+
+def validate_denial_record(
+    record: dict[str, Any],
+    *,
+    expected_run_id: str,
+    expected_input_handoff_hash: str,
+    errors: list[dict[str, Any]],
+) -> None:
+    payload = dict(record)
+    considered_urls = payload.pop("considered_urls", None)
+    validate_execution_record(
+        payload,
+        capture_events=[],
+        extraction_records=[],
+        errors=errors,
+    )
+    if not isinstance(considered_urls, list) or not all(
+        isinstance(url, str) and url for url in considered_urls
+    ):
+        add_error(
+            errors,
+            code="INVALID_CONSIDERED_URLS",
+            message="considered_urls must be an array of non-blank strings",
+            path="$.considered_urls",
+        )
+    elif expected_run_id and payload.get("run_id") != expected_run_id:
+        add_error(
+            errors,
+            code="DENIAL_RUN_ID_MISMATCH",
+            message="denial record run_id does not match execution-record.json",
+            path="$.run_id",
+        )
+    if payload.get("input_handoff_hash") != expected_input_handoff_hash:
+        add_error(
+            errors,
+            code="DENIAL_HANDOFF_HASH_MISMATCH",
+            message="denial record input_handoff_hash does not match execution-record.json",
+            path="$.input_handoff_hash",
+        )
+
+
+def validate_network_safety_report(
+    report: dict[str, Any],
+    *,
+    execution_record: dict[str, Any],
+    errors: list[dict[str, Any]],
+) -> None:
+    if not isinstance(report, dict):
+        add_error(
+            errors,
+            code="INVALID_NETWORK_SAFETY_REPORT",
+            message="network-safety-report.json must contain a JSON object",
+            path="$",
+        )
+        return
+    summary = execution_record.get("network_safety_gate")
+    if not isinstance(summary, dict):
+        add_error(
+            errors,
+            code="MISSING_NETWORK_SAFETY_GATE_SUMMARY",
+            message="execution-record.json is missing network_safety_gate for a network safety report",
+            path="$.network_safety_gate",
+        )
+        return
+    if report.get("schema_version") != summary.get("schema_version"):
+        add_error(
+            errors,
+            code="NETWORK_SAFETY_SCHEMA_MISMATCH",
+            message="network safety report schema_version does not match execution summary",
+            path="$.schema_version",
+        )
+    if report.get("decision") != summary.get("decision"):
+        add_error(
+            errors,
+            code="NETWORK_SAFETY_DECISION_MISMATCH",
+            message="network safety report decision does not match execution summary",
+            path="$.decision",
+        )
+    if report.get("execution_allowed") != summary.get("execution_allowed"):
+        add_error(
+            errors,
+            code="NETWORK_SAFETY_ALLOWANCE_MISMATCH",
+            message="network safety report execution_allowed does not match execution summary",
+            path="$.execution_allowed",
+        )
+    counts = report.get("counts")
+    if not isinstance(counts, dict):
+        add_error(
+            errors,
+            code="INVALID_NETWORK_SAFETY_COUNTS",
+            message="network safety report counts must be an object",
+            path="$.counts",
+        )
+        return
+    if counts.get("errors") != summary.get("error_count"):
+        add_error(
+            errors,
+            code="NETWORK_SAFETY_ERROR_COUNT_MISMATCH",
+            message="network safety report error count does not match execution summary",
+            path="$.counts.errors",
+        )
+    if counts.get("warnings") != summary.get("warning_count"):
+        add_error(
+            errors,
+            code="NETWORK_SAFETY_WARNING_COUNT_MISMATCH",
+            message="network safety report warning count does not match execution summary",
+            path="$.counts.warnings",
+        )
 
 
 def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any], int]:

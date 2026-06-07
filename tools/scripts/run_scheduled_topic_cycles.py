@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common import runtime_ledger  # noqa: E402
 from tools.common.workspace_lock import (  # noqa: E402
     acquire_workspace_lock,
@@ -46,6 +47,14 @@ EXIT_INTEGRITY_FAILURE = 6
 EXIT_PARTIAL_OUTPUT = 7
 EXIT_INTERNAL_CRASH = 8
 MAX_FAILURE_REASON_LENGTH = 2048
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when JSON object parsing sees a duplicate key."""
+
+
+class NonStandardJsonConstantError(ValueError):
+    """Raised for NaN, Infinity, and -Infinity JSON constants."""
 
 
 
@@ -81,6 +90,19 @@ def normalize_timestamp(value: str | None) -> str:
     if parsed.tzinfo is None:
         raise ScheduledCycleError(f"timestamp must include timezone: {value}")
     return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def reject_json_constant(value: str) -> None:
+    raise NonStandardJsonConstantError(f"non-standard JSON constant: {value}")
+
+
+def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise DuplicateJsonKeyError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
 
 
 def _format_failure_result(
@@ -211,10 +233,7 @@ def hash_file(path: Path) -> str:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(path, payload)
 
 
 def manifest_relative_path(path: Path, *, run_dir: Path) -> str:
@@ -228,10 +247,16 @@ def parse_child_manifest_output(raw_manifest: str | None) -> dict[str, Any] | No
     if not raw_manifest:
         return None
     try:
-        payload = json.loads(raw_manifest)
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
+        payload = json.loads(
+            raw_manifest,
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError) as exc:
+        raise ScheduledCycleError(f"child manifest stdout is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ScheduledCycleError("child manifest stdout must contain a JSON object")
+    return payload
 
 
 def resolve_child_manifest(
@@ -245,9 +270,20 @@ def resolve_child_manifest(
     if not child_manifest_path.is_file():
         return None
     try:
-        return json.loads(child_manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+        raw_manifest = child_manifest_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ScheduledCycleError(f"child manifest could not be read: {child_manifest_path}") from exc
+    try:
+        payload = json.loads(
+            raw_manifest,
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError) as exc:
+        raise ScheduledCycleError(f"child manifest could not be parsed: {child_manifest_path}") from exc
+    if not isinstance(payload, dict):
+        raise ScheduledCycleError(f"child manifest must contain a JSON object: {child_manifest_path}")
+    return payload
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

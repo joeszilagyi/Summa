@@ -1,0 +1,15 @@
+{
+  "artifacts": {
+    "capture_events": "capture-events.jsonl",
+    "denial_record": null,
+    "execution_record": "execution-record.json",
+    "extraction_records": "extraction-records.jsonl",
+    "manifest": "manifest.json",
+    "network_safety_report": null
+  },
+  "canonical_persistence_attempted": false,
+  "created_at": "2026-06-03T12:34:56Z",
+  "run_id": "fixture-exec",
+  "schema_version": "source-acquisition-run-manifest.v1",
+  "status": "completed"
+}

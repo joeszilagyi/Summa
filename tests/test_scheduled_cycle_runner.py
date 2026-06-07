@@ -159,6 +159,34 @@ def run_scheduled_in_dir(
     assert "--selection" in wrapper.stdout
 
 
+def test_scheduled_runner_rejects_invalid_child_manifest_json(tmp_path: Path) -> None:
+    child_manifest_path = tmp_path / "topic-cycle-run.json"
+    child_manifest_path.write_text(
+        '{"schema_version":"topic-cycle-run.v1","status":"completed","status":"failed"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(scheduled_runner.ScheduledCycleError, match="child manifest"):
+        scheduled_runner.resolve_child_manifest(child_manifest_path=child_manifest_path, proc=None)
+
+
+def test_scheduled_runner_write_json_uses_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "scheduled-topic-cycles-run.json"
+    payload = {"schema_version": "scheduled-topic-cycles-run.v1", "status": "completed"}
+    calls: list[tuple[Path, dict[str, object]]] = []
+
+    def fake_atomic_write_json(target: Path, body: dict[str, object]) -> None:
+        calls.append((target, dict(body)))
+        target.write_text(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(scheduled_runner, "atomic_write_json", fake_atomic_write_json)
+
+    scheduled_runner.write_json(path, payload)
+
+    assert calls == [(path, payload)]
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
 def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "scheduled_subject")
     selection = write_selection(

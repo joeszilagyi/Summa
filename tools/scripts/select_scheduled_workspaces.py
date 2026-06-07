@@ -42,6 +42,7 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
 )
 from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.validators import validate_topic_workspace_registry  # noqa: E402
+import validate_subject_manifest  # noqa: E402
 
 
 class SelectionError(RuntimeError):
@@ -469,18 +470,34 @@ def build_planned_run_records(
     return records
 
 
-def load_subject_id_from_manifest(manifest_path: str | None) -> str | None:
+def load_subject_id_from_manifest(
+    manifest_path: str | None,
+    *,
+    allow_unresolved: bool = False,
+) -> str | None:
     if not isinstance(manifest_path, str) or not manifest_path:
         return None
     path = Path(manifest_path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
+        payload, errors, _ = validate_subject_manifest.load_json_object(path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if allow_unresolved:
+            return None
+        raise SelectionError(f"default subject manifest could not be read: {path}") from exc
+    if payload is None:
+        if allow_unresolved:
+            return None
+        if errors:
+            message = errors[0].get("message", "default subject manifest could not be read")
+        else:
+            message = "default subject manifest could not be read"
+        raise SelectionError(f"default subject manifest failed validation: {message}")
     subject_id = payload.get("subject_id")
-    return subject_id if isinstance(subject_id, str) and subject_id else None
+    if isinstance(subject_id, str) and subject_id:
+        return subject_id
+    if allow_unresolved:
+        return None
+    raise SelectionError(f"default subject manifest failed validation: missing subject_id: {path}")
 
 
 def saturation_context(
@@ -504,6 +521,16 @@ def saturation_context(
     return policy, conn
 
 
+def workspace_allows_unresolved_subject_manifest(workspace: dict[str, Any]) -> bool:
+    scheduler_policy = workspace.get("scheduler_policy")
+    if not isinstance(scheduler_policy, dict):
+        return False
+    extensions = scheduler_policy.get("extensions")
+    if not isinstance(extensions, dict):
+        return False
+    return extensions.get("allow_unresolved_subject_manifest") is True
+
+
 def attach_saturation(
     entry: dict[str, Any],
     *,
@@ -514,7 +541,10 @@ def attach_saturation(
 ) -> None:
     if policy is None or conn is None:
         return
-    subject_id = load_subject_id_from_manifest(entry.get("resolved_default_subject_manifest"))
+    subject_id = load_subject_id_from_manifest(
+        entry.get("resolved_default_subject_manifest"),
+        allow_unresolved=workspace_allows_unresolved_subject_manifest(workspace),
+    )
     if subject_id is None:
         entry["saturation"] = {
             "schema_version": topic_saturation.SCHEMA_VERSION,
