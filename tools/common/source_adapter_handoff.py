@@ -157,9 +157,12 @@ def validate_source_adapter_handoff_record(
             errors.append(f"source_specific contains unsupported {variant} field: {unknown_specific[0]}")
         if isinstance(handoff, dict):
             requested_specific = set(handoff.get("source_specific_fields", []))
-            unknown_requested = sorted(set(source_specific) - requested_specific)
-            if unknown_requested:
-                errors.append(f"source_specific contains undeclared field: {unknown_requested[0]}")
+            missing_requested = sorted(requested_specific - set(source_specific))
+            if missing_requested:
+                errors.append(f"source_specific is missing required field: {missing_requested[0]}")
+            undeclared_requested = sorted(set(source_specific) - requested_specific)
+            if undeclared_requested:
+                errors.append(f"source_specific contains undeclared field: {undeclared_requested[0]}")
             unsupported_requested = sorted(requested_specific - expected_specific)
             if unsupported_requested:
                 errors.append(

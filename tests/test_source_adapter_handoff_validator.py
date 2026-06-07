@@ -338,6 +338,63 @@ def test_handoff_validator_rejects_incomplete_original_locator_fields(tmp_path: 
     assert "preserved.original_locator.configured_ref must be a non-blank string" in git_errors
 
 
+def test_handoff_validator_rejects_missing_structured_source_specific_fields() -> None:
+    adapter_payload = {
+        "schema_version": "source-adapter.v1",
+        "adapter_id": "runtime_structured_data",
+        "workspace_id": "alpha_subject",
+        "input_family": "local_directory",
+        "normalized_handoff": {
+            "record_family": "source_lead",
+            "batch_unit": "per_record",
+            "source_specific_fields": [
+                "relative_path",
+                "source_filename",
+                "structured_format",
+                "record_locator",
+                "record_kind",
+            ],
+        },
+    }
+
+    valid_record = {
+        "schema_version": "source-adapter-handoff.v1",
+        "adapter_id": "runtime_structured_data",
+        "workspace_id": "alpha_subject",
+        "record_family": "source_lead",
+        "batch_unit": "per_record",
+        "adapter_path": "/tmp/source_adapter.json",
+        "emitted_at": "2026-06-07T00:00:00Z",
+        "sequence": 1,
+        "resolved_source_path": "/tmp/records.json",
+        "relative_path": "records.json",
+        "preserved": {
+            "original_locator": {
+                "adapter_local_path": "dataset",
+                "resolved_source_path": "/tmp/records.json",
+                "relative_path": "records.json",
+            }
+        },
+        "source_specific": {
+            "relative_path": "records.json",
+            "source_filename": "records.json",
+            "structured_format": "json",
+            "record_locator": "line:1",
+            "record_kind": "object",
+        },
+    }
+
+    missing_structured_format = copy.deepcopy(valid_record)
+    missing_structured_format["source_specific"].pop("structured_format")
+    errors = validate_source_adapter_handoff_record(missing_structured_format, adapter_payload)
+    assert "source_specific is missing required field: structured_format" in errors
+
+    missing_record_locator = copy.deepcopy(valid_record)
+    missing_record_locator["source_specific"].pop("record_locator")
+    errors = validate_source_adapter_handoff_record(missing_record_locator, adapter_payload)
+    assert "source_specific is missing required field: record_locator" in errors
+
+
 def test_handoff_validator_rejects_family_specific_state_mismatch(tmp_path: Path) -> None:
     adapter_path = FIXTURE_ROOT / "local_directory" / "source_adapter.json"
     handoff_path = tmp_path / "invalid_handoff.json"
