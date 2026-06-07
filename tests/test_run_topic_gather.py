@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -558,6 +559,48 @@ def test_run_topic_gather_source_text_fingerprint_encodes_once(
     assert blocks[0]["sha256"] == expected_hash
 
 
+def test_run_topic_gather_streams_large_source_text_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_path = workspace_root / "large-source.txt"
+    source_text = "Large input line with emoji 😀 and combining e\u0301.\n" * 6000
+    source_bytes = source_text.encode("utf-8")
+    source_path.write_bytes(source_bytes)
+    template = wrapper_common.load_template()
+
+    monkeypatch.setattr(driver, "SOURCE_TEXT_BLOCK_BYTE_CAP", 128)
+    def fake_read_text_file(*args, **kwargs) -> str:
+        raise AssertionError("large source text files should stream")
+
+    monkeypatch.setattr(driver, "read_text_file", fake_read_text_file)
+
+    read_calls = 0
+
+    class CountingBytesIO(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            nonlocal read_calls
+            read_calls += 1
+            return super().read(size)
+
+    def fake_open(self: Path, mode: str = "r", *args, **kwargs):
+        assert self.resolve() == source_path.resolve()
+        assert mode == "rb"
+        return CountingBytesIO(source_bytes)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    blocks, rendered_blocks = driver.resolve_source_text_blocks([str(source_path)], template=template)
+
+    assert read_calls > 1
+    assert len(rendered_blocks) == len(blocks) > 1
+    assert sum(block["byte_count"] for block in blocks) == len(source_bytes)
+    assert blocks[0]["source_ref"].endswith("#chunk-0001")
+    assert blocks[-1]["source_ref"].endswith(f"#chunk-{len(blocks):04d}")
+
+
 def test_run_topic_gather_write_text_can_defer_and_group_fsync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -629,7 +672,9 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     assert exit_code == validator.EXIT_PASS, report
 
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
-    assert payload["source_text_wrapping"]["source_block_count"] == 1
+    assert payload["source_text_wrapping"]["source_block_count"] > 1
+    assert len(payload["source_text_wrapping"]["blocks"]) == payload["source_text_wrapping"]["source_block_count"]
+    assert payload["source_text_wrapping"]["blocks"][0]["source_ref"].endswith("#chunk-0001")
     assert prompt_path.stat().st_size > large_source_path.stat().st_size
 
 

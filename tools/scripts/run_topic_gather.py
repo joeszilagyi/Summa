@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -57,6 +59,8 @@ LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 STAMP_RUN_TS_FORMAT = "%Y-%m-%dT%H%M%SZ"
+SOURCE_TEXT_BLOCK_BYTE_CAP = 256 * 1024
+SOURCE_TEXT_HAZARD_SCAN_OVERLAP = 256
 HOSTILE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "prompt_injection_text": (
         re.compile(r"ignore previous instructions", re.IGNORECASE),
@@ -301,6 +305,23 @@ def detect_hazard_flags(source_text: str) -> list[str]:
     return flags
 
 
+def iter_source_text_chunks(path: Path, *, byte_cap: int = SOURCE_TEXT_BLOCK_BYTE_CAP) -> Iterator[str]:
+    if byte_cap <= 0:
+        raise GatherDriverError("source text byte cap must be greater than zero")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    with path.open("rb") as handle:
+        while True:
+            raw_chunk = handle.read(byte_cap)
+            if not raw_chunk:
+                break
+            text_chunk = decoder.decode(raw_chunk, final=False)
+            if text_chunk:
+                yield text_chunk
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            yield tail
+
+
 def resolve_source_text_blocks(
     paths: list[str], *, template: WrapperTemplate
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -310,30 +331,91 @@ def resolve_source_text_blocks(
         source_path = Path(raw_path).expanduser()
         if not source_path.is_absolute():
             source_path = (Path.cwd() / source_path).resolve()
-        source_text = read_text_file(source_path, label="source text file")
-        hazard_flags = detect_hazard_flags(source_text)
         source_ref = f"file:{source_path}"
         provenance = f"local_text_file:{source_path}"
-        rendered_blocks.append(
-            render_wrapped_block(
-                source_ref=source_ref,
-                provenance=provenance,
-                hazard_flags=hazard_flags,
-                source_text=source_text,
-                template=template,
+        ensure_file(source_path, label="source text file")
+        try:
+            source_size = source_path.stat().st_size
+        except OSError as exc:
+            raise GatherDriverError(f"could not stat source text file: {source_path}") from exc
+
+        if source_size <= SOURCE_TEXT_BLOCK_BYTE_CAP:
+            source_text = read_text_file(source_path, label="source text file")
+            hazard_flags = detect_hazard_flags(source_text)
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=source_ref,
+                    provenance=provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
             )
-        )
-        byte_count, sha256 = source_text_fingerprint(source_text)
-        blocks.append(
-            {
-                "block_id": f"source-block-{index:04d}",
-                "source_ref": source_ref,
-                "provenance": provenance,
-                "hazard_flags": hazard_flags,
-                "byte_count": byte_count,
-                "sha256": sha256,
-            }
-        )
+            byte_count, sha256 = source_text_fingerprint(source_text)
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}",
+                    "source_ref": source_ref,
+                    "provenance": provenance,
+                    "hazard_flags": hazard_flags,
+                    "byte_count": byte_count,
+                    "sha256": sha256,
+                }
+            )
+            continue
+
+        chunk_count = 0
+        hazard_scan_tail = ""
+        for chunk_index, source_text in enumerate(iter_source_text_chunks(source_path), start=1):
+            chunk_count = chunk_index
+            chunk_bytes = source_text.encode("utf-8")
+            digest = hashlib.sha256()
+            digest.update(chunk_bytes)
+            chunk_source_ref = f"{source_ref}#chunk-{chunk_index:04d}"
+            chunk_provenance = f"{provenance}#chunk-{chunk_index:04d}"
+            hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
+            hazard_scan_tail = (hazard_scan_tail + source_text)[-SOURCE_TEXT_HAZARD_SCAN_OVERLAP:]
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=chunk_source_ref,
+                    provenance=chunk_provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
+            )
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}-{chunk_index:04d}",
+                    "source_ref": chunk_source_ref,
+                    "provenance": chunk_provenance,
+                    "hazard_flags": hazard_flags,
+                    "byte_count": len(chunk_bytes),
+                    "sha256": digest.hexdigest(),
+                }
+            )
+        if chunk_count == 0:
+            source_text = ""
+            hazard_flags = detect_hazard_flags(source_text)
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=source_ref,
+                    provenance=provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
+            )
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}",
+                    "source_ref": source_ref,
+                    "provenance": provenance,
+                    "hazard_flags": hazard_flags,
+                    "byte_count": 0,
+                    "sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                }
+            )
     return blocks, rendered_blocks
 
 
