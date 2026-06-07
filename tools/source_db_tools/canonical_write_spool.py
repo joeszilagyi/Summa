@@ -67,6 +67,7 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
 def record_checksum(record: Mapping[str, Any]) -> str:
     payload = dict(record)
     payload.pop("spool_record_checksum", None)
+    payload.pop("spool_path", None)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -221,10 +222,6 @@ def load_spool_record(path: Path) -> dict[str, Any]:
     stored_spool_path = payload.get("spool_path")
     if not isinstance(stored_spool_path, str):
         raise CanonicalWriteSpoolError(f"spool record missing spool_path: {path}")
-    if Path(stored_spool_path).resolve() != path.resolve():
-        raise CanonicalWriteSpoolError(
-            f"spool record path mismatch: stored={stored_spool_path} actual={path}"
-        )
     return payload
 
 

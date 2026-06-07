@@ -473,7 +473,7 @@ def test_spool_record_does_not_embed_raw_payload_text(tmp_path: Path) -> None:
     assert record["raw_payload_policy"] == "artifact_references_only"
 
 
-def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
+def test_moved_spool_record_remains_loadable(tmp_path: Path) -> None:
     spool_dir = tmp_path / "spool"
     proc = run_script(
         INGEST_BATCH,
@@ -492,8 +492,8 @@ def test_moved_spool_record_is_rejected(tmp_path: Path) -> None:
     moved_path = tmp_path / "moved.json"
     record_path.replace(moved_path)
 
-    with pytest.raises(canonical_write_spool.CanonicalWriteSpoolError, match="path mismatch"):
-        canonical_write_spool.load_spool_record(moved_path)
+    loaded = canonical_write_spool.load_spool_record(moved_path)
+    assert loaded["spool_path"] == str(record_path)
 
 
 def test_replay_main_writes_report_with_atomic_json_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
