@@ -615,7 +615,33 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
     return posture, findings
 
 
-def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def migration_ledger_receipt_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}-report.json")
+
+
+def load_migration_ledger_receipt(path: Path) -> dict[str, Any] | None:
+    receipt_path = migration_ledger_receipt_path(path)
+    if not receipt_path.exists() or not receipt_path.is_file():
+        return None
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    counts = payload.get("counts")
+    latest_event = payload.get("latest_event")
+    status = payload.get("status")
+    if not isinstance(counts, dict) or not isinstance(latest_event, dict) or status not in {"pass", "warn", "fail"}:
+        return None
+    return payload
+
+
+def inspect_migration_posture(
+    repo_root: Path,
+    *,
+    validate_all: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     ledger_root = repo_root / "runtime" / "ledgers"
     posture = {
         "ledger_root": str(ledger_root),
@@ -631,6 +657,10 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
         "latest_backup_ref": None,
         "latest_snapshot_ref": None,
         "latest_rollback_of_event_id": None,
+        "validation_mode": "full" if validate_all else "fast",
+        "validated_ledger_count": 0,
+        "cached_receipt_count": 0,
+        "skipped_ledger_count": 0,
         "status": "unknown",
     }
     findings: list[dict[str, Any]] = []
@@ -662,23 +692,34 @@ def inspect_migration_posture(repo_root: Path) -> tuple[dict[str, Any], list[dic
         )
         return posture, findings
 
+    latest_path = max(ledger_paths, key=lambda path: (path.stat().st_mtime_ns, path.name))
     latest_event: dict[str, Any] | None = None
     for path in ledger_paths:
-        result, exit_code = validate_migration_ledger.validate_migration_ledger(path)
-        if exit_code != validate_migration_ledger.EXIT_PASS:
-            findings.append(
-                finding(
-                    "MIGRATION_LEDGER_INVALID",
-                    "operator_action_required",
-                    "migration ledger failed validation",
-                    path=str(path),
-                    errors=result.get("errors", [])[:5],
+        if validate_all or path == latest_path:
+            result, exit_code = validate_migration_ledger.validate_migration_ledger(path)
+            posture["validated_ledger_count"] += 1
+            if exit_code != validate_migration_ledger.EXIT_PASS:
+                findings.append(
+                    finding(
+                        "MIGRATION_LEDGER_INVALID",
+                        "operator_action_required",
+                        "migration ledger failed validation",
+                        path=str(path),
+                        errors=result.get("errors", [])[:5],
+                    )
                 )
-            )
-            continue
-        posture["event_count"] += result["counts"]["accepted"]
-        candidate = result.get("latest_event")
-        if candidate is not None and (
+                continue
+            posture["event_count"] += result["counts"]["accepted"]
+            candidate = result.get("latest_event")
+        else:
+            receipt = load_migration_ledger_receipt(path)
+            if receipt is None or receipt.get("status") != "pass":
+                posture["skipped_ledger_count"] += 1
+                continue
+            posture["cached_receipt_count"] += 1
+            posture["event_count"] += int(receipt.get("counts", {}).get("accepted", 0))
+            candidate = receipt.get("latest_event")
+        if isinstance(candidate, dict) and (
             latest_event is None or candidate["occurred_at"] > latest_event["occurred_at"]
         ):
             latest_event = candidate
@@ -852,6 +893,7 @@ def build_report(
     canonical_db: str | Path | None = None,
     database_quick_check: bool = False,
     database_quick_check_sample: int = 0,
+    validate_all_migration_ledgers: bool = False,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     status, status_detail = git_status(repo_root)
@@ -923,7 +965,10 @@ def build_report(
     findings.extend(lock_findings)
     backup_posture, backup_findings = inspect_backup_posture(repo_root)
     findings.extend(backup_findings)
-    migration_posture, migration_findings = inspect_migration_posture(repo_root)
+    migration_posture, migration_findings = inspect_migration_posture(
+        repo_root,
+        validate_all=validate_all_migration_ledgers,
+    )
     findings.extend(migration_findings)
     scheduler, scheduler_findings = inspect_scheduler(repo_root, registry_path, registry_status)
     findings.extend(scheduler_findings)
@@ -1096,6 +1141,11 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="Run PRAGMA quick_check against the first N discovered databases while keeping the rest on metadata-only checks.",
     )
+    parser.add_argument(
+        "--full-migration-ledger-validation",
+        action="store_true",
+        help="Validate every migration ledger instead of using the fast latest-ledger/receipt path.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
@@ -1106,6 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
         canonical_db=args.canonical_db,
         database_quick_check=args.database_quick_check,
         database_quick_check_sample=max(0, args.database_quick_check_sample),
+        validate_all_migration_ledgers=args.full_migration_ledger_validation,
     )
     body = (
         json.dumps(report, indent=2, sort_keys=True) + "\n"
