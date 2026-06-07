@@ -1293,6 +1293,7 @@ def build_knowledge_tree_export_payload(
                 "canonical_store_fingerprint": snapshot["db_fingerprint"],
                 "canonical_store_storage_fingerprint": snapshot["db_storage_fingerprint"],
                 "canonical_store_table_fingerprints": snapshot["publication_table_fingerprints"],
+                "canonical_store_query_fingerprints": snapshot["publication_query_fingerprints"],
             },
             "page_inventory_hints": page_inventory_hints,
             "validation_summary": snapshot["validation_summary"],
