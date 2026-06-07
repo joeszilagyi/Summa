@@ -775,6 +775,34 @@ def test_record_stage_artifacts_streams_hash_without_read_bytes(
     assert seen["schema_id"] is None
 
 
+def test_record_stage_artifacts_hashes_embedded_dicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    embedded_report = {
+        "schema_version": "canonical-ingest-report.v1",
+        "status": "dry_run",
+        "mutated": False,
+        "counts": {"work": 0},
+    }
+    seen: dict[str, object] = {}
+
+    def fake_record_cycle_artifact_ref(conn, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return "artifact:fixture"
+
+    monkeypatch.setattr(cycle_evidence_ledger, "record_cycle_artifact_ref", fake_record_cycle_artifact_ref)
+
+    cycle_evidence_ledger._record_stage_artifacts(  # type: ignore[attr-defined]
+        object(),
+        cycle_event_id="cycle:test",
+        stage_event_id="stage:test",
+        stage={"artifacts": {"ingest_report": embedded_report}},
+    )
+
+    assert seen["artifact_type"] == "ingest_report"
+    assert seen["artifact_path"] == json.dumps(embedded_report, sort_keys=True)
+    assert str(seen["artifact_hash"]).startswith("sha256:")
+    assert seen["byte_count"] is None
+
+
 def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

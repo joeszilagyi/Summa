@@ -315,6 +315,20 @@ def _file_hash(path: Path) -> str | None:
         return None
 
 
+def _payload_hash(value: object) -> str | None:
+    try:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def record_cycle_event_start(
     conn: sqlite3.Connection,
     *,
@@ -1183,13 +1197,19 @@ def _record_stage_artifacts(
     for key, value in sorted(artifacts.items()):
         if key.endswith("_sha256") or key == "mutated":
             continue
-        if not isinstance(value, str) or not value:
+        artifact_hash: str | None = None
+        if isinstance(value, str) and value:
+            path = Path(value)
+            hash_value = artifacts.get(f"{key}_sha256")
+            artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
+            if artifact_hash is None:
+                artifact_hash = _file_hash(path)
+        elif isinstance(value, Mapping):
+            artifact_hash = _payload_hash(value)
+            if artifact_hash is None:
+                continue
+        else:
             continue
-        path = Path(value)
-        hash_value = artifacts.get(f"{key}_sha256")
-        artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
-        if artifact_hash is None:
-            artifact_hash = _file_hash(path)
         schema_id = _stage_artifact_schema_id(stage, key)
         if schema_id is None and artifact_schema_ids is not None:
             schema_id = artifact_schema_ids.get(key)
@@ -1198,9 +1218,9 @@ def _record_stage_artifacts(
             cycle_event_id=cycle_event_id,
             stage_event_id=stage_event_id,
             artifact_type=key,
-            artifact_path=value,
+            artifact_path=value if isinstance(value, str) else json.dumps(value, sort_keys=True),
             artifact_hash=artifact_hash,
-            byte_count=_file_size(path),
+            byte_count=_file_size(Path(value)) if isinstance(value, str) else None,
             public_safe=False,
             schema_id=schema_id,
             validation_status=_optional_text((stage.get("validation") or {}).get("status"))
