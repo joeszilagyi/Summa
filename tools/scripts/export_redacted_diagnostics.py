@@ -29,7 +29,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.leak_scanner import scan_directory  # noqa: E402
-from tools.common.operator_text import format_operator_text_value, strip_terminal_escapes  # noqa: E402
+from tools.common.operator_text import (  # noqa: E402
+    format_operator_text_value,
+    strip_terminal_escapes,
+)
 from tools.source_db_tools import canonical_graph_closure, canonical_store  # noqa: E402
 
 try:  # noqa: SIM105 - optional helper; diagnostics still work without doctor import.
@@ -127,7 +130,7 @@ class SchemaIntrospectionCache:
         self._columns: dict[str, set[str]] = {}
 
     @classmethod
-    def from_connection(cls, conn: sqlite3.Connection) -> "SchemaIntrospectionCache":
+    def from_connection(cls, conn: sqlite3.Connection) -> SchemaIntrospectionCache:
         return cls(canonical_store.actual_tables(conn))
 
     def table_names(self) -> list[str]:

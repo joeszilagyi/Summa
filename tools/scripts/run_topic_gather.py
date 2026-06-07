@@ -24,13 +24,13 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
+from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
     load_template,
     parse_wrapped_blocks,
     render_wrapped_block,
 )
-from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402

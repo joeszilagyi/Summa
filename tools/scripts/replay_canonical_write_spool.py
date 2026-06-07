@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -14,8 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json, stable_json_text  # noqa: E402
 from tools.source_db_tools import canonical_store, canonical_write_spool  # noqa: E402
-from tools.common.atomic_write import atomic_write_json, stable_json_text
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

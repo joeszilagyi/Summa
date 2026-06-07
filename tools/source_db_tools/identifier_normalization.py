@@ -6,7 +6,6 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-
 DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", re.IGNORECASE)
 ISBN_RE = re.compile(r"^[0-9]{9}[0-9Xx]$|^[0-9]{13}$")
 ISSN_RE = re.compile(r"^[0-9]{7}[0-9Xx]$")

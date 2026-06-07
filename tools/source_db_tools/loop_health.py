@@ -10,7 +10,6 @@ from typing import Any
 
 from tools.source_db_tools import canonical_store
 
-
 SCHEMA_VERSION = "loop-health-summary.v1"
 DEFAULT_LOOKBACK_CYCLES = 5
 MIN_CYCLES_FOR_TREND = 2
@@ -507,12 +506,12 @@ def _contradiction_metrics(
         total = _safe_count(conn, "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'")
         unresolved = _safe_count(
             conn,
-            """
+            f"""
             SELECT COUNT(*)
             FROM source_relationship
             WHERE predicate='contradicts'
-              AND COALESCE(review_state, '') IN ({})
-            """.format(_state_placeholders(PENDING_REVIEW_STATES)),
+              AND COALESCE(review_state, '') IN ({_state_placeholders(PENDING_REVIEW_STATES)})
+            """,
             tuple(sorted(PENDING_REVIEW_STATES)),
         )
     else:
@@ -528,13 +527,13 @@ def _contradiction_metrics(
         )
         unresolved = _safe_count(
             conn,
-            """
+            f"""
             SELECT COUNT(*)
             FROM source_relationship
             WHERE predicate='contradicts'
               AND workspace_id=?
-              AND COALESCE(review_state, '') IN ({})
-            """.format(_state_placeholders(PENDING_REVIEW_STATES)),
+              AND COALESCE(review_state, '') IN ({_state_placeholders(PENDING_REVIEW_STATES)})
+            """,
             (workspace_id, *sorted(PENDING_REVIEW_STATES)),
         )
     new_in_lookback = sum(int(cycle["new_contradiction_count"]) for cycle in per_cycle)

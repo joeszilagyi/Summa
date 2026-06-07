@@ -513,20 +513,18 @@ def find_existing_work_match(
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
         review_state_placeholders = ", ".join("?" for _ in WORK_MATCH_REVIEW_STATES)
         rows = conn.execute(
-            """
+            f"""
             SELECT work.work_id, work.work_key_v1
             FROM work_identifier
             INNER JOIN work ON work.work_id = work_identifier.work_id
             WHERE work_identifier.scheme=? AND work_identifier.value=?
               AND work_identifier.validity_status='valid'
-              AND work.review_state IN ({})
-              AND work_identifier.review_state IN ({})
+              AND work.review_state IN ({review_state_placeholders})
+              AND work_identifier.review_state IN ({review_state_placeholders})
               AND work_identifier.confidence_score IS NOT NULL
               AND work_identifier.confidence_score >= ?
             ORDER BY work.work_id
-            """.format(
-                review_state_placeholders, review_state_placeholders
-            ),
+            """,
             (
                 normalized["scheme"],
                 normalized["value"],
@@ -682,21 +680,19 @@ def find_existing_authority_match(
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
         review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         row = conn.execute(
-            """
+            f"""
             SELECT authority_record.authority_record_id
             FROM authority_identifier
             INNER JOIN authority_record
               ON authority_record.authority_record_id = authority_identifier.authority_record_id
             WHERE authority_identifier.scheme=? AND authority_identifier.value=?
               AND authority_identifier.validity_status='valid'
-              AND authority_record.review_state IN ({})
-              AND authority_identifier.review_state IN ({})
+              AND authority_record.review_state IN ({review_state_placeholders})
+              AND authority_identifier.review_state IN ({review_state_placeholders})
               AND authority_identifier.confidence_score IS NOT NULL
               AND authority_identifier.confidence_score >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
-            """.format(
-                review_state_placeholders, review_state_placeholders
-            ),
+            """,
             (
                 normalized["scheme"],
                 normalized["value"],

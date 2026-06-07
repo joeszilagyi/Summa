@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import mimetypes
@@ -18,6 +17,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -43,7 +43,6 @@ from tools.common.network_safety_gate import (  # noqa: E402
     evaluate_request,
     load_request,
 )
-from tools.validators.common import is_rfc3339_datetime
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
@@ -51,7 +50,7 @@ from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
     resolve_json_record_path,
 )
 from tools.validators import validate_source_adapter, validate_source_adapter_handoff  # noqa: E402
-from tools.validators.common import EXIT_PASS, EXIT_STATE_UNSAFE  # noqa: E402
+from tools.validators.common import EXIT_PASS, EXIT_STATE_UNSAFE, is_rfc3339_datetime  # noqa: E402
 
 EXECUTION_SCHEMA_VERSION = "source-acquisition-execution.v1"
 CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
@@ -318,9 +317,7 @@ def make_extraction_id(index: int) -> str:
 def is_probably_binary(payload: bytes) -> bool:
     if not payload:
         return False
-    if b"\x00" in payload:
-        return True
-    return False
+    return b"\x00" in payload
 
 
 def is_probably_text(decoded_text: str) -> bool:

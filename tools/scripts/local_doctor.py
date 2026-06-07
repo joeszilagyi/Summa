@@ -30,7 +30,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import workspace_lock  # noqa: E402
-from tools.common.operator_text import format_operator_text_value, strip_terminal_escapes  # noqa: E402
+from tools.common.operator_text import (  # noqa: E402
+    format_operator_text_value,
+    strip_terminal_escapes,
+)
 from tools.common.topic_workspace_registry import (  # noqa: E402
     TopicWorkspaceRegistryError,
     discover_registry_path,

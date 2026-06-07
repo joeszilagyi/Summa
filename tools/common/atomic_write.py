@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -48,10 +49,8 @@ def atomic_write_text(path: Path, body: str, *, encoding: str = "utf-8") -> None
             os.fsync(handle.fileno())
         temp_path.replace(path)
         temp_path = None
-        try:
+        with contextlib.suppress(OSError):
             _fsync_directory(path.parent)
-        except OSError:
-            pass
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -74,10 +73,8 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             os.fsync(handle.fileno())
         temp_path.replace(path)
         temp_path = None
-        try:
+        with contextlib.suppress(OSError):
             _fsync_directory(path.parent)
-        except OSError:
-            pass
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -109,10 +106,8 @@ def atomic_write_json(path: Path, payload: Any) -> None:
             os.fsync(handle.fileno())
         temp_path.replace(path)
         temp_path = None
-        try:
+        with contextlib.suppress(OSError):
             _fsync_directory(path.parent)
-        except OSError:
-            pass
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)

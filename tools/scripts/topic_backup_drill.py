@@ -9,12 +9,10 @@ import hashlib
 import json
 import shutil
 import sys
-import tempfile
-from functools import lru_cache
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -22,9 +20,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.crown_jewel_store_manifest import load_manifest  # noqa: E402
-from tools.common.runtime_ledger import append_event, build_event, default_ledger_path, new_run_id  # noqa: E402
+from tools.common.runtime_ledger import (  # noqa: E402
+    append_event,
+    build_event,
+    default_ledger_path,
+    new_run_id,
+)
 from tools.source_db_tools.sqlite_safety import backup_database, run_check  # noqa: E402
-
 
 SNAPSHOT_SCHEMA_VERSION = "topic-backup-snapshot.v1"
 

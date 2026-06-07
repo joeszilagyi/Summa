@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT / "tools" / "common",
@@ -39,8 +38,9 @@ from tools.common.local_search_contract import (  # noqa: E402
 )
 from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS  # noqa: E402
 from tools.validators.validate_correction_ledger import validate_correction_ledger  # noqa: E402
-from tools.validators.validate_local_search_projection import validate_local_search_projection_payload  # noqa: E402
-
+from tools.validators.validate_local_search_projection import (  # noqa: E402
+    validate_local_search_projection_payload,  # noqa: E402
+)
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
 SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

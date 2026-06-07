@@ -12,10 +12,10 @@ import socket
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK_ROOT = REPO_ROOT / "runtime" / "locks"
@@ -189,10 +189,8 @@ def acquire_workspace_lock(
             return
         except Exception:
             if not handle.closed:
-                try:
+                with suppress(OSError):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
                 handle.close()
             raise
 

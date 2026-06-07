@@ -9,10 +9,9 @@ import json
 import re
 import sqlite3
 import sys
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
@@ -26,14 +25,17 @@ for candidate in (
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.local_search_contract import (  # noqa: E402
-    RESULTS_SCHEMA_VERSION,
     RESULT_CLASS_BY_OBJECT_TYPE,
+    RESULTS_SCHEMA_VERSION,
     SEARCH_SCOPE_TO_OBJECT_TYPES,
 )
 from tools.scripts.build_local_search_projection import looks_like_private_path  # noqa: E402
-from tools.validators.validate_local_search_results import EXIT_PASS as EXIT_VALIDATOR_PASS  # noqa: E402
-from tools.validators.validate_local_search_results import validate_local_search_results  # noqa: E402
-
+from tools.validators.validate_local_search_results import (  # noqa: E402
+    EXIT_PASS as EXIT_VALIDATOR_PASS,  # noqa: E402
+)
+from tools.validators.validate_local_search_results import (  # noqa: E402
+    validate_local_search_results,  # noqa: E402
+)
 
 SCRIPT_PATH = "tools/scripts/query_local_search.py"
 MAX_LIMIT = 100

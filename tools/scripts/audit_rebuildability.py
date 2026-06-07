@@ -7,7 +7,6 @@ Documentation: docs/scripts/index_audit_rebuildability.md
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import shutil
@@ -16,6 +15,7 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -24,13 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json, stable_json_text  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
     canonical_graph_closure,
     canonical_ingest,
     canonical_store,
     canonical_write_spool,
 )
-from tools.common.atomic_write import atomic_write_json, stable_json_text
 
 REPORT_SCHEMA_VERSION = "canonical-rebuildability-report.v1"
 REPLAYABLE_TYPES = {

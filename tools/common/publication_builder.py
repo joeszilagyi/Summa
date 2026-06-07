@@ -15,16 +15,25 @@ from typing import Any
 
 from tools.common.atomic_write import atomic_write_json
 from tools.common.canonical_graph_model_contract import DOCUMENTED_EXPECTED_SQLITE_TABLES
-from tools.common.local_search_contract import PUBLIC_SEARCHABLE_PUBLICATION_STATES, is_searchable_review_state, normalize_publication_state
+from tools.common.local_search_contract import (
+    PUBLIC_SEARCHABLE_PUBLICATION_STATES,
+    is_searchable_review_state,
+    normalize_publication_state,
+)
 from tools.scripts.build_local_search_projection import build_projection_payload, write_index
 from tools.scripts.query_local_search import build_results_payload
 from tools.validators.validate_knowledge_tree_export import EXIT_PASS as EXIT_EXPORT_PASS
 from tools.validators.validate_knowledge_tree_export import validate_knowledge_tree_export
-from tools.validators.validate_local_search_projection import validate_local_search_projection_payload
+from tools.validators.validate_local_search_projection import (
+    validate_local_search_projection_payload,
+)
 from tools.validators.validate_local_search_results import validate_local_search_results_payload
-from tools.validators.validate_public_knowledge_tree_presentation import EXIT_PASS as EXIT_PRESENTATION_PASS
-from tools.validators.validate_public_knowledge_tree_presentation import validate_public_knowledge_tree_presentation
-
+from tools.validators.validate_public_knowledge_tree_presentation import (
+    EXIT_PASS as EXIT_PRESENTATION_PASS,
+)
+from tools.validators.validate_public_knowledge_tree_presentation import (
+    validate_public_knowledge_tree_presentation,
+)
 
 EXPORT_SCHEMA_VERSION = "knowledge-tree-export.v1"
 PRESENTATION_SCHEMA_VERSION = "public-presentation.v1"
@@ -175,7 +184,7 @@ def _normalize_fingerprint_value(value: Any) -> Any:
 
 
 def _row_to_fingerprint_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return {key: _normalize_fingerprint_value(row[key]) for key in row.keys()}
+    return {key: _normalize_fingerprint_value(row[key]) for key in row}
 
 
 def actual_tables(conn: sqlite3.Connection) -> set[str]:
@@ -285,9 +294,9 @@ def ensure_required_publication_tables(conn: sqlite3.Connection) -> set[str]:
 
 
 def row_is_public(row: sqlite3.Row, *, review_field: str = "review_state", publication_field: str = "publication_state", blocker_field: str = "public_blocker") -> bool:
-    review_state = nonblank(row[review_field]) if review_field in row.keys() else None
-    publication_state = normalize_publication_state(row[publication_field]) if publication_field in row.keys() else "local_only"
-    public_blocker = nonblank(row[blocker_field]) if blocker_field in row.keys() else None
+    review_state = nonblank(row[review_field]) if review_field in row else None
+    publication_state = normalize_publication_state(row[publication_field]) if publication_field in row else "local_only"
+    public_blocker = nonblank(row[blocker_field]) if blocker_field in row else None
     return (
         is_searchable_review_state(review_state)
         and public_blocker is None

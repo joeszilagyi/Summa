@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from tools.source_db_tools import canonical_reconciliation, canonical_store
-from tools.validators import validate_gather_candidate_batch as validate_gather_candidate_batch_validator
+from tools.validators import (
+    validate_gather_candidate_batch as validate_gather_candidate_batch_validator,
+)
 from tools.validators.validate_gather_candidate_batch import (
     EXIT_PASS as EXIT_GATHER_BATCH_PASS,
 )
@@ -217,7 +219,7 @@ def _structured_claim_type(candidate_type: str, structured: dict[str, Any] | Non
 
 
 def _normalize_key_text(value: Any) -> str:
-    if isinstance(value, dict) or isinstance(value, list):
+    if isinstance(value, (dict, list)):
         value = _safe_json_text(value)
     text = "" if value is None else str(value)
     normalized = unicodedata.normalize("NFKC", text)

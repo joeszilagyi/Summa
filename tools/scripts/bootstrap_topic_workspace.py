@@ -18,7 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(REPO_ROOT) not in sys.path:
@@ -26,18 +25,18 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
+import validate_subject_manifest  # noqa: E402
+import validate_topic_workspace_registry  # noqa: E402
+
 from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
-    is_tracked_registry_path,
     is_path_within,
+    is_tracked_registry_path,
     load_or_initialize_registry_json,
     reference_path_for_registry,
     resolve_existing_path,
     write_registry_json,
 )
-import validate_subject_manifest  # noqa: E402
-import validate_topic_workspace_registry  # noqa: E402
-
 
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 

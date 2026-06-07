@@ -35,14 +35,14 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import os
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
-import unicodedata
 import tempfile
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -196,8 +196,8 @@ def detect_text_layer(pdf_path: Path, page_count: int) -> tuple[bool, str]:
 def extract_via_ocr(pdf_path: Path, lang: str, page_count: int = 0) -> tuple[str, list[str]]:
     warnings: list[str] = []
     try:
-        from pdf2image import convert_from_path
         import pytesseract
+        from pdf2image import convert_from_path
     except ImportError as exc:
         raise RuntimeError(
             f"OCR dependencies not available ({exc}). "
@@ -391,7 +391,7 @@ def _print_dry_run_summary(
     print(f"dry-run: {pdf_path}")
     print(f"  pages: {page_count}")
     print(f"  extraction method: {method}")
-    print(f"  sidecars:")
+    print("  sidecars:")
     print(f"    - {txt_path}")
     print(f"    - {meta_path}")
     if txt_path.exists() and meta_path.exists() and not force:

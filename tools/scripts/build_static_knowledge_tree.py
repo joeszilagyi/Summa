@@ -13,9 +13,9 @@ import shutil
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
@@ -30,21 +30,26 @@ for candidate in (
 from tools.common.atomic_write import atomic_write_json, atomic_write_text  # noqa: E402
 from tools.common.operator_text import format_operator_text_value  # noqa: E402
 from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
-    BuildManifestReceipt,
     EXIT_PASS as EXIT_BUILD_MANIFEST_PASS,
+)
+from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
+    BuildManifestReceipt,
     hash_file,
     validate_build_manifest,
     validate_build_manifest_receipt,
 )
 from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     EXIT_PASS as EXIT_EXPORT_PASS,
+)
+from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     validate_knowledge_tree_export,
 )
 from tools.validators.validate_public_knowledge_tree_presentation import (  # noqa: E402
     EXIT_PASS as EXIT_PRESENTATION_PASS,
+)
+from tools.validators.validate_public_knowledge_tree_presentation import (  # noqa: E402
     validate_public_knowledge_tree_presentation,
 )
-
 
 SCRIPT_PATH = "tools/scripts/build_static_knowledge_tree.py"
 SCHEMA_VERSION = "knowledge-tree-build-manifest.v1"
@@ -155,7 +160,7 @@ def now_rfc3339() -> str:
 
 
 def default_build_id(*, export_sha256: str, presentation_sha256: str) -> str:
-    digest_input = f"{export_sha256}|{presentation_sha256}".encode("utf-8")
+    digest_input = f"{export_sha256}|{presentation_sha256}".encode()
     digest = hashlib.sha256(digest_input).hexdigest()
     return f"build-{digest[:16]}"
 

@@ -16,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.source_db_tools import canonical_store  # noqa: E402
 
 PROFILE_SCHEMA_VERSION = "standards-profile.v1"
 EXPORT_SCHEMA_VERSION = "standards-profile-export.v1"

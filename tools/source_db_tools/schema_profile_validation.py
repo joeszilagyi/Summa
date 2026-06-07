@@ -17,19 +17,21 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import source_types
-    import identifier_normalization
-    import rights_retention
-    import relationship_predicates
     import claim_types
     import confidence_model
+    import identifier_normalization
+    import relationship_predicates
+    import rights_retention
+    import source_types
 except ImportError:  # pragma: no cover - package import fallback
-    from tools.source_db_tools import source_types  # type: ignore
-    from tools.source_db_tools import identifier_normalization  # type: ignore
-    from tools.source_db_tools import rights_retention  # type: ignore
-    from tools.source_db_tools import relationship_predicates  # type: ignore
-    from tools.source_db_tools import claim_types  # type: ignore
-    from tools.source_db_tools import confidence_model  # type: ignore
+    from tools.source_db_tools import (
+        claim_types,  # type: ignore
+        confidence_model,  # type: ignore
+        identifier_normalization,  # type: ignore
+        relationship_predicates,  # type: ignore
+        rights_retention,  # type: ignore
+        source_types,  # type: ignore
+    )
 
 PROFILE_PATH = Path(__file__).resolve().with_name("schema_profiles.json")
 REPORT_SCHEMA_VERSION = "schema-profile-validation-report.v1"
@@ -90,10 +92,7 @@ def values_for_path(obj: Any, path: str) -> list[Any]:
         list_part = part.endswith("[]")
         key = part[:-2] if list_part else part
         for value in current:
-            if isinstance(value, dict):
-                child = value.get(key)
-            else:
-                child = None
+            child = value.get(key) if isinstance(value, dict) else None
             if list_part:
                 if isinstance(child, list):
                     next_values.extend(child)

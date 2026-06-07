@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = "runtime-ledger.v1"
 LEDGER_METADATA_SCHEMA_VERSION = "runtime-ledger-metadata.v1"
 DEFAULT_LEDGER_ROOT = Path("runtime") / "ledgers"

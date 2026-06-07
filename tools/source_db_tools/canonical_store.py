@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -699,10 +700,8 @@ def apply_migrations(
     try:
         conn.executescript(script)
     except sqlite3.Error as exc:
-        try:
+        with contextlib.suppress(sqlite3.Error):
             conn.rollback()
-        except sqlite3.Error:
-            pass
         raise CanonicalStoreError(f"failed to apply canonical store migrations: {exc}") from exc
 
     final_version = get_schema_version(conn)
