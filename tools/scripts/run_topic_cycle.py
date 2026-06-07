@@ -55,6 +55,7 @@ from tools.validators.validate_source_acquisition_execution import (  # noqa: E4
 SCHEMA_VERSION = "topic-cycle-run.v1"
 DEFAULT_FACET = "sources"
 DEFAULT_PHASE = "01a"
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 KNOWN_RUN_STATUSES = {"completed", "dry_run", "failed", "partial"}
 REMOTE_FETCH_ENABLED = False
 
@@ -207,6 +208,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--run-id", help="Stable cycle run id. Defaults to the run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override for deterministic tests.")
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help=(
+            "Maximum seconds to allow each child subprocess call. Defaults to 600 seconds "
+            "when not supplied."
+        ),
+    )
     parser.add_argument(
         "--facet", default=DEFAULT_FACET, help="Gather facet when no feedback plan selects one."
     )
@@ -502,8 +511,21 @@ def command_text(command: list[str]) -> str:
     return " ".join(command)
 
 
-def run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
+    timeout_seconds = getattr(args, "command_timeout_seconds", None)
+    if timeout_seconds is None:
+        return DEFAULT_COMMAND_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise TopicCycleError("--command-timeout-seconds must be greater than zero")
+    return float(timeout_seconds)
+
+
+def run_command(
+    command: list[str], *, cwd: Path, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command, cwd=cwd, text=True, capture_output=True, check=False, timeout=timeout
+    )
 
 
 def fail_stage(stage: StageRecord, message: str) -> NoReturn:
@@ -688,7 +710,7 @@ def build_feedback_plan_stage(
     ]
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
             fail_stage(stage, (proc.stderr or proc.stdout).strip() or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
@@ -853,7 +875,7 @@ def gather_stage(
         command.extend(["--cycle-depth", str(args.cycle_depth)])
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
             fail_stage(stage, (proc.stderr or proc.stdout).strip() or "gather failed")
         payload = json.loads(proc.stdout)
@@ -1118,7 +1140,7 @@ def acquisition_stage(
     ]
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
             fail_stage(
                 stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed"
@@ -1621,6 +1643,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if getattr(args, "dry_run", False):
         args.mode = "dry-run"
     started_at = normalize_timestamp(args.timestamp)
+    command_timeout_seconds = resolve_command_timeout_seconds(args)
     workspace = resolve_path(args.workspace)
     db_path = resolve_path(args.db)
     run_dir = resolve_path(args.run_dir)
@@ -1639,6 +1662,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         workspace=workspace,
         db_path=db_path,
     )
+    manifest["budget"] = {"command_timeout_seconds": command_timeout_seconds}
     manifest["stage_plan"] = build_stage_plan(
         feedback_plan_mode=args.feedback_plan,
         build_next_feedback_plan=args.build_next_feedback_plan,

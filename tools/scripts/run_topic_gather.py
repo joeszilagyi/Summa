@@ -51,6 +51,7 @@ DEFAULT_MODE = "dry-run"
 DEFAULT_PHASE = "01a"
 DEFAULT_ENGINE = "codex"
 DEFAULT_CYCLE_DEPTH = 1
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 RUNS_ROOT = Path("runs") / "gather"
 LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
@@ -144,6 +145,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--created-at",
         help="Optional RFC3339 UTC timestamp override, for example 2026-06-03T12:34:56Z.",
+    )
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help=(
+            "Maximum seconds to allow each child subprocess call. Defaults to 600 seconds "
+            "when not supplied."
+        ),
     )
     parser.add_argument(
         "--source-text-file",
@@ -256,6 +265,15 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
+    timeout_seconds = getattr(args, "command_timeout_seconds", None)
+    if timeout_seconds is None:
+        return DEFAULT_COMMAND_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise GatherDriverError("--command-timeout-seconds must be greater than zero")
+    return float(timeout_seconds)
 
 
 def read_text_file(path: Path, *, label: str) -> str:
@@ -669,14 +687,21 @@ def parse_stamp_footer(text: str) -> dict[str, str]:
     }
 
 
-def invoke_llm_runner_bridge(command: list[str], *, label: str) -> None:
-    proc = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def invoke_llm_runner_bridge(
+    command: list[str], *, label: str, timeout_seconds: float | None
+) -> None:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_value = timeout_seconds if timeout_seconds is not None else "unset"
+        raise GatherDriverError(f"{label} exceeded timeout after {timeout_value} seconds") from exc
     if proc.returncode != 0:
         message = (proc.stdout + proc.stderr).strip()
         raise GatherDriverError(
@@ -692,6 +717,7 @@ def run_live_engine(
     facet: str,
     phase: str,
     engine: str,
+    command_timeout_seconds: float | None,
 ) -> dict[str, Any]:
     ensure_file(LLM_RUNNER_BRIDGE_PATH, label="llm_runner bridge")
     ensure_file(LLM_RUNNER_PATH, label="llm_runner library")
@@ -719,6 +745,7 @@ def run_live_engine(
             DRIVER_NAME,
         ],
         label="live engine run",
+        timeout_seconds=command_timeout_seconds,
     )
     raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
 
@@ -740,6 +767,7 @@ def run_live_engine(
             engine,
         ],
         label="llm_runner output stamp",
+        timeout_seconds=command_timeout_seconds,
     )
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
     stamp_footer = parse_stamp_footer(stamped_output_text)
@@ -1003,6 +1031,7 @@ def main() -> int:
             if args.created_at
             else utc_now_text()
         )
+        command_timeout_seconds = resolve_command_timeout_seconds(args)
         runtime = resolve_runtime_inputs(args)
         feedback_plan = load_feedback_plan(args.feedback_plan) if args.feedback_plan else None
         next_action = apply_feedback_plan_defaults(
@@ -1082,6 +1111,7 @@ def main() -> int:
                 facet=gather_inputs["facet"],
                 phase=gather_inputs["phase"],
                 engine=args.engine,
+                command_timeout_seconds=command_timeout_seconds,
             )
 
         batch = build_candidate_batch(

@@ -238,6 +238,8 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
             "cycle-dry-run",
             "--timestamp",
             "2026-06-03T12:00:00Z",
+            "--command-timeout-seconds",
+            "45",
             "--dry-run",
         ]
     )
@@ -247,6 +249,7 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert manifest["schema_version"] == "topic-cycle-run.v1"
     assert manifest["status"] == "dry_run"
     assert manifest["canonical_db"]["mutated"] is False  # type: ignore[index]
+    assert manifest["budget"]["command_timeout_seconds"] == 45.0  # type: ignore[index]
     assert table_count(db_path, "work") == before_work
     assert file_sha256(db_path) == before_db_hash
     assert tree_sha256(workspace / ".indexer") == before_workspace_hash
@@ -756,7 +759,10 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "rendered_prompt_sha256": "prompt-hash",
     }
 
-    def fake_run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    def fake_run_command(
+        command: list[str], *, cwd: Path, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout == 111.0
         return subprocess.CompletedProcess(
             args=command,
             returncode=0,
@@ -784,6 +790,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         previous_run_id=[],
         dry_run=True,
         candidate_batch_fixture=None,
+        command_timeout_seconds=111.0,
     )
     manifest = {
         "run_id": "cycle-827",
@@ -828,7 +835,10 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "counts": {"selected": 1},
     }
 
-    def fake_run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    def fake_run_command(
+        command: list[str], *, cwd: Path, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout == 123.0
         output_index = command.index("--output-json") + 1
         path = Path(command[output_index])
         assert path == output_path
@@ -853,6 +863,7 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
 
     args = SimpleNamespace(degraded_spool=False)
+    args.command_timeout_seconds = 123.0
     manifest = {
         "run_id": "cycle-feedback-plan",
         "started_at": "2026-06-03T12:34:56Z",
@@ -1166,6 +1177,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         )
 
     def fake_run_command(*args, **kwargs):
+        assert kwargs.get("timeout") == 222.0
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def fake_load_handoff_adapter_path(_: Path) -> Path:
@@ -1209,6 +1221,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         mode="live",
         degraded_spool=False,
         spool_dir=None,
+        command_timeout_seconds=222.0,
     )
     manifest = {
         "run_id": "cycle-832",
