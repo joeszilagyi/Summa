@@ -173,9 +173,7 @@ def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> No
         prompt_text=prompt_text,
     )
 
-    assert args[0] == "-p"
-    assert "--dangerously-skip-permissions" in args
-    assert args[-2:] == ["--effort", "high"]
+    assert args == ["-p", "--model", "sonnet", "--effort", "high"]
     assert stdin == prompt_text
 
 
