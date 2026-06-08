@@ -1205,6 +1205,92 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_run_topic_gather_live_mode_blocks_hostile_source_text_by_default(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "hostile-live-blocked"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "live",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--source-text-file",
+            str(HOSTILE_SOURCE_FIXTURE),
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "--allow-hostile-source-text" in proc.stderr
+    assert "prompt_injection_text" in proc.stderr
+    assert not batch_path_for(workspace_root, run_id).exists()
+    assert not prompt_path_for(workspace_root, run_id).exists()
+
+
+def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_allowed(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    run_id = "hostile-live-allowed"
+    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = fake_output
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--source-text-file",
+            str(HOSTILE_SOURCE_FIXTURE),
+            "--allow-hostile-source-text",
+        ],
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    batch_path = batch_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert payload["mode"] == "live"
+    assert set(payload["source_text_wrapping"]["blocks"][0]["hazard_flags"]) == {
+        "prompt_injection_text",
+        "hostile_markup",
+    }
+    assert payload["raw_engine_output"] == fake_output
+    assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert fake_log.read_text(encoding="utf-8")
+
+
 def test_run_topic_gather_live_engine_uses_command_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

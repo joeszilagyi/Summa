@@ -227,6 +227,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include the full rendered prompt in the batch artifact after leak scanning.",
     )
+    parser.add_argument(
+        "--allow-hostile-source-text",
+        action="store_true",
+        help=(
+            "Allow live mode to proceed even when wrapped source text triggers hazard flags. "
+            "Dry-run mode still records the detected hazards."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -313,6 +321,36 @@ def detect_hazard_flags(source_text: str) -> list[str]:
         if pattern.search(source_text):
             flags.append(flag)
     return flags
+
+
+def collect_source_text_hazard_flags(blocks: list[dict[str, Any]]) -> list[str]:
+    hazard_flags: list[str] = []
+    seen_flags: set[str] = set()
+    for block in blocks:
+        raw_flags = block.get("hazard_flags")
+        if not isinstance(raw_flags, list):
+            continue
+        for raw_flag in raw_flags:
+            if not isinstance(raw_flag, str) or raw_flag in seen_flags:
+                continue
+            seen_flags.add(raw_flag)
+            hazard_flags.append(raw_flag)
+    return hazard_flags
+
+
+def ensure_live_source_text_is_allowed(
+    *, args: argparse.Namespace, source_wrapping_blocks: list[dict[str, Any]]
+) -> None:
+    if args.mode != "live" or getattr(args, "allow_hostile_source_text", False):
+        return
+    hazard_flags = collect_source_text_hazard_flags(source_wrapping_blocks)
+    if not hazard_flags:
+        return
+    hazard_flags_text = ", ".join(hazard_flags)
+    raise GatherDriverError(
+        "live mode is blocked because wrapped source text triggered hazard flags "
+        f"({hazard_flags_text}); rerun with --allow-hostile-source-text to acknowledge the risk"
+    )
 
 
 def split_cli_values(
@@ -706,6 +744,10 @@ def execute_gather_run(
     source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
         args.source_text_file,
         template=gather_inputs["wrapper_template"],
+    )
+    ensure_live_source_text_is_allowed(
+        args=args,
+        source_wrapping_blocks=source_wrapping_blocks,
     )
     rendered_prompt = render_prompt_text(
         prompt_body=prompt_body,
