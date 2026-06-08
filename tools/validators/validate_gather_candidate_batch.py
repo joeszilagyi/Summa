@@ -1055,30 +1055,42 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         )
 
             if isinstance(prior_state, dict):
-                actual_prior_state_block = parsed_metadata_blocks.get("metadata:prior-state")
-                expected_prior_state_text = render_json_payload(prior_state)
-                if actual_prior_state_block is None:
+                prior_state_payload = {
+                    key: value
+                    for key, value in prior_state.items()
+                    if not key.startswith("prior_state_rendered_")
+                }
+                expected_prior_state_text = render_json_payload(prior_state_payload)
+                expected_prior_state_hash = hashlib.sha256(expected_prior_state_text.encode("utf-8")).hexdigest()
+                expected_prior_state_byte_count = len(expected_prior_state_text.encode("utf-8"))
+                if prior_state.get("prior_state_rendered_source_ref") != "metadata:prior-state":
                     add_error(
                         errors,
-                        code="UNTRUSTED_PRIOR_STATE_METADATA_MISSING",
-                        message="rendered prompt must include an untrusted prior-state metadata block",
-                        path="$.prompt.rendered_prompt",
+                        code="UNTRUSTED_PRIOR_STATE_METADATA_SOURCE_REF_MISMATCH",
+                        message="prior-state metadata source_ref must use the wrapped prompt contract",
+                        path="$.prior_state.prior_state_rendered_source_ref",
                     )
-                else:
-                    if actual_prior_state_block.provenance != "prior canonical state context":
-                        add_error(
-                            errors,
-                            code="UNTRUSTED_PRIOR_STATE_METADATA_PROVENANCE_MISMATCH",
-                            message="prior-state metadata provenance must match the wrapped prompt contract",
-                            path="$.prompt.rendered_prompt",
-                        )
-                    if actual_prior_state_block.source_text != expected_prior_state_text:
-                        add_error(
-                            errors,
-                            code="UNTRUSTED_PRIOR_STATE_METADATA_MISMATCH",
-                            message="prior-state metadata block must serialize the prior state payload as inert JSON",
-                            path="$.prompt.rendered_prompt",
-                        )
+                if prior_state.get("prior_state_rendered_provenance") != "prior canonical state context":
+                    add_error(
+                        errors,
+                        code="UNTRUSTED_PRIOR_STATE_METADATA_PROVENANCE_MISMATCH",
+                        message="prior-state metadata provenance must match the wrapped prompt contract",
+                        path="$.prior_state.prior_state_rendered_provenance",
+                    )
+                if prior_state.get("prior_state_rendered_hash") != expected_prior_state_hash:
+                    add_error(
+                        errors,
+                        code="UNTRUSTED_PRIOR_STATE_METADATA_HASH_MISMATCH",
+                        message="prior-state metadata hash must match the rendered prior_state payload",
+                        path="$.prior_state.prior_state_rendered_hash",
+                    )
+                if prior_state.get("prior_state_rendered_byte_count") != expected_prior_state_byte_count:
+                    add_error(
+                        errors,
+                        code="UNTRUSTED_PRIOR_STATE_METADATA_BYTE_COUNT_MISMATCH",
+                        message="prior-state metadata byte_count must match the rendered prior_state payload",
+                        path="$.prior_state.prior_state_rendered_byte_count",
+                    )
 
     candidates = payload.get("candidates")
     if isinstance(candidates, list):

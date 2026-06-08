@@ -592,6 +592,21 @@
         },
         "context_hash": {
           "$ref": "#/$defs/sha256"
+        },
+        "prior_state_rendered_source_ref": {
+          "type": "string",
+          "const": "metadata:prior-state"
+        },
+        "prior_state_rendered_provenance": {
+          "type": "string",
+          "const": "prior canonical state context"
+        },
+        "prior_state_rendered_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "prior_state_rendered_byte_count": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

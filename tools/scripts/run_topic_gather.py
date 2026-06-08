@@ -1296,7 +1296,14 @@ def build_candidate_batch(
         },
     }
     if prior_state is not None:
-        batch["prior_state"] = prior_state
+        prior_state_rendered_text = render_json_payload(prior_state)
+        batch["prior_state"] = {
+            **prior_state,
+            "prior_state_rendered_source_ref": "metadata:prior-state",
+            "prior_state_rendered_provenance": "prior canonical state context",
+            "prior_state_rendered_hash": sha256_text(prior_state_rendered_text),
+            "prior_state_rendered_byte_count": len(prior_state_rendered_text.encode("utf-8")),
+        }
     if feedback_plan is not None and next_action is not None:
         next_action_rendered_text = render_json_payload(next_action)
         batch["feedback_plan"] = {
