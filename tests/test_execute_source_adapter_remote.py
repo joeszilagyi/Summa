@@ -415,7 +415,16 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: P
     monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
     monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: gate_report)
 
-    execution_record, denial_record, capture_events, extraction_records, _, _ = source_executor.execute_remote_url_manifest(
+    (
+        execution_record,
+        denial_record,
+        capture_events,
+        extraction_records,
+        _gate_report,
+        _expected_urls,
+        text_artifacts,
+        binary_artifacts,
+    ) = source_executor.execute_remote_url_manifest(
         records=records,
         run_id="remote-denial-only",
         created_at="2026-06-03T12:34:56Z",
@@ -432,6 +441,10 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: P
     assert denial_record is None
     assert execution_record["network_access_attempted"] is True
     assert execution_record["urls_denied"] == 2
+    assert "_text_artifacts" not in execution_record
+    assert "_binary_artifacts" not in execution_record
+    assert text_artifacts == {}
+    assert binary_artifacts == {}
     assert capture_events[0]["status"] == "denied"
     assert extraction_records[0]["status"] == "denied"
 

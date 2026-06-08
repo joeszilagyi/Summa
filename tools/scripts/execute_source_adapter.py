@@ -2097,6 +2097,8 @@ def execute_remote_url_manifest(
     list[dict[str, Any]],
     dict[str, Any],
     list[str],
+    dict[str, str],
+    dict[str, bytes],
 ]:
     if gate_request_path is None:
         raise SourceAcquisitionError(
@@ -2133,7 +2135,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     if gate_report["decision"] == "dry_run" or dry_run:
         execution_record = dry_run_execution_record(
@@ -2148,7 +2150,7 @@ def execute_remote_url_manifest(
             gate_report=gate_report,
             planned_actions=planned_actions,
         )
-        return execution_record, None, [], [], gate_report, expected_urls
+        return execution_record, None, [], [], gate_report, expected_urls, {}, {}
 
     if not gate_report["execution_allowed"]:
         execution_record = execution_record_payload(
@@ -2172,7 +2174,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     reason = "explicit --allow-network is required for remote execution"
     if not allow_network:
@@ -2197,7 +2199,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     capture_events, extraction_records, text_artifacts, binary_artifacts, failed, remote_summary = (
         execute_remote_fetches(
@@ -2241,9 +2243,16 @@ def execute_remote_url_manifest(
             **remote_summary,
         }
     )
-    execution_record["_text_artifacts"] = text_artifacts
-    execution_record["_binary_artifacts"] = binary_artifacts
-    return execution_record, None, capture_events, extraction_records, gate_report, expected_urls
+    return (
+        execution_record,
+        None,
+        capture_events,
+        extraction_records,
+        gate_report,
+        expected_urls,
+        text_artifacts,
+        binary_artifacts,
+    )
 
 
 def main() -> int:
@@ -2296,6 +2305,8 @@ def main() -> int:
                     remote_extraction_records,
                     gate_report,
                     _,
+                    _remote_text_artifacts,
+                    _remote_binary_artifacts,
                 ) = execute_remote_url_manifest(
                     records=records,
                     run_id=run_id,
@@ -2446,7 +2457,16 @@ def main() -> int:
                 if args.network_safety_request
                 else None
             )
-            execution_record, denial_record, capture_events, extraction_records, gate_report, _ = (
+            (
+                execution_record,
+                denial_record,
+                capture_events,
+                extraction_records,
+                gate_report,
+                _,
+                text_artifacts,
+                binary_artifacts,
+            ) = (
                 execute_remote_url_manifest(
                     records=records,
                     run_id=run_id,
@@ -2461,8 +2481,6 @@ def main() -> int:
                     max_response_bytes=args.max_response_bytes,
                 )
             )
-            text_artifacts = execution_record.pop("_text_artifacts", {})
-            binary_artifacts = execution_record.pop("_binary_artifacts", {})
         else:
             raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
 
