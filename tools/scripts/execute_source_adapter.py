@@ -74,6 +74,10 @@ class SourceAcquisitionError(RuntimeError):
     """Raised when execution inputs are invalid or unsupported."""
 
 
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 class DuplicateJsonKeyError(ValueError):
     """Raised when JSON object parsing sees a duplicate key."""
 
@@ -2597,15 +2601,7 @@ def main() -> int:
                     payload_spool_dir=remote_payload_spool_dir,
                 )
                 if not args.suppress_execution_record_stdout:
-                    sys.stdout.write(
-                        json.dumps(
-                            remote_execution_record,
-                            ensure_ascii=False,
-                            indent=2,
-                            sort_keys=True,
-                        )
-                        + "\n"
-                    )
+                    sys.stdout.write(compact_json_text(remote_execution_record) + "\n")
                 return 0 if remote_execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
 
             dry_run_local_input_paths = sorted(
@@ -2624,10 +2620,7 @@ def main() -> int:
                 planned_actions=planned_actions,
             )
             if not args.suppress_execution_record_stdout:
-                sys.stdout.write(
-                    json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True)
-                    + "\n"
-                )
+                sys.stdout.write(compact_json_text(execution_record) + "\n")
             return 0
 
         prepare_output_dir(output_dir, run_id=run_id, workspace_root=workspace_root)
@@ -2784,9 +2777,7 @@ def main() -> int:
             publish_output_dir(staging_dir, output_dir)
 
         if not args.suppress_execution_record_stdout:
-            sys.stdout.write(
-                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            )
+            sys.stdout.write(compact_json_text(execution_record) + "\n")
         return EXIT_PASS if execution_record["status"] == "completed" else EXIT_STATE_UNSAFE
     except SourceAcquisitionError as exc:
         print(f"Error: {exc}", file=sys.stderr)

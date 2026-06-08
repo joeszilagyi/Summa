@@ -27,6 +27,10 @@ def canonical_json_bytes(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def compact_json_text(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
     return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
         "utf-8"
@@ -164,6 +168,7 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     extractions = load_jsonl(output / "extraction-records.jsonl")
 
     assert execution["schema_version"] == "source-acquisition-execution.v1"
+    assert proc.stdout == compact_json_text(execution) + "\n"
     assert execution["adapter_type"] == "local_source"
     assert execution["status"] == "failed"
     assert execution["dry_run"] is False

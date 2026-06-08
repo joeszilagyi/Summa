@@ -384,8 +384,12 @@ def _read_text_if_present(path_value: Any) -> str | None:
         return None
 
 
+def compact_json_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def render_json_payload(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    return compact_json_text(payload)
 
 
 def parse_stamp_footer(text: str) -> dict[str, str] | None:

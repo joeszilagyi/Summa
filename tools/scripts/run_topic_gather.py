@@ -281,8 +281,12 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def render_json_payload(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    return compact_json_text(payload)
 
 
 def source_text_fingerprint(source_text: str) -> tuple[int, str]:
@@ -933,7 +937,7 @@ def render_untrusted_json_block(
         source_ref=source_ref,
         provenance=provenance,
         hazard_flags=["prompt_injection_text"],
-        source_text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        source_text=compact_json_text(payload),
         template=template,
     )
 
@@ -1035,11 +1039,7 @@ def sync_paths(paths: list[Path]) -> None:
 
 
 def write_json(path: Path, payload: dict[str, Any], *, sync: bool = True) -> None:
-    write_text(
-        path,
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        sync=sync,
-    )
+    write_text(path, compact_json_text(payload) + "\n", sync=sync)
 
 
 def parse_stamp_footer(text: str) -> dict[str, str]:
@@ -1526,7 +1526,7 @@ def render_summary_json(
         if live_result is not None
         else None,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return compact_json_text(payload) + "\n"
 
 
 def main() -> int:
@@ -1589,9 +1589,7 @@ def main() -> int:
                     "run_count": len(results),
                     "runs": [json.loads(result["summary_json"]) for result in results],
                 }
-                sys.stdout.write(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-                )
+                sys.stdout.write(compact_json_text(payload) + "\n")
             else:
                 lines = ["batch_mode=true", f"run_count={len(results)}"]
                 for result in results:

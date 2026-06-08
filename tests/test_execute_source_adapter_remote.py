@@ -338,6 +338,10 @@ def canonical_json_bytes(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def compact_json_text(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
     return "".join(
         json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
@@ -1011,6 +1015,7 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        assert proc.stdout == compact_json_text(execution) + "\n"
         captures = load_jsonl(output / "capture-events.jsonl")
         extractions = load_jsonl(output / "extraction-records.jsonl")
         assert execution["network_access_attempted"] is True
@@ -1248,6 +1253,7 @@ def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         execution = json.loads(proc.stdout)
+        assert proc.stdout == compact_json_text(execution) + "\n"
         assert execution["status"] == "dry_run"
         assert execution["canonical_persistence_attempted"] is False
         assert execution["network_access_attempted"] is False

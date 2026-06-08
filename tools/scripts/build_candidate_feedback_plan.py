@@ -18,7 +18,7 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "scripts"):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.atomic_write import atomic_write_text  # noqa: E402
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     ACCEPTED_REVIEW_STATES,
     CANDIDATE_FEEDBACK_SCORE_MAX,
@@ -127,6 +127,10 @@ def _entity_facet_resolution_sql(enabled_facets: list[str]) -> tuple[str, tuple[
 
 class CandidateFeedbackError(RuntimeError):
     """Raised when planner inputs are missing or malformed."""
+
+
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -1831,16 +1835,14 @@ def main() -> int:
 
         if args.output_json:
             output_path = resolve_path(args.output_json)
-            atomic_write_json(output_path, payload)
+            atomic_write_text(output_path, compact_json_text(payload) + "\n")
             validate_emitted_plan(output_path)
         else:
             with tempfile.NamedTemporaryFile(
                 "w", encoding="utf-8", suffix=".json", delete=False
             ) as handle:
                 temp_path = Path(handle.name)
-                handle.write(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-                )
+                handle.write(compact_json_text(payload) + "\n")
             try:
                 validate_emitted_plan(temp_path)
             finally:
@@ -1855,7 +1857,7 @@ def main() -> int:
         if args.format == "text":
             sys.stdout.write(render_text_plan(payload))
         else:
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            sys.stdout.write(compact_json_text(payload))
             sys.stdout.write("\n")
         return 0
     except CandidateFeedbackError as exc:

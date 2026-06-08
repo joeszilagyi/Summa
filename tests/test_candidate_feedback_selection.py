@@ -22,6 +22,11 @@ VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_candidate_feedba
 BATCH_VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_gather_candidate_batch.py"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
 
+
+def compact_json_text(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 validator_spec = importlib.util.spec_from_file_location(
     "candidate_feedback_validator_for_selection_tests",
     VALIDATOR_PATH,
@@ -798,7 +803,9 @@ def test_candidate_feedback_planner_sparse_state_uses_bootstrap_selection(tmp_pa
     result, output_path, payload = build_plan(tmp_path, db_path, manifest_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == compact_json_text(payload) + "\n"
     assert output_path.is_file()
+    assert output_path.read_text(encoding="utf-8") == compact_json_text(payload) + "\n"
     assert payload["schema_version"] == "candidate-feedback-plan.v1"
     assert payload["counts"]["gather_runs_considered"] == 0
     assert payload["next_action"]["action_kind"] == "facet_bootstrap"
@@ -2044,11 +2051,8 @@ def test_gather_consumes_feedback_plan_and_records_metadata(tmp_path: Path) -> N
     assert batch_payload["feedback_plan"]["next_action_id"] == payload["next_action"]["action_id"]
     assert batch_payload["provenance"]["feedback_plan_hash"] == batch_payload["feedback_plan"]["plan_hash"]
     assert batch_payload["provenance"]["next_action_id"] == payload["next_action"]["action_id"]
-    expected_next_action_text = json.dumps(
-        compact_next_action_prompt_payload(payload["next_action"]),
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
+    expected_next_action_text = compact_json_text(
+        compact_next_action_prompt_payload(payload["next_action"])
     )
     assert batch_payload["feedback_plan"]["next_action_rendered_source_ref"] == "metadata:feedback-plan"
     assert batch_payload["feedback_plan"]["next_action_rendered_provenance"] == "candidate feedback plan next action"
