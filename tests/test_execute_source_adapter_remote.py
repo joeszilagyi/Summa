@@ -21,7 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
 PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_remote_url_manifest_adapter.py"
-ADAPTER = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "remote_url_manifest" / "source_adapter.json"
+ADAPTER = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "source_adapter_runtime"
+    / "remote_url_manifest"
+    / "source_adapter.json"
+)
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -117,8 +124,62 @@ def fixture_server() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://{host}:{port}"
 
 
+def test_remote_fetch_one_spools_captured_payload_to_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b"\x00\x01\x02\x03"
+    payload_spool_dir = tmp_path / "payload-spool"
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status = 200
+            self.headers = {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(body)),
+            }
+            self._offset = 0
+
+        def getcode(self) -> int:
+            return 200
+
+        def read(self, size: int) -> bytes:
+            if self._offset >= len(body):
+                return b""
+            chunk = body[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+    class FakeOpener:
+        def open(self, request: Any, timeout: float) -> FakeResponse:
+            del request, timeout
+            return FakeResponse()
+
+    monkeypatch.setattr(source_executor, "build_opener", lambda _handler: FakeOpener())
+
+    fetch_result = source_executor.remote_fetch_one(
+        url="https://example.test/binary",
+        method="GET",
+        user_agent="SummaRemoteTest/1.0",
+        allowlist_hosts=[],
+        allowlist_prefixes=[],
+        timeout_seconds=2,
+        max_response_bytes=1024,
+        payload_spool_dir=payload_spool_dir,
+    )
+
+    assert fetch_result["status"] == "captured"
+    assert fetch_result["payload_path"] is not None
+    payload_path = Path(str(fetch_result["payload_path"]))
+    assert payload_path.parent == payload_spool_dir
+    assert payload_path.read_bytes() == body
+    assert fetch_result["payload_sha256"] == hashlib.sha256(body).hexdigest()
+    assert fetch_result["payload_byte_count"] == len(body)
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return path
 
 
@@ -127,15 +188,18 @@ def canonical_json_bytes(value: dict[str, Any]) -> bytes:
 
 
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
-    return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
-        "utf-8"
-    )
+    return "".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+    ).encode("utf-8")
 
 
 def make_handoff(tmp_path: Path, urls: list[str]) -> Path:
     manifest = tmp_path / "remote-manifest.jsonl"
     manifest.write_text(
-        "".join(json.dumps({"url": url, "title": f"entry {index}"}) + "\n" for index, url in enumerate(urls, start=1)),
+        "".join(
+            json.dumps({"url": url, "title": f"entry {index}"}) + "\n"
+            for index, url in enumerate(urls, start=1)
+        ),
         encoding="utf-8",
     )
     handoff = tmp_path / "handoff.jsonl"
@@ -161,7 +225,14 @@ def make_handoff(tmp_path: Path, urls: list[str]) -> Path:
     return handoff
 
 
-def make_gate_request(tmp_path: Path, *, urls: list[str], allowed_prefix: str, dry_run: bool = False, max_actions: int | None = None) -> Path:
+def make_gate_request(
+    tmp_path: Path,
+    *,
+    urls: list[str],
+    allowed_prefix: str,
+    dry_run: bool = False,
+    max_actions: int | None = None,
+) -> Path:
     payload = {
         "schema_version": "network-safety-gate-request.v1",
         "executor_name": "tools/scripts/execute_source_adapter.py",
@@ -244,7 +315,9 @@ def run_executor(
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def open_targets_under(root: Path) -> list[Path]:
@@ -343,6 +416,7 @@ def test_execute_remote_fetches_emits_denied_evidence_rows(
                 gate_report=gate_report,
                 timeout_seconds=2,
                 max_response_bytes=1024,
+                payload_spool_dir=tmp_path / "payload-spool",
             )
         )
 
@@ -351,7 +425,11 @@ def test_execute_remote_fetches_emits_denied_evidence_rows(
         assert summary["urls_succeeded"] == 1
         assert summary["urls_denied"] == 2
         assert [record["status"] for record in capture_events] == ["completed", "denied", "denied"]
-        assert [record["status"] for record in extraction_records] == ["completed", "denied", "denied"]
+        assert [record["status"] for record in extraction_records] == [
+            "completed",
+            "denied",
+            "denied",
+        ]
         assert capture_events[1]["failure_reason"] == "network_gate_action_missing"
         assert capture_events[2]["failure_reason"] == "unsupported_request_method"
         assert extraction_records[1]["failure_reason"] == "network_gate_action_missing"
@@ -363,7 +441,9 @@ def test_execute_remote_fetches_emits_denied_evidence_rows(
         server.shutdown()
 
 
-def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: Path, monkeypatch) -> None:
+def test_remote_executor_marks_denied_only_runs_as_network_attempted(
+    tmp_path: Path, monkeypatch
+) -> None:
     records = [
         {
             "sequence": 1,
@@ -443,6 +523,7 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(tmp_path: P
         allow_network=True,
         timeout_seconds=2,
         max_response_bytes=1024,
+        payload_spool_dir=tmp_path / "payload-spool",
     )
 
     assert denial_record is None
@@ -537,6 +618,7 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             allow_network=True,
             timeout_seconds=2,
             max_response_bytes=1024,
+            payload_spool_dir=tmp_path / "payload-spool",
         )
 
     extra_action_report = {
@@ -583,10 +665,12 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             allow_network=True,
             timeout_seconds=2,
             max_response_bytes=1024,
+            payload_spool_dir=tmp_path / "payload-spool",
         )
 
 
 def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_independently(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     records = [
@@ -670,7 +754,9 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
     def fake_sleep(seconds: float) -> None:
         sleep_calls.append(seconds)
         assert host_a_started.is_set()
-        assert host_b_completed.wait(timeout=1.0), "host B did not complete while host A was sleeping"
+        assert host_b_completed.wait(timeout=1.0), (
+            "host B did not complete while host A was sleeping"
+        )
 
     def fake_remote_fetch_one(
         *,
@@ -681,8 +767,17 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
         allowlist_prefixes: list[str],
         timeout_seconds: float,
         max_response_bytes: int,
+        payload_spool_dir: Path,
     ) -> dict[str, Any]:
-        del method, user_agent, allowlist_hosts, allowlist_prefixes, timeout_seconds, max_response_bytes
+        del (
+            method,
+            user_agent,
+            allowlist_hosts,
+            allowlist_prefixes,
+            timeout_seconds,
+            max_response_bytes,
+            payload_spool_dir,
+        )
         fetch_calls.append(url)
         if "host-a.test" in url and url.endswith("/one"):
             host_a_started.set()
@@ -713,6 +808,7 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
             gate_report=gate_report,
             timeout_seconds=2,
             max_response_bytes=1024,
+            payload_spool_dir=tmp_path / "payload-spool",
         )
     )
 
@@ -732,7 +828,11 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
         "https://host-b.test/one",
         "https://host-a.test/two",
     ]
-    assert [record["status"] for record in extraction_records] == ["completed", "completed", "completed"]
+    assert [record["status"] for record in extraction_records] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
     assert text_artifacts == {
         "extracted-text/extraction-0001.txt": "remote fixture text\n",
         "extracted-text/extraction-0002.txt": "remote fixture text\n",
@@ -749,7 +849,9 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-text-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -762,7 +864,9 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert execution["urls_succeeded"] == 1
         assert (output / "execution-record.json").read_bytes() == canonical_json_bytes(execution)
         assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
-        assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
+        assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(
+            extractions
+        )
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
         assert (output / "manifest.json").read_bytes() == canonical_json_bytes(manifest)
         assert captures[0]["http_status_code"] == 200
@@ -775,7 +879,9 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert not (output / "payloads").exists()
         assert extractions[0]["capture_id"] == captures[0]["capture_id"]
         assert extractions[0]["status"] == "completed"
-        assert (output / extractions[0]["extracted_text_path"]).read_text(encoding="utf-8") == "remote fixture text\n"
+        assert (output / extractions[0]["extracted_text_path"]).read_text(
+            encoding="utf-8"
+        ) == "remote fixture text\n"
         assert FixtureHandler.request_paths == ["/text"]
     finally:
         server.shutdown()
@@ -789,7 +895,9 @@ def test_gate_pass_marks_unsupported_content_type_as_failed(tmp_path: Path) -> N
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-html-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == source_executor.EXIT_STATE_UNSAFE, proc.stdout + proc.stderr
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -799,6 +907,9 @@ def test_gate_pass_marks_unsupported_content_type_as_failed(tmp_path: Path) -> N
         assert execution["urls_attempted"] == 1
         assert execution["urls_succeeded"] == 1
         assert captures[0]["status"] == "completed"
+        assert captures[0]["transient_payload_path"] == "payloads/capture-0001.bin"
+        assert captures[0]["payload_retention_policy"] == "transient_run_artifact"
+        assert (output / "payloads" / "capture-0001.bin").read_bytes() == b"\x00\x01\x02\x03"
         assert extractions[0]["status"] == "failed"
         assert extractions[0]["failure_reason"] == "unsupported_content_type"
         assert extractions[0]["extracted_text_path"] is None
@@ -816,7 +927,9 @@ def test_gate_pass_writes_exact_text_without_trailing_newline(tmp_path: Path) ->
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-plain-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         extractions = load_jsonl(output / "extraction-records.jsonl")
@@ -843,6 +956,8 @@ def test_write_execution_artifacts_closes_files_before_validation(tmp_path: Path
     handoff_path = tmp_path / "handoff.jsonl"
     handoff_path.write_text("{}\n", encoding="utf-8")
     handoff_hash = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
+    payload_source = tmp_path / "payload-source.bin"
+    payload_source.write_bytes(b"closed before validation\n")
     execution_record = source_executor.dry_run_execution_record(
         run_id="dry-run-close-check",
         created_at="2026-06-03T12:34:56Z",
@@ -864,7 +979,7 @@ def test_write_execution_artifacts_closes_files_before_validation(tmp_path: Path
         denial_record=None,
         gate_report=None,
         text_artifacts={"extracted-text/extraction-0001.txt": "closed before validation\n"},
-        binary_artifacts={"payloads/capture-0001.bin": b"closed before validation\n"},
+        binary_artifacts={"payloads/capture-0001.bin": payload_source},
     )
 
     assert open_targets_under(output) == []
@@ -891,7 +1006,9 @@ def test_validator_detects_mutated_extracted_text_artifact(tmp_path: Path) -> No
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-plain-mismatch-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         extractions = load_jsonl(output / "extraction-records.jsonl")
@@ -922,7 +1039,9 @@ def test_missing_allow_network_denies_without_fetch(tmp_path: Path) -> None:
         output = tmp_path / "remote-denied-run"
         expected_handoff_hash = hashlib.sha256(handoff.read_bytes()).hexdigest()
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=False)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=False
+        )
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -932,12 +1051,18 @@ def test_missing_allow_network_denies_without_fetch(tmp_path: Path) -> None:
         assert execution["input_handoff_hash"] == expected_handoff_hash
         assert execution["canonical_persistence_attempted"] is False
         assert execution["network_access_attempted"] is False
-        assert execution["network_access_denied_reason"] == "explicit --allow-network is required for remote execution"
+        assert (
+            execution["network_access_denied_reason"]
+            == "explicit --allow-network is required for remote execution"
+        )
         assert denial_record["status"] == "denied"
         assert denial_record["adapter_id"] == "runtime_remote_url_manifest"
         assert denial_record["input_handoff_hash"] == expected_handoff_hash
         assert denial_record["canonical_persistence_attempted"] is False
-        assert denial_record["network_access_denied_reason"] == "explicit --allow-network is required for remote execution"
+        assert (
+            denial_record["network_access_denied_reason"]
+            == "explicit --allow-network is required for remote execution"
+        )
         assert denial_record["considered_urls"] == [url]
         assert load_jsonl(output / "capture-events.jsonl") == []
         assert FixtureHandler.request_paths == []
@@ -945,15 +1070,25 @@ def test_missing_allow_network_denies_without_fetch(tmp_path: Path) -> None:
         server.shutdown()
 
 
-def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(tmp_path: Path) -> None:
+def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(
+    tmp_path: Path,
+) -> None:
     server, base_url = fixture_server()
     try:
         url = f"{base_url}/text"
         handoff = make_handoff(tmp_path, [url])
-        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url, dry_run=True)
+        gate_request = make_gate_request(
+            tmp_path, urls=[url], allowed_prefix=base_url, dry_run=True
+        )
         output = tmp_path / "remote-dry-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True, dry_run=True)
+        proc = run_executor(
+            handoff=handoff,
+            output=output,
+            gate_request=gate_request,
+            allow_network=True,
+            dry_run=True,
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         execution = json.loads(proc.stdout)
@@ -972,10 +1107,14 @@ def test_gate_refusal_denies_without_fetch(tmp_path: Path) -> None:
     try:
         url = f"{base_url}/text"
         handoff = make_handoff(tmp_path, [url])
-        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix="http://not-localhost.invalid/")
+        gate_request = make_gate_request(
+            tmp_path, urls=[url], allowed_prefix="http://not-localhost.invalid/"
+        )
         output = tmp_path / "remote-gate-refused-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -995,7 +1134,9 @@ def test_remote_http_failure_records_attempt_without_successful_extraction(tmp_p
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-404-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -1020,7 +1161,9 @@ def test_remote_http_429_records_hostile_status_without_retry(tmp_path: Path) ->
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-429-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -1077,7 +1220,9 @@ def test_remote_partial_failure_remains_coherent_and_validator_clean(tmp_path: P
         gate_request = make_gate_request(tmp_path, urls=urls, allowed_prefix=base_url)
         output = tmp_path / "remote-partial-failure-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode != 0
         execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
@@ -1118,7 +1263,9 @@ def test_redirect_inside_allowlist_is_captured(tmp_path: Path) -> None:
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-redirect-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         captures = load_jsonl(output / "capture-events.jsonl")
@@ -1138,7 +1285,9 @@ def test_redirect_with_lowercase_location_header_is_captured(tmp_path: Path) -> 
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-redirect-lower-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         captures = load_jsonl(output / "capture-events.jsonl")
@@ -1158,7 +1307,9 @@ def test_redirect_outside_allowlist_is_not_followed(tmp_path: Path) -> None:
         gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
         output = tmp_path / "remote-redirect-out-run"
 
-        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+        proc = run_executor(
+            handoff=handoff, output=output, gate_request=gate_request, allow_network=True
+        )
 
         assert proc.returncode != 0
         captures = load_jsonl(output / "capture-events.jsonl")

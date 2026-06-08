@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
@@ -69,6 +70,33 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
         ) as handle:
             temp_path = Path(handle.name)
             handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+        temp_path = None
+        with contextlib.suppress(OSError):
+            _fsync_directory(path.parent)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_path(path: Path, source: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with (
+            source.open("rb") as source_handle,
+            tempfile.NamedTemporaryFile(
+                "wb",
+                delete=False,
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            ) as handle,
+        ):
+            temp_path = Path(handle.name)
+            shutil.copyfileobj(source_handle, handle)
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)

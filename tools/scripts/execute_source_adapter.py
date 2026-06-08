@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import mimetypes
+import os
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from tools.common.atomic_write import (  # noqa: E402
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_jsonl,
+    atomic_write_path,
     atomic_write_text,
 )
 from tools.common.network_safety_gate import (  # noqa: E402
@@ -899,7 +901,7 @@ def write_text_artifacts(output_dir: Path, text_artifacts: dict[str, str]) -> No
         atomic_write_text(output_dir / relative_path, body)
 
 
-def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes]) -> None:
+def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes | Path]) -> None:
     for relative_path, payload in binary_artifacts.items():
         target = (output_dir / relative_path).resolve()
         try:
@@ -908,7 +910,10 @@ def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes])
             raise SourceAcquisitionError(
                 f"binary artifact path escapes output directory: {relative_path}"
             ) from exc
-        atomic_write_bytes(target, payload)
+        if isinstance(payload, Path):
+            atomic_write_path(target, payload)
+        else:
+            atomic_write_bytes(target, payload)
 
 
 def clear_directory_contents(path: Path) -> None:
@@ -949,7 +954,7 @@ def write_execution_artifacts(
     denial_record: dict[str, Any] | None,
     gate_report: dict[str, Any] | None,
     text_artifacts: dict[str, str],
-    binary_artifacts: dict[str, bytes] | None = None,
+    binary_artifacts: dict[str, bytes | Path] | None = None,
 ) -> None:
     clear_directory_contents(output_dir)
     atomic_write_json(output_dir / "execution-record.json", execution_record)
@@ -1606,6 +1611,46 @@ def read_limited_response(response: Any, *, max_response_bytes: int) -> tuple[by
     return payload, False
 
 
+def spool_limited_response(
+    response: Any, *, max_response_bytes: int, spool_dir: Path
+) -> tuple[Path | None, str | None, int, bool]:
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    total = 0
+    limit = max_response_bytes + 1
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=spool_dir,
+            prefix=".remote-payload-",
+            suffix=".bin.tmp",
+        ) as handle:
+            temp_path = Path(handle.name)
+            while total <= max_response_bytes:
+                chunk = response.read(min(64 * 1024, limit - total))
+                if not chunk:
+                    break
+                handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+                if total > max_response_bytes:
+                    break
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+    if temp_path is None:
+        raise SourceAcquisitionError("failed to spool remote payload")
+    if total > max_response_bytes:
+        temp_path.unlink(missing_ok=True)
+        return None, None, 0, True
+    return temp_path, digest.hexdigest(), total, False
+
+
 def gate_allowlist(gate_report: dict[str, Any]) -> tuple[list[str], list[str]]:
     checks = gate_report.get("checks", {})
     request_allowlist = checks.get("allowlist")
@@ -1629,6 +1674,7 @@ def remote_fetch_one(
     allowlist_prefixes: list[str],
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
 ) -> dict[str, Any]:
     opener = build_opener(NoAutoRedirectHandler)
     current_url = url
@@ -1638,18 +1684,22 @@ def remote_fetch_one(
     while True:
         attempted_urls.append(current_url)
         request = Request(current_url, method=method, headers={"User-Agent": user_agent})
+        payload_path: Path | None = None
+        payload_sha256: str | None = None
+        payload_byte_count = 0
+        truncated = False
         try:
             response = opener.open(request, timeout=timeout_seconds)
             status_code = int(getattr(response, "status", response.getcode()))
             headers = response.headers
-            payload, truncated = (
-                (b"", False)
-                if method == "HEAD"
-                else read_limited_response(
-                    response,
-                    max_response_bytes=max_response_bytes,
+            if method != "HEAD":
+                payload_path, payload_sha256, payload_byte_count, truncated = (
+                    spool_limited_response(
+                        response,
+                        max_response_bytes=max_response_bytes,
+                        spool_dir=payload_spool_dir,
+                    )
                 )
-            )
         except HTTPError as exc:
             status_code = int(exc.code)
             headers = exc.headers
@@ -1667,7 +1717,9 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
@@ -1680,7 +1732,9 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
@@ -1693,20 +1747,22 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
                 current_url = redirected_url
                 continue
-            payload, truncated = (
-                (b"", False)
-                if method == "HEAD"
-                else read_limited_response(
-                    exc,
-                    max_response_bytes=max_response_bytes,
+            if method != "HEAD":
+                payload_path, payload_sha256, payload_byte_count, truncated = (
+                    spool_limited_response(
+                        exc,
+                        max_response_bytes=max_response_bytes,
+                        spool_dir=payload_spool_dir,
+                    )
                 )
-            )
         except (TimeoutError, URLError, OSError) as exc:
             return {
                 "status": "failed",
@@ -1716,7 +1772,9 @@ def remote_fetch_one(
                 "final_url": current_url,
                 "redirect_count": redirect_count,
                 "attempted_urls": attempted_urls,
-                "payload": b"",
+                "payload_path": None,
+                "payload_sha256": None,
+                "payload_byte_count": 0,
                 "truncated": False,
                 "headers": None,
             }
@@ -1726,11 +1784,25 @@ def remote_fetch_one(
         if status_code >= 400:
             status = "failed"
             failure_reason = f"http_status_{status_code}"
-            payload = b""
+            if payload_path is not None:
+                payload_path.unlink(missing_ok=True)
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
             truncated = False
         elif truncated:
             status = "failed"
             failure_reason = "response_exceeds_max_bytes"
+            if payload_path is not None:
+                payload_path.unlink(missing_ok=True)
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
+
+        if method == "HEAD":
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
 
         return {
             "status": status,
@@ -1739,7 +1811,9 @@ def remote_fetch_one(
             "final_url": current_url,
             "redirect_count": redirect_count,
             "attempted_urls": attempted_urls,
-            "payload": payload,
+            "payload_path": str(payload_path) if payload_path is not None else None,
+            "payload_sha256": payload_sha256,
+            "payload_byte_count": payload_byte_count,
             "truncated": truncated,
             "headers": headers,
         }
@@ -1759,6 +1833,7 @@ def _remote_fetch_host_queue(
     timeout_seconds: float,
     max_response_bytes: int,
     min_interval_seconds: float,
+    payload_spool_dir: Path,
 ) -> dict[int, dict[str, Any]]:
     results: dict[int, dict[str, Any]] = {}
     for index, task in enumerate(tasks):
@@ -1772,6 +1847,7 @@ def _remote_fetch_host_queue(
             allowlist_prefixes=allowlist_prefixes,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            payload_spool_dir=payload_spool_dir,
         )
     return results
 
@@ -1790,10 +1866,21 @@ def _build_remote_fetch_artifacts(
     user_agent: str,
     fetch_result: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str | None, bool]:
-    payload = fetch_result["payload"]
+    payload_source_path_value = fetch_result.get("payload_path")
+    payload_source_path = (
+        Path(str(payload_source_path_value)).expanduser().resolve()
+        if isinstance(payload_source_path_value, str) and payload_source_path_value.strip()
+        else None
+    )
+    payload_bytes = fetch_result.get("payload")
+    payload_sha256 = fetch_result.get("payload_sha256")
+    payload_byte_count = int(fetch_result.get("payload_byte_count") or 0)
+    if isinstance(payload_bytes, bytes):
+        payload_sha256 = (
+            sha256_bytes(payload_bytes) if fetch_result["status"] == "captured" else None
+        )
+        payload_byte_count = len(payload_bytes) if fetch_result["status"] == "captured" else 0
     content_type = extract_content_type(fetch_result.get("headers"))
-    content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
-    byte_count = len(payload) if fetch_result["status"] == "captured" else 0
     response_headers = normalize_response_headers(fetch_result.get("headers"))
     capture_event = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -1816,8 +1903,8 @@ def _build_remote_fetch_artifacts(
         "http_status_code": fetch_result["http_status_code"],
         "request_method": method,
         "user_agent": user_agent,
-        "content_hash": content_hash,
-        "byte_count": byte_count,
+        "content_hash": payload_sha256 if fetch_result["status"] == "captured" else None,
+        "byte_count": payload_byte_count if fetch_result["status"] == "captured" else 0,
         "content_length_header": response_headers.get("content-length"),
         "content_type": content_type,
         "captured_at": created_at,
@@ -1842,6 +1929,7 @@ def _build_remote_fetch_artifacts(
     extracted_text_path = None
     decode_failed = False
     unsupported_content_type = False
+    retain_payload = False
     if fetch_result["status"] == "captured":
         if method == "HEAD":
             failure_reason = "head_request_no_body"
@@ -1850,11 +1938,25 @@ def _build_remote_fetch_artifacts(
             failure_reason = "unsupported_content_type"
             unsupported_content_type = True
         else:
-            extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+            if payload_bytes is None and payload_source_path is not None:
+                payload_bytes = payload_source_path.read_bytes()
+            extracted_text, encoding_result, failure_reason = safe_decode_text(
+                payload_bytes if isinstance(payload_bytes, bytes) else b""
+            )
             if extracted_text is not None:
                 extracted_text_path = f"extracted-text/{extraction_id}.txt"
             else:
                 decode_failed = True
+        retain_payload = bool(
+            payload_source_path is not None
+            and payload_byte_count > 0
+            and (unsupported_content_type or decode_failed)
+        )
+        if retain_payload:
+            capture_event["transient_payload_path"] = f"payloads/{capture_id}.bin"
+            capture_event["payload_retention_policy"] = "transient_run_artifact"
+        elif payload_source_path is not None:
+            payload_source_path.unlink(missing_ok=True)
 
     extraction_record = build_extraction_record(
         extraction_id=extraction_id,
@@ -1864,8 +1966,8 @@ def _build_remote_fetch_artifacts(
         adapter_type="remote_url_manifest",
         handoff_sequence=record["sequence"],
         relative_path=record["relative_path"],
-        input_hash=content_hash,
-        byte_count_in=byte_count,
+        input_hash=payload_sha256 if fetch_result["status"] == "captured" else None,
+        byte_count_in=payload_byte_count if fetch_result["status"] == "captured" else 0,
         extraction_method="remote_text_extract",
         hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
         content_text=extracted_text,
@@ -1897,11 +1999,12 @@ def execute_remote_fetches(
     gate_report: dict[str, Any],
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, str],
-    dict[str, bytes],
+    dict[str, Path],
     bool,
     dict[str, Any],
 ]:
@@ -1913,6 +2016,7 @@ def execute_remote_fetches(
     capture_events: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
+    binary_artifacts: dict[str, Path] = {}
     failed = False
     summary = {
         "urls_planned": len(records),
@@ -2044,6 +2148,7 @@ def execute_remote_fetches(
                     timeout_seconds=timeout_seconds,
                     max_response_bytes=max_response_bytes,
                     min_interval_seconds=min_interval_seconds,
+                    payload_spool_dir=payload_spool_dir,
                 ): host
                 for host, tasks in host_tasks.items()
             }
@@ -2085,7 +2190,15 @@ def execute_remote_fetches(
         extraction_records.append(extraction_record)
         if extracted_text is not None and extraction_record["extracted_text_path"] is not None:
             text_artifacts[extraction_record["extracted_text_path"]] = extracted_text
-    return capture_events, extraction_records, text_artifacts, {}, failed, summary
+        if (
+            capture_event.get("transient_payload_path") is not None
+            and isinstance(fetch_result.get("payload_path"), str)
+            and fetch_result["status"] == "captured"
+        ):
+            binary_artifacts[str(capture_event["transient_payload_path"])] = Path(
+                str(fetch_result["payload_path"])
+            )
+    return capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary
 
 
 def execute_remote_url_manifest(
@@ -2101,6 +2214,7 @@ def execute_remote_url_manifest(
     allow_network: bool,
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any] | None,
@@ -2109,7 +2223,7 @@ def execute_remote_url_manifest(
     dict[str, Any],
     list[str],
     dict[str, str],
-    dict[str, bytes],
+    dict[str, Path],
 ]:
     if gate_request_path is None:
         raise SourceAcquisitionError(
@@ -2222,6 +2336,7 @@ def execute_remote_url_manifest(
             gate_report=gate_report,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            payload_spool_dir=payload_spool_dir,
         )
     )
     execution_record = execution_record_payload(
@@ -2274,6 +2389,7 @@ def main() -> int:
     output_dir = resolve_output_dir(args.output, workspace_root=workspace_root)
     created_at = normalize_created_at(args.created_at)
     run_id = resolve_run_id(output_dir, run_id=args.run_id)
+    remote_payload_spool_dir: Path | None = None
 
     try:
         adapter_payload = load_validated_adapter(adapter_path)
@@ -2303,6 +2419,14 @@ def main() -> int:
                 "remote_url_manifest execution requires --network-safety-request"
             )
 
+        if variant == "remote_url_manifest":
+            remote_payload_spool_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{output_dir.name}.remote-payloads.",
+                    dir=output_dir.parent,
+                )
+            )
+
         if args.dry_run:
             gate_report = None
             if variant == "remote_url_manifest":
@@ -2330,6 +2454,7 @@ def main() -> int:
                     allow_network=args.allow_network,
                     timeout_seconds=args.timeout_seconds,
                     max_response_bytes=args.max_response_bytes,
+                    payload_spool_dir=remote_payload_spool_dir,
                 )
                 sys.stdout.write(
                     json.dumps(
@@ -2477,20 +2602,19 @@ def main() -> int:
                 _,
                 text_artifacts,
                 binary_artifacts,
-            ) = (
-                execute_remote_url_manifest(
-                    records=records,
-                    run_id=run_id,
-                    created_at=created_at,
-                    handoff_path=handoff_path,
-                    handoff_hash=handoff_hash,
-                    adapter_payload=adapter_payload,
-                    gate_request_path=remote_gate_request_path,
-                    dry_run=False,
-                    allow_network=args.allow_network,
-                    timeout_seconds=args.timeout_seconds,
-                    max_response_bytes=args.max_response_bytes,
-                )
+            ) = execute_remote_url_manifest(
+                records=records,
+                run_id=run_id,
+                created_at=created_at,
+                handoff_path=handoff_path,
+                handoff_hash=handoff_hash,
+                adapter_payload=adapter_payload,
+                gate_request_path=remote_gate_request_path,
+                dry_run=False,
+                allow_network=args.allow_network,
+                timeout_seconds=args.timeout_seconds,
+                max_response_bytes=args.max_response_bytes,
+                payload_spool_dir=remote_payload_spool_dir,
             )
         else:
             raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
@@ -2515,13 +2639,15 @@ def main() -> int:
 
         if not args.suppress_execution_record_stdout:
             sys.stdout.write(
-                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True)
-                + "\n"
+                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
             )
         return EXIT_PASS if execution_record["status"] == "completed" else EXIT_STATE_UNSAFE
     except SourceAcquisitionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if remote_payload_spool_dir is not None:
+            shutil.rmtree(remote_payload_spool_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
