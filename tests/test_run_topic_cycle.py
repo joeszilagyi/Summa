@@ -1360,6 +1360,8 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
 
     def fake_run_command(*args, **kwargs):
         assert kwargs.get("timeout") == 222.0
+        command = args[0]
+        assert "--suppress-execution-record-stdout" in command
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def fake_load_handoff_adapter_path(_: Path) -> Path:

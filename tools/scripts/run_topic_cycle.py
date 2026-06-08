@@ -1207,6 +1207,7 @@ def acquisition_stage(
         f"{manifest['run_id']}.execution",
         "--created-at",
         manifest["started_at"],
+        "--suppress-execution-record-stdout",
     ]
     stage.command = command
     try:

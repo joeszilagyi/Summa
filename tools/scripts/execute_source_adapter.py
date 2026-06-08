@@ -144,6 +144,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--suppress-execution-record-stdout",
+        action="store_true",
+        help=(
+            "Skip printing the final execution record to stdout; the run directory still "
+            "contains the canonical artifacts."
+        ),
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=DEFAULT_REMOTE_TIMEOUT_SECONDS,
@@ -2502,9 +2510,11 @@ def main() -> int:
             validate_emitted_artifacts(staging_dir)
             publish_output_dir(staging_dir, output_dir)
 
-        sys.stdout.write(
-            json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        )
+        if not args.suppress_execution_record_stdout:
+            sys.stdout.write(
+                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n"
+            )
         return EXIT_PASS if execution_record["status"] == "completed" else EXIT_STATE_UNSAFE
     except SourceAcquisitionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
