@@ -80,6 +80,7 @@ def _run_llm_runner_with_fake_engine(
     exit_code: int = 0,
     use_run_to_file: bool = False,
     output_file: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[list[str], str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -138,6 +139,7 @@ def _run_llm_runner_with_fake_engine(
             "ARGS_FILE": str(args_file),
             "STDIN_FILE": str(stdin_file),
             "EXIT_CODE": str(exit_code),
+            **(extra_env or {}),
         },
     )
     if exit_code == 0:
@@ -161,6 +163,13 @@ def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> Non
     )
 
     assert args[0] == "exec"
+    assert "--skip-git-repo-check" in args
+    assert "-s" in args
+    assert "workspace-write" in args
+    assert "model=gpt-5.4-mini" in args
+    assert "model_reasoning_effort=high" in args
+    assert "model_max_output_tokens=8192" in args
+    assert "model_verbosity=low" in args
     assert args[-1] == "-"
     assert stdin == prompt_text
 
@@ -175,6 +184,22 @@ def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> No
 
     assert args == ["-p", "--model", "sonnet", "--effort", "high"]
     assert stdin == prompt_text
+
+
+def test_llm_runner_can_forward_codex_output_schema_file(tmp_path: Path) -> None:
+    prompt_text = "schema test prompt"
+    schema_file = tmp_path / "schema.json"
+    schema_file.write_text('{"type":"object"}\n', encoding="utf-8")
+    args, _stdin, _output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+        extra_env={"CODEX_OUTPUT_SCHEMA_FILE": str(schema_file)},
+    )
+
+    assert "--output-schema" in args
+    index = args.index("--output-schema")
+    assert args[index + 1] == str(schema_file)
 
 
 def test_llm_runner_run_to_file_preserves_existing_output_on_failure(tmp_path: Path) -> None:
