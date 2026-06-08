@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from tools.source_db_tools import authority_reconciliation, canonical_reconciliation, canonical_store
+from tools.source_db_tools import (
+    authority_reconciliation,
+    canonical_reconciliation,
+    canonical_store,
+)
 
 FIXED_TIMESTAMP = "2026-06-05T10:20:30Z"
 

@@ -97,7 +97,8 @@ def _spool_candidate_batch(
             ]
         },
         replay_recipe={
-            "batch_path": str(batch_path),
+            "artifact_root": str(batch_path.parent),
+            "batch_path": batch_path.name,
             "batch_hash": batch_hash,
             "strict": not args.no_strict,
         },

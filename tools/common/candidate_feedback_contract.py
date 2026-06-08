@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
 
 SCHEMA_VERSION = "candidate-feedback-plan.v1"
 SCORING_POLICY_ID = "candidate-feedback.default.v1"
@@ -71,3 +73,55 @@ def deferred_candidate_retryable(reason: str | None) -> bool:
     if not reason_code:
         return True
     return reason_code not in DEFERRED_NON_RETRYABLE_REASON_CODES
+
+
+def compact_next_action_prompt_payload(next_action: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the compact next-action object rendered into gather prompts.
+
+    The prompt-facing object keeps only the machine fields the runner needs to
+    communicate the selected action.  It intentionally omits the scoring
+    rationale, reason codes, and other planner-only explanation fields.
+    """
+
+    return {
+        "action_id": next_action.get("action_id"),
+        "action_kind": next_action.get("action_kind"),
+        "subject_id": next_action.get("subject_id"),
+        "selected_facet": next_action.get("selected_facet"),
+        "selected_prompt_bundle_id": next_action.get("selected_prompt_bundle_id"),
+        "should_call_llm": next_action.get("should_call_llm"),
+        "selected_object_ref": next_action.get("selected_object_ref"),
+        "selected_lead_kind": next_action.get("selected_lead_kind"),
+        "cycle_depth": next_action.get("cycle_depth"),
+        "use_prior_state": next_action.get("use_prior_state"),
+        "previous_run_ids_considered": list(next_action.get("previous_run_ids_considered") or []),
+        "input_record_refs": list(next_action.get("input_record_refs") or []),
+        "suggested_cli_args": list(next_action.get("suggested_cli_args") or []),
+    }
+
+
+def compact_candidate_record_payload(
+    *,
+    candidate_type: str,
+    raw_output: str,
+    locator: Any | None = None,
+    confidence: Any | None = None,
+    reason: str = "llm_proposed",
+    source_span: Any | None = None,
+) -> dict[str, Any]:
+    """Return the compact candidate record stored in gather batches.
+
+    The record keeps the machine-facing fields bounded and stable while the
+    raw engine transcript remains available separately in the batch artifact.
+    """
+
+    first_line = str(raw_output or "").splitlines()[0] if raw_output else ""
+    bounded_claim = " ".join(first_line.split())[:240] or "claim-fallback-empty"
+    return {
+        "candidate_type": candidate_type,
+        "locator": locator,
+        "claim": bounded_claim,
+        "confidence": confidence,
+        "reason": reason,
+        "source_span": source_span,
+    }

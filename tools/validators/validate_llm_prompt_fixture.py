@@ -18,6 +18,7 @@ try:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (  # type: ignore
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +42,6 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     load_template,
     parse_wrapped_blocks,
 )
-
 
 VALIDATOR_NAME = "llm_prompt_fixture"
 CONTRACT_VERSION = "1"
@@ -268,6 +269,7 @@ def main() -> int:
     target = Path(args.target)
     result, exit_code = validate_prompt_fixture(target)
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     output_artifacts = {
         "report_json": display_path(args.report_json),
         "report_text": display_path(args.report_text),
@@ -284,6 +286,7 @@ def main() -> int:
         target=args.target_id or display_path(args.target) or str(target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

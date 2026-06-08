@@ -14,9 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.scripts import plan_local_git_repo_adapter
-from tools.scripts import execute_source_adapter as source_executor
- 
+from tools.scripts import plan_local_git_repo_adapter  # noqa: E402, I001
+from tools.scripts import execute_source_adapter as source_executor  # noqa: E402, I001
+
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_local_git_repo_adapter.py"
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_git_repo"
@@ -43,6 +43,8 @@ def run_executor(*, handoff: Path, output: Path, adapter_path: Path) -> subproce
             str(adapter_path),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -405,6 +407,57 @@ def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> Non
     assert captures[0]["git_commit"] == expected_commit
     assert [entry["extraction_method"] for entry in extractions] == ["git_file_text_extract", "git_file_text_extract"]
     assert [entry["status"] for entry in extractions] == ["completed", "completed"]
+    assert {entry["input_hash"] for entry in extractions} == {captures[0]["content_hash"]}
+    assert {entry["byte_count_in"] for entry in extractions} == {captures[0]["byte_count"]}
     assert (output / "execution-record.json").read_bytes() == (
         json.dumps(execution, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+
+
+def test_local_git_repo_execution_reads_each_candidate_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
+    adapter_path = write_adapter(scenario_dir)
+    repo_dir = scenario_dir / "repo"
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(
+        ["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    adapter_payload = source_executor.load_validated_adapter(adapter_path)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff_jsonl, adapter_path=adapter_path
+    )
+    tracked_file = (repo_dir / "tracked.md").resolve()
+    nested_file = (repo_dir / "nested" / "data.json").resolve()
+    target_paths = {tracked_file, nested_file}
+    open_counts = {path: 0 for path in target_paths}
+    original_open = source_executor.Path.open
+
+    def guarded_open(self: Path, *args: object, **kwargs: object) -> object:
+        resolved = self.expanduser().resolve()
+        if resolved in target_paths:
+            open_counts[resolved] += 1
+            if open_counts[resolved] > 1:
+                raise AssertionError(f"local git repo file reopened unexpectedly: {resolved}")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(source_executor.Path, "open", guarded_open)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_git_repo(
+        records=records,
+        adapter_payload=adapter_payload,
+        run_id="local-git-execution",
+        created_at="2026-06-03T12:34:56Z",
+        handoff_hash=handoff_hash,
+    )
+
+    assert open_counts == {tracked_file: 1, nested_file: 1}
+    assert failed is False
+    assert len(capture_events) == 1
+    assert len(extraction_records) == 2
+    assert local_paths == [str(nested_file), str(tracked_file)]
+    assert text_artifacts

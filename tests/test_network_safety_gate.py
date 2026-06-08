@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "evaluate_network_safety_gate.py"
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "network_safety_gate.py"

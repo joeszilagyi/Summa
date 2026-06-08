@@ -7,7 +7,6 @@ Documentation: docs/scripts/index_audit_rebuildability.md
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import shutil
@@ -16,6 +15,7 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -24,13 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json, stable_json_text  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
     canonical_graph_closure,
     canonical_ingest,
     canonical_store,
     canonical_write_spool,
 )
-from tools.common.atomic_write import atomic_write_json, stable_json_text
 
 REPORT_SCHEMA_VERSION = "canonical-rebuildability-report.v1"
 REPLAYABLE_TYPES = {
@@ -58,17 +58,32 @@ EXPECTED_REFERENCE_SCHEMAS: dict[str, set[str]] = {
     "topic_cycle_manifest": {"topic-cycle-run.v1", "topic-cycle-run.v0"},
     "scheduled_cycle_manifest": {"scheduled-topic-cycles-run.v1", "scheduled-topic-cycles-run.v0"},
     "feedback_plan": {"candidate-feedback-plan.v1", "candidate-feedback-plan.v0"},
-    "review_decision_apply_result": {"review-decision-apply-result.v1", "review-decision-apply-result.v0"},
-    "graph_closure_report": {"canonical-graph-closure-report.v1", "canonical-graph-closure-report.v0"},
-    "network_safety_gate_report": {"network-safety-gate-report.v1", "network-safety-gate-report.v0"},
-    "rebuildability_report": {"canonical-rebuildability-report.v1", "canonical-rebuildability-report.v0"},
+    "review_decision_apply_result": {
+        "review-decision-apply-result.v1",
+        "review-decision-apply-result.v0",
+    },
+    "graph_closure_report": {
+        "canonical-graph-closure-report.v1",
+        "canonical-graph-closure-report.v0",
+    },
+    "network_safety_gate_report": {
+        "network-safety-gate-report.v1",
+        "network-safety-gate-report.v0",
+    },
+    "rebuildability_report": {
+        "canonical-rebuildability-report.v1",
+        "canonical-rebuildability-report.v0",
+    },
     "release_readiness_report": {"release-readiness-report.v1", "release-readiness-report.v0"},
 }
 
 PUBLICATION_REFERENCE_SCHEMAS = {
     "knowledge_tree_export.json": {"knowledge-tree-export.v1", "knowledge-tree-export.v0"},
     "public_presentation.json": {"public-presentation.v1", "public-presentation.v0"},
-    "publication-artifacts-report.json": {"publication-artifacts-report.v1", "publication-artifacts-report.v0"},
+    "publication-artifacts-report.json": {
+        "publication-artifacts-report.v1",
+        "publication-artifacts-report.v0",
+    },
 }
 
 
@@ -203,8 +218,8 @@ def validate_candidate_batch(path: Path) -> Artifact:
 def validate_execution_dir(run_dir: Path) -> Artifact:
     payload = read_json(run_dir / "execution-record.json")
     try:
-        _execution_record, _captures, _extractions, _paths, hashes = (
-            canonical_ingest.load_validated_execution_artifacts(run_dir)
+        _execution_record, _paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+            run_dir
         )
         digest = hashlib.sha256(
             "\x1f".join(hashes[key] for key in sorted(hashes)).encode()
@@ -221,8 +236,6 @@ def validate_execution_dir(run_dir: Path) -> Artifact:
             payload=_execution_record,
             replay_inputs={
                 "execution_record": _execution_record,
-                "capture_events": _captures,
-                "extraction_records": _extractions,
                 "paths": _paths,
                 "input_hashes": hashes,
             },
@@ -255,7 +268,9 @@ def validate_spool_record(
                 )
             record = payload
         else:
-            record = payload if payload is not None else canonical_write_spool.load_spool_record(path)
+            record = (
+                payload if payload is not None else canonical_write_spool.load_spool_record(path)
+            )
         return Artifact(
             artifact_type="canonical_write_spool_record",
             path=path,
@@ -274,11 +289,7 @@ def validate_spool_record(
         )
     except Exception as exc:
         fallback_payload = (
-            payload
-            if payload is not None
-            else None
-            if payload_loaded
-            else read_json(path)
+            payload if payload is not None else None if payload_loaded else read_json(path)
         )
         return Artifact(
             artifact_type="canonical_write_spool_record",
@@ -358,8 +369,9 @@ def _finalize_discovered_artifact(candidate: DiscoveryCandidate) -> Artifact:
 def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
     if artifact.validation_status != "valid" or artifact.artifact_type not in REPLAYABLE_TYPES:
         return ReplayPreparation(artifact=artifact)
-    if artifact.artifact_type == "canonical_write_spool_record" and artifact.replay_status.startswith(
-        "skipped"
+    if (
+        artifact.artifact_type == "canonical_write_spool_record"
+        and artifact.replay_status.startswith("skipped")
     ):
         return ReplayPreparation(artifact=artifact)
     try:
@@ -380,20 +392,16 @@ def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
         if artifact.artifact_type == "source_acquisition_execution":
             if artifact.replay_inputs is not None:
                 execution_record = artifact.replay_inputs.get("execution_record")
-                captures = artifact.replay_inputs.get("capture_events")
-                extractions = artifact.replay_inputs.get("extraction_records")
                 paths = artifact.replay_inputs.get("paths")
                 hashes = artifact.replay_inputs.get("input_hashes")
                 if (
                     isinstance(execution_record, dict)
-                    and isinstance(captures, list)
-                    and isinstance(extractions, list)
                     and isinstance(paths, dict)
                     and isinstance(hashes, dict)
                 ):
                     return ReplayPreparation(artifact=artifact)
-            execution_record, captures, extractions, paths, hashes = (
-                canonical_ingest.load_validated_execution_artifacts(artifact.path)
+            execution_record, paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+                artifact.path
             )
             return ReplayPreparation(
                 artifact=replace(
@@ -401,8 +409,6 @@ def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
                     payload=execution_record,
                     replay_inputs={
                         "execution_record": execution_record,
-                        "capture_events": captures,
-                        "extraction_records": extractions,
                         "paths": paths,
                         "input_hashes": hashes,
                     },
@@ -506,9 +512,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "execution_ingest_report"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["execution_ingest_report"],
                 )
             )
             continue
@@ -536,9 +540,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "scheduled_cycle_manifest"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["scheduled_cycle_manifest"],
                 )
             )
             continue
@@ -626,9 +628,7 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                     kind="reference",
                     payload=payload,
                     payload_loaded=True,
-                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS[
-                        "release_readiness_report"
-                    ],
+                    expected_schema_versions=EXPECTED_REFERENCE_SCHEMAS["release_readiness_report"],
                 )
             )
             continue
@@ -857,38 +857,34 @@ def replay_execution_artifacts(
 ) -> dict[str, Any]:
     if artifact.replay_inputs is not None:
         execution_record = artifact.replay_inputs.get("execution_record")
-        captures = artifact.replay_inputs.get("capture_events")
-        extractions = artifact.replay_inputs.get("extraction_records")
         paths = artifact.replay_inputs.get("paths")
         hashes = artifact.replay_inputs.get("input_hashes")
         if (
             isinstance(execution_record, dict)
-            and isinstance(captures, list)
-            and isinstance(extractions, list)
             and isinstance(paths, dict)
             and isinstance(hashes, dict)
         ):
             return canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                captures,
-                extractions,
                 paths=paths,
                 input_hashes=hashes,
+                capture_events=None,
+                extraction_records=None,
                 dry_run=False,
                 strict=True,
                 db_path=db_path,
             )
-    execution_record, captures, extractions, paths, hashes = (
-        canonical_ingest.load_validated_execution_artifacts(artifact.path)
+    execution_record, paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+        artifact.path
     )
     return canonical_ingest.ingest_execution_artifacts(
         conn,
         execution_record,
-        captures,
-        extractions,
         paths=paths,
         input_hashes=hashes,
+        capture_events=None,
+        extraction_records=None,
         dry_run=False,
         strict=True,
         db_path=db_path,

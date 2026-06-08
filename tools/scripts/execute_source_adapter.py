@@ -7,17 +7,21 @@ Documentation: `docs/scripts/index_execute_source_adapter.md`.
 from __future__ import annotations
 
 import argparse
+import codecs
 import csv
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
+import io
 import json
 import mimetypes
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -35,6 +39,7 @@ from tools.common.atomic_write import (  # noqa: E402
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_jsonl,
+    atomic_write_path,
     atomic_write_text,
 )
 from tools.common.network_safety_gate import (  # noqa: E402
@@ -43,21 +48,21 @@ from tools.common.network_safety_gate import (  # noqa: E402
     evaluate_request,
     load_request,
 )
-from tools.validators.common import is_rfc3339_datetime
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
-    build_xml_path_map,
     resolve_json_record_path,
 )
 from tools.validators import validate_source_adapter, validate_source_adapter_handoff  # noqa: E402
-from tools.validators.common import EXIT_PASS, EXIT_STATE_UNSAFE  # noqa: E402
+from tools.validators.common import EXIT_PASS, EXIT_STATE_UNSAFE, is_rfc3339_datetime  # noqa: E402
 
 EXECUTION_SCHEMA_VERSION = "source-acquisition-execution.v1"
 CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
 EXTRACTION_SCHEMA_VERSION = "source-extraction-record.v1"
 EXECUTOR_NAME = "tools/scripts/execute_source_adapter.py"
 MAX_EXTRACT_TEXT_BYTES = 64 * 1024
+MAX_XML_RECORD_BYTES = 8 * 1024 * 1024
+MAX_XML_RECORD_NODES = 100_000
 DEFAULT_REMOTE_TIMEOUT_SECONDS = 10.0
 DEFAULT_REMOTE_MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_REMOTE_REDIRECTS = 3
@@ -65,10 +70,15 @@ SAFE_TEXT_STATUS = {"completed", "failed", "skipped", "denied"}
 SAFE_RUN_STATUS = {"completed", "denied", "failed", "dry_run"}
 LOCAL_VARIANTS = {"local_source", "structured_data", "local_git_repo"}
 REMOTE_VARIANTS = {"remote_url_manifest"}
+JSON_SKIP_DECODER = json.JSONDecoder()
 
 
 class SourceAcquisitionError(RuntimeError):
     """Raised when execution inputs are invalid or unsupported."""
+
+
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -114,6 +124,13 @@ def parse_args() -> argparse.Namespace:
         "--output", required=True, help="Workspace-local run directory for execution artifacts."
     )
     parser.add_argument(
+        "--workspace-root",
+        help=(
+            "Trusted workspace root that the output directory must remain under. "
+            "Defaults to the current working directory."
+        ),
+    )
+    parser.add_argument(
         "--mode",
         choices=("auto", "local", "remote"),
         default="auto",
@@ -134,6 +151,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Explicit opt-in for remote URL retrieval after a network safety gate allow decision. "
             "Remote fetch remains disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--suppress-execution-record-stdout",
+        action="store_true",
+        help=(
+            "Skip printing the final execution record to stdout; the run directory still "
+            "contains the canonical artifacts."
         ),
     )
     parser.add_argument(
@@ -165,12 +190,33 @@ def resolve_cli_path(raw_path: str, *, base_dir: Path) -> Path:
     return (base_dir / path).resolve()
 
 
+def resolve_workspace_root(raw_path: str | None) -> Path:
+    if raw_path is None:
+        return Path.cwd().resolve()
+    return resolve_cli_path(raw_path, base_dir=Path.cwd())
+
+
+def resolve_output_dir(raw_path: str, *, workspace_root: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (workspace_root / path).resolve()
+
+
 def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
 def sha256_text(payload: str) -> str:
     return sha256_bytes(payload.encode("utf-8"))
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(MAX_EXTRACT_TEXT_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -210,7 +256,7 @@ def load_validated_handoff_records(
     records = [record for _, record in loaded_records]
     if not records:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
-    return records, sha256_bytes(handoff_path.read_bytes())
+    return records, sha256_file(handoff_path)
 
 
 def ensure_single_adapter_context(
@@ -250,13 +296,18 @@ def validate_handoff_sequence(records: list[dict[str, Any]]) -> None:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
 
     sequences = [record.get("sequence") for record in records]
-    if any(not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1 for sequence in sequences):
+    if any(
+        not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1
+        for sequence in sequences
+    ):
         raise SourceAcquisitionError("handoff artifact sequence values must be positive integers")
     if len(set(sequences)) != len(sequences):
         raise SourceAcquisitionError("handoff artifact must not repeat sequence values")
     expected_sequences = list(range(1, len(records) + 1))
     if sorted(sequences) != expected_sequences:
-        raise SourceAcquisitionError("handoff artifact sequence values must be contiguous starting at 1")
+        raise SourceAcquisitionError(
+            "handoff artifact sequence values must be contiguous starting at 1"
+        )
 
 
 def determine_executor_mode(requested_mode: str, *, variant: str) -> str:
@@ -288,7 +339,17 @@ def resolve_run_id(output_dir: Path, *, run_id: str | None) -> str:
     )
 
 
-def prepare_output_dir(output_dir: Path, *, run_id: str) -> None:
+def ensure_output_dir_within_workspace_root(output_dir: Path, *, workspace_root: Path) -> None:
+    try:
+        output_dir.resolve().relative_to(workspace_root.resolve())
+    except ValueError as exc:
+        raise SourceAcquisitionError(
+            f"output path escapes the allowed workspace root: {output_dir}"
+        ) from exc
+
+
+def prepare_output_dir(output_dir: Path, *, run_id: str, workspace_root: Path) -> None:
+    ensure_output_dir_within_workspace_root(output_dir, workspace_root=workspace_root)
     if output_dir.exists() and not output_dir.is_dir():
         raise SourceAcquisitionError(f"output path exists and is not a directory: {output_dir}")
     if output_dir.exists():
@@ -318,9 +379,7 @@ def make_extraction_id(index: int) -> str:
 def is_probably_binary(payload: bytes) -> bool:
     if not payload:
         return False
-    if b"\x00" in payload:
-        return True
-    return False
+    return b"\x00" in payload
 
 
 def is_probably_text(decoded_text: str) -> bool:
@@ -348,34 +407,75 @@ def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
     return decoded_text, "utf8", None
 
 
-def stream_local_file_payload(
+def stream_local_text_payload(
     path: Path,
-) -> tuple[str, int, str | None, str, str | None]:
+) -> tuple[str, int, list[str], str, str | None, str]:
     digest = hashlib.sha256()
     byte_count = 0
-    preview = bytearray()
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    text_chunks: list[str] = []
+    sample_text = ""
     saw_binary_byte = False
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(MAX_EXTRACT_TEXT_BYTES), b""):
             digest.update(chunk)
             byte_count += len(chunk)
             if not saw_binary_byte and b"\x00" in chunk:
                 saw_binary_byte = True
-            if len(preview) < MAX_EXTRACT_TEXT_BYTES:
-                preview.extend(chunk[: MAX_EXTRACT_TEXT_BYTES - len(preview)])
+            try:
+                text_chunk = decoder.decode(chunk, final=False)
+            except UnicodeDecodeError:
+                return (
+                    digest.hexdigest(),
+                    byte_count,
+                    [],
+                    "invalid_utf8",
+                    "invalid_utf8",
+                    "not_truncated",
+                )
+            if text_chunk:
+                text_chunks.append(text_chunk)
+                if len(sample_text) < 4096:
+                    sample_text += text_chunk[: 4096 - len(sample_text)]
+        try:
+            tail = decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return (
+                digest.hexdigest(),
+                byte_count,
+                [],
+                "invalid_utf8",
+                "invalid_utf8",
+                "not_truncated",
+            )
+        if tail:
+            text_chunks.append(tail)
+            if len(sample_text) < 4096:
+                sample_text += tail[: 4096 - len(sample_text)]
 
     content_hash = digest.hexdigest()
-    if byte_count > MAX_EXTRACT_TEXT_BYTES:
-        return content_hash, byte_count, None, "not_attempted", "oversized_payload"
     if saw_binary_byte:
-        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
-    try:
-        decoded_text = preview.decode("utf-8")
-    except UnicodeDecodeError:
-        return content_hash, byte_count, None, "invalid_utf8", "invalid_utf8"
-    if not is_probably_text(decoded_text):
-        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
-    return content_hash, byte_count, decoded_text, "utf8", None
+        return (
+            content_hash,
+            byte_count,
+            [],
+            "binary_unsupported",
+            "binaryish_payload",
+            "not_truncated",
+        )
+    if not is_probably_text(sample_text):
+        return (
+            content_hash,
+            byte_count,
+            [],
+            "binary_unsupported",
+            "binaryish_payload",
+            "not_truncated",
+        )
+    if not text_chunks and byte_count == 0:
+        text_chunks = [""]
+    truncation_status = "truncated" if byte_count > MAX_EXTRACT_TEXT_BYTES else "not_truncated"
+    return content_hash, byte_count, text_chunks, "utf8", None, truncation_status
 
 
 def guess_content_type(path: Path, *, fallback: str = "application/octet-stream") -> str:
@@ -407,15 +507,25 @@ def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) 
         raise SourceAcquisitionError("source adapter manifest locator must be an object")
     adapter_local_path = locator.get("local_path")
     if not isinstance(adapter_local_path, str) or not adapter_local_path.strip():
-        raise SourceAcquisitionError("source adapter manifest local_path must be a non-blank string")
+        raise SourceAcquisitionError(
+            "source adapter manifest local_path must be a non-blank string"
+        )
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 
-def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+def load_csv_row_map(
+    payload: bytes | Path,
+) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     row_map: dict[str, dict[str, str]] = {}
     errors: list[dict[str, str]] = []
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    try:
+        with io.StringIO(text) as handle:
             reader = csv.DictReader(handle, restkey="__EXTRA_FIELDS__")
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
@@ -439,24 +549,148 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
                     )
                     continue
                 row_map[f"row:{row_index}"] = dict(row)
-    except UnicodeDecodeError:
-        errors.append({"context": "file", "reason": "file is not valid UTF-8"})
     except csv.Error as exc:
         errors.append({"context": "file", "reason": str(exc)})
     return row_map, errors
 
 
-def load_json_record_map(
-    path: Path, *, record_path: str | None
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def _skip_json_whitespace(text: str, position: int) -> int:
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
+
+
+def _skip_json_value(text: str, position: int) -> tuple[int | None, str | None]:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"),
+        _, end_position = JSON_SKIP_DECODER.raw_decode(text, position)
+    except json.JSONDecodeError as exc:
+        return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+    return end_position, None
+
+
+def _select_json_record_path_slice(
+    text: str, *, record_path: str, position: int = 0, segments: list[str] | None = None
+) -> tuple[str | None, str | None]:
+    if segments is None:
+        segments = [part for part in record_path.split(".") if part]
+    if not segments:
+        try:
+            _, end_position = JSON_SKIP_DECODER.raw_decode(text, position)
+        except json.JSONDecodeError as exc:
+            return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+        return text[position:end_position], None
+
+    position = _skip_json_whitespace(text, position)
+    if position >= len(text):
+        return None, f"record_path could not be resolved: {record_path}"
+
+    current = text[position]
+    segment = segments[0]
+
+    if current == "{":
+        position += 1
+        seen_keys: set[str] = set()
+        while True:
+            position = _skip_json_whitespace(text, position)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == "}":
+                return None, f"record_path could not be resolved: {record_path}"
+            try:
+                key, key_end = JSON_SKIP_DECODER.raw_decode(text, position)
+            except json.JSONDecodeError as exc:
+                return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+            if not isinstance(key, str):
+                return None, f"record_path could not be resolved: {record_path}"
+            if key in seen_keys:
+                return None, f"duplicate JSON object key: {key}"
+            seen_keys.add(key)
+            position = _skip_json_whitespace(text, key_end)
+            if position >= len(text) or text[position] != ":":
+                return None, f"record_path could not be resolved: {record_path}"
+            position += 1
+            position = _skip_json_whitespace(text, position)
+            if key == segment:
+                return _select_json_record_path_slice(
+                    text, record_path=record_path, position=position, segments=segments[1:]
+                )
+            skipped_end, skipped_error = _skip_json_value(text, position)
+            if skipped_error is not None:
+                return None, skipped_error
+            position = _skip_json_whitespace(text, skipped_end)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == ",":
+                position += 1
+                continue
+            if text[position] == "}":
+                return None, f"record_path could not be resolved: {record_path}"
+            return None, f"record_path could not be resolved: {record_path}"
+
+    if current == "[":
+        if not segment.isdigit():
+            return None, f"record_path could not be resolved: {record_path}"
+        target_index = int(segment)
+        current_index = 0
+        position += 1
+        while True:
+            position = _skip_json_whitespace(text, position)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == "]":
+                return None, f"record_path could not be resolved: {record_path}"
+            if current_index == target_index:
+                return _select_json_record_path_slice(
+                    text, record_path=record_path, position=position, segments=segments[1:]
+                )
+            skipped_end, skipped_error = _skip_json_value(text, position)
+            if skipped_error is not None:
+                return None, skipped_error
+            position = _skip_json_whitespace(text, skipped_end)
+            current_index += 1
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == ",":
+                position += 1
+                continue
+            if text[position] == "]":
+                return None, f"record_path could not be resolved: {record_path}"
+            return None, f"record_path could not be resolved: {record_path}"
+
+    return None, f"record_path could not be resolved: {record_path}"
+
+
+def load_json_record_map(
+    payload: bytes | Path, *, record_path: str | None
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
+    try:
+        decoded_payload = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    if record_path:
+        selected_text, record_path_error = _select_json_record_path_slice(
+            decoded_payload, record_path=record_path
+        )
+        if record_path_error is not None or selected_text is None:
+            return {}, [
+                {
+                    "context": f"record_path:{record_path}",
+                    "reason": record_path_error
+                    or f"record_path could not be resolved: {record_path}",
+                }
+            ]
+        payload_to_parse = selected_text
+    else:
+        payload_to_parse = decoded_payload
+
+    try:
+        parsed_payload = json.loads(
+            payload_to_parse,
             object_pairs_hook=no_duplicate_object_pairs,
             parse_constant=reject_json_constant,
         )
-    except UnicodeDecodeError:
-        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     except DuplicateJsonKeyError as exc:
         return {}, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
@@ -464,19 +698,24 @@ def load_json_record_map(
     except ValueError as exc:
         return {}, [{"context": "line:1", "reason": str(exc)}]
 
-    selected, record_path_error = resolve_json_record_path(payload, record_path)
-    if record_path_error is not None:
-        return {}, [{"context": f"record_path:{record_path}", "reason": record_path_error}]
+    if record_path:
+        selected = parsed_payload
+    else:
+        selected, record_path_error = resolve_json_record_path(parsed_payload, record_path)
+        if record_path_error is not None:
+            return {}, [{"context": f"record_path:{record_path}", "reason": record_path_error}]
     if isinstance(selected, list):
         return {f"index:{index}": entry for index, entry in enumerate(selected, start=1)}, []
     return {"object:1": selected}, []
 
 
-def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     record_map: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     for line_number, raw_line in enumerate(lines, start=1):
@@ -502,46 +741,118 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
 
 
 def load_xml_record_map(
-    path: Path, *, record_path: str | None
+    payload: bytes | Path, *, record_path: str | None
 ) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
+    if len(payload) > MAX_XML_RECORD_BYTES:
+        return {}, [{"context": "file", "reason": "xml payload exceeds maximum byte size"}]
+
+    def _fallback_tree_parse() -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+        try:
+            root = ET.fromstring(payload)
+        except UnicodeDecodeError:
+            return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+        except ET.ParseError as exc:
+            line_number, column = getattr(exc, "position", (1, 1))
+            return {}, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
+
+        path_map = {}
+
+        def visit(element: ET.Element, parent_path: str) -> None:
+            path_map[id(element)] = parent_path
+            sibling_counts: dict[str, int] = {}
+            for child in list(element):
+                sibling_counts[child.tag] = sibling_counts.get(child.tag, 0) + 1
+                child_path = f"{parent_path}/{child.tag}[{sibling_counts[child.tag]}]"
+                visit(child, child_path)
+
+        visit(root, f"/{root.tag}[1]")
+        if record_path:
+            matches = root.findall(record_path)
+            if not matches:
+                return {}, [
+                    {
+                        "context": f"record_path:{record_path}",
+                        "reason": "record_path matched no XML elements",
+                    }
+                ]
+        else:
+            matches = list(root) or [root]
+        return {
+            path_map.get(id(element), f"element:{index}"): element
+            for index, element in enumerate(matches, start=1)
+        }, []
+
+    if record_path and not record_path.startswith("/"):
+        return _fallback_tree_parse()
+
     try:
-        tree = ET.parse(path)
+        path_map: dict[str, ET.Element] = {}
+        path_stack: list[str] = []
+        sibling_counts_stack: list[dict[str, int]] = []
+        root_had_children = False
+        node_count = 0
+        for event, elem in ET.iterparse(io.BytesIO(payload), events=("start", "end")):
+            if event == "start":
+                node_count += 1
+                if node_count > MAX_XML_RECORD_NODES:
+                    return {}, [
+                        {
+                            "context": "file",
+                            "reason": "xml tree exceeds maximum element count",
+                        }
+                    ]
+                if not path_stack:
+                    path_stack.append(f"/{elem.tag}[1]")
+                    sibling_counts_stack.append({})
+                else:
+                    root_had_children = True
+                    sibling_counts = sibling_counts_stack[-1]
+                    sibling_index = sibling_counts.get(elem.tag, 0) + 1
+                    sibling_counts[elem.tag] = sibling_index
+                    path_stack.append(f"{path_stack[-1]}/{elem.tag}[{sibling_index}]")
+                    sibling_counts_stack.append({})
+                continue
+            current_path = path_stack[-1]
+            if record_path:
+                if current_path == record_path:
+                    path_map[current_path] = deepcopy(elem)
+            elif len(path_stack) == 2 or (len(path_stack) == 1 and not root_had_children):
+                path_map[current_path] = deepcopy(elem)
+            elem.clear()
+            path_stack.pop()
+            sibling_counts_stack.pop()
+        if record_path:
+            if not path_map:
+                return {}, [
+                    {
+                        "context": f"record_path:{record_path}",
+                        "reason": "record_path matched no XML elements",
+                    }
+                ]
+            return path_map, []
+        if not path_map and not root_had_children:
+            return {}, [{"context": "file", "reason": "file contained no XML elements"}]
+        return path_map, []
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     except ET.ParseError as exc:
         line_number, column = getattr(exc, "position", (1, 1))
         return {}, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
 
-    root = tree.getroot()
-    path_map = build_xml_path_map(root)
-    if record_path:
-        matches = root.findall(record_path)
-        if not matches:
-            return {}, [
-                {
-                    "context": f"record_path:{record_path}",
-                    "reason": "record_path matched no XML elements",
-                }
-            ]
-    else:
-        matches = list(root) or [root]
-    return {
-        path_map.get(id(element), f"element:{index}"): element
-        for index, element in enumerate(matches, start=1)
-    }, []
-
 
 def load_structured_record_map(
-    path: Path, *, structured_format: str, record_path: str | None
+    payload: bytes, *, structured_format: str, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if structured_format == "csv":
-        return load_csv_row_map(path)
+        return load_csv_row_map(payload)
     if structured_format == "json":
-        return load_json_record_map(path, record_path=record_path)
+        return load_json_record_map(payload, record_path=record_path)
     if structured_format == "jsonl":
-        return load_jsonl_record_map(path)
+        return load_jsonl_record_map(payload)
     if structured_format == "xml":
-        return load_xml_record_map(path, record_path=record_path)
+        return load_xml_record_map(payload, record_path=record_path)
     return {}, [
         {"context": "file", "reason": f"unsupported structured format: {structured_format}"}
     ]
@@ -557,7 +868,13 @@ def serialize_structured_value(value: Any) -> str:
     if isinstance(value, ET.Element):
         body = ET.tostring(value, encoding="unicode")
         return body if body.endswith("\n") else body + "\n"
-    body = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+    body = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     return body if body.endswith("\n") else body + "\n"
 
 
@@ -578,6 +895,7 @@ def build_extraction_record(
     encoding_result: str,
     failure_reason: str | None,
     extracted_text_path: str | None,
+    truncation_status: str | None = None,
     status_override: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -592,6 +910,13 @@ def build_extraction_record(
     )
     if status not in SAFE_TEXT_STATUS:
         raise SourceAcquisitionError(f"unsupported extraction status: {status}")
+    resolved_truncation_status = (
+        truncation_status
+        if truncation_status is not None
+        else "refused_oversize"
+        if failure_reason == "oversized_payload"
+        else "not_truncated"
+    )
     payload = {
         "schema_version": EXTRACTION_SCHEMA_VERSION,
         "extraction_id": extraction_id,
@@ -608,9 +933,7 @@ def build_extraction_record(
         "byte_count_in": byte_count_in,
         "byte_count_out": byte_count_out,
         "encoding_result": encoding_result,
-        "truncation_status": "refused_oversize"
-        if failure_reason == "oversized_payload"
-        else "not_truncated",
+        "truncation_status": resolved_truncation_status,
         "hostile_replay_flags": hazard_flags,
         "failure_reason": failure_reason,
         "extracted_text_path": extracted_text_path,
@@ -672,6 +995,44 @@ def build_remote_denied_capture_event(
         "canonical_persistence_attempted": False,
         "verification_status": "unverified",
     }
+
+
+def build_remote_denied_extraction_record(
+    *,
+    record: dict[str, Any],
+    adapter_payload: dict[str, Any],
+    extraction_id: str,
+    run_id: str,
+    capture_id: str,
+    url: str,
+    method: str,
+    failure_reason: str,
+) -> dict[str, Any]:
+    return build_extraction_record(
+        extraction_id=extraction_id,
+        run_id=run_id,
+        capture_id=capture_id,
+        adapter_payload=adapter_payload,
+        adapter_type="remote_url_manifest",
+        handoff_sequence=record["sequence"],
+        relative_path=record["relative_path"],
+        input_hash=None,
+        byte_count_in=0,
+        extraction_method="remote_text_extract",
+        hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+        content_text=None,
+        encoding_result="not_attempted",
+        failure_reason=failure_reason,
+        extracted_text_path=None,
+        status_override="denied",
+        extra_fields={
+            "content_type": "application/octet-stream",
+            "remote_url": url,
+            "final_url": url,
+            "network_access_attempted": True,
+            "request_method": method,
+        },
+    )
 
 
 def dry_run_execution_record(
@@ -816,7 +1177,7 @@ def write_text_artifacts(output_dir: Path, text_artifacts: dict[str, str]) -> No
         atomic_write_text(output_dir / relative_path, body)
 
 
-def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes]) -> None:
+def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes | Path]) -> None:
     for relative_path, payload in binary_artifacts.items():
         target = (output_dir / relative_path).resolve()
         try:
@@ -825,7 +1186,10 @@ def write_binary_artifacts(output_dir: Path, binary_artifacts: dict[str, bytes])
             raise SourceAcquisitionError(
                 f"binary artifact path escapes output directory: {relative_path}"
             ) from exc
-        atomic_write_bytes(target, payload)
+        if isinstance(payload, Path):
+            atomic_write_path(target, payload)
+        else:
+            atomic_write_bytes(target, payload)
 
 
 def clear_directory_contents(path: Path) -> None:
@@ -866,7 +1230,7 @@ def write_execution_artifacts(
     denial_record: dict[str, Any] | None,
     gate_report: dict[str, Any] | None,
     text_artifacts: dict[str, str],
-    binary_artifacts: dict[str, bytes] | None = None,
+    binary_artifacts: dict[str, bytes | Path] | None = None,
 ) -> None:
     clear_directory_contents(output_dir)
     atomic_write_json(output_dir / "execution-record.json", execution_record)
@@ -974,15 +1338,14 @@ def execute_local_source(
         original_locator = record["preserved"]["original_locator"]
         try:
             ensure_path_is_local_file(source_path)
-            if adapter_payload["input_family"] == "local_file":
-                content_hash, byte_count, extracted_text, encoding_result, failure_reason = (
-                    stream_local_file_payload(source_path)
-                )
-            else:
-                payload = source_path.read_bytes()
-                content_hash = sha256_bytes(payload)
-                byte_count = len(payload)
-                extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+            (
+                content_hash,
+                byte_count,
+                extracted_text_chunks,
+                encoding_result,
+                failure_reason,
+                truncation_status,
+            ) = stream_local_text_payload(source_path)
 
             capture_event = {
                 "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -1011,34 +1374,66 @@ def execute_local_source(
                 "verification_status": "unverified",
             }
             capture_events.append(capture_event)
-            extraction_id = make_extraction_id(len(extraction_records) + 1)
-            extracted_text_path = None
-            if extracted_text is not None:
-                extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                text_artifacts[extracted_text_path] = extracted_text
-            else:
+            if failure_reason is not None:
                 failed = True
-            extraction_records.append(
-                build_extraction_record(
-                    extraction_id=extraction_id,
-                    run_id=run_id,
-                    capture_id=capture_id,
-                    adapter_payload=adapter_payload,
-                    adapter_type="local_source",
-                    handoff_sequence=record["sequence"],
-                    relative_path=record["relative_path"],
-                    input_hash=capture_event["content_hash"],
-                    byte_count_in=capture_event["byte_count"],
-                    extraction_method="utf8_text_extract",
-                    hazard_flags=list(
-                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                    ),
-                    content_text=extracted_text,
-                    encoding_result=encoding_result,
-                    failure_reason=failure_reason,
-                    extracted_text_path=extracted_text_path,
+                extraction_id = make_extraction_id(len(extraction_records) + 1)
+                extraction_records.append(
+                    build_extraction_record(
+                        extraction_id=extraction_id,
+                        run_id=run_id,
+                        capture_id=capture_id,
+                        adapter_payload=adapter_payload,
+                        adapter_type="local_source",
+                        handoff_sequence=record["sequence"],
+                        relative_path=record["relative_path"],
+                        input_hash=capture_event["content_hash"],
+                        byte_count_in=capture_event["byte_count"],
+                        extraction_method="utf8_text_extract",
+                        hazard_flags=list(
+                            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                        ),
+                        content_text=None,
+                        encoding_result=encoding_result,
+                        failure_reason=failure_reason,
+                        extracted_text_path=None,
+                    )
                 )
-            )
+            else:
+                chunk_count = len(extracted_text_chunks)
+                for chunk_index, extracted_text in enumerate(extracted_text_chunks, start=1):
+                    extraction_id = make_extraction_id(len(extraction_records) + 1)
+                    extracted_text_path = f"extracted-text/{extraction_id}.txt"
+                    text_artifacts[extracted_text_path] = extracted_text
+                    extraction_records.append(
+                        build_extraction_record(
+                            extraction_id=extraction_id,
+                            run_id=run_id,
+                            capture_id=capture_id,
+                            adapter_payload=adapter_payload,
+                            adapter_type="local_source",
+                            handoff_sequence=record["sequence"],
+                            relative_path=record["relative_path"],
+                            input_hash=capture_event["content_hash"],
+                            byte_count_in=capture_event["byte_count"],
+                            extraction_method="utf8_text_extract",
+                            hazard_flags=list(
+                                record["preserved"]
+                                .get("source_metadata", {})
+                                .get("hazard_flags", [])
+                            ),
+                            content_text=extracted_text,
+                            encoding_result=encoding_result,
+                            failure_reason=None,
+                            extracted_text_path=extracted_text_path,
+                            truncation_status=truncation_status,
+                            extra_fields={
+                                "chunk_index": chunk_index,
+                                "chunk_count": chunk_count,
+                            }
+                            if chunk_count > 1
+                            else None,
+                        )
+                    )
         except SourceAcquisitionError as exc:
             failed = True
             capture_events.append(
@@ -1146,9 +1541,11 @@ def execute_structured_data(
             }
         )
         structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = structured_record_map_cache_key(source_path_value, structured_format, record_path)
+        cache_key = structured_record_map_cache_key(
+            source_path_value, structured_format, record_path
+        )
         record_map, parse_errors = load_structured_record_map(
-            source_path, structured_format=structured_format, record_path=record_path
+            payload, structured_format=structured_format, record_path=record_path
         )
         record_map_cache[cache_key] = (record_map, parse_errors)
 
@@ -1159,7 +1556,9 @@ def execute_structured_data(
         structured_format = record["source_specific"]["structured_format"]
         record_locator = record["source_specific"]["record_locator"]
         record_map, parse_errors = record_map_cache[
-            structured_record_map_cache_key(record["resolved_source_path"], structured_format, record_path)
+            structured_record_map_cache_key(
+                record["resolved_source_path"], structured_format, record_path
+            )
         ]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         value = record_map.get(record_locator)
@@ -1273,6 +1672,7 @@ def execute_local_git_repo(
         record["preserved"].get("source_metadata", {}).get("candidate_paths", [])
     )
     file_entries: list[dict[str, Any]] = []
+    file_payloads_by_path: dict[str, tuple[str, int, list[str], str, str | None, str]] = {}
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
     local_paths: list[str] = []
@@ -1285,18 +1685,34 @@ def execute_local_git_repo(
         file_path = (repo_path / relative_path).resolve()
         ensure_path_within_root(file_path, root=repo_path)
         ensure_path_is_local_file(file_path)
-        payload = file_path.read_bytes()
+        (
+            content_hash,
+            byte_count,
+            extracted_text_chunks,
+            encoding_result,
+            failure_reason,
+            truncation_status,
+        ) = stream_local_text_payload(file_path)
         file_entries.append(
             {
                 "relative_path": relative_path,
-                "content_hash": sha256_bytes(payload),
-                "byte_count": len(payload),
+                "content_hash": content_hash,
+                "byte_count": byte_count,
             }
+        )
+        file_payloads_by_path[relative_path] = (
+            content_hash,
+            byte_count,
+            extracted_text_chunks,
+            encoding_result,
+            failure_reason,
+            truncation_status,
         )
         local_paths.append(str(file_path))
     snapshot_hash = compute_git_snapshot_hash(
         file_entries, git_ref=git_ref, git_commit=resolved_commit
     )
+    snapshot_byte_count = sum(entry["byte_count"] for entry in file_entries)
     capture_event = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "capture_id": make_capture_id(1),
@@ -1314,7 +1730,7 @@ def execute_local_git_repo(
         "original_locator": record["preserved"]["original_locator"],
         "normalized_local_path": str(repo_path),
         "content_hash": snapshot_hash,
-        "byte_count": sum(entry["byte_count"] for entry in file_entries),
+        "byte_count": snapshot_byte_count,
         "content_type": "application/x-git-local-checkout",
         "captured_at": created_at,
         "capture_method": "local_git_snapshot",
@@ -1328,41 +1744,81 @@ def execute_local_git_repo(
         "verification_status": "unverified",
     }
     for file_entry in file_entries:
-        file_path = (repo_path / file_entry["relative_path"]).resolve()
-        payload = file_path.read_bytes()
-        extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
-        extraction_id = make_extraction_id(len(extraction_records) + 1)
-        extracted_text_path = None
-        if extracted_text is not None:
-            extracted_text_path = f"extracted-text/{extraction_id}.txt"
-            text_artifacts[extracted_text_path] = extracted_text
-        else:
+        (
+            _content_hash,
+            _byte_count,
+            extracted_text_chunks,
+            encoding_result,
+            failure_reason,
+            truncation_status,
+        ) = file_payloads_by_path[file_entry["relative_path"]]
+        if failure_reason is not None:
             failed = True
-        extraction_records.append(
-            build_extraction_record(
-                extraction_id=extraction_id,
-                run_id=run_id,
-                capture_id=capture_event["capture_id"],
-                adapter_payload=adapter_payload,
-                adapter_type="local_git_repo",
-                handoff_sequence=record["sequence"],
-                relative_path=file_entry["relative_path"],
-                input_hash=file_entry["content_hash"],
-                byte_count_in=file_entry["byte_count"],
-                extraction_method="git_file_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=extracted_text,
-                encoding_result=encoding_result,
-                failure_reason=failure_reason,
-                extracted_text_path=extracted_text_path,
-                extra_fields={
-                    "git_ref": git_ref,
-                    "git_commit": resolved_commit,
-                },
+            extraction_id = make_extraction_id(len(extraction_records) + 1)
+            extraction_records.append(
+                build_extraction_record(
+                    extraction_id=extraction_id,
+                    run_id=run_id,
+                    capture_id=capture_event["capture_id"],
+                    adapter_payload=adapter_payload,
+                    adapter_type="local_git_repo",
+                    handoff_sequence=record["sequence"],
+                    relative_path=file_entry["relative_path"],
+                    input_hash=capture_event["content_hash"],
+                    byte_count_in=snapshot_byte_count,
+                    extraction_method="git_file_text_extract",
+                    hazard_flags=list(
+                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                    ),
+                    content_text=None,
+                    encoding_result=encoding_result,
+                    failure_reason=failure_reason,
+                    extracted_text_path=None,
+                    extra_fields={
+                        "git_ref": git_ref,
+                        "git_commit": resolved_commit,
+                    },
+                )
             )
-        )
+        else:
+            chunk_count = len(extracted_text_chunks)
+            for chunk_index, extracted_text in enumerate(extracted_text_chunks, start=1):
+                extraction_id = make_extraction_id(len(extraction_records) + 1)
+                extracted_text_path = f"extracted-text/{extraction_id}.txt"
+                text_artifacts[extracted_text_path] = extracted_text
+                extraction_records.append(
+                    build_extraction_record(
+                        extraction_id=extraction_id,
+                        run_id=run_id,
+                        capture_id=capture_event["capture_id"],
+                        adapter_payload=adapter_payload,
+                        adapter_type="local_git_repo",
+                        handoff_sequence=record["sequence"],
+                        relative_path=file_entry["relative_path"],
+                        input_hash=capture_event["content_hash"],
+                        byte_count_in=snapshot_byte_count,
+                        extraction_method="git_file_text_extract",
+                        hazard_flags=list(
+                            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                        ),
+                        content_text=extracted_text,
+                        encoding_result=encoding_result,
+                        failure_reason=None,
+                        extracted_text_path=extracted_text_path,
+                        truncation_status=truncation_status,
+                        extra_fields={
+                            "git_ref": git_ref,
+                            "git_commit": resolved_commit,
+                            "chunk_index": chunk_index,
+                            "chunk_count": chunk_count,
+                        }
+                        if chunk_count > 1
+                        else {
+                            "git_ref": git_ref,
+                            "git_commit": resolved_commit,
+                        },
+                    )
+                )
     return [capture_event], extraction_records, text_artifacts, sorted(local_paths), failed
 
 
@@ -1486,21 +1942,58 @@ def is_extractable_content_type(content_type: str) -> bool:
 
 
 def read_limited_response(response: Any, *, max_response_bytes: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    total = 0
+    payload = bytearray()
     limit = max_response_bytes + 1
-    while total <= max_response_bytes:
-        chunk = response.read(min(64 * 1024, limit - total))
+    while len(payload) <= max_response_bytes:
+        chunk = response.read(min(64 * 1024, limit - len(payload)))
         if not chunk:
             break
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > max_response_bytes:
+        payload.extend(chunk)
+        if len(payload) > max_response_bytes:
             break
-    payload = b"".join(chunks)
     if len(payload) > max_response_bytes:
-        return payload[:max_response_bytes], True
-    return payload, False
+        return bytes(payload[:max_response_bytes]), True
+    return bytes(payload), False
+
+
+def spool_limited_response(
+    response: Any, *, max_response_bytes: int, spool_dir: Path
+) -> tuple[Path | None, str | None, int, bool]:
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    total = 0
+    limit = max_response_bytes + 1
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=spool_dir,
+            prefix=".remote-payload-",
+            suffix=".bin.tmp",
+        ) as handle:
+            temp_path = Path(handle.name)
+            while total <= max_response_bytes:
+                chunk = response.read(min(64 * 1024, limit - total))
+                if not chunk:
+                    break
+                handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+                if total > max_response_bytes:
+                    break
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+    if temp_path is None:
+        raise SourceAcquisitionError("failed to spool remote payload")
+    if total > max_response_bytes:
+        temp_path.unlink(missing_ok=True)
+        return None, None, 0, True
+    return temp_path, digest.hexdigest(), total, False
 
 
 def gate_allowlist(gate_report: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -1526,8 +2019,10 @@ def remote_fetch_one(
     allowlist_prefixes: list[str],
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
+    opener: Any | None = None,
 ) -> dict[str, Any]:
-    opener = build_opener(NoAutoRedirectHandler)
+    opener = opener if opener is not None else build_opener(NoAutoRedirectHandler)
     current_url = url
     redirect_count = 0
     attempted_urls: list[str] = []
@@ -1535,18 +2030,22 @@ def remote_fetch_one(
     while True:
         attempted_urls.append(current_url)
         request = Request(current_url, method=method, headers={"User-Agent": user_agent})
+        payload_path: Path | None = None
+        payload_sha256: str | None = None
+        payload_byte_count = 0
+        truncated = False
         try:
             response = opener.open(request, timeout=timeout_seconds)
             status_code = int(getattr(response, "status", response.getcode()))
             headers = response.headers
-            payload, truncated = (
-                (b"", False)
-                if method == "HEAD"
-                else read_limited_response(
-                    response,
-                    max_response_bytes=max_response_bytes,
+            if method != "HEAD":
+                payload_path, payload_sha256, payload_byte_count, truncated = (
+                    spool_limited_response(
+                        response,
+                        max_response_bytes=max_response_bytes,
+                        spool_dir=payload_spool_dir,
+                    )
                 )
-            )
         except HTTPError as exc:
             status_code = int(exc.code)
             headers = exc.headers
@@ -1564,7 +2063,9 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
@@ -1577,7 +2078,9 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
@@ -1590,20 +2093,22 @@ def remote_fetch_one(
                         "redirect_target": redirected_url,
                         "redirect_count": redirect_count,
                         "attempted_urls": attempted_urls,
-                        "payload": b"",
+                        "payload_path": None,
+                        "payload_sha256": None,
+                        "payload_byte_count": 0,
                         "truncated": False,
                         "headers": headers,
                     }
                 current_url = redirected_url
                 continue
-            payload, truncated = (
-                (b"", False)
-                if method == "HEAD"
-                else read_limited_response(
-                    exc,
-                    max_response_bytes=max_response_bytes,
+            if method != "HEAD":
+                payload_path, payload_sha256, payload_byte_count, truncated = (
+                    spool_limited_response(
+                        exc,
+                        max_response_bytes=max_response_bytes,
+                        spool_dir=payload_spool_dir,
+                    )
                 )
-            )
         except (TimeoutError, URLError, OSError) as exc:
             return {
                 "status": "failed",
@@ -1613,7 +2118,9 @@ def remote_fetch_one(
                 "final_url": current_url,
                 "redirect_count": redirect_count,
                 "attempted_urls": attempted_urls,
-                "payload": b"",
+                "payload_path": None,
+                "payload_sha256": None,
+                "payload_byte_count": 0,
                 "truncated": False,
                 "headers": None,
             }
@@ -1623,11 +2130,25 @@ def remote_fetch_one(
         if status_code >= 400:
             status = "failed"
             failure_reason = f"http_status_{status_code}"
-            payload = b""
+            if payload_path is not None:
+                payload_path.unlink(missing_ok=True)
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
             truncated = False
         elif truncated:
             status = "failed"
             failure_reason = "response_exceeds_max_bytes"
+            if payload_path is not None:
+                payload_path.unlink(missing_ok=True)
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
+
+        if method == "HEAD":
+            payload_path = None
+            payload_sha256 = None
+            payload_byte_count = 0
 
         return {
             "status": status,
@@ -1636,7 +2157,9 @@ def remote_fetch_one(
             "final_url": current_url,
             "redirect_count": redirect_count,
             "attempted_urls": attempted_urls,
-            "payload": payload,
+            "payload_path": str(payload_path) if payload_path is not None else None,
+            "payload_sha256": payload_sha256,
+            "payload_byte_count": payload_byte_count,
             "truncated": truncated,
             "headers": headers,
         }
@@ -1656,8 +2179,10 @@ def _remote_fetch_host_queue(
     timeout_seconds: float,
     max_response_bytes: int,
     min_interval_seconds: float,
+    payload_spool_dir: Path,
 ) -> dict[int, dict[str, Any]]:
     results: dict[int, dict[str, Any]] = {}
+    opener = build_opener(NoAutoRedirectHandler)
     for index, task in enumerate(tasks):
         if index > 0 and min_interval_seconds > 0:
             time.sleep(min_interval_seconds)
@@ -1669,6 +2194,8 @@ def _remote_fetch_host_queue(
             allowlist_prefixes=allowlist_prefixes,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            payload_spool_dir=payload_spool_dir,
+            opener=opener,
         )
     return results
 
@@ -1687,10 +2214,21 @@ def _build_remote_fetch_artifacts(
     user_agent: str,
     fetch_result: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str | None, bool]:
-    payload = fetch_result["payload"]
+    payload_source_path_value = fetch_result.get("payload_path")
+    payload_source_path = (
+        Path(str(payload_source_path_value)).expanduser().resolve()
+        if isinstance(payload_source_path_value, str) and payload_source_path_value.strip()
+        else None
+    )
+    payload_bytes = fetch_result.get("payload")
+    payload_sha256 = fetch_result.get("payload_sha256")
+    payload_byte_count = int(fetch_result.get("payload_byte_count") or 0)
+    if isinstance(payload_bytes, bytes):
+        payload_sha256 = (
+            sha256_bytes(payload_bytes) if fetch_result["status"] == "captured" else None
+        )
+        payload_byte_count = len(payload_bytes) if fetch_result["status"] == "captured" else 0
     content_type = extract_content_type(fetch_result.get("headers"))
-    content_hash = sha256_bytes(payload) if fetch_result["status"] == "captured" else None
-    byte_count = len(payload) if fetch_result["status"] == "captured" else 0
     response_headers = normalize_response_headers(fetch_result.get("headers"))
     capture_event = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -1713,8 +2251,8 @@ def _build_remote_fetch_artifacts(
         "http_status_code": fetch_result["http_status_code"],
         "request_method": method,
         "user_agent": user_agent,
-        "content_hash": content_hash,
-        "byte_count": byte_count,
+        "content_hash": payload_sha256 if fetch_result["status"] == "captured" else None,
+        "byte_count": payload_byte_count if fetch_result["status"] == "captured" else 0,
         "content_length_header": response_headers.get("content-length"),
         "content_type": content_type,
         "captured_at": created_at,
@@ -1738,17 +2276,35 @@ def _build_remote_fetch_artifacts(
     failure_reason = fetch_result["failure_reason"]
     extracted_text_path = None
     decode_failed = False
+    unsupported_content_type = False
+    retain_payload = False
     if fetch_result["status"] == "captured":
         if method == "HEAD":
             failure_reason = "head_request_no_body"
+            unsupported_content_type = True
         elif not is_extractable_content_type(content_type):
             failure_reason = "unsupported_content_type"
+            unsupported_content_type = True
         else:
-            extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+            if payload_bytes is None and payload_source_path is not None:
+                payload_bytes = payload_source_path.read_bytes()
+            extracted_text, encoding_result, failure_reason = safe_decode_text(
+                payload_bytes if isinstance(payload_bytes, bytes) else b""
+            )
             if extracted_text is not None:
                 extracted_text_path = f"extracted-text/{extraction_id}.txt"
             else:
                 decode_failed = True
+        retain_payload = bool(
+            payload_source_path is not None
+            and payload_byte_count > 0
+            and (unsupported_content_type or decode_failed)
+        )
+        if retain_payload:
+            capture_event["transient_payload_path"] = f"payloads/{capture_id}.bin"
+            capture_event["payload_retention_policy"] = "transient_run_artifact"
+        elif payload_source_path is not None:
+            payload_source_path.unlink(missing_ok=True)
 
     extraction_record = build_extraction_record(
         extraction_id=extraction_id,
@@ -1758,12 +2314,10 @@ def _build_remote_fetch_artifacts(
         adapter_type="remote_url_manifest",
         handoff_sequence=record["sequence"],
         relative_path=record["relative_path"],
-        input_hash=content_hash,
-        byte_count_in=byte_count,
+        input_hash=payload_sha256 if fetch_result["status"] == "captured" else None,
+        byte_count_in=payload_byte_count if fetch_result["status"] == "captured" else 0,
         extraction_method="remote_text_extract",
-        hazard_flags=list(
-            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-        ),
+        hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
         content_text=extracted_text,
         encoding_result=encoding_result,
         failure_reason=failure_reason,
@@ -1775,7 +2329,12 @@ def _build_remote_fetch_artifacts(
             "network_access_attempted": True,
         },
     )
-    return capture_event, extraction_record, extracted_text, fetch_result["status"] != "captured" or decode_failed
+    return (
+        capture_event,
+        extraction_record,
+        extracted_text,
+        fetch_result["status"] != "captured" or decode_failed or unsupported_content_type,
+    )
 
 
 def execute_remote_fetches(
@@ -1788,11 +2347,12 @@ def execute_remote_fetches(
     gate_report: dict[str, Any],
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, str],
-    dict[str, bytes],
+    dict[str, Path],
     bool,
     dict[str, Any],
 ]:
@@ -1804,6 +2364,7 @@ def execute_remote_fetches(
     capture_events: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
+    binary_artifacts: dict[str, Path] = {}
     failed = False
     summary = {
         "urls_planned": len(records),
@@ -1828,7 +2389,9 @@ def execute_remote_fetches(
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
     record_plans: list[dict[str, Any]] = []
     host_tasks: dict[str, list[dict[str, Any]]] = {}
-    for index, record in enumerate(sorted(records, key=lambda item: int(item["sequence"])), start=1):
+    for index, record in enumerate(
+        sorted(records, key=lambda item: int(item["sequence"])), start=1
+    ):
         original_locator = record["preserved"]["original_locator"]
         url = original_locator["entry_url"]
         capture_id = make_capture_id(index)
@@ -1849,7 +2412,9 @@ def execute_remote_fetches(
                 if gate_action is None
                 else "network_gate_action_not_planned"
             )
-            request_method = str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
+            request_method = (
+                str(gate_action.get("method") or "GET").upper() if gate_action else "GET"
+            )
             record_plan["kind"] = "denied"
             record_plan["capture_event"] = build_remote_denied_capture_event(
                 record=record,
@@ -1863,31 +2428,15 @@ def execute_remote_fetches(
                 failure_reason=denied_reason,
                 user_agent=user_agent,
             )
-            record_plan["extraction_record"] = build_extraction_record(
+            record_plan["extraction_record"] = build_remote_denied_extraction_record(
+                record=record,
+                adapter_payload=adapter_payload,
                 extraction_id=extraction_id,
                 run_id=run_id,
                 capture_id=capture_id,
-                adapter_payload=adapter_payload,
-                adapter_type="remote_url_manifest",
-                handoff_sequence=record["sequence"],
-                relative_path=record["relative_path"],
-                input_hash=None,
-                byte_count_in=0,
-                extraction_method="remote_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=None,
-                encoding_result="not_attempted",
+                url=url,
+                method=request_method,
                 failure_reason=denied_reason,
-                extracted_text_path=None,
-                status_override="denied",
-                extra_fields={
-                    "content_type": "application/octet-stream",
-                    "remote_url": url,
-                    "final_url": url,
-                    "network_access_attempted": True,
-                },
             )
             record_plans.append(record_plan)
             continue
@@ -1908,31 +2457,15 @@ def execute_remote_fetches(
                 failure_reason="unsupported_request_method",
                 user_agent=user_agent,
             )
-            record_plan["extraction_record"] = build_extraction_record(
+            record_plan["extraction_record"] = build_remote_denied_extraction_record(
+                record=record,
+                adapter_payload=adapter_payload,
                 extraction_id=extraction_id,
                 run_id=run_id,
                 capture_id=capture_id,
-                adapter_payload=adapter_payload,
-                adapter_type="remote_url_manifest",
-                handoff_sequence=record["sequence"],
-                relative_path=record["relative_path"],
-                input_hash=None,
-                byte_count_in=0,
-                extraction_method="remote_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=None,
-                encoding_result="not_attempted",
+                url=url,
+                method=method,
                 failure_reason="unsupported_request_method",
-                extracted_text_path=None,
-                status_override="denied",
-                extra_fields={
-                    "content_type": "application/octet-stream",
-                    "remote_url": url,
-                    "final_url": url,
-                    "network_access_attempted": True,
-                },
             )
             record_plans.append(record_plan)
             continue
@@ -1963,6 +2496,7 @@ def execute_remote_fetches(
                     timeout_seconds=timeout_seconds,
                     max_response_bytes=max_response_bytes,
                     min_interval_seconds=min_interval_seconds,
+                    payload_spool_dir=payload_spool_dir,
                 ): host
                 for host, tasks in host_tasks.items()
             }
@@ -1976,18 +2510,20 @@ def execute_remote_fetches(
             continue
 
         fetch_result = fetch_results_by_sequence[int(record_plan["sequence"])]
-        capture_event, extraction_record, extracted_text, record_failed = _build_remote_fetch_artifacts(
-            record=record_plan["record"],
-            adapter_payload=adapter_payload,
-            run_id=run_id,
-            handoff_hash=handoff_hash,
-            created_at=created_at,
-            capture_id=record_plan["capture_id"],
-            extraction_id=record_plan["extraction_id"],
-            url=record_plan["url"],
-            method=record_plan["method"],
-            user_agent=user_agent,
-            fetch_result=fetch_result,
+        capture_event, extraction_record, extracted_text, record_failed = (
+            _build_remote_fetch_artifacts(
+                record=record_plan["record"],
+                adapter_payload=adapter_payload,
+                run_id=run_id,
+                handoff_hash=handoff_hash,
+                created_at=created_at,
+                capture_id=record_plan["capture_id"],
+                extraction_id=record_plan["extraction_id"],
+                url=record_plan["url"],
+                method=record_plan["method"],
+                user_agent=user_agent,
+                fetch_result=fetch_result,
+            )
         )
         summary["urls_attempted"] += 1
         if fetch_result["status"] == "captured":
@@ -2002,7 +2538,15 @@ def execute_remote_fetches(
         extraction_records.append(extraction_record)
         if extracted_text is not None and extraction_record["extracted_text_path"] is not None:
             text_artifacts[extraction_record["extracted_text_path"]] = extracted_text
-    return capture_events, extraction_records, text_artifacts, {}, failed, summary
+        if (
+            capture_event.get("transient_payload_path") is not None
+            and isinstance(fetch_result.get("payload_path"), str)
+            and fetch_result["status"] == "captured"
+        ):
+            binary_artifacts[str(capture_event["transient_payload_path"])] = Path(
+                str(fetch_result["payload_path"])
+            )
+    return capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary
 
 
 def execute_remote_url_manifest(
@@ -2018,6 +2562,7 @@ def execute_remote_url_manifest(
     allow_network: bool,
     timeout_seconds: float,
     max_response_bytes: int,
+    payload_spool_dir: Path,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any] | None,
@@ -2025,6 +2570,8 @@ def execute_remote_url_manifest(
     list[dict[str, Any]],
     dict[str, Any],
     list[str],
+    dict[str, str],
+    dict[str, Path],
 ]:
     if gate_request_path is None:
         raise SourceAcquisitionError(
@@ -2061,7 +2608,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     if gate_report["decision"] == "dry_run" or dry_run:
         execution_record = dry_run_execution_record(
@@ -2076,7 +2623,7 @@ def execute_remote_url_manifest(
             gate_report=gate_report,
             planned_actions=planned_actions,
         )
-        return execution_record, None, [], [], gate_report, expected_urls
+        return execution_record, None, [], [], gate_report, expected_urls, {}, {}
 
     if not gate_report["execution_allowed"]:
         execution_record = execution_record_payload(
@@ -2100,7 +2647,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     reason = "explicit --allow-network is required for remote execution"
     if not allow_network:
@@ -2125,7 +2672,7 @@ def execute_remote_url_manifest(
             denial_record_written=True,
         )
         denial_record = build_denial_record(execution_record, considered_urls=expected_urls)
-        return execution_record, denial_record, [], [], gate_report, expected_urls
+        return execution_record, denial_record, [], [], gate_report, expected_urls, {}, {}
 
     capture_events, extraction_records, text_artifacts, binary_artifacts, failed, remote_summary = (
         execute_remote_fetches(
@@ -2137,6 +2684,7 @@ def execute_remote_url_manifest(
             gate_report=gate_report,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            payload_spool_dir=payload_spool_dir,
         )
     )
     execution_record = execution_record_payload(
@@ -2169,18 +2717,27 @@ def execute_remote_url_manifest(
             **remote_summary,
         }
     )
-    execution_record["_text_artifacts"] = text_artifacts
-    execution_record["_binary_artifacts"] = binary_artifacts
-    return execution_record, None, capture_events, extraction_records, gate_report, expected_urls
+    return (
+        execution_record,
+        None,
+        capture_events,
+        extraction_records,
+        gate_report,
+        expected_urls,
+        text_artifacts,
+        binary_artifacts,
+    )
 
 
 def main() -> int:
     args = parse_args()
     handoff_path = resolve_cli_path(args.handoff, base_dir=Path.cwd())
     adapter_path = resolve_cli_path(args.adapter, base_dir=Path.cwd())
-    output_dir = resolve_cli_path(args.output, base_dir=Path.cwd())
+    workspace_root = resolve_workspace_root(args.workspace_root)
+    output_dir = resolve_output_dir(args.output, workspace_root=workspace_root)
     created_at = normalize_created_at(args.created_at)
     run_id = resolve_run_id(output_dir, run_id=args.run_id)
+    remote_payload_spool_dir: Path | None = None
 
     try:
         adapter_payload = load_validated_adapter(adapter_path)
@@ -2210,6 +2767,14 @@ def main() -> int:
                 "remote_url_manifest execution requires --network-safety-request"
             )
 
+        if variant == "remote_url_manifest":
+            remote_payload_spool_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{output_dir.name}.remote-payloads.",
+                    dir=output_dir.parent,
+                )
+            )
+
         if args.dry_run:
             gate_report = None
             if variant == "remote_url_manifest":
@@ -2223,6 +2788,8 @@ def main() -> int:
                     remote_extraction_records,
                     gate_report,
                     _,
+                    _remote_text_artifacts,
+                    _remote_binary_artifacts,
                 ) = execute_remote_url_manifest(
                     records=records,
                     run_id=run_id,
@@ -2235,13 +2802,10 @@ def main() -> int:
                     allow_network=args.allow_network,
                     timeout_seconds=args.timeout_seconds,
                     max_response_bytes=args.max_response_bytes,
+                    payload_spool_dir=remote_payload_spool_dir,
                 )
-                sys.stdout.write(
-                    json.dumps(
-                        remote_execution_record, ensure_ascii=False, indent=2, sort_keys=True
-                    )
-                    + "\n"
-                )
+                if not args.suppress_execution_record_stdout:
+                    sys.stdout.write(compact_json_text(remote_execution_record) + "\n")
                 return 0 if remote_execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
 
             dry_run_local_input_paths = sorted(
@@ -2259,12 +2823,11 @@ def main() -> int:
                 gate_report=None,
                 planned_actions=planned_actions,
             )
-            sys.stdout.write(
-                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            )
+            if not args.suppress_execution_record_stdout:
+                sys.stdout.write(compact_json_text(execution_record) + "\n")
             return 0
 
-        prepare_output_dir(output_dir, run_id=run_id)
+        prepare_output_dir(output_dir, run_id=run_id, workspace_root=workspace_root)
 
         denial_record = None
         gate_report = None
@@ -2373,23 +2936,29 @@ def main() -> int:
                 if args.network_safety_request
                 else None
             )
-            execution_record, denial_record, capture_events, extraction_records, gate_report, _ = (
-                execute_remote_url_manifest(
-                    records=records,
-                    run_id=run_id,
-                    created_at=created_at,
-                    handoff_path=handoff_path,
-                    handoff_hash=handoff_hash,
-                    adapter_payload=adapter_payload,
-                    gate_request_path=remote_gate_request_path,
-                    dry_run=False,
-                    allow_network=args.allow_network,
-                    timeout_seconds=args.timeout_seconds,
-                    max_response_bytes=args.max_response_bytes,
-                )
+            (
+                execution_record,
+                denial_record,
+                capture_events,
+                extraction_records,
+                gate_report,
+                _,
+                text_artifacts,
+                binary_artifacts,
+            ) = execute_remote_url_manifest(
+                records=records,
+                run_id=run_id,
+                created_at=created_at,
+                handoff_path=handoff_path,
+                handoff_hash=handoff_hash,
+                adapter_payload=adapter_payload,
+                gate_request_path=remote_gate_request_path,
+                dry_run=False,
+                allow_network=args.allow_network,
+                timeout_seconds=args.timeout_seconds,
+                max_response_bytes=args.max_response_bytes,
+                payload_spool_dir=remote_payload_spool_dir,
             )
-            text_artifacts = execution_record.pop("_text_artifacts", {})
-            binary_artifacts = execution_record.pop("_binary_artifacts", {})
         else:
             raise SourceAcquisitionError(f"unsupported source-adapter handoff variant: {variant}")
 
@@ -2411,13 +2980,15 @@ def main() -> int:
             validate_emitted_artifacts(staging_dir)
             publish_output_dir(staging_dir, output_dir)
 
-        sys.stdout.write(
-            json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        )
+        if not args.suppress_execution_record_stdout:
+            sys.stdout.write(compact_json_text(execution_record) + "\n")
         return EXIT_PASS if execution_record["status"] == "completed" else EXIT_STATE_UNSAFE
     except SourceAcquisitionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if remote_payload_spool_dir is not None:
+            shutil.rmtree(remote_payload_spool_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

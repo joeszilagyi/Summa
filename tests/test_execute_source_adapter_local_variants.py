@@ -8,11 +8,15 @@ from typing import Any
 
 from tools.scripts import execute_source_adapter as source_executor
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 STRUCTURED_FIXTURE_ROOT = (
-    REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "structured_data"
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "source_adapter_runtime"
+    / "hostile_replay"
+    / "structured_data"
 )
 ADAPTER = STRUCTURED_FIXTURE_ROOT / "source_adapter.json"
 
@@ -22,13 +26,15 @@ def canonical_json_bytes(value: dict[str, Any]) -> bytes:
 
 
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
-    return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
-        "utf-8"
-    )
+    return "".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+    ).encode("utf-8")
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def materialize_handoff(template_path: Path, output_path: Path) -> Path:
@@ -50,6 +56,8 @@ def run_executor(*, handoff: Path, output: Path) -> subprocess.CompletedProcess[
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -95,7 +103,9 @@ def test_execute_structured_data_branch_emits_artifacts_for_hostile_replay_fixtu
     ]
 
     assert [capture["capture_method"] for capture in captures] == ["structured_data_load"] * 3
-    assert [extraction["extraction_method"] for extraction in extractions] == ["structured_record_extract"] * 4
+    assert [extraction["extraction_method"] for extraction in extractions] == [
+        "structured_record_extract"
+    ] * 4
     assert extractions[-1]["status"] == "skipped"
     assert extractions[-1]["failure_reason"] == "oversized_payload"
     assert extractions[-1]["extracted_text_path"] is None
@@ -106,3 +116,147 @@ def test_execute_structured_data_branch_emits_artifacts_for_hostile_replay_fixtu
     assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
     assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
     assert (output / "manifest.json").read_bytes() == canonical_json_bytes(manifest)
+
+
+def test_execute_structured_data_reads_each_source_file_once_per_grouped_capture(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    handoff = materialize_handoff(
+        STRUCTURED_FIXTURE_ROOT / "expected_handoff.jsonl",
+        tmp_path / "structured-data-handoff.jsonl",
+    )
+    adapter_payload = source_executor.load_validated_adapter(ADAPTER)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff, adapter_path=ADAPTER
+    )
+
+    source_paths = {
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "injection.jsonl").resolve(),
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "markup.xml").resolve(),
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "oversize.json").resolve(),
+    }
+    read_counts = {path: 0 for path in source_paths}
+    original_open = Path.open
+
+    def count_if_source(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in read_counts:
+            read_counts[resolved] += 1
+
+    def guarded_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        count_if_source(self)
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open, raising=True)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = (
+        source_executor.execute_structured_data(
+            records=records,
+            adapter_payload=adapter_payload,
+            adapter_path=ADAPTER,
+            run_id="structured-data-execution",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash=handoff_hash,
+        )
+    )
+
+    assert failed is True
+    assert local_paths == [
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "injection.jsonl"),
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "markup.xml"),
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "oversize.json"),
+    ]
+    assert [capture["capture_method"] for capture in capture_events] == ["structured_data_load"] * 3
+    assert [extraction["extraction_method"] for extraction in extraction_records] == [
+        "structured_record_extract"
+    ] * 4
+    assert text_artifacts["extracted-text/extraction-0001.txt"].startswith("{")
+    assert not text_artifacts["extracted-text/extraction-0001.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0002.txt"].startswith("{")
+    assert not text_artifacts["extracted-text/extraction-0002.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0003.txt"].startswith("<")
+    assert extraction_records[-1]["status"] == "skipped"
+    assert extraction_records[-1]["failure_reason"] == "oversized_payload"
+    assert all(count == 1 for count in read_counts.values())
+
+
+def test_load_structured_json_record_map_parses_only_selected_subtree(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "structured_data"
+        / "nested_records.json"
+    ).read_bytes()
+    original_loads = source_executor.json.loads
+    load_calls: list[str] = []
+
+    def loads_spy(*args: Any, **kwargs: Any) -> Any:
+        load_calls.append(args[0])
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(source_executor.json, "loads", loads_spy)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="json", record_path="records"
+    )
+
+    assert errors == []
+    assert list(record_map) == ["index:1", "index:2"]
+    assert len(load_calls) == 1
+    assert len(load_calls[0]) < len(payload.decode("utf-8"))
+
+
+def test_load_structured_xml_record_map_streams_without_tree_parse(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "hostile_replay"
+        / "structured_data"
+        / "corpus"
+        / "markup.xml"
+    ).read_bytes()
+
+    def parse_spy(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("XML structured loading should stream with iterparse, not ET.parse()")
+
+    monkeypatch.setattr(source_executor.ET, "parse", parse_spy)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="xml", record_path=None
+    )
+
+    assert errors == []
+    assert list(record_map) == ["/records[1]/record[1]"]
+    assert record_map["/records[1]/record[1]"].tag == "record"
+
+
+def test_load_structured_xml_record_map_enforces_node_count_limit(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "hostile_replay"
+        / "structured_data"
+        / "corpus"
+        / "markup.xml"
+    ).read_bytes()
+    monkeypatch.setattr(source_executor, "MAX_XML_RECORD_NODES", 1)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="xml", record_path=None
+    )
+
+    assert record_map == {}
+    assert errors
+    assert errors[0]["reason"] == "xml tree exceeds maximum element count"

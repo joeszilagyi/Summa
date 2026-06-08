@@ -8,7 +8,6 @@ import pytest
 
 from tools.source_db_tools import review_queue
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL = REPO_ROOT / "tools" / "scripts" / "build_review_queue_view.py"
 CLI_TOOL = REPO_ROOT / "tools" / "source_db_tools" / "review_queue.py"
@@ -151,6 +150,28 @@ def test_review_queue_view_reports_pending_items_and_counts(tmp_path: Path) -> N
     assert "work:2" not in refs
 
 
+def test_review_queue_list_items_pushes_limit_into_each_target_query(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    executed_sql: list[str] = []
+    conn.set_trace_callback(executed_sql.append)
+    try:
+        rows = review_queue.list_review_items(conn, state="all", limit=1)
+    finally:
+        conn.close()
+
+    assert [row["object_ref"] for row in rows] == ["claim:1"]
+    target_selects = [
+        sql
+        for sql in executed_sql
+        if ("FROM work" in sql or "FROM lead" in sql or "FROM source_claim" in sql)
+    ]
+    assert any("FROM work" in sql and "LIMIT 1" in sql for sql in target_selects)
+    assert any("FROM lead" in sql and "LIMIT 1" in sql for sql in target_selects)
+    assert any("FROM source_claim" in sql and "LIMIT 1" in sql for sql in target_selects)
+
+
 def test_review_queue_view_honors_state_type_and_limit_filters(tmp_path: Path) -> None:
     db = create_review_db(tmp_path)
 
@@ -173,6 +194,35 @@ def test_review_queue_view_honors_state_type_and_limit_filters(tmp_path: Path) -
     payload = json.loads(result.stdout)
     assert payload["filters"]["state"] == "all"
     assert payload["filters"]["object_type"] == "work"
+    assert payload["filters"]["full_counts"] is False
+    assert payload["counts"]["total_items"] == 2
+    assert payload["counts"]["returned_items"] == 2
+    assert payload["truncated"] is True
+    assert [item["object_ref"] for item in payload["items"]] == ["work:1", "work:3"]
+
+
+def test_review_queue_view_can_compute_full_counts_explicitly(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+
+    result = run_tool(
+        [
+            "--db",
+            str(db),
+            "--state",
+            "all",
+            "--object-type",
+            "work",
+            "--limit",
+            "2",
+            "--full-counts",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["filters"]["full_counts"] is True
     assert payload["counts"]["total_items"] == 3
     assert payload["counts"]["returned_items"] == 2
     assert payload["truncated"] is True
@@ -261,7 +311,8 @@ def test_review_queue_view_text_output_is_stable(tmp_path: Path) -> None:
     assert "workspace_id_filter=-" in result.stdout
     assert "authority_level_filter=-" in result.stdout
     assert "public_blocker_filter=-" in result.stdout
-    assert "total_items=3" in result.stdout
+    assert "full_counts=false" in result.stdout
+    assert "total_items=1" in result.stdout
     assert "returned_items=1" in result.stdout
     assert "truncated=true" in result.stdout
     assert "writer_surface=tools/source_db_tools/review_queue.py" in result.stdout

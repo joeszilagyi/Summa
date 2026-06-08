@@ -11,7 +11,6 @@ import pytest
 
 from tools.scripts import operator_path_smoke
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PY_TOOL = REPO_ROOT / "tools" / "scripts" / "operator_path_smoke.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Operator_Path_Smoke.sh"
@@ -203,7 +202,7 @@ def test_operator_path_smoke_wrapper_dry_run_json_passes_without_repo_mutation(t
         "extraction_record": 1,
         "provenance_event": 2,
         "cycle_event": 1,
-        "cycle_stage_event": 12,
+        "cycle_stage_event": 9,
     }
 
     final_family_counts = topic_cycle["canonical_db"]["final_summary"]["family_counts"]

@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from tools.source_db_tools import canonical_ingest, canonical_store
-
+from tests.test_canonical_dedup_and_contradiction import (
+    build_batch,
+    entity_candidate,
+    prose_claim_candidate,
+    relationship_candidate,
+    source_lead_candidate,
+    structured_claim_candidate,
+    work_candidate,
+)
+from tools.source_db_tools import canonical_ingest, canonical_reconciliation, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
@@ -65,6 +74,35 @@ def build_batch_payload() -> dict[str, object]:
             }
         ],
     }
+
+
+class ProvenanceLookupCountingProxy:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.provenance_lookup_count = 0
+        self.prior_state_like_count = 0
+        self.prior_state_count_query_count = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+    def __enter__(self) -> ProvenanceLookupCountingProxy:
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> object:
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def execute(self, sql: str, params: object = ()) -> object:
+        if isinstance(sql, str):
+            normalized_sql = " ".join(sql.split()).upper()
+            if normalized_sql.startswith("SELECT PROVENANCE_EVENT_ID FROM PROVENANCE_EVENT"):
+                self.provenance_lookup_count += 1
+            if normalized_sql.startswith("SELECT COUNT(*) AS COUNT"):
+                self.prior_state_count_query_count += 1
+            if "NOTE_TEXT LIKE" in normalized_sql:
+                self.prior_state_like_count += 1
+        return self._conn.execute(sql, params)
 
 
 def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: Path) -> None:
@@ -152,6 +190,262 @@ def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: 
     assert output_path.is_file()
 
 
+def test_candidate_batch_ingest_resolves_provenance_event_once(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch, batch_hash = load_fixture_batch()
+    conn = canonical_store.connect_canonical_store(db_path)
+    proxy = ProvenanceLookupCountingProxy(conn)
+    try:
+        with proxy:
+            report = canonical_ingest.ingest_candidate_batch(
+                proxy,
+                batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert proxy.provenance_lookup_count == 1
+
+
+def test_candidate_batch_ingest_passes_incremental_reconciliation_work_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    payload = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:claim.incremental",
+                payload={
+                    "claim_type": "quantity",
+                    "about_object_ref": "work:incremental",
+                    "value": 10,
+                },
+            ),
+            relationship_candidate(
+                "cand:relationship.incremental",
+                from_object_ref="authority:person-a",
+                predicate="taught_by",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="incremental-reconciliation",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        captured.update(kwargs)
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                payload,
+                batch_path=tmp_path / "batch.json",
+                batch_hash=batch_hash(payload),
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert captured["provenance_event_ref"] == report["provenance_event"]["event_key"]
+    assert captured["source_run_id"] == "incremental-reconciliation"
+    assert captured["claim_work_items"] == [("fixture_subject", "work:incremental", "quantity")]
+    assert captured["relationship_work_items"] == [
+        ("fixture_subject", "authority:person-a", "taught_by", "authority:person-b")
+    ]
+
+
+def test_candidate_batch_ingest_batches_fresh_family_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    payload = build_batch(
+        [
+            work_candidate(
+                "cand:work.batch",
+                work_key="work.fixture.batch",
+                title="Batch Work",
+                identifier_scheme="doi",
+                identifier_value="10.1000/batch",
+                canonical_url="https://example.test/work/batch",
+            ),
+            source_lead_candidate(
+                "cand:lead.batch",
+                original_locator="https://example.test/lead.pdf",
+                canonical_url="https://example.test/lead.pdf",
+                source_lead_id="lead:batch",
+            ),
+            prose_claim_candidate("cand:claim.batch", "Batch claim text"),
+            entity_candidate("cand:entity.batch", label="Batch Person"),
+            relationship_candidate(
+                "cand:relationship.batch",
+                from_object_ref="authority:person-a",
+                predicate="mentions",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="batch-family-writes",
+    )
+    captured: dict[str, object] = {}
+
+    def fail_record_source_access(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_access should be batched")
+
+    def fail_record_source_claim(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_claim should be batched")
+
+    def fail_record_source_relationship(
+        *args: object, **kwargs: object
+    ) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_relationship should be batched")
+
+    def fail_record_extraction_detected_entity(
+        *args: object, **kwargs: object
+    ) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("extraction_detected_entity should be batched")
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        captured.update(kwargs)
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(canonical_store, "record_source_access", fail_record_source_access)
+    monkeypatch.setattr(canonical_store, "record_source_claim", fail_record_source_claim)
+    monkeypatch.setattr(
+        canonical_store,
+        "record_source_relationship",
+        fail_record_source_relationship,
+    )
+    monkeypatch.setattr(
+        canonical_store,
+        "record_extraction_detected_entity",
+        fail_record_extraction_detected_entity,
+    )
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                payload,
+                batch_path=tmp_path / "batch-family-writes.json",
+                batch_hash=batch_hash(payload),
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert report["counts"]["inserted"]["work"] >= 1
+    assert report["counts"]["inserted"]["source_access"] >= 2
+    assert report["counts"]["inserted"]["source_claim"] >= 1
+    assert report["counts"]["inserted"]["source_relationship"] >= 1
+    assert report["counts"]["inserted"]["extraction_detected_entity"] >= 1
+    assert captured["source_run_id"] == "batch-family-writes"
+    assert captured["claim_work_items"]
+    assert captured["relationship_work_items"]
+    assert captured["entity_candidates"]
+
+
+def test_candidate_batch_ingest_skips_reconciliation_when_no_work_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    payload = build_batch(
+        [
+            source_lead_candidate(
+                "cand:lead.only",
+                original_locator="https://example.test/source.pdf",
+                canonical_url="https://example.test/source.pdf",
+                source_lead_id="lead:only",
+            )
+        ],
+        run_id="source-lead-only",
+    )
+    called = False
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        nonlocal called
+        called = True
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                payload,
+                batch_path=tmp_path / "source-lead-only.json",
+                batch_hash=batch_hash(payload),
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert called is False
+    assert report["transaction_status"] == "committed"
+    assert report["counts"]["reconciled"] == {}
+    assert report["counts"]["contradicted"] == {}
+    assert report["counts"]["deduped"] == {}
+
+
 def test_candidate_batch_validation_happens_before_write(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     invalid_path = tmp_path / "invalid-gather-candidate-batch.json"
@@ -230,7 +524,58 @@ def test_candidate_batch_unknown_candidate_is_preserved_with_warning(tmp_path: P
     assert "unknown candidate type preserved as a source claim" in warning_messages
 
 
-def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "candidate_type",
+    ["raw_candidate_text", "open_question", "timeline_item"],
+)
+def test_prose_only_candidate_claim_text_is_bounded(
+    tmp_path: Path, candidate_type: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    prose = (
+        "Line one should be retained as the bounded claim text. "
+        "This remainder should not be stored verbatim in source_claim.claim_text.\n"
+        + ("additional prose " * 40)
+    )
+    batch = build_batch(
+        [
+            {
+                "candidate_id": f"cand:{candidate_type}.1",
+                "candidate_type": candidate_type,
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": prose,
+            }
+        ],
+        run_id=f"bounded-{candidate_type}",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=tmp_path / f"{candidate_type}.json",
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        claim_row = conn.execute(
+            "SELECT claim_text, claim_type FROM source_claim ORDER BY source_claim_id"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    expected_claim_text = " ".join(prose.splitlines()[0].split())[:240] or "claim-fallback-empty"
+    assert report["counts"]["inserted"]["source_claim"] == 1
+    assert claim_row["claim_type"] == f"candidate_{candidate_type}"
+    assert claim_row["claim_text"] == expected_claim_text
+    assert claim_row["claim_text"] != prose
+
+
+def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
     subject_id = str(batch["subject"]["subject_id"])
@@ -248,16 +593,20 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
     tuned_batch["candidates"] = tuned_candidates
 
     conn = canonical_store.connect_canonical_store(db_path)
+    proxy = ProvenanceLookupCountingProxy(conn)
     try:
-        with conn:
+        with proxy:
             canonical_ingest.ingest_candidate_batch(
-                conn,
+                proxy,
                 tuned_batch,
                 batch_path=FIXTURE_BATCH,
                 batch_hash=batch_hash,
                 db_path=db_path,
             )
-        prior_state = canonical_store.load_gather_prior_state(conn, subject_id=subject_id)
+        proxy.prior_state_count_query_count = 0
+        proxy.prior_state_like_count = 0
+        monkeypatch.setattr(canonical_store, "validate_existing_store", lambda *args, **kwargs: None)
+        prior_state = canonical_store.load_gather_prior_state(proxy, subject_id=subject_id)
     finally:
         conn.close()
 
@@ -266,6 +615,8 @@ def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(tmp
     assert {
         record["entity_label"] for record in prior_state["records"]["entities"]
     } >= {"Alpha Example"}
+    assert proxy.prior_state_like_count == 0
+    assert proxy.prior_state_count_query_count == 0
 
 
 def test_candidate_batch_dry_run_reports_intended_writes_without_mutation(tmp_path: Path) -> None:
@@ -296,25 +647,27 @@ def test_candidate_batch_ingest_rolls_back_on_write_failure(tmp_path: Path, monk
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
     conn = canonical_store.connect_canonical_store(db_path)
-    original_record_source_access = canonical_store.record_source_access
+    original_batch_insert_rows_if_fresh = canonical_ingest._batch_insert_rows_if_fresh
 
-    def fail_after_first_access(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
-        raise canonical_ingest.CanonicalIngestError("synthetic source access failure")
+    def fail_source_access_batch(*args: object, **kwargs: object) -> object:
+        if kwargs.get("table_name") == "source_access":
+            raise canonical_ingest.CanonicalIngestError("synthetic source access failure")
+        return original_batch_insert_rows_if_fresh(*args, **kwargs)
 
-    monkeypatch.setattr(canonical_store, "record_source_access", fail_after_first_access)
+    monkeypatch.setattr(canonical_ingest, "_batch_insert_rows_if_fresh", fail_source_access_batch)
     try:
-        with pytest.raises(canonical_ingest.CanonicalIngestError, match="synthetic source access failure"):
-            with conn:
-                canonical_ingest.ingest_candidate_batch(
-                    conn,
-                    batch,
-                    batch_path=FIXTURE_BATCH,
-                    batch_hash=batch_hash,
-                    db_path=db_path,
-                )
+        with pytest.raises(
+            canonical_ingest.CanonicalIngestError, match="synthetic source access failure"
+        ), conn:
+            canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=FIXTURE_BATCH,
+                batch_hash=batch_hash,
+                db_path=db_path,
+            )
         counts = canonical_store.canonical_family_counts(conn)
     finally:
-        monkeypatch.setattr(canonical_store, "record_source_access", original_record_source_access)
         conn.close()
 
     assert all(count == 0 for count in counts.values())
@@ -397,7 +750,9 @@ def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> 
     assert identifier["confidence_score"] is None
 
 
-def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_validated_candidate_batch_streams_without_read_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     valid_payload = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))
     valid_payload["prompt"]["rendered_prompt"] = FIXTURE_PROMPT.read_text(encoding="utf-8")
     valid_payload["prompt"]["rendered_prompt_hash"] = hashlib.sha256(
@@ -410,23 +765,16 @@ def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_p
     valid_payload["prompt"]["rendered_prompt_path"] = "rendered-prompt.txt"
 
     valid_text = json.dumps(valid_payload, ensure_ascii=False, sort_keys=True) + "\n"
-    mutated_payload = json.loads(valid_text)
-    mutated_payload["run_id"] = "run-id-mutated"
-    mutated_text = json.dumps(mutated_payload, ensure_ascii=False, sort_keys=True) + "\n"
     batch_path.write_text(valid_text, encoding="utf-8")
 
     original_read_text = canonical_ingest.Path.read_text
-    calls = {"count": 0}
 
-    def read_text_side_effect(self: Path, *args: object, **kwargs: object) -> str:
+    def fail_read_text(self: Path, *args: object, **kwargs: object) -> str:
         if self == batch_path:
-            calls["count"] += 1
-            if calls["count"] == 1:
-                return valid_text
-            return mutated_text
+            raise AssertionError("candidate batch loading should stream via Path.open()")
         return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(canonical_ingest.Path, "read_text", read_text_side_effect)
+    monkeypatch.setattr(canonical_ingest.Path, "read_text", fail_read_text)
 
     batch, batch_hash = canonical_ingest.load_validated_candidate_batch(batch_path)
 
@@ -440,6 +788,76 @@ def test_candidate_structured_payload_rejects_duplicate_json_keys() -> None:
     }
 
     assert canonical_ingest._candidate_structured_payload(candidate) is None
+
+
+@pytest.mark.parametrize(
+    "candidate_type",
+    ["raw_candidate_text", "open_question", "timeline_item"],
+)
+def test_candidate_structured_payload_skips_raw_candidate_text_prose(
+    candidate_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = {
+        "candidate_type": candidate_type,
+        "text": "This is plain prose, not JSON.",
+    }
+
+    def fail_json_loads(*args: object, **kwargs: object) -> object:
+        raise AssertionError("raw candidate prose should not be parsed as JSON")
+
+    monkeypatch.setattr(canonical_ingest.json, "loads", fail_json_loads)
+
+    assert canonical_ingest._candidate_structured_payload(candidate) is None
+
+
+def test_raw_candidate_text_json_payload_uses_bounded_claim_text(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    claim_text = "Lead summary from the model"
+    batch = {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": "raw-candidate-json",
+        "created_at": FIXED_TIMESTAMP,
+        "candidates": [
+            {
+                "candidate_id": "cand:raw-json.1",
+                "candidate_type": "raw_candidate_text",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps(
+                    {
+                        "candidate_type": "source_lead",
+                        "locator": None,
+                        "claim": claim_text,
+                        "confidence": None,
+                        "reason": "llm_proposed",
+                        "source_span": None,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        ],
+    }
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=tmp_path / "raw-candidate-json.json",
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        claim_row = conn.execute(
+            "SELECT claim_text, claim_type FROM source_claim ORDER BY source_claim_id"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert report["counts"]["inserted"]["source_claim"] == 1
+    assert claim_row["claim_text"] == claim_text
+    assert claim_row["claim_type"] == "candidate_raw_candidate_text"
 
 
 def test_candidate_structured_payload_rejects_non_standard_json_constants() -> None:

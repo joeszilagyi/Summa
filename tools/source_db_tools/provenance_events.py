@@ -125,7 +125,9 @@ def record_event(
     object_namespace_value = _required_text(object_namespace, "object_namespace")
     object_id_value = _required_text(object_id, "object_id")
     event_type_value = _required_text(event_type, "event_type")
-    source_object_namespace_value = _optional_text(source_object_namespace, "source_object_namespace")
+    source_object_namespace_value = _optional_text(
+        source_object_namespace, "source_object_namespace"
+    )
     source_object_id_value = _optional_text(source_object_id, "source_object_id")
     confidence_score_value = _normalize_confidence_score(confidence_score)
 
@@ -136,7 +138,9 @@ def record_event(
         raise ValueError(f"unsupported provenance event_type: {event_type_value}")
 
     timestamp = _normalize_timestamp(event_timestamp)
-    explicit_key = None if provenance_event_key_v1 is None else str(provenance_event_key_v1).strip() or None
+    explicit_key = (
+        None if provenance_event_key_v1 is None else str(provenance_event_key_v1).strip() or None
+    )
     key = explicit_key or stable_key(
         object_namespace_value,
         object_id_value,

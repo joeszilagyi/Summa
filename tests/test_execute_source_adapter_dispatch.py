@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tools.common.source_adapter_handoff import validate_source_adapter_handoff_record

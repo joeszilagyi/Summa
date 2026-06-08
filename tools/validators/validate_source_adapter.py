@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import ipaddress
+import json
 import re
 import sys
 from pathlib import Path
@@ -21,6 +21,7 @@ try:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (  # type: ignore
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +42,6 @@ PROJECT_ROOT = REPO_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from tools.common.network_safety_gate import normalized_allowlist_url  # noqa: E402
-
 from tools.common.source_adapter_contract import (  # noqa: E402
     ALLOWED_PRESERVE_FIELDS,
     AUTOMATION_POSTURES,
@@ -56,7 +57,6 @@ from tools.common.source_adapter_contract import (  # noqa: E402
     STRUCTURED_DATA_FORMATS,
 )
 from tools.source_db_tools import rights_retention  # noqa: E402
-
 
 VALIDATOR_NAME = "source_adapter"
 CONTRACT_VERSION = "1"
@@ -559,6 +559,7 @@ def main() -> int:
     result, exit_code = validate_source_adapter(target)
 
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report = emit_report(
         contract_version=CONTRACT_VERSION,
         counts=result["counts"],
@@ -574,6 +575,7 @@ def main() -> int:
         target=args.target_id or (display_path(args.target) or args.target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

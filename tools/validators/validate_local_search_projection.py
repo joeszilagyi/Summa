@@ -19,6 +19,7 @@ try:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -55,7 +57,6 @@ from tools.common.search_leak_policy import (  # noqa: E402
     is_raw_payload_field,
     is_restricted_public_field,
 )
-
 
 VALIDATOR_NAME = "local_search_projection"
 CONTRACT_VERSION = "1"
@@ -532,13 +533,12 @@ def validate_local_search_projection_payload(payload: dict[str, Any]) -> list[di
                 code="COUNT_MISMATCH",
                 message="counts.candidate_records must be at least projected_records + excluded_records",
             )
-    if isinstance(policy, dict):
-        if bool(policy.get("private_paths_exposed")) != private_path_found:
-            add_error(
-                errors,
-                code="PRIVATE_PATH_POLICY_MISMATCH",
-                message="policy.private_paths_exposed must match whether indexed_fields contain private-looking paths",
-            )
+    if isinstance(policy, dict) and bool(policy.get("private_paths_exposed")) != private_path_found:
+        add_error(
+            errors,
+            code="PRIVATE_PATH_POLICY_MISMATCH",
+            message="policy.private_paths_exposed must match whether indexed_fields contain private-looking paths",
+        )
     return errors
 
 
@@ -575,7 +575,9 @@ def validate_local_search_projection(target: Path) -> tuple[dict[str, Any], int]
 
 def main() -> int:
     args = parse_args()
-    report, exit_code = validate_local_search_projection(Path(args.target))
+    target = Path(args.target)
+    report, exit_code = validate_local_search_projection(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report["scenario"] = args.scenario
     if args.target_id:
         report["target"] = args.target_id
@@ -584,8 +586,8 @@ def main() -> int:
         "report_text": display_path(args.report_text) if args.report_text else None,
     }
     text_report = render_text_report(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
     sys.stdout.write(text_report)
     return exit_code
 

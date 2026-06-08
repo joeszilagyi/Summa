@@ -326,7 +326,9 @@ def mark_spool_record_failed(
     return write_spool_record(path, payload)
 
 
-def _recipe_anchor_path(recipe: Mapping[str, Any], *, record_path: Path, key: str, default: Path) -> Path:
+def _recipe_anchor_path(
+    recipe: Mapping[str, Any], *, record_path: Path, key: str, default: Path
+) -> Path:
     raw_root = recipe.get(key)
     if not isinstance(raw_root, str) or not raw_root.strip():
         return default
@@ -349,7 +351,9 @@ def _resolve_recipe_path(
     path_value = Path(str(raw_value))
     if path_value.is_absolute():
         return path_value
-    root = _recipe_anchor_path(recipe, record_path=record_path, key="artifact_root", default=default_root)
+    root = _recipe_anchor_path(
+        recipe, record_path=record_path, key="artifact_root", default=default_root
+    )
     return (root / path_value).resolve()
 
 
@@ -417,8 +421,8 @@ def replay_spool_record(
             record_path=record_path,
             default_root=Path.cwd(),
         )
-        execution_record, capture_events, extraction_records, paths, input_hashes = (
-            canonical_ingest.load_validated_execution_artifacts(run_dir)
+        execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+            run_dir
         )
         expected_hashes = recipe.get("input_hashes")
         if isinstance(expected_hashes, Mapping):
@@ -428,10 +432,10 @@ def replay_spool_record(
         return canonical_ingest.ingest_execution_artifacts(
             conn,
             execution_record,
-            capture_events,
-            extraction_records,
             paths=paths,
             input_hashes=input_hashes,
+            capture_events=None,
+            extraction_records=None,
             dry_run=dry_run,
             strict=strict,
             db_path=db_path,

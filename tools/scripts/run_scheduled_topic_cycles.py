@@ -9,11 +9,11 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,16 +22,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common import runtime_ledger  # noqa: E402
-from tools.common.workspace_lock import (  # noqa: E402
-    acquire_workspace_lock,
-    DEFAULT_LOCK_ROOT,
-    WorkspaceLockError,
-)
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     read_runtime_ledger,
     summarize_run_outcomes,
+)
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
+from tools.common.workspace_lock import (  # noqa: E402
+    DEFAULT_LOCK_ROOT,
+    WorkspaceLockError,
+    acquire_workspace_lock,
 )
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
@@ -55,7 +59,6 @@ class DuplicateJsonKeyError(ValueError):
 
 class NonStandardJsonConstantError(ValueError):
     """Raised for NaN, Infinity, and -Infinity JSON constants."""
-
 
 
 def _next_workspace_token() -> str:
@@ -127,7 +130,10 @@ def _bounded_failure_message(raw_message: str, *, limit: int = MAX_FAILURE_REASO
     message = (raw_message or "").strip()
     if len(message) <= limit:
         return message
-    return message[: max(limit - 64, 0)].rstrip() + f"... (truncated, {len(message) - limit} chars omitted)"
+    return (
+        message[: max(limit - 64, 0)].rstrip()
+        + f"... (truncated, {len(message) - limit} chars omitted)"
+    )
 
 
 def _set_failure(
@@ -197,7 +203,9 @@ def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
         errors.append("planned-run record decision must be selected or skipped")
     if not isinstance(record.get("cadence_reason"), str) or not record["cadence_reason"].strip():
         errors.append("planned-run record cadence_reason must be a non-blank string")
-    if record.get("skipped_reason") is not None and not isinstance(record.get("skipped_reason"), str):
+    if record.get("skipped_reason") is not None and not isinstance(
+        record.get("skipped_reason"), str
+    ):
         errors.append("planned-run record skipped_reason must be null or a string")
     if not isinstance(record.get("skipped_reasons"), list):
         errors.append("planned-run record skipped_reasons must be an array")
@@ -212,12 +220,21 @@ def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
         if max_runtime is not None and (
             not isinstance(max_runtime, int) or isinstance(max_runtime, bool) or max_runtime < 1
         ):
-            errors.append("planned-run record run_budget.max_runtime_seconds must be null or an integer >= 1")
+            errors.append(
+                "planned-run record run_budget.max_runtime_seconds must be null or an integer >= 1"
+            )
     if record.get("retry_policy") is not None and not isinstance(record.get("retry_policy"), dict):
         errors.append("planned-run record retry_policy must be null or an object")
-    if record.get("failure_state") is not None and not isinstance(record.get("failure_state"), dict):
+    if record.get("failure_state") is not None and not isinstance(
+        record.get("failure_state"), dict
+    ):
         errors.append("planned-run record failure_state must be null or an object")
-    for field in ("workspace_root", "resolved_workspace_root", "default_subject_manifest", "resolved_default_subject_manifest"):
+    for field in (
+        "workspace_root",
+        "resolved_workspace_root",
+        "default_subject_manifest",
+        "resolved_default_subject_manifest",
+    ):
         if not isinstance(record.get(field), str) or not record[field].strip():
             errors.append(f"planned-run record {field} must be a non-blank string")
 
@@ -264,15 +281,17 @@ def resolve_child_manifest(
     child_manifest_path: Path,
     proc: subprocess.CompletedProcess[str] | None,
 ) -> dict[str, Any] | None:
-    child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
-    if isinstance(child_manifest, dict):
-        return child_manifest
     if not child_manifest_path.is_file():
+        child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
+        if isinstance(child_manifest, dict):
+            return child_manifest
         return None
     try:
         raw_manifest = child_manifest_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise ScheduledCycleError(f"child manifest could not be read: {child_manifest_path}") from exc
+        raise ScheduledCycleError(
+            f"child manifest could not be read: {child_manifest_path}"
+        ) from exc
     try:
         payload = json.loads(
             raw_manifest,
@@ -280,9 +299,13 @@ def resolve_child_manifest(
             parse_constant=reject_json_constant,
         )
     except (DuplicateJsonKeyError, NonStandardJsonConstantError, json.JSONDecodeError) as exc:
-        raise ScheduledCycleError(f"child manifest could not be parsed: {child_manifest_path}") from exc
+        raise ScheduledCycleError(
+            f"child manifest could not be parsed: {child_manifest_path}"
+        ) from exc
     if not isinstance(payload, dict):
-        raise ScheduledCycleError(f"child manifest must contain a JSON object: {child_manifest_path}")
+        raise ScheduledCycleError(
+            f"child manifest must contain a JSON object: {child_manifest_path}"
+        )
     return payload
 
 
@@ -417,14 +440,7 @@ def default_cycle_invoker(
     *,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
+    return run_streaming_command(command, cwd=REPO_ROOT, timeout=timeout)
 
 
 def invoke_cycle(
@@ -548,7 +564,8 @@ def run_scheduled_cycles(
                 "--mode",
                 mode,
                 "--format",
-                "json",
+                "text",
+                "--skip-workspace-lock",
             ]
             if candidate_batch_fixture:
                 command.extend(["--candidate-batch-fixture", candidate_batch_fixture])
@@ -612,7 +629,14 @@ def run_scheduled_cycles(
                         result["scheduler_failure_state_record"] = manifest_relative_path(
                             ledger_path, run_dir=run_dir
                         )
-                        return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+                        return (
+                            result,
+                            code_delta,
+                            attempted_delta,
+                            completed_delta,
+                            failed_delta,
+                            deferred_delta,
+                        )
                     elapsed = round(monotonic() - start, 6)
             except WorkspaceLockError as exc:
                 result["outcome"] = "deferred"
@@ -626,7 +650,14 @@ def run_scheduled_cycles(
                 deferred_delta += 1
                 code_delta = EXIT_TRANSIENT_ACQUISITION_FAILURE
                 _update_global_exit_code(code_delta)
-                return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+                return (
+                    result,
+                    code_delta,
+                    attempted_delta,
+                    completed_delta,
+                    failed_delta,
+                    deferred_delta,
+                )
             except Exception as exc:
                 result["outcome"] = "failed"
                 _set_failure(
@@ -639,7 +670,14 @@ def run_scheduled_cycles(
                 failed_delta += 1
                 code_delta = EXIT_INTERNAL_CRASH
                 _update_global_exit_code(code_delta)
-                return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+                return (
+                    result,
+                    code_delta,
+                    attempted_delta,
+                    completed_delta,
+                    failed_delta,
+                    deferred_delta,
+                )
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
         result["cycle_manifest_path"] = manifest_relative_path(
@@ -705,7 +743,9 @@ def run_scheduled_cycles(
             _set_failure(
                 result=result,
                 reason_code="topic_cycle_partial_output" if is_partial else "topic_cycle_failed",
-                reason=_bounded_failure_message((proc.stderr or proc.stdout).strip() or "topic cycle failed"),
+                reason=_bounded_failure_message(
+                    command_output_excerpt(proc) or "topic cycle failed"
+                ),
                 stage="child_cycle_exec",
                 recoverability="retryable" if is_partial else "non_retryable",
             )
@@ -721,7 +761,9 @@ def run_scheduled_cycles(
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
-        result["scheduler_failure_state_record"] = manifest_relative_path(ledger_path, run_dir=run_dir)
+        result["scheduler_failure_state_record"] = manifest_relative_path(
+            ledger_path, run_dir=run_dir
+        )
         return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
 
     attempted_index = 0
@@ -874,9 +916,7 @@ def run_scheduled_cycles(
             if run_exit_code > exit_code:
                 exit_code = run_exit_code
             workspace_results[record_index] = result
-    manifest["workspace_results"] = [
-        result for result in workspace_results if result is not None
-    ]
+    manifest["workspace_results"] = [result for result in workspace_results if result is not None]
     manifest["ended_at"] = utc_now()
     if manifest["failed_workspace_count"]:
         manifest["status"] = "failed"

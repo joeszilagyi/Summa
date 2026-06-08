@@ -190,8 +190,11 @@
       "required": [
         "gather_runs_considered",
         "facet_candidates",
+        "facet_candidates_total",
         "lead_candidates",
+        "lead_candidates_total",
         "productive_leads",
+        "productive_leads_total",
         "deferred_candidates"
       ],
       "properties": {
@@ -203,11 +206,23 @@
           "type": "integer",
           "minimum": 0
         },
+        "facet_candidates_total": {
+          "type": "integer",
+          "minimum": 0
+        },
         "lead_candidates": {
           "type": "integer",
           "minimum": 0
         },
+        "lead_candidates_total": {
+          "type": "integer",
+          "minimum": 0
+        },
         "productive_leads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "productive_leads_total": {
           "type": "integer",
           "minimum": 0
         },

@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.source_db_tools import canonical_store, canonical_write_spool
 from tools.scripts import ingest_gather_candidate_batch as ingest_batch_script
 from tools.scripts import replay_canonical_write_spool as replay_script
+from tools.source_db_tools import canonical_store, canonical_write_spool
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE_BATCH = (
@@ -186,7 +186,7 @@ def test_execution_artifact_ingest_spools_on_db_unavailable(tmp_path: Path) -> N
     assert payload["status"] == "spooled"
     _path, record = first_spool_record(spool_dir)
     assert record["operation_kind"] == "execution_artifact_ingest"
-    assert len(record["operation_input"]["artifact_refs"]) == 3
+    assert len(record["operation_input"]["artifact_refs"]) == 4
 
 
 def test_review_decision_apply_spools_on_db_unavailable(tmp_path: Path) -> None:
@@ -532,7 +532,7 @@ def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_pat
         originating_tool="pytest",
         created_at=FIXED_TIMESTAMP,
     )
-    valid_path = canonical_write_spool.write_spool_record(spool_dir, record)
+    canonical_write_spool.write_spool_record(spool_dir, record)
     partial_path = nested / "partial.json"
     partial_path.write_text('{"schema_version": "canonical-write-spool-record.v1"', encoding="utf-8")
 

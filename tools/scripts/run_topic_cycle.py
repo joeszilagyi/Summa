@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
-import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +18,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
+from tools.common.workspace_lock import (  # noqa: E402
+    DEFAULT_LOCK_ROOT,
+    WorkspaceLockError,
+    acquire_workspace_lock,
+)
 from tools.scripts import resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import (  # noqa: E402
     canonical_graph_closure,
@@ -27,20 +36,25 @@ from tools.source_db_tools import (  # noqa: E402
     canonical_write_spool,
     cycle_evidence_ledger,
 )
+from tools.validators import (  # noqa: E402
+    validate_gather_candidate_batch as gather_candidate_batch_validator,  # noqa: E402
+)
+from tools.validators import (  # noqa: E402
+    validate_source_acquisition_execution as execution_validator,  # noqa: E402
+)
+from tools.validators import validate_source_adapter_handoff  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS as EXIT_FEEDBACK_PASS,
 )
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     validate_candidate_feedback_plan,
 )
-from tools.validators import validate_source_adapter_handoff  # noqa: E402
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     EXIT_PASS as EXIT_GATHER_PASS,
 )
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     validate_gather_candidate_batch,
 )
-from tools.validators import validate_source_acquisition_execution as execution_validator  # noqa: E402
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     EXIT_PASS as EXIT_EXECUTION_PASS,
 )
@@ -53,6 +67,7 @@ from tools.validators.validate_source_acquisition_execution import (  # noqa: E4
 SCHEMA_VERSION = "topic-cycle-run.v1"
 DEFAULT_FACET = "sources"
 DEFAULT_PHASE = "01a"
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 KNOWN_RUN_STATUSES = {"completed", "dry_run", "failed", "partial"}
 REMOTE_FETCH_ENABLED = False
 
@@ -173,17 +188,8 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def manifest_hash(manifest: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    ).hexdigest()
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(path, payload)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -205,6 +211,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--run-id", help="Stable cycle run id. Defaults to the run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override for deterministic tests.")
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help=(
+            "Maximum seconds to allow each child subprocess call. Defaults to 600 seconds "
+            "when not supplied."
+        ),
+    )
     parser.add_argument(
         "--facet", default=DEFAULT_FACET, help="Gather facet when no feedback plan selects one."
     )
@@ -253,6 +267,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reserved for later remote acquisition. F26 records this as disabled and refuses remote fetch.",
     )
     parser.add_argument(
+        "--skip-workspace-lock",
+        action="store_true",
+        help="Assume an outer wrapper already holds the workspace lock.",
+    )
+    parser.add_argument(
         "--degraded-spool",
         action="store_true",
         help="Preserve validated canonical-write intents as spool records if the DB is unavailable.",
@@ -289,7 +308,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--resume", action="store_true", help="Reserved; currently refuses partial runs clearly."
     )
-    parser.add_argument("--format", choices=("json", "text"), default="json")
+    parser.add_argument(
+        "--format",
+        choices=("json", "text"),
+        default="text",
+        help="Render compact text by default; use json when you need the full manifest on stdout.",
+    )
     return parser.parse_args(argv)
 
 
@@ -374,7 +398,14 @@ def build_manifest(
     }
 
 
-def build_stage_plan(*, feedback_plan_mode: str | None, build_next_feedback_plan: bool) -> list[str]:
+def build_stage_plan(
+    *,
+    feedback_plan_mode: str | None,
+    build_next_feedback_plan: bool,
+    include_source_adapter: bool = False,
+    include_execution_ingest: bool = False,
+    include_graph_closure: bool = False,
+) -> list[str]:
     if feedback_plan_mode == "auto":
         feedback_plan_pre = "build_feedback_plan_pre"
     elif feedback_plan_mode:
@@ -382,21 +413,26 @@ def build_stage_plan(*, feedback_plan_mode: str | None, build_next_feedback_plan
     else:
         feedback_plan_pre = "feedback_plan_pre"
 
-    feedback_plan_post = "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
-    return [
+    feedback_plan_post = (
+        "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
+    )
+    stages = [
         "resolve_subject_runtime",
         "resolve_domain_pack",
         "validate_canonical_store",
         feedback_plan_pre,
         "run_gather",
         "ingest_candidate_batch",
-        "execute_source_adapter",
-        "ingest_execution_artifacts",
-        feedback_plan_post,
-        "build_publication",
-        "final_canonical_store_summary",
-        "graph_closure_audit",
     ]
+    if include_source_adapter:
+        stages.append("execute_source_adapter")
+    if include_execution_ingest:
+        stages.append("ingest_execution_artifacts")
+    stages.append(feedback_plan_post)
+    stages.append("final_canonical_store_summary")
+    if include_graph_closure:
+        stages.append("graph_closure_audit")
+    return stages
 
 
 def attach_feedback_selection_explanation(
@@ -405,6 +441,7 @@ def attach_feedback_selection_explanation(
     payload: dict[str, Any],
     path: Path,
     when: str,
+    sha256: str | None = None,
 ) -> None:
     explanation = payload.get("selection_explanation")
     if not isinstance(explanation, dict):
@@ -422,17 +459,17 @@ def attach_feedback_selection_explanation(
             "source": "feedback_plan",
             "when": when,
             "path": str(path),
-            "sha256": hash_file(path),
+            "sha256": hash_file(path) if sha256 is None else sha256,
         }
     )
 
 
 def record_feedback_plan_reference(
-    manifest: dict[str, Any], *, path: Path, when: str
+    manifest: dict[str, Any], *, path: Path, when: str, sha256: str | None = None
 ) -> None:
     record = {
         "path": str(path),
-        "sha256": hash_file(path),
+        "sha256": hash_file(path) if sha256 is None else sha256,
         "when": when,
     }
     if when == "post":
@@ -495,8 +532,17 @@ def command_text(command: list[str]) -> str:
     return " ".join(command)
 
 
-def run_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
+    timeout_seconds = getattr(args, "command_timeout_seconds", None)
+    if timeout_seconds is None:
+        return DEFAULT_COMMAND_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise TopicCycleError("--command-timeout-seconds must be greater than zero")
+    return float(timeout_seconds)
+
+
+def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> object:
+    return run_streaming_command(command, cwd=cwd, timeout=timeout)
 
 
 def fail_stage(stage: StageRecord, message: str) -> NoReturn:
@@ -620,13 +666,33 @@ def validate_store_stage(
     stage.started_at = utc_now()
     stage.inputs = {"db": str(db_path)}
     try:
-        check = canonical_store.check_canonical_store(db_path)
-        summary = canonical_store.summarize_canonical_store_population(db_path)
+        conn = canonical_store.connect_existing_read_only(db_path)
+        try:
+            outline = canonical_store.load_canonical_outline()
+            version_row, table_set, extra_tables = canonical_store.validate_existing_store(
+                conn,
+                outline=outline,
+            )
+            validation = canonical_store.CheckResult(
+                db_path=canonical_store.resolve_db_path(db_path),
+                schema_version=version_row.schema_version,
+                current_migration_id=version_row.current_migration_id,
+                tables=tuple(sorted(table_set)),
+                extra_tables=tuple(sorted(extra_tables)),
+            )
+            summary = canonical_store.summarize_canonical_store_population(
+                db_path,
+                include_counts=False,
+                conn=conn,
+                validation=validation,
+            )
+        finally:
+            conn.close()
         manifest["canonical_db"]["initial_summary"] = summary
         stage.validation = {
             "status": "pass",
-            "schema_version": check.schema_version,
-            "current_migration_id": check.current_migration_id,
+            "schema_version": summary["schema_version"],
+            "current_migration_id": summary["current_migration_id"],
         }
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -681,9 +747,9 @@ def build_feedback_plan_stage(
     ]
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, (proc.stderr or proc.stdout).strip() or "feedback planner failed")
+            fail_stage(stage, command_output_excerpt(proc) or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
         report, exit_code = validate_candidate_feedback_plan(output)
         stage.validation = {
@@ -692,6 +758,7 @@ def build_feedback_plan_stage(
         }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "candidate feedback plan failed validation")
+        feedback_hash = hash_file(output)
         stage.evidence = {
             "artifact_schema_ids": {
                 "feedback_plan": payload.get("schema_version"),
@@ -706,10 +773,10 @@ def build_feedback_plan_stage(
         }
         stage.artifacts = {
             "feedback_plan": str(output),
-            "feedback_plan_sha256": hash_file(output),
+            "feedback_plan_sha256": feedback_hash,
         }
         stage.counts = payload.get("counts")
-        record_feedback_plan_reference(manifest, path=output, when=when)
+        record_feedback_plan_reference(manifest, path=output, when=when, sha256=feedback_hash)
         if when != "post" or manifest.get("next_action") is None:
             manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
@@ -717,6 +784,7 @@ def build_feedback_plan_stage(
             payload=payload,
             path=output,
             when=when,
+            sha256=feedback_hash,
         )
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -771,13 +839,15 @@ def resolve_feedback_plan(
                 "artifact_path": str(path),
             },
         }
-        record_feedback_plan_reference(manifest, path=path, when="pre")
+        feedback_hash = hash_file(path)
+        record_feedback_plan_reference(manifest, path=path, when="pre", sha256=feedback_hash)
         manifest["next_action"] = payload.get("next_action")
         attach_feedback_selection_explanation(
             manifest,
             payload=payload,
             path=path,
             when="pre",
+            sha256=feedback_hash,
         )
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -798,10 +868,17 @@ def gather_stage(
     run_dir: Path,
     runtime: dict[str, Any],
     feedback_plan: Path | None,
-) -> Path:
+) -> tuple[Path, dict[str, Any], str, dict[str, Any]]:
     stage = StageRecord(name="run_gather")
     stage.started_at = utc_now()
     gather_run_id = f"{manifest['run_id']}.gather"
+    gather_facet = args.facet
+    if feedback_plan is not None:
+        next_action = manifest.get("next_action")
+        if isinstance(next_action, dict):
+            selected_facet = next_action.get("selected_facet")
+            if isinstance(selected_facet, str) and selected_facet.strip():
+                gather_facet = selected_facet.strip()
     command = [
         sys.executable,
         str(REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"),
@@ -810,7 +887,7 @@ def gather_stage(
         "--workspace",
         str(workspace),
         "--facet",
-        args.facet,
+        gather_facet,
         "--phase",
         args.phase,
         "--mode",
@@ -835,9 +912,9 @@ def gather_stage(
         command.extend(["--cycle-depth", str(args.cycle_depth)])
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, (proc.stderr or proc.stdout).strip() or "gather failed")
+            fail_stage(stage, command_output_excerpt(proc) or "gather failed")
         payload = json.loads(proc.stdout)
         batch_path = resolve_path(payload["candidate_batch_path"], base=REPO_ROOT)
         prompt_path = resolve_path(payload["rendered_prompt_path"], base=REPO_ROOT)
@@ -847,16 +924,32 @@ def gather_stage(
             candidate_batch_sha256 = hash_file(batch_path)
         if not isinstance(rendered_prompt_sha256, str):
             rendered_prompt_sha256 = hash_file(prompt_path)
-        report, exit_code = validate_gather_candidate_batch(batch_path)
+        batch, report, exit_code = (
+            gather_candidate_batch_validator.load_validated_gather_candidate_batch(batch_path)
+        )
         stage.validation = {
             "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
             "report": report,
         }
         if exit_code != EXIT_GATHER_PASS:
             fail_stage(stage, "gather candidate batch failed validation")
+        validation_receipt = {
+            "artifact_path": str(batch_path),
+            "artifact_hash": candidate_batch_sha256,
+            "validator_name": gather_candidate_batch_validator.VALIDATOR_NAME,
+            "validator_version": gather_candidate_batch_validator.CONTRACT_VERSION,
+            "result": report,
+        }
+        validation_receipt_path = (
+            run_dir / "candidate-ingest" / "gather-candidate-batch-validation.json"
+        )
+        validation_receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(validation_receipt_path, validation_receipt)
         stage.artifacts = {
             "candidate_batch": str(batch_path),
             "candidate_batch_sha256": candidate_batch_sha256,
+            "candidate_batch_validation_receipt": str(validation_receipt_path),
+            "candidate_batch_validation_receipt_sha256": hash_file(validation_receipt_path),
             "rendered_prompt": str(prompt_path),
             "rendered_prompt_sha256": rendered_prompt_sha256,
         }
@@ -867,7 +960,7 @@ def gather_stage(
             }
         finish_stage(stage)
         add_stage(manifest, stage)
-        return batch_path
+        return batch_path, batch, candidate_batch_sha256, validation_receipt
     except TopicCycleError:
         raise
     except Exception as exc:
@@ -881,6 +974,9 @@ def candidate_ingest_stage(
     db_path: Path,
     batch_path: Path,
     run_dir: Path,
+    candidate_batch: dict[str, Any] | None = None,
+    candidate_batch_hash: str | None = None,
+    validation_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     stage = StageRecord(name="ingest_candidate_batch", required=args.mode != "dry-run")
     stage.started_at = utc_now()
@@ -902,9 +998,7 @@ def candidate_ingest_stage(
         shutil.copy2(fixture, fixture_target)
         fixture_payload = read_json(fixture, label="candidate batch fixture")
         prompt_ref = (
-            fixture_payload.get("prompt")
-            if isinstance(fixture_payload.get("prompt"), dict)
-            else {}
+            fixture_payload.get("prompt") if isinstance(fixture_payload.get("prompt"), dict) else {}
         )
         rendered_prompt_path = prompt_ref.get("rendered_prompt_path")
         if isinstance(rendered_prompt_path, str) and rendered_prompt_path:
@@ -924,8 +1018,26 @@ def candidate_ingest_stage(
                     shutil.copy2(source_prompt_path, target_prompt_path)
         ingest_batch_path = fixture_target
     stage.inputs = {"candidate_batch": str(ingest_batch_path)}
-    if args.mode == "dry-run":
+    batch = candidate_batch
+    batch_hash = candidate_batch_hash
+    if batch is None or batch_hash is None:
         batch, batch_hash = canonical_ingest.load_validated_candidate_batch(ingest_batch_path)
+    elif validation_receipt is not None:
+        receipt_artifact_path = validation_receipt.get("artifact_path")
+        receipt_artifact_hash = validation_receipt.get("artifact_hash")
+        receipt_validator_name = validation_receipt.get("validator_name")
+        receipt_validator_version = validation_receipt.get("validator_version")
+        receipt_result = validation_receipt.get("result")
+        if (
+            not isinstance(receipt_artifact_path, str)
+            or Path(receipt_artifact_path).resolve() != ingest_batch_path.resolve()
+            or receipt_artifact_hash != batch_hash
+            or receipt_validator_name != gather_candidate_batch_validator.VALIDATOR_NAME
+            or receipt_validator_version != gather_candidate_batch_validator.CONTRACT_VERSION
+            or not isinstance(receipt_result, dict)
+        ):
+            fail_stage(stage, "candidate batch validation receipt does not match the ingest batch")
+    if args.mode == "dry-run":
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             report = canonical_ingest.ingest_candidate_batch(
@@ -962,7 +1074,6 @@ def candidate_ingest_stage(
         add_stage(manifest, stage)
         return report
     try:
-        batch, batch_hash = canonical_ingest.load_validated_candidate_batch(ingest_batch_path)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             with conn:
@@ -1071,14 +1182,8 @@ def acquisition_stage(
             "remote acquisition remains disabled in F26; --allow-network was ignored"
         )
     if args.execution_run_fixture:
-        stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
-        stage.skipped_reason = "execution fixture supplied"
-        add_stage(manifest, stage)
         return resolve_path(args.execution_run_fixture), None
     if not args.source_handoff:
-        stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
-        stage.skipped_reason = "no source handoff supplied"
-        add_stage(manifest, stage)
         return None, None
     stage = StageRecord(name="execute_source_adapter")
     stage.started_at = utc_now()
@@ -1093,20 +1198,21 @@ def acquisition_stage(
         str(adapter_path),
         "--output",
         str(output_dir),
+        "--workspace-root",
+        str(run_dir),
         "--mode",
         "local",
         "--run-id",
         f"{manifest['run_id']}.execution",
         "--created-at",
         manifest["started_at"],
+        "--suppress-execution-record-stdout",
     ]
     stage.command = command
     try:
-        proc = run_command(command, cwd=REPO_ROOT)
+        proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(
-                stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed"
-            )
+            fail_stage(stage, command_output_excerpt(proc) or "source adapter execution failed")
         receipt = load_execution_artifacts(output_dir)
         report, exit_code = validate_execution_artifact_receipt(receipt)
         stage.validation = {
@@ -1147,9 +1253,6 @@ def execution_ingest_stage(
     run_dir: Path,
 ) -> dict[str, Any] | None:
     if execution_run_dir is None:
-        stage = StageRecord(name="ingest_execution_artifacts", required=False, status="skipped")
-        stage.skipped_reason = "no execution artifacts available"
-        add_stage(manifest, stage)
         return None
     stage = StageRecord(name="ingest_execution_artifacts", required=args.mode != "dry-run")
     stage.started_at = utc_now()
@@ -1159,21 +1262,19 @@ def execution_ingest_stage(
         loaded_hashes: dict[str, str] | None = None
         if execution_artifacts is None:
             try:
-                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                execution_record, paths, input_hashes = (
                     canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
                 )
             except Exception:
                 if not args.degraded_spool:
                     raise
-                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                execution_record, paths, input_hashes = (
                     canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
                 )
             loaded_paths = paths
             loaded_hashes = input_hashes
         else:
             execution_record = execution_artifacts.execution_record
-            capture_events = execution_artifacts.capture_events
-            extraction_records = execution_artifacts.extraction_records
             paths = execution_artifacts.paths
             input_hashes = execution_artifacts.input_hashes
             loaded_paths = paths
@@ -1184,10 +1285,10 @@ def execution_ingest_stage(
                 report = canonical_ingest.ingest_execution_artifacts(
                     conn,
                     execution_record,
-                    capture_events,
-                    extraction_records,
                     paths=paths,
                     input_hashes=input_hashes,
+                    capture_events=None,
+                    extraction_records=None,
                     dry_run=True,
                     db_path=db_path,
                 )
@@ -1196,10 +1297,10 @@ def execution_ingest_stage(
                     report = canonical_ingest.ingest_execution_artifacts(
                         conn,
                         execution_record,
-                        capture_events,
-                        extraction_records,
                         paths=paths,
                         input_hashes=input_hashes,
+                        capture_events=None,
+                        extraction_records=None,
                         dry_run=False,
                         db_path=db_path,
                     )
@@ -1294,12 +1395,6 @@ def execution_ingest_stage(
         fail_stage(stage, str(exc))
 
 
-def publication_stage(*, manifest: dict[str, Any]) -> None:
-    stage = StageRecord(name="build_publication", required=False, status="skipped")
-    stage.skipped_reason = "publication rebuild not requested in this F26 runner"
-    add_stage(manifest, stage)
-
-
 def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path) -> None:
     stage = StageRecord(name="final_canonical_store_summary")
     stage.started_at = utc_now()
@@ -1356,7 +1451,6 @@ def graph_closure_stage(
             }
         )
         finish_stage(stage, status="skipped")
-        add_stage(manifest, stage)
         return
 
     report_path = graph_closure_report_path(args, run_dir)
@@ -1391,6 +1485,7 @@ def graph_closure_stage(
         fail_stage(stage, str(exc))
 
     summary = report.get("summary", {})
+    report_sha256 = hash_file(report_path)
     stage.evidence = {
         "artifact_schema_ids": {
             "graph_closure_report": report.get("schema_version"),
@@ -1402,7 +1497,7 @@ def graph_closure_stage(
             "strict": bool(args.graph_closure_strict),
             "status": report.get("status"),
             "report_path": str(report_path),
-            "report_sha256": hash_file(report_path),
+            "report_sha256": report_sha256,
             "orphan_error_count": int(summary.get("true_orphan_error_count", 0)),
             "unresolved_tracked_count": int(summary.get("unresolved_tracked_count", 0)),
             "repairable_count": int(summary.get("repairable_count", 0)),
@@ -1412,7 +1507,7 @@ def graph_closure_stage(
     )
     stage.artifacts = {
         "graph_closure_report": str(report_path),
-        "graph_closure_report_sha256": hash_file(report_path),
+        "graph_closure_report_sha256": report_sha256,
     }
     stage.validation = {
         "status": report.get("status"),
@@ -1470,9 +1565,17 @@ def record_cycle_evidence_from_manifest(
     if manifest.get("dry_run") is True:
         ledger["status"] = "skipped"
         return
+    spool_dir = spool_dir_for(args, Path(str(manifest["run_dir"])))
+    workspace_id = manifest["workspace"].get("workspace_id")
+    subject_id = (
+        manifest.get("subject", {}).get("subject_id")
+        if isinstance(manifest.get("subject"), dict)
+        else None
+    )
     if not db_path.is_file():
         if args.degraded_spool:
             try:
+                manifest_hash_value = hash_file(manifest_path)
                 record = canonical_write_spool.build_spool_record(
                     operation_kind="cycle_evidence_write",
                     operation_input={
@@ -1480,31 +1583,29 @@ def record_cycle_evidence_from_manifest(
                             {
                                 "artifact_type": "topic_cycle_manifest",
                                 "artifact_path": str(manifest_path),
-                                "artifact_hash": hash_file(manifest_path),
+                                "artifact_hash": manifest_hash_value,
                             }
                         ]
                     },
                     replay_recipe={
                         "artifact_root": str(manifest_path.parent),
                         "manifest_path": manifest_path.name,
-                        "manifest_hash": hash_file(manifest_path),
+                        "manifest_hash": manifest_hash_value,
                     },
                     failure=f"canonical DB path is not a file: {db_path}",
                     canonical_db_path=db_path,
-                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    spool_dir=spool_dir,
                     originating_tool="tools/scripts/run_topic_cycle.py",
                     originating_command="run_topic_cycle.py",
                     originating_run_id=str(manifest["run_id"]),
                     topic_cycle_id=str(manifest["cycle_event_id"]),
                     stage_name="cycle_evidence_write",
-                    workspace_id=manifest["workspace"].get("workspace_id"),
-                    subject_id=manifest.get("subject", {}).get("subject_id")
-                    if isinstance(manifest.get("subject"), dict)
-                    else None,
+                    workspace_id=workspace_id,
+                    subject_id=subject_id,
                     expected_schema_version=None,
                 )
                 spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                    spool_dir, record
                 )
                 ledger["status"] = "spooled"
                 ledger["spool_record_path"] = str(spool_path)
@@ -1526,7 +1627,7 @@ def record_cycle_evidence_from_manifest(
         write_json(manifest_path, manifest)
         return
     try:
-        current_manifest_hash = manifest_hash(manifest)
+        current_manifest_hash = hash_file(manifest_path)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             with conn:
@@ -1560,20 +1661,18 @@ def record_cycle_evidence_from_manifest(
                     },
                     failure=exc,
                     canonical_db_path=db_path,
-                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    spool_dir=spool_dir,
                     originating_tool="tools/scripts/run_topic_cycle.py",
                     originating_command="run_topic_cycle.py",
                     originating_run_id=str(manifest["run_id"]),
                     topic_cycle_id=str(manifest["cycle_event_id"]),
                     stage_name="cycle_evidence_write",
-                    workspace_id=manifest["workspace"].get("workspace_id"),
-                    subject_id=manifest.get("subject", {}).get("subject_id")
-                    if isinstance(manifest.get("subject"), dict)
-                    else None,
+                    workspace_id=workspace_id,
+                    subject_id=subject_id,
                     expected_schema_version=None,
                 )
                 spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                    spool_dir, record
                 )
                 ledger["status"] = "spooled"
                 ledger["error"] = str(exc)
@@ -1604,6 +1703,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if getattr(args, "dry_run", False):
         args.mode = "dry-run"
     started_at = normalize_timestamp(args.timestamp)
+    command_timeout_seconds = resolve_command_timeout_seconds(args)
     workspace = resolve_path(args.workspace)
     db_path = resolve_path(args.db)
     run_dir = resolve_path(args.run_dir)
@@ -1622,79 +1722,113 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         workspace=workspace,
         db_path=db_path,
     )
+    manifest["budget"] = {"command_timeout_seconds": command_timeout_seconds}
     manifest["stage_plan"] = build_stage_plan(
         feedback_plan_mode=args.feedback_plan,
         build_next_feedback_plan=args.build_next_feedback_plan,
+        include_source_adapter=bool(args.source_handoff),
+        include_execution_ingest=bool(args.source_handoff or args.execution_run_fixture),
+        include_graph_closure=bool(args.graph_closure),
     )
     manifest_path = run_dir / "topic-cycle-run.json"
     started = time.monotonic()
     try:
         runtime = resolve_runtime_stage(args=args, manifest=manifest, workspace=workspace)
-        resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
-        validate_store_stage(args=args, manifest=manifest, db_path=db_path)
-        feedback_plan = resolve_feedback_plan(
-            args=args,
-            manifest=manifest,
-            workspace=workspace,
-            db_path=db_path,
-            run_dir=run_dir,
-            runtime=runtime,
-        )
-        batch_path = gather_stage(
-            args=args,
-            manifest=manifest,
-            workspace=workspace,
-            db_path=db_path,
-            run_dir=run_dir,
-            runtime=runtime,
-            feedback_plan=feedback_plan,
-        )
-        candidate_ingest_stage(
-            args=args, manifest=manifest, db_path=db_path, batch_path=batch_path, run_dir=run_dir
-        )
-        acquisition_result = acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
-        if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
-            execution_run_dir, execution_artifacts = acquisition_result
-        else:
-            execution_run_dir = acquisition_result
-            execution_artifacts = None
-        execution_ingest_stage(
-            args=args,
-            manifest=manifest,
-            db_path=db_path,
-            execution_run_dir=execution_run_dir,
-            execution_artifacts=execution_artifacts,
-            run_dir=run_dir,
-        )
-        if args.build_next_feedback_plan:
-            build_feedback_plan_stage(
-                args=args,
-                manifest=manifest,
-                workspace=workspace,
-                db_path=db_path,
-                run_dir=run_dir,
-                runtime=runtime,
-                when="post",
+        lock_context = nullcontext()
+        if not getattr(args, "skip_workspace_lock", False):
+            workspace_id = manifest["workspace"].get("workspace_id")
+            if not isinstance(workspace_id, str) or not workspace_id.strip():
+                raise TopicCycleError(
+                    "workspace_id must be resolved before acquiring the workspace lock",
+                    stage_name="workspace_lock",
+                )
+            lock_context = acquire_workspace_lock(
+                workspace_id,
+                command=f"run_topic_cycle:{run_id}",
+                lock_root=DEFAULT_LOCK_ROOT,
+                wait=False,
             )
-        else:
-            stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
-            stage.skipped_reason = "not requested"
-            add_stage(manifest, stage)
-        publication_stage(manifest=manifest)
-        final_store_stage(args=args, manifest=manifest, db_path=db_path)
-        graph_closure_stage(
-            args=args,
-            manifest=manifest,
-            db_path=db_path,
-            run_dir=run_dir,
-        )
-        if args.mode == "dry-run":
-            manifest["status"] = "dry_run"
-        elif manifest.get("spool_records"):
-            manifest["status"] = "degraded"
-        else:
-            manifest["status"] = "completed"
-        return_code = 0
+        try:
+            with lock_context:
+                resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
+                validate_store_stage(args=args, manifest=manifest, db_path=db_path)
+                feedback_plan = resolve_feedback_plan(
+                    args=args,
+                    manifest=manifest,
+                    workspace=workspace,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                    runtime=runtime,
+                )
+                batch_path, candidate_batch, candidate_batch_hash, validation_receipt = (
+                    gather_stage(
+                        args=args,
+                        manifest=manifest,
+                        workspace=workspace,
+                        db_path=db_path,
+                        run_dir=run_dir,
+                        runtime=runtime,
+                        feedback_plan=feedback_plan,
+                    )
+                )
+                candidate_ingest_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    batch_path=batch_path,
+                    run_dir=run_dir,
+                    candidate_batch=None if args.candidate_batch_fixture else candidate_batch,
+                    candidate_batch_hash=None
+                    if args.candidate_batch_fixture
+                    else candidate_batch_hash,
+                    validation_receipt=None if args.candidate_batch_fixture else validation_receipt,
+                )
+                acquisition_result = acquisition_stage(
+                    args=args, manifest=manifest, run_dir=run_dir
+                )
+                if isinstance(acquisition_result, tuple) and len(acquisition_result) == 2:
+                    execution_run_dir, execution_artifacts = acquisition_result
+                else:
+                    execution_run_dir = acquisition_result
+                    execution_artifacts = None
+                execution_ingest_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    execution_run_dir=execution_run_dir,
+                    execution_artifacts=execution_artifacts,
+                    run_dir=run_dir,
+                )
+                if args.build_next_feedback_plan:
+                    build_feedback_plan_stage(
+                        args=args,
+                        manifest=manifest,
+                        workspace=workspace,
+                        db_path=db_path,
+                        run_dir=run_dir,
+                        runtime=runtime,
+                        when="post",
+                    )
+                else:
+                    stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
+                    stage.skipped_reason = "not requested"
+                    add_stage(manifest, stage)
+                final_store_stage(args=args, manifest=manifest, db_path=db_path)
+                graph_closure_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                )
+                if args.mode == "dry-run":
+                    manifest["status"] = "dry_run"
+                elif manifest.get("spool_records"):
+                    manifest["status"] = "degraded"
+                else:
+                    manifest["status"] = "completed"
+                return_code = 0
+        except WorkspaceLockError as exc:
+            raise TopicCycleError(str(exc), stage_name="workspace_lock") from exc
     except TopicCycleError as exc:
         manifest["status"] = "failed"
         if exc.stage_name:
@@ -1719,12 +1853,6 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     finally:
         manifest["ended_at"] = utc_now()
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
-        record_cycle_evidence_from_manifest(
-            args=args,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            db_path=db_path,
-        )
         if return_code == 0:
             if args.mode == "dry-run":
                 manifest["status"] = "dry_run"
@@ -1732,7 +1860,18 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 manifest["status"] = "degraded"
             else:
                 manifest["status"] = "completed"
+        ledger = manifest.get("cycle_evidence_ledger")
+        if isinstance(ledger, dict):
+            ledger["status"] = "skipped" if args.mode == "dry-run" else "recorded"
+        # Write the finalized manifest before recording evidence so the ledger hash
+        # and manifest artifact metadata both reflect the durable on-disk state.
         write_json(manifest_path, manifest)
+        record_cycle_evidence_from_manifest(
+            args=args,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            db_path=db_path,
+        )
     return manifest, return_code
 
 

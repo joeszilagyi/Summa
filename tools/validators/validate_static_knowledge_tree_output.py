@@ -21,6 +21,7 @@ try:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (  # type: ignore
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 
 
@@ -39,7 +41,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import tools.validators.validate_knowledge_tree_build_manifest as validate_knowledge_tree_build_manifest  # noqa: E402
-
 
 VALIDATOR_NAME = "static_knowledge_tree_output"
 CONTRACT_VERSION = "1"
@@ -125,9 +126,7 @@ def is_external_reference(value: str) -> bool:
     if not stripped or stripped.startswith("#") or stripped.startswith("//"):
         return True
     split = urlsplit(stripped)
-    if split.scheme:
-        return True
-    return False
+    return bool(split.scheme)
 
 
 def normalize_internal_reference(current_route: str, raw_value: str) -> str | None:
@@ -357,6 +356,7 @@ def main() -> int:
         validate_page_links_enabled=bool(args.validate_page_links),
     )
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report = emit_report(
         contract_version=CONTRACT_VERSION,
         counts=result["counts"],
@@ -372,6 +372,7 @@ def main() -> int:
         target=args.target_id or (display_path(args.target) or args.target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

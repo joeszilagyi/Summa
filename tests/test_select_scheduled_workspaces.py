@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tools.scripts import select_scheduled_workspaces as selector
+from tools.source_db_tools import canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
@@ -201,6 +203,12 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
         "skipped_reasons": [],
         "run_budget": {"max_attempts": 2, "max_runtime_seconds": 900},
     }
+    assert payload["selected_workspaces"][0] == {
+        "workspace_id": "selected_workspace",
+        "topic_label": "Selected Workspace",
+        "lifecycle_state": "active",
+        "schedule_posture": "scheduled",
+    }
 
     manual = records_by_workspace["manual_workspace"]
     assert manual["decision"] == "skipped"
@@ -208,11 +216,28 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert manual["skipped_reason"] == "schedule_posture is manual; pass --include-manual to include it"
     assert manual["skipped_reasons"] == [manual["skipped_reason"]]
     assert manual["cadence_reason"] == "schedule_posture:manual"
+    assert payload["skipped_workspaces"][0] == {
+        "workspace_id": "manual_workspace",
+        "topic_label": "Manual Workspace",
+        "lifecycle_state": "active",
+        "schedule_posture": "manual",
+        "reasons": ["schedule_posture is manual; pass --include-manual to include it"],
+    }
 
     missing_manifest = records_by_workspace["missing_manifest_workspace"]
     assert missing_manifest["decision"] == "skipped"
     assert missing_manifest["skipped_reason"] == (
         "default_subject_manifest is missing or unresolved; scheduled runs need an explicit manifest"
+    )
+    assert "default_subject_manifest" not in payload["selected_workspaces"][0]
+    assert "resolved_workspace_root" not in payload["selected_workspaces"][0]
+    assert "default_subject_manifest" not in payload["skipped_workspaces"][0]
+    assert "resolved_workspace_root" not in payload["skipped_workspaces"][0]
+    assert explanation["selected_candidate"]["metadata"]["workspace_root"] == str(
+        selected_root
+    )
+    assert records_by_workspace["selected_workspace"]["resolved_workspace_root"] == str(
+        selected_root
     )
 
     inactive = records_by_workspace["inactive_workspace"]
@@ -297,6 +322,165 @@ def test_selector_can_allow_unresolved_subject_manifest_when_explicitly_enabled(
         str(manifest_path),
         allow_unresolved=True,
     ) is None
+
+
+def test_selector_uses_cached_subject_id_for_saturation_without_reloading_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at="2026-01-01T00:00:00Z",
+        applied_by="pytest.selector",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="gather_candidate_batch",
+                object_id="run-1",
+                event_type="gather_candidate_batch_ingest",
+                tool_name="tests/test_select_scheduled_workspaces.py",
+                run_id="run-1",
+                event_timestamp="2026-01-01T00:00:00Z",
+                source_object_namespace="topic_subject",
+                source_object_id="subject.selected",
+                note_text=json.dumps(
+                    {
+                        "subject_id": "subject.selected",
+                        "facet": "sources",
+                        "cycle_depth": 1,
+                    },
+                    sort_keys=True,
+                ),
+                provenance_event_key_v1="prov:selected:run-1",
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=event.event_key,
+                source_claim_key_v1="claim:selected:run-1",
+                about_object_ref="subject:selected_workspace",
+                claim_text="Reviewable claim",
+                claim_type="fixture_claim",
+                review_state="needs_review",
+                workspace_id="selected_workspace",
+                created_at="2026-01-01T00:00:00Z",
+                record_last_updated="2026-01-01T00:00:00Z",
+            )
+    finally:
+        conn.close()
+
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    def fail_if_reloaded(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("subject manifest should have been cached during registry validation")
+
+    monkeypatch.setattr(selector, "load_subject_id_from_manifest", fail_if_reloaded)
+
+    payload = selector.build_selection_payload(
+        selector.argparse.Namespace(
+            registry=str(registry_path),
+            workspace_ids=[],
+            include_manual=False,
+            limit=None,
+            format="json",
+            planned_runs_jsonl=None,
+            planner_run_id="planner-fixture",
+            planned_at="2026-01-01T00:00:00Z",
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+            db=str(db_path),
+            saturation_policy=str(REPO_ROOT / "config" / "topic_saturation_policy.v1.json"),
+            include_saturated=False,
+            ignore_saturation=False,
+        )
+    )
+
+    assert payload["selected_count"] == 1
+    assert payload["selected_workspaces"][0]["workspace_id"] == "selected_workspace"
+
+
+def test_selector_batches_saturation_evaluation_across_workspaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    selector.canonical_store.init_canonical_store(
+        db_path,
+        applied_at="2026-01-01T00:00:00Z",
+        applied_by="pytest.selector",
+    )
+
+    selected_root = tmp_path / "workspaces" / "selected"
+    other_root = tmp_path / "workspaces" / "other"
+    selected_root.mkdir(parents=True)
+    other_root.mkdir(parents=True)
+    selected_manifest = write_manifest(selected_root, subject_id="subject.selected")
+    other_manifest = write_manifest(other_root, subject_id="subject.other")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=selected_root,
+                manifest_path=selected_manifest,
+            ),
+            workspace_record(
+                workspace_id="other_workspace",
+                workspace_root=other_root,
+                manifest_path=other_manifest,
+            ),
+        ],
+    )
+
+    call_count = {"count": 0}
+    original_evaluate_saturations = selector.topic_saturation.evaluate_saturations
+
+    def counting_evaluate_saturations(*args: object, **kwargs: object) -> dict[str, object]:
+        call_count["count"] += 1
+        return original_evaluate_saturations(*args, **kwargs)
+
+    monkeypatch.setattr(selector.topic_saturation, "evaluate_saturations", counting_evaluate_saturations)
+
+    payload = selector.build_selection_payload(
+        selector.argparse.Namespace(
+            registry=str(registry_path),
+            workspace_ids=[],
+            include_manual=False,
+            limit=None,
+            format="json",
+            planned_runs_jsonl=None,
+            planner_run_id="planner-fixture",
+            planned_at="2026-01-01T00:00:00Z",
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+            db=str(db_path),
+            saturation_policy=str(REPO_ROOT / "config" / "topic_saturation_policy.v1.json"),
+            include_saturated=False,
+            ignore_saturation=False,
+        )
+    )
+
+    assert call_count["count"] == 1
+    assert payload["selected_count"] == 2
+    assert {workspace["workspace_id"] for workspace in payload["selected_workspaces"]} == {
+        "selected_workspace",
+        "other_workspace",
+    }
 
 
 @pytest.mark.parametrize(
@@ -527,6 +711,60 @@ def test_selector_append_planned_runs_uses_streaming_reader_for_existing_file(tm
     assert read_jsonl(planned_runs) == [record]
 
 
+def test_selector_planned_run_record_reuses_policy_snapshots_without_deepcopy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    manifest_path = tmp_path / "manifest.json"
+    run_budget = {"max_attempts": 2, "max_runtime_seconds": 900}
+    retry_policy = {"backoff_seconds": 60, "max_retryable_failures": 3}
+    failure_state = {"status": "retryable", "attempt_count": 1}
+    saturation = {
+        "schema_version": "topic-saturation.v1",
+        "policy_id": "topic-saturation.test",
+        "workspace_id": "selected_workspace",
+        "subject_id": "subject.selected",
+    }
+    entry = {
+        "workspace_id": "selected_workspace",
+        "schedule_posture": "scheduled",
+        "reasons": [],
+        "workspace_root": str(workspace_root),
+        "resolved_workspace_root": str(workspace_root),
+        "default_subject_manifest": str(manifest_path),
+        "resolved_default_subject_manifest": str(manifest_path),
+        "saturation": saturation,
+        "saturation_override": True,
+    }
+    registry_path = tmp_path / "registry.json"
+
+    def fail_deepcopy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("planned_run_record should reuse existing policy snapshots")
+
+    monkeypatch.setattr(selector.copy, "deepcopy", fail_deepcopy)
+
+    record = selector.planned_run_record(
+        entry=entry,
+        decision="selected",
+        registry_path=registry_path,
+        planner_run_id="planner-fixture",
+        planned_at="2026-01-01T00:00:00Z",
+        run_budget=run_budget,
+        retry_policy=retry_policy,
+        failure_state=failure_state,
+    )
+
+    assert record["run_budget"] is run_budget
+    assert record["retry_policy"] is retry_policy
+    assert record["failure_state"] is failure_state
+    assert record["saturation"] is saturation
+    assert record["workspace_root"] == str(workspace_root)
+    assert record["resolved_workspace_root"] == str(workspace_root)
+    assert record["default_subject_manifest"] == str(manifest_path)
+    assert record["resolved_default_subject_manifest"] == str(manifest_path)
+
+
 def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspaces" / "selected"
     workspace_root.mkdir(parents=True)
@@ -580,6 +818,66 @@ def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Pat
     record = json.loads(lines[0])
     assert record["planner_run_id"] == "planner-idempotent"
     assert record["planned_run_id"] == "planner-idempotent:selected_workspace"
+
+
+def test_selector_append_planned_runs_uses_file_lock_and_deduplicates_existing_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+    record = {
+        "schema_version": "planned-run.v1",
+        "planner_run_id": "planner-lock",
+        "planned_run_id": "planner-lock:selected_workspace",
+        "planned_at": "2026-01-01T00:00:00Z",
+        "workspace_id": "selected_workspace",
+        "decision": "selected",
+        "cadence_reason": "schedule_posture:scheduled",
+        "skipped_reason": None,
+        "skipped_reasons": [],
+        "run_budget": {"max_attempts": 1},
+        "retry_policy": None,
+        "failure_state": None,
+        "workspace_root": str(workspace_root),
+        "resolved_workspace_root": str(workspace_root),
+        "default_subject_manifest": str(manifest_path),
+        "resolved_default_subject_manifest": str(manifest_path),
+        "selection_explanation_id": "explanation-id",
+        "saturation": None,
+        "saturation_override": False,
+        "registry_path": str(registry_path),
+    }
+    planned_runs = tmp_path / "planned-runs.jsonl"
+    planned_runs.write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    flock_flags: list[int] = []
+    original_flock = selector.fcntl.flock
+
+    def counting_flock(fd: int, flag: int) -> None:
+        flock_flags.append(flag)
+        return original_flock(fd, flag)
+
+    monkeypatch.setattr(selector.fcntl, "flock", counting_flock)
+
+    selector.append_planned_run_records(planned_runs, [record, record])
+
+    assert read_jsonl(planned_runs) == [record]
+    assert flock_flags[0] == fcntl.LOCK_EX
+    assert flock_flags[-1] == fcntl.LOCK_UN
 
 
 def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path) -> None:
@@ -637,6 +935,40 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
             "run_budget": {"max_attempts": 1},
         }
     ]
+
+
+def test_selector_text_output_uses_planned_run_records_for_workspace_details(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-text",
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--format",
+            "text",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "selected[0].workspace_id=selected_workspace" in proc.stdout
+    assert f"selected[0].workspace_root={workspace_root}" in proc.stdout
+    assert f"selected[0].subject_manifest={manifest_path}" in proc.stdout
 
 
 def test_selector_canonicalizes_planned_at_across_payloads(tmp_path: Path) -> None:

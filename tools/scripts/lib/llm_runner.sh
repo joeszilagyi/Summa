@@ -21,8 +21,11 @@
 #
 # Env var inputs (all optional; lib sets safe defaults):
 #   LLM_ENGINE                codex | claude          (default: codex)
-#   CODEX_MODEL               model string            (default: gpt-5.4)
+#   CODEX_MODEL               model string            (default: gpt-5.4-mini)
 #   CODEX_REASONING_EFFORT    low | medium | high     (default: high)
+#   CODEX_MAX_OUTPUT_TOKENS    positive int            (default: 8192)
+#   CODEX_MODEL_VERBOSITY      low | medium | high     (default: low)
+#   CODEX_OUTPUT_SCHEMA_FILE   JSON schema path        (default: unset)
 #   CLAUDE_MODEL              model string or alias   (default: sonnet)
 #   CLAUDE_EFFORT             low | medium | high     (default: high)
 #
@@ -35,8 +38,11 @@ set -euo pipefail
 # Public state — read these in callers; do not set them directly
 # ---------------------------------------------------------------------------
 LLM_RUNNER_ENGINE="${LLM_ENGINE:-codex}"
-LLM_RUNNER_CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+LLM_RUNNER_CODEX_MODEL="${CODEX_MODEL:-gpt-5.4-mini}"
 LLM_RUNNER_CODEX_EFFORT="${CODEX_REASONING_EFFORT:-high}"
+LLM_RUNNER_CODEX_MAX_OUTPUT_TOKENS="${CODEX_MAX_OUTPUT_TOKENS:-8192}"
+LLM_RUNNER_CODEX_MODEL_VERBOSITY="${CODEX_MODEL_VERBOSITY:-low}"
+LLM_RUNNER_CODEX_OUTPUT_SCHEMA_FILE="${CODEX_OUTPUT_SCHEMA_FILE:-}"
 LLM_RUNNER_CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 LLM_RUNNER_CLAUDE_EFFORT="${CLAUDE_EFFORT:-high}"
 
@@ -128,7 +134,12 @@ llm_runner_init() {
         -s workspace-write
         -c "model=${LLM_RUNNER_CODEX_MODEL}"
         -c "model_reasoning_effort=${LLM_RUNNER_CODEX_EFFORT}"
+        -c "model_max_output_tokens=${LLM_RUNNER_CODEX_MAX_OUTPUT_TOKENS}"
+        -c "model_verbosity=${LLM_RUNNER_CODEX_MODEL_VERBOSITY}"
       )
+      if [[ -n "$LLM_RUNNER_CODEX_OUTPUT_SCHEMA_FILE" ]]; then
+        _LLM_RUNNER_CODEX_ARGS+=(--output-schema "$LLM_RUNNER_CODEX_OUTPUT_SCHEMA_FILE")
+      fi
       ;;
     claude)
       command -v claude >/dev/null 2>&1 || {
@@ -264,13 +275,44 @@ llm_runner_run_to_file() {
 #   Footer is separated by --- so forward-scanning parsers are unaffected.
 #   Idempotent: skips files that already contain GENERATED_BY.
 # ---------------------------------------------------------------------------
+_llm_runner_has_stamp_footer() {
+  local file="$1"
+
+  python3 - "$file" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    text = path.read_text(encoding="utf-8")
+except OSError:
+    raise SystemExit(1)
+
+pattern = re.compile(
+    r"\n---\n"
+    r"RUN_META_VERSION: run-body-footer\.v1\n"
+    r"GENERATED_BY: [^\n]+\n"
+    r"MODEL: [^\n]+\n"
+    r"PLACE: [^\n]+\n"
+    r"FACET: [^\n]+\n"
+    r"PHASE: [^\n]+\n"
+    r"RUN_TS: [^\n]+\n"
+    r"\Z"
+)
+raise SystemExit(0 if pattern.search(text) else 1)
+PY
+}
+
 llm_runner_stamp_output() {
   local file="$1" place="$2" facet="$3" phase="$4"
   local model_str tmp_file output_dir
   local footer_schema_version="run-body-footer.v1"
 
   _llm_runner_require_output_dir "$file" || return 1
-  grep -q '^GENERATED_BY:' "$file" 2>/dev/null && return 0
+  _llm_runner_has_stamp_footer "$file" && return 0
 
   if [[ -e "$file" && ! -w "$file" ]]; then
     printf 'llm_runner: output file "%s" is not writable\n' "$file" >&2

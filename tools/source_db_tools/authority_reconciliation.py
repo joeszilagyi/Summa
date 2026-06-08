@@ -82,9 +82,19 @@ def propose_candidate(
     created_at: str | None = None,
 ) -> int:
     timestamp = created_at or now_iso()
-    target_namespace = "extraction_detected_entity" if detected_entity_id is not None else "authority_reconciliation"
-    target_id = str(detected_entity_id) if detected_entity_id is not None else stable_key(raw_label, entity_type, candidate_authority_id, candidate_uri)
-    reconciliation_key = "authrec:" + stable_key(target_namespace, target_id, raw_label, candidate_authority_id, candidate_uri)
+    target_namespace = (
+        "extraction_detected_entity"
+        if detected_entity_id is not None
+        else "authority_reconciliation"
+    )
+    target_id = (
+        str(detected_entity_id)
+        if detected_entity_id is not None
+        else stable_key(raw_label, entity_type, candidate_authority_id, candidate_uri)
+    )
+    reconciliation_key = "authrec:" + stable_key(
+        target_namespace, target_id, raw_label, candidate_authority_id, candidate_uri
+    )
     conn.execute(
         """
         INSERT OR IGNORE INTO authority_reconciliation (
@@ -128,7 +138,9 @@ def propose_candidate(
         (reconciliation_key,),
     ).fetchone()
     if row is None:
-        raise RuntimeError(f"failed to insert or fetch authority reconciliation key: {reconciliation_key}")
+        raise RuntimeError(
+            f"failed to insert or fetch authority reconciliation key: {reconciliation_key}"
+        )
     return int(row[0])
 
 
@@ -164,7 +176,14 @@ def reject_candidate(
             record_last_updated=?
         WHERE authority_reconciliation_id=?
         """,
-        (reason, json.dumps(rejected, sort_keys=True), timestamp, timestamp, timestamp, reconciliation_id),
+        (
+            reason,
+            json.dumps(rejected, sort_keys=True),
+            timestamp,
+            timestamp,
+            timestamp,
+            reconciliation_id,
+        ),
     )
 
 
@@ -203,7 +222,9 @@ def accept_candidate(
     if authority_id is None:
         authority_id = row["candidate_authority_id"] or row["candidate_authority_record_id"]
     if authority_id is None:
-        raise ValueError("accepted authority id is required when no candidate authority was proposed")
+        raise ValueError(
+            "accepted authority id is required when no candidate authority was proposed"
+        )
     fetch_authority_record(conn, authority_id)
     timestamp = changed_at or now_iso()
     conn.execute(
@@ -275,7 +296,11 @@ def create_local_authority(
             timestamp,
         ),
     )
-    return int(conn.execute("SELECT authority_record_id FROM authority_record WHERE authority_key_v1=?", (key,)).fetchone()[0])
+    return int(
+        conn.execute(
+            "SELECT authority_record_id FROM authority_record WHERE authority_key_v1=?", (key,)
+        ).fetchone()[0]
+    )
 
 
 def add_authority_identifier(
@@ -342,7 +367,9 @@ def add_authority_identifier(
         (normalized["scheme"], normalized["value"]),
     ).fetchone()
     if row is None:
-        raise RuntimeError(f"failed to insert or fetch authority identifier: {normalized['scheme']}:{normalized['value']}")
+        raise RuntimeError(
+            f"failed to insert or fetch authority identifier: {normalized['scheme']}:{normalized['value']}"
+        )
     return int(row[0])
 
 
@@ -363,7 +390,9 @@ def merge_local_authority_into_external(
     if current_merge_target is not None:
         if current_merge_target == external_authority_id:
             return
-        raise ValueError(f"authority record {local_authority_id} is already merged into {current_merge_target}")
+        raise ValueError(
+            f"authority record {local_authority_id} is already merged into {current_merge_target}"
+        )
     timestamp = merged_at or now_iso()
     conn.execute(
         """

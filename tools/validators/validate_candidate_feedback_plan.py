@@ -20,6 +20,7 @@ try:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -32,6 +33,7 @@ except ModuleNotFoundError:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -99,8 +101,11 @@ SCORING_POLICY_REQUIRED_KEYS = {
 COUNT_REQUIRED_KEYS = {
     "gather_runs_considered",
     "facet_candidates",
+    "facet_candidates_total",
     "lead_candidates",
+    "lead_candidates_total",
     "productive_leads",
+    "productive_leads_total",
     "deferred_candidates",
 }
 FACET_SCORE_REQUIRED_KEYS = {
@@ -416,6 +421,24 @@ def validate_counts(payload: dict[str, Any], errors: list[dict[str, Any]]) -> No
         value = counts.get(key)
         if not isinstance(value, int) or value < 0:
             add_error(errors, code="INVALID_COUNT_VALUE", message=f"counts.{key} must be a non-negative integer")
+    if counts.get("facet_candidates_total", 0) < counts.get("facet_candidates", 0):
+        add_error(
+            errors,
+            code="COUNT_MISMATCH",
+            message="counts.facet_candidates_total must be greater than or equal to counts.facet_candidates",
+        )
+    if counts.get("lead_candidates_total", 0) < counts.get("lead_candidates", 0):
+        add_error(
+            errors,
+            code="COUNT_MISMATCH",
+            message="counts.lead_candidates_total must be greater than or equal to counts.lead_candidates",
+        )
+    if counts.get("productive_leads_total", 0) < counts.get("productive_leads", 0):
+        add_error(
+            errors,
+            code="COUNT_MISMATCH",
+            message="counts.productive_leads_total must be greater than or equal to counts.productive_leads",
+        )
 
 
 def validate_reason_codes(value: Any, *, field_name: str, errors: list[dict[str, Any]]) -> list[str]:
@@ -825,10 +848,11 @@ def main() -> int:
     args = parse_args()
     target = Path(args.target).expanduser()
     report, exit_code = validate_candidate_feedback_plan(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     if getattr(args, "report_json", None):
-        write_json(Path(args.report_json), report)
+        write_json(Path(args.report_json), report, root=report_root)
     if getattr(args, "report_text", None):
-        write_text(Path(args.report_text), render_text_report(report))
+        write_text(Path(args.report_text), render_text_report(report), root=report_root)
     if getattr(args, "format", "json") == "text":
         sys.stdout.write(render_text_report(report))
     else:

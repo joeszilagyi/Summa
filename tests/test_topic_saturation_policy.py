@@ -10,7 +10,6 @@ import pytest
 from tools.common import topic_saturation
 from tools.source_db_tools import authority_reconciliation, canonical_store
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EVALUATOR = REPO_ROOT / "tools" / "scripts" / "evaluate_topic_saturation.py"
 SELECTOR = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
@@ -126,6 +125,8 @@ def add_cycle(
         tool_name="tests/test_topic_saturation_policy.py",
         run_id=run_id,
         event_timestamp=event_timestamp,
+        source_object_namespace=topic_saturation.GATHER_EVENT_SOURCE_NAMESPACE,
+        source_object_id=subject_id,
         note_text=json.dumps(note, sort_keys=True),
         provenance_event_key_v1=f"prov:saturation:{subject_id}:{run_id}",
     )
@@ -203,6 +204,48 @@ def test_active_topic_with_reviewable_yield_stays_runnable(tmp_path: Path) -> No
     assert result["state"] == "active"
     assert result["scheduler_action"] == "run"
     assert result["recent_yield_summary"]["new_reviewable_records"] == 2  # type: ignore[index]
+
+
+def test_evaluate_saturations_batches_multiple_subjects_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            add_cycle(conn, subject_id="subject.one", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
+            add_cycle(conn, subject_id="subject.two", run_id="run-2", cycle_depth=1, event_index=2, review_state="needs_review")
+    finally:
+        conn.close()
+
+    cycle_call_count = {"count": 0}
+    original_cycle_yields = topic_saturation.cycle_yields
+
+    def counting_cycle_yields(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        cycle_call_count["count"] += 1
+        return original_cycle_yields(*args, **kwargs)
+
+    monkeypatch.setattr(topic_saturation, "cycle_yields", counting_cycle_yields)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        results = topic_saturation.evaluate_saturations(
+            conn,
+            workspace_subject_pairs=[
+                ("workspace.one", "subject.one"),
+                ("workspace.two", "subject.two"),
+            ],
+            policy=topic_saturation.load_policy(policy),
+            evaluated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        conn.close()
+
+    assert cycle_call_count["count"] == 1
+    assert set(results) == {"workspace.one", "workspace.two"}
+    assert results["workspace.one"]["subject_id"] == "subject.one"
+    assert results["workspace.two"]["subject_id"] == "subject.two"
 
 
 def test_rejected_source_access_does_not_count_as_useful_yield(tmp_path: Path) -> None:
@@ -520,7 +563,66 @@ def test_evaluator_is_read_only(tmp_path: Path) -> None:
     assert db_path.read_bytes() == before
 
 
-def test_load_recent_gather_events_escapes_like_wildcards(tmp_path: Path) -> None:
+def test_evaluate_saturation_batches_cycle_count_queries(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=3)
+    conn = canonical_store.connect_canonical_store(db_path)
+    executed_sql: list[str] = []
+    try:
+        with conn:
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                artifact_hash="artifact-one",
+            )
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                artifact_hash="artifact-two",
+            )
+            add_cycle(
+                conn,
+                subject_id="batched_subject",
+                run_id="run-3",
+                cycle_depth=3,
+                event_index=3,
+                artifact_hash="artifact-three",
+            )
+        conn.set_trace_callback(executed_sql.append)
+        result = topic_saturation.evaluate_saturation(
+            conn,
+            workspace_id="batched_subject",
+            subject_id="batched_subject",
+            policy=topic_saturation.load_policy(policy),
+            evaluated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert result["recent_yield_summary"]["cycle_count"] == 3  # type: ignore[index]
+    assert sum("SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert sum("SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM capture_event WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("SELECT COUNT(*) AS count FROM extraction_record WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
+    assert sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql) == 1
+
+
+def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     subject_id = "subject_%_literal"
     other_subject_id = "subjectXliteral"
@@ -537,5 +639,27 @@ def test_load_recent_gather_events_escapes_like_wildcards(tmp_path: Path) -> Non
         conn.close()
 
     assert [event["event_key"] for event in events] == [f"prov:saturation:{subject_id}:run-1"]
-    assert any("ESCAPE '\\'" in statement for statement in traces)
-    assert any("subject\\_\\%\\_literal" in statement for statement in traces)
+    assert any("source_object_namespace" in statement for statement in traces)
+    assert any("source_object_id" in statement for statement in traces)
+    assert not any("LIKE" in statement for statement in traces)
+
+
+def test_load_recent_gather_events_uses_sql_json_extraction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            add_cycle(conn, subject_id="json_extract_subject", run_id="run-1", cycle_depth=7, event_index=1, artifact_hash="artifact-hash")
+        monkeypatch.setattr(
+            topic_saturation,
+            "parse_note_text",
+            lambda _: (_ for _ in ()).throw(AssertionError("parse_note_text should not be called")),
+        )
+        events = topic_saturation.load_recent_gather_events(conn, subject_id="json_extract_subject", limit=1)
+    finally:
+        conn.close()
+
+    assert len(events) == 1
+    assert events[0]["facet"] == "sources"
+    assert events[0]["cycle_depth"] == 7
+    assert events[0]["_artifact_hash"] == "artifact-hash"

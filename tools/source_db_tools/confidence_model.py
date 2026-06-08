@@ -151,7 +151,9 @@ def validate_record_confidence(
         "invalid_dimension_severity", DEFAULT_INVALID_DIMENSION_SEVERITY
     )
     band_mismatch_severity = policy.get("band_mismatch_severity", DEFAULT_BAND_MISMATCH_SEVERITY)
-    missing_severity = policy.get("missing_confidence_severity", DEFAULT_MISSING_CONFIDENCE_SEVERITY)
+    missing_severity = policy.get(
+        "missing_confidence_severity", DEFAULT_MISSING_CONFIDENCE_SEVERITY
+    )
 
     for path, value in confidence_value_paths(record):
         if value is not None and not is_valid_score(value):

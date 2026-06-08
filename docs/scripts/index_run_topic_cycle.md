@@ -17,6 +17,8 @@ Purpose:
 - run graph-closure audit before cycle close and write a report artifact
 - write a `topic-cycle-run.v1` manifest with stage statuses, artifacts, hashes,
   counts, warnings, and failures
+- print compact text output by default; pass `--format json` only when you need
+  the full manifest JSON on stdout
 
 Examples:
 

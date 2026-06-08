@@ -21,6 +21,7 @@ try:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -43,7 +45,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.migration_ledger import MIGRATION_TYPES, SCHEMA_VERSION  # noqa: E402
-
 
 VALIDATOR_NAME = "migration_ledger"
 CONTRACT_VERSION = "1"
@@ -365,6 +366,7 @@ def main() -> int:
     target = Path(args.target)
     result, exit_code = validate_migration_ledger(target)
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     output_artifacts = {
         "report_json": display_path(args.report_json),
         "report_text": display_path(args.report_text),
@@ -381,11 +383,12 @@ def main() -> int:
         target=args.target_id or display_path(args.target) or str(target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     report["latest_event"] = result["latest_event"]
     text_report = render_text_report(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
     sys.stdout.write(text_report)
     return exit_code
 

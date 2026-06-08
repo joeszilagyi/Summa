@@ -112,26 +112,6 @@ def result_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run(argv: list[str] | None = None) -> dict[str, Any]:
-    args = parse_args(argv)
-    db_path = resolve_db_path(args.db)
-    conn = canonical_store.connect_canonical_store(db_path)
-    try:
-        return review_decision_apply.apply_review_decision(
-            conn,
-            target=args.target,
-            decision_action=args.decision,
-            reviewer=args.reviewer,
-            reason=args.reason,
-            expected_state=args.expected_current_state,
-            dry_run=bool(args.dry_run),
-            decided_at=args.decided_at,
-            run_id=args.run_id,
-        )
-    finally:
-        conn.close()
-
-
 def spool_review_decision(args: argparse.Namespace, failure: BaseException) -> dict[str, Any]:
     if not args.spool_dir:
         raise ApplyReviewDecisionCliError(
@@ -210,7 +190,9 @@ def _execute_review_decision(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
+                raise ApplyReviewDecisionCliError(
+                    f"{exc}; spool failed: {spool_exc}"
+                ) from spool_exc
         else:
             raise
     except Exception as exc:
@@ -218,7 +200,9 @@ def _execute_review_decision(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 return spool_review_decision(args, exc)
             except Exception as spool_exc:
-                raise ApplyReviewDecisionCliError(f"{exc}; spool failed: {spool_exc}") from spool_exc
+                raise ApplyReviewDecisionCliError(
+                    f"{exc}; spool failed: {spool_exc}"
+                ) from spool_exc
         raise
 
 

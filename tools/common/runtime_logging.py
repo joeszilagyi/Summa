@@ -174,7 +174,13 @@ def default_archive_dir(log_path: Path) -> Path:
     return log_path.parent / "logs_archive"
 
 
-def rotate_monolithic_log(log_path: Path, archive_dir: Path, *, max_bytes: int = DEFAULT_MAX_BYTES, keep: int = DEFAULT_KEEP) -> bool:
+def rotate_monolithic_log(
+    log_path: Path,
+    archive_dir: Path,
+    *,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    keep: int = DEFAULT_KEEP,
+) -> bool:
     if not log_path.exists():
         return False
     if log_path.stat().st_size < max_bytes:
@@ -202,7 +208,9 @@ def rotate_monolithic_log(log_path: Path, archive_dir: Path, *, max_bytes: int =
     return True
 
 
-def build_logger(tool_name: str, log_path: Path, *, verbose: bool = False, language: str = "py") -> logging.Logger:
+def build_logger(
+    tool_name: str, log_path: Path, *, verbose: bool = False, language: str = "py"
+) -> logging.Logger:
     """Build a logger that writes runtime events with shared tool metadata."""
     log_path = log_path.resolve()
     archive_dir = default_archive_dir(log_path)

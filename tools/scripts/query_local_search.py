@@ -9,10 +9,9 @@ import json
 import re
 import sqlite3
 import sys
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
@@ -26,14 +25,17 @@ for candidate in (
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.local_search_contract import (  # noqa: E402
-    RESULTS_SCHEMA_VERSION,
     RESULT_CLASS_BY_OBJECT_TYPE,
+    RESULTS_SCHEMA_VERSION,
     SEARCH_SCOPE_TO_OBJECT_TYPES,
 )
 from tools.scripts.build_local_search_projection import looks_like_private_path  # noqa: E402
-from tools.validators.validate_local_search_results import EXIT_PASS as EXIT_VALIDATOR_PASS  # noqa: E402
-from tools.validators.validate_local_search_results import validate_local_search_results  # noqa: E402
-
+from tools.validators.validate_local_search_results import (  # noqa: E402
+    EXIT_PASS as EXIT_VALIDATOR_PASS,  # noqa: E402
+)
+from tools.validators.validate_local_search_results import (  # noqa: E402
+    validate_local_search_results,  # noqa: E402
+)
 
 SCRIPT_PATH = "tools/scripts/query_local_search.py"
 MAX_LIMIT = 100
@@ -83,8 +85,12 @@ def parse_indexed_fields_json(indexed_fields_json: str) -> tuple[dict[str, Any],
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a safe plain-text query over a local search projection index.")
-    parser.add_argument("--index-db", required=True, help="Path to the local search projection SQLite index.")
+    parser = argparse.ArgumentParser(
+        description="Run a safe plain-text query over a local search projection index."
+    )
+    parser.add_argument(
+        "--index-db", required=True, help="Path to the local search projection SQLite index."
+    )
     parser.add_argument("--query", required=True, help="Plain-text search query.")
     parser.add_argument(
         "--scope",
@@ -92,11 +98,30 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Optional result scope to constrain object families.",
     )
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Maximum number of results to return, capped at 100.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help="Maximum number of results to return, capped at 100.",
+    )
     parser.add_argument("--offset", type=int, default=0, help="Offset into the ordered result set.")
-    parser.add_argument("--format", choices=("json", "text"), default="json", help="Stdout format for the emitted results payload.")
-    parser.add_argument("--output-json", help="Optional JSON path for the emitted local-search-results payload.")
-    parser.add_argument("--generated-at", help="Optional RFC3339 timestamp override for deterministic tests.")
+    parser.add_argument(
+        "--format",
+        choices=("json", "text"),
+        default="json",
+        help="Stdout format for the emitted results payload.",
+    )
+    parser.add_argument(
+        "--output-json", help="Optional JSON path for the emitted local-search-results payload."
+    )
+    parser.add_argument(
+        "--include-total",
+        action="store_true",
+        help="Compute counts.total_estimate with an additional count query.",
+    )
+    parser.add_argument(
+        "--generated-at", help="Optional RFC3339 timestamp override for deterministic tests."
+    )
     return parser.parse_args()
 
 
@@ -142,7 +167,9 @@ def load_metadata(conn: sqlite3.Connection) -> sqlite3.Row:
         """
     ).fetchone()
     if row is None:
-        raise SearchQueryError("projection_metadata row missing; rebuild the local search index with build_local_search_projection.py")
+        raise SearchQueryError(
+            "projection_metadata row missing; rebuild the local search index with build_local_search_projection.py"
+        )
     return row
 
 
@@ -208,25 +235,21 @@ def load_matching_rows(
     scope: str,
     limit: int,
     offset: int,
-) -> tuple[list[sqlite3.Row], int]:
+    include_total: bool = False,
+) -> tuple[list[sqlite3.Row], int | None, bool]:
     scope_clause, scope_params = build_scope_clause(scope)
     fts_scope_clause = scope_clause.replace("sp.", "")
     score_expression = sql_score_expression().replace(
         "bm25(search_projection_fts)",
         "matches.score",
     )
+    row_limit = limit if include_total else limit + 1
     rows: list[sqlite3.Row] = conn.execute(
         f"""
         SELECT
           sp.*,
           matches.score,
-          matches.match_snippet,
-            (
-            SELECT COUNT(*)
-            FROM search_projection_fts
-            JOIN search_projection AS sf_match USING (projection_id)
-            WHERE search_projection_fts MATCH ?{scope_clause}
-          ) AS total_matches
+          matches.match_snippet
         FROM (
           SELECT
             projection_id,
@@ -239,10 +262,37 @@ def load_matching_rows(
         ORDER BY {score_expression} ASC, sp.object_type ASC, sp.object_pk ASC
         LIMIT ? OFFSET ?
         """,
-        [fts_query, *scope_params, fts_query, *scope_params, limit, offset],
+        [fts_query, *scope_params, row_limit, offset],
     ).fetchall()
-    total = 0 if not rows else int(rows[0]["total_matches"])
-    return rows, total
+    if include_total:
+        total = count_matching_rows(conn, fts_query=fts_query, scope=scope)
+        truncated = offset + len(rows) < total
+        return rows, total, truncated
+
+    truncated = len(rows) > limit
+    if truncated:
+        rows = rows[:limit]
+    return rows, None, truncated
+
+
+def count_matching_rows(
+    conn: sqlite3.Connection,
+    *,
+    fts_query: str,
+    scope: str,
+) -> int:
+    scope_clause, scope_params = build_scope_clause(scope)
+    total_row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM search_projection_fts
+        JOIN search_projection AS sf_match USING (projection_id)
+        WHERE search_projection_fts MATCH ?{scope_clause}
+        """,
+        [fts_query, *scope_params],
+    ).fetchone()
+    assert total_row is not None
+    return int(total_row[0])
 
 
 def render_snippet_text(text: str, terms: list[str], *, max_length: int = 120) -> str:
@@ -375,11 +425,21 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
     conn = connect_read_only(index_path)
     try:
         metadata = load_metadata(conn)
-        rows, total = load_matching_rows(conn, fts_query=fts_query, scope=args.scope, limit=args.limit, offset=args.offset)
+        rows, total, truncated = load_matching_rows(
+            conn,
+            fts_query=fts_query,
+            scope=args.scope,
+            limit=args.limit,
+            offset=args.offset,
+            include_total=getattr(args, "include_total", False),
+        )
     finally:
         conn.close()
 
-    results = [build_result(row, terms=terms, rank=args.offset + index + 1) for index, row in enumerate(rows)]
+    results = [
+        build_result(row, terms=terms, rank=args.offset + index + 1)
+        for index, row in enumerate(rows)
+    ]
     return {
         "schema_version": RESULTS_SCHEMA_VERSION,
         "generated_at": args.generated_at or now_rfc3339(),
@@ -401,7 +461,7 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
         "counts": {
             "returned": len(results),
             "total_estimate": total,
-            "truncated": args.offset + len(results) < total,
+            "truncated": truncated,
         },
         "policy": {
             "raw_payload_indexed": False,
@@ -416,13 +476,14 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def render_text(payload: dict[str, Any]) -> str:
+    total_estimate = payload["counts"]["total_estimate"]
     lines = [
         f"schema_version={payload['schema_version']}",
         f"query={payload['query']['normalized_query']}",
         f"scope={payload['query']['scope']}",
         f"visibility_profile={payload['query']['visibility_profile']}",
         f"returned={payload['counts']['returned']}",
-        f"total_estimate={payload['counts']['total_estimate']}",
+        f"total_estimate={total_estimate if total_estimate is not None else 'unknown'}",
         f"truncated={str(payload['counts']['truncated']).lower()}",
         f"writer_surface={SCRIPT_PATH}",
     ]
@@ -431,7 +492,9 @@ def render_text(payload: dict[str, Any]) -> str:
         lines.append(f"result[{result['rank']}].result_class={result['result_class']}")
         lines.append(f"result[{result['rank']}].title={result['title']}")
         if result["matched_fields"]:
-            lines.append(f"result[{result['rank']}].matched_fields={','.join(result['matched_fields'])}")
+            lines.append(
+                f"result[{result['rank']}].matched_fields={','.join(result['matched_fields'])}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -444,7 +507,10 @@ def main() -> int:
             atomic_write_json(output_path, payload)
             report, exit_code = validate_local_search_results(output_path)
             if exit_code != EXIT_VALIDATOR_PASS:
-                message = "; ".join(error["message"] for error in report["errors"]) or "local search results validation failed"
+                message = (
+                    "; ".join(error["message"] for error in report["errors"])
+                    or "local search results validation failed"
+                )
                 raise SearchQueryError(message)
     except (OSError, SearchQueryError, sqlite3.DatabaseError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

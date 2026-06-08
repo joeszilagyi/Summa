@@ -239,6 +239,97 @@ def test_cycle_evidence_helpers_fail_clearly_on_invalid_inputs(tmp_path: Path) -
         conn.close()
 
 
+def test_skipped_cycle_stages_preserve_null_execution_timestamps(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        cycle_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-skipped-stage",
+            started_at=FIXED_TIMESTAMP,
+        )
+        stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=cycle_id,
+            run_id="run-skipped-stage",
+            stage_name="build_publication",
+            stage_order=1,
+            status="skipped",
+            skipped_reason="not requested",
+        )
+        cycle_evidence_ledger.record_cycle_stage_finish(
+            conn,
+            stage_event_id=stage_id,
+            status="skipped",
+        )
+
+        row = conn.execute(
+            "SELECT started_at, ended_at, skipped_reason FROM cycle_stage_event WHERE stage_event_id=?",
+            (stage_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["started_at"] is None
+        assert row["ended_at"] is None
+        assert row["skipped_reason"] == "not requested"
+    finally:
+        conn.close()
+
+
+def test_cycle_evidence_rejects_non_finite_json_values(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-non-finite-json",
+                metadata={"bad": float("nan")},
+            )
+    finally:
+        conn.close()
+
+
+def test_cycle_evidence_finish_rejects_reverse_chronology(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        cycle_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-time-reversal",
+            started_at="2026-06-03T12:34:56Z",
+        )
+        stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=cycle_id,
+            run_id="run-time-reversal",
+            stage_name="gather",
+            stage_order=1,
+            started_at="2026-06-03T12:34:56Z",
+        )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="earlier than started_at",
+        ):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn,
+                cycle_event_id=cycle_id,
+                status="failed",
+                ended_at="2026-06-03T12:34:55Z",
+            )
+        with pytest.raises(
+            cycle_evidence_ledger.CycleEvidenceLedgerError,
+            match="earlier than started_at",
+        ):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn,
+                stage_event_id=stage_id,
+                status="failed",
+                ended_at="2026-06-03T12:34:55Z",
+            )
+    finally:
+        conn.close()
+
+
 def test_cycle_events_for_subject_returns_latest_when_limited(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -682,6 +773,34 @@ def test_record_stage_artifacts_streams_hash_without_read_bytes(
 
     assert str(seen["artifact_hash"]).startswith("sha256:")
     assert seen["schema_id"] is None
+
+
+def test_record_stage_artifacts_hashes_embedded_dicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    embedded_report = {
+        "schema_version": "canonical-ingest-report.v1",
+        "status": "dry_run",
+        "mutated": False,
+        "counts": {"work": 0},
+    }
+    seen: dict[str, object] = {}
+
+    def fake_record_cycle_artifact_ref(conn, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return "artifact:fixture"
+
+    monkeypatch.setattr(cycle_evidence_ledger, "record_cycle_artifact_ref", fake_record_cycle_artifact_ref)
+
+    cycle_evidence_ledger._record_stage_artifacts(  # type: ignore[attr-defined]
+        object(),
+        cycle_event_id="cycle:test",
+        stage_event_id="stage:test",
+        stage={"artifacts": {"ingest_report": embedded_report}},
+    )
+
+    assert seen["artifact_type"] == "ingest_report"
+    assert seen["artifact_path"] == json.dumps(embedded_report, sort_keys=True)
+    assert str(seen["artifact_hash"]).startswith("sha256:")
+    assert seen["byte_count"] is None
 
 
 def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candidates(

@@ -7,8 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.common.llm_source_text_wrapper import load_template
+from tools.scripts.run_topic_gather import render_prompt_text
 from tools.source_db_tools import canonical_ingest, canonical_store
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER_PATH = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
@@ -83,6 +84,22 @@ def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "rendered-prompt.txt"
 
 
+def _render_place_shape_prompt(payload: dict[str, object]) -> str:
+    fixture_prompt_text = (FIXTURE_BATCH.parent / "rendered-prompt.txt").read_text(encoding="utf-8")
+    prompt_body = fixture_prompt_text.split("\n\nSubject runtime:\n", 1)[0]
+    prompt_bundle = dict(payload["prompt_bundle"])
+    prompt_bundle["source_text_wrapper_template_id"] = prompt_bundle["wrapper_template_id"]
+    return render_prompt_text(
+        prompt_body=prompt_body,
+        subject=payload["subject"],
+        facet=str(payload["facet"]["name"]),
+        phase=str(payload["phase"]),
+        bundle=prompt_bundle,
+        wrapped_blocks=[],
+        template=load_template(),
+    )
+
+
 def _place_shape_candidate_batch(
     *,
     subject_id: str,
@@ -117,6 +134,7 @@ def _place_shape_candidate_batch(
     payload["provenance"]["timestamp"] = FIXED_CREATED_AT
     payload["provenance"]["engine_invoked"] = False
     payload["provenance"]["engine_present"] = False
+    payload["prompt"]["rendered_prompt_path"] = f"{run_id}/rendered-prompt.txt"
     payload["candidates"] = [
         {
             "candidate_id": f"cand:{subject_id}.source_lead",
@@ -184,7 +202,7 @@ def _place_shape_candidate_batch(
             "text": open_question_text,
         },
     ]
-    rendered_prompt = str(payload["prompt"]["rendered_prompt"])
+    rendered_prompt = _render_place_shape_prompt(payload)
     payload["prompt"]["rendered_prompt_hash"] = hashlib.sha256(
         rendered_prompt.encode("utf-8")
     ).hexdigest()
@@ -217,6 +235,9 @@ def write_place_shape_batch(
     )
     path = tmp_path / f"{run_id}-gather-candidate-batch.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    prompt_path = path.parent / str(payload["prompt"]["rendered_prompt_path"])
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(_render_place_shape_prompt(payload), encoding="utf-8")
     return path
 
 

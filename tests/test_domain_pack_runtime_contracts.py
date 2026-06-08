@@ -6,8 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+GENERAL_PACK = REPO_ROOT / "config" / "domain_packs" / "general.v1.json"
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
 RESOLVE_GATHER = SCRIPTS_DIR / "resolve_gather_domain_pack.py"
 SUBJECT_DETAIL = SCRIPTS_DIR / "build_subject_detail_view.py"
@@ -115,6 +115,20 @@ def test_non_article_facet_resolution_does_not_fall_back_to_article_assumptions(
     assert payload["facets"]["open_questions"]["prompt_bundle_id"] == "general.gather.open_questions.v1"
     assert "article" not in payload["facets"]["open_questions"]["01a_output_stem"]
     assert payload["facets"]["open_questions"]["01a_prompt"] == "general.open_questions.seed"
+
+
+def test_resolve_prompt_bundles_does_not_retain_raw_template_arrays() -> None:
+    pack = json.loads(GENERAL_PACK.read_text(encoding="utf-8"))
+    bundles = resolve_subject_runtime.resolve_prompt_bundles(pack, ["sources"])
+
+    bundle = bundles["sources"]
+    assert bundle["phase_templates"] == {"01a": "general.sources.seed", "01r": "general.sources.review"}
+    assert bundle["resolved_phase_prompt_files"] == {
+        "01a": "general.sources.seed",
+        "01r": "general.sources.review",
+    }
+    assert "template_ids" not in bundle
+    assert "template_files" not in bundle
 
 
 def test_subject_detail_view_uses_normalized_prompt_bundle_metadata(tmp_path: Path) -> None:

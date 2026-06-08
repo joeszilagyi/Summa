@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import os
 import json
+import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
-
 
 EXIT_PASS = 0
 EXIT_VALIDATION_FAILED = 1
@@ -54,6 +53,13 @@ def add_report_args(parser: argparse.ArgumentParser) -> None:
         "--report-text",
         help="Write the human-readable report text to this path.",
     )
+    parser.add_argument(
+        "--report-root",
+        help=(
+            "Trusted root directory for report output paths. When omitted, the "
+            "validator output root defaults to the validated target's directory."
+        ),
+    )
 
 
 def display_path(path_value: str | None) -> str | None:
@@ -96,13 +102,42 @@ def _write_atomically(path: Path, body: str) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
-def write_text(path_value: str | None, body: str) -> None:
+def resolve_report_root(
+    target: str | Path,
+    *,
+    report_root: str | Path | None = None,
+) -> Path:
+    if report_root is not None:
+        root = Path(report_root).expanduser()
+        return (Path.cwd() / root).resolve() if not root.is_absolute() else root.resolve()
+
+    target_path = Path(target).expanduser()
+    resolved_target = target_path.resolve()
+    if target_path.exists() and target_path.is_dir():
+        return resolved_target
+    return resolved_target.parent
+
+
+def resolve_report_path(path_value: str, *, root: Path) -> Path:
+    candidate_path = Path(path_value).expanduser()
+    if not candidate_path.is_absolute():
+        candidate_path = root / candidate_path
+    candidate_path = candidate_path.resolve()
+    resolved_root = root.resolve()
+    try:
+        candidate_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"report path escapes the allowed report root: {candidate_path}") from exc
+    return candidate_path
+
+
+def write_text(path_value: str | None, body: str, *, root: Path) -> None:
     if path_value is None:
         return
-    _write_atomically(Path(path_value), body)
+    _write_atomically(resolve_report_path(path_value, root=root), body)
 
 
-def write_json(path_value: str | None, payload: dict[str, Any]) -> None:
+def write_json(path_value: str | None, payload: dict[str, Any], *, root: Path) -> None:
     if path_value is None:
         return
     body = json.dumps(
@@ -112,7 +147,7 @@ def write_json(path_value: str | None, payload: dict[str, Any]) -> None:
         sort_keys=True,
         allow_nan=False,
     ) + "\n"
-    _write_atomically(Path(path_value), body)
+    _write_atomically(resolve_report_path(path_value, root=root), body)
 
 
 def render_text_report(report: dict[str, Any]) -> str:
@@ -154,6 +189,7 @@ def emit_report(
     target: str,
     validator: str,
     warnings: list[dict[str, Any]],
+    report_root: str | Path | None = None,
 ) -> dict[str, Any]:
     report = {
         "contract_version": contract_version,
@@ -167,6 +203,7 @@ def emit_report(
         "warnings": warnings,
     }
     text_report = render_text_report(report)
-    write_json(report_json_path, report)
-    write_text(report_text_path, text_report)
+    root = resolve_report_root(target, report_root=report_root)
+    write_json(report_json_path, report, root=root)
+    write_text(report_text_path, text_report, root=root)
     return report

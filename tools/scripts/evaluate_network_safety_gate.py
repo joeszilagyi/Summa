@@ -24,6 +24,7 @@ from tools.validators.common import (  # noqa: E402
     EXIT_PASS,
     EXIT_VALIDATION_FAILED,
     add_report_args,
+    resolve_report_root,
     write_json,
     write_text,
 )
@@ -72,6 +73,7 @@ def render_text(report: dict[str, object]) -> str:
 def main() -> int:
     args = parse_args()
     target = Path(args.target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     try:
         payload = load_request(target)
     except Exception as exc:
@@ -80,8 +82,8 @@ def main() -> int:
 
     report = evaluate_request(payload)
     text_report = render_text(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
 
     if args.format == "json":
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")

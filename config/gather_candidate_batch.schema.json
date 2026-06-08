@@ -109,6 +109,12 @@
         "null"
       ]
     },
+    "raw_engine_output_hash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "engine_output_ref": {
       "type": [
         "string",
@@ -150,6 +156,9 @@
           ]
         },
         "invoked": {
+          "type": "boolean"
+        },
+        "cache_hit": {
           "type": "boolean"
         },
         "engine_present": {
@@ -324,8 +333,6 @@
       "required": [
         "bundle_key",
         "bundle_id",
-        "template_ids",
-        "template_files",
         "selected_template_id",
         "selected_template_file",
         "wrapper_template_id"
@@ -586,6 +593,21 @@
         },
         "context_hash": {
           "$ref": "#/$defs/sha256"
+        },
+        "prior_state_rendered_source_ref": {
+          "type": "string",
+          "const": "metadata:prior-state"
+        },
+        "prior_state_rendered_provenance": {
+          "type": "string",
+          "const": "prior canonical state context"
+        },
+        "prior_state_rendered_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "prior_state_rendered_byte_count": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -675,6 +697,21 @@
             "minLength": 1
           }
         },
+        "next_action_rendered_source_ref": {
+          "type": "string",
+          "const": "metadata:feedback-plan"
+        },
+        "next_action_rendered_provenance": {
+          "type": "string",
+          "const": "candidate feedback plan next action"
+        },
+        "next_action_rendered_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "next_action_rendered_byte_count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "next_action": {
           "type": "object"
         }
@@ -708,7 +745,10 @@
         "block_id",
         "source_ref",
         "provenance",
+        "resolved_source_path",
         "hazard_flags",
+        "start_offset",
+        "end_offset",
         "byte_count",
         "sha256"
       ],
@@ -725,12 +765,24 @@
           "type": "string",
           "minLength": 1
         },
+        "resolved_source_path": {
+          "type": "string",
+          "minLength": 1
+        },
         "hazard_flags": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
           }
+        },
+        "start_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_offset": {
+          "type": "integer",
+          "minimum": 0
         },
         "byte_count": {
           "type": "integer",
@@ -869,6 +921,9 @@
         "engine_invoked": {
           "type": "boolean"
         },
+        "engine_cache_hit": {
+          "type": "boolean"
+        },
         "engine_present": {
           "type": "boolean"
         },
@@ -914,6 +969,18 @@
           "minimum": 1
         },
         "stamped_output_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stamped_output_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stamped_output_footer_hash": {
           "type": [
             "string",
             "null"

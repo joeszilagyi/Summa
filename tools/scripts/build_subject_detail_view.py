@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -152,7 +151,8 @@ def facet_entries(manifest: dict[str, Any], pack: dict[str, Any]) -> list[dict[s
             if bundle is None:
                 entry["prompt_bundle_status"] = "missing"
             else:
-                template_files = bundle.get("template_files")
+                raw_bundle = pack.get("prompt_bundles", {}).get(bundle_key, {})
+                template_files = raw_bundle.get("template_files")
                 if not isinstance(template_files, list):
                     template_files = []
                 entry.update(

@@ -89,6 +89,9 @@ def test_empty_db_bootstrap_creates_required_tables_and_metadata(tmp_path: Path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == canonical_store.DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+        assert int(conn.execute("PRAGMA synchronous").fetchone()[0]) == 1
         assert canonical_store.actual_tables(conn) == expected_bootstrap_tables()
         version_row = canonical_store.get_schema_version(conn)
         assert version_row is not None
@@ -101,6 +104,28 @@ def test_empty_db_bootstrap_creates_required_tables_and_metadata(tmp_path: Path)
             int(conn.execute("PRAGMA user_version").fetchone()[0])
             == canonical_store.CURRENT_SCHEMA_VERSION
         )
+    finally:
+        conn.close()
+
+
+def test_connect_canonical_store_can_opt_into_rollback_journal_mode(tmp_path: Path) -> None:
+    db_path = tmp_path / "rollback.sqlite"
+    conn = canonical_store.connect_canonical_store(db_path, journal_mode="DELETE")
+    try:
+        assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == canonical_store.DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+        assert int(conn.execute("PRAGMA synchronous").fetchone()[0]) == 2
+    finally:
+        conn.close()
+
+
+def test_connect_existing_read_only_sets_busy_timeout(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_existing_read_only(db_path)
+    try:
+        assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+        assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == canonical_store.DEFAULT_SQLITE_BUSY_TIMEOUT_MS
     finally:
         conn.close()
 
@@ -249,6 +274,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -267,6 +293,10 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
     assert version_row is not None
     assert version_row.schema_version == canonical_store.CURRENT_SCHEMA_VERSION
     assert version_row.current_migration_id == canonical_store.CURRENT_MIGRATION_ID
+    assert {
+        "ix_source_claim_provenance_event_claim_type",
+        "ix_source_relationship_provenance_workspace_predicate",
+    } <= indexes
 
 
 def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_indexes(
@@ -297,6 +327,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -409,6 +440,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0005_extraction_detected_entity_workspace",
         "0006_reconciliation_hot_path_indexes",
         "0007_source_claim_open_question_status",
+        "0008_source_reconciliation_hot_path_indexes",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)

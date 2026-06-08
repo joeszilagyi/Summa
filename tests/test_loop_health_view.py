@@ -6,9 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tools.source_db_tools import canonical_store, loop_health
-from tools.source_db_tools import cycle_evidence_ledger
+import pytest
 
+from tools.source_db_tools import canonical_store, cycle_evidence_ledger, loop_health
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_SCRIPT = REPO_ROOT / "tools" / "scripts" / "build_operator_dashboard.py"
@@ -495,6 +495,51 @@ def test_loop_health_summary_is_read_only(tmp_path: Path) -> None:
 
     assert summary["read_only"] is True
     assert before == after
+
+
+def test_loop_health_summary_uses_fast_population_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            add_cycle(conn, run_id="run-1", cycle_depth=1, timestamp="2026-06-04T10:00:00Z", reviewable_claims=1)
+    finally:
+        conn.close()
+
+    include_counts_calls: list[bool] = []
+
+    def fake_summary(db_path: Path, *, include_counts: bool = True) -> dict[str, object]:
+        include_counts_calls.append(include_counts)
+        return {
+            "path": str(db_path),
+            "exists": True,
+            "initialized": True,
+            "valid": True,
+            "schema_version": 8,
+            "current_migration_id": "m8",
+            "status": "initialized_empty",
+            "family_counts": {},
+            "table_counts": {},
+            "total_rows": None,
+            "last_provenance_event_at": None,
+            "last_provenance_event_type": None,
+            "last_provenance_event_id": None,
+            "last_ingest_at": None,
+            "last_ingest_event_type": None,
+            "last_ingest_provenance_event_id": None,
+            "warnings": [],
+            "errors": [],
+            "recommended_interpretation": "Canonical store is initialized and valid, but contains no canonical records yet.",
+        }
+
+    monkeypatch.setattr(canonical_store, "summarize_canonical_store_population", fake_summary)
+
+    summary = loop_health.summarize_loop_health(db_path, subject_id="fixture_subject", now=FIXED_NOW)
+
+    assert include_counts_calls == [False]
+    assert summary["read_only"] is True
 
 
 def test_local_doctor_includes_loop_health_section(tmp_path: Path) -> None:

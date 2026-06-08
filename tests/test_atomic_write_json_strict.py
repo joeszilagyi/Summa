@@ -36,7 +36,18 @@ def test_validator_write_json_rejects_nonstandard_json_constants(tmp_path) -> No
     output = tmp_path / "report.json"
 
     with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
-        write_json(str(output), {"value": -math.inf})
+        write_json(str(output), {"value": -math.inf}, root=tmp_path)
+
+    assert not output.exists()
+
+
+def test_validator_write_json_rejects_output_outside_root(tmp_path) -> None:
+    root = tmp_path / "reports"
+    root.mkdir()
+    output = tmp_path.parent / "escape.json"
+
+    with pytest.raises(ValueError, match="report path escapes the allowed report root"):
+        write_json(str(output), {"value": 1}, root=root)
 
     assert not output.exists()
 

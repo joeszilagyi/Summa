@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 import hashlib
+import importlib.util
 import json
 import sqlite3
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
@@ -505,6 +504,58 @@ def test_projection_is_deterministic_when_rows_are_inserted_in_different_orders(
     ]
 
 
+def test_projection_streams_index_before_materializing_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "streamed_projection.sqlite"
+    args = SimpleNamespace(
+        db=str(db),
+        profile="public_preview",
+        index_db=str(index_db),
+        output_json=None,
+        correction_ledger=str(create_correction_ledger(tmp_path)),
+        generated_at="2026-06-02T00:00:00Z",
+        format="json",
+        validate_index_file=False,
+    )
+
+    observed: dict[str, object] = {}
+    original_write_index = builder.write_index
+
+    def wrapped_write_index(
+        index_path: Path,
+        payload: dict[str, object],
+        *,
+        validate_index_file: bool = False,
+        records_path: Path | None = None,
+        defer_metadata: bool = False,
+    ) -> None:
+        if records_path is not None:
+            observed["payload_keys"] = set(payload)
+            observed["defer_metadata"] = defer_metadata
+            observed["records_path"] = records_path
+            assert "records" not in payload
+            assert "excluded_records" not in payload
+        return original_write_index(
+            index_path,
+            payload,
+            validate_index_file=validate_index_file,
+            records_path=records_path,
+            defer_metadata=defer_metadata,
+        )
+
+    monkeypatch.setattr(builder, "write_index", wrapped_write_index)
+
+    payload = builder.build_projection_payload(args, index_path=index_db)
+
+    assert observed["defer_metadata"] is True
+    assert isinstance(observed["records_path"], Path)
+    assert "records" in payload
+    assert "excluded_records" in payload
+    builder.validate_projection_index_file(index_db, payload)
+
+
 def test_builder_with_output_json_does_not_duplicate_json_stdout(tmp_path: Path) -> None:
     db = create_search_db(tmp_path)
     output_json = tmp_path / "local_projection.json"
@@ -753,8 +804,48 @@ def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: P
         generated_at="2026-06-02T00:00:00Z",
     )
     with pytest.raises(builder.SearchProjectionError):
-        builder.write_index(index_db, builder.build_projection_payload(args))
+        builder.write_index(index_db, builder.build_projection_payload(args), validate_index_file=True)
 
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT title
+            FROM search_projection
+            WHERE object_ref='work:1'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row[0] == "Public Work"
+
+
+def test_builder_skips_full_validation_by_default(tmp_path: Path, monkeypatch) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    payload = builder.build_projection_payload(
+        SimpleNamespace(
+            db=str(db),
+            profile="local",
+            correction_ledger=None,
+            generated_at="2026-06-02T00:00:00Z",
+        )
+    )
+
+    called = 0
+
+    def fail_validation(index_path: Path, payload: dict[str, object]) -> None:
+        nonlocal called
+        called += 1
+        raise builder.SearchProjectionError("full validation should not run by default")
+
+    monkeypatch.setattr(builder, "validate_projection_index_file", fail_validation)
+
+    builder.write_index(index_db, payload)
+
+    assert called == 0
     conn = sqlite3.connect(index_db)
     try:
         row = conn.execute(

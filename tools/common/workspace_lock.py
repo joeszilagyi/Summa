@@ -11,15 +11,18 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK_ROOT = REPO_ROOT / "runtime" / "locks"
 ID_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+HEARTBEAT_REFRESH_INTERVAL_SECONDS = 30.0
 
 
 class WorkspaceLockError(RuntimeError):
@@ -30,12 +33,24 @@ def safe_workspace_id(workspace_id: str) -> str:
     if not workspace_id or workspace_id.strip() != workspace_id:
         raise WorkspaceLockError("workspace_id must be a non-blank trimmed string")
     if any(char not in ID_SAFE_CHARS for char in workspace_id):
-        raise WorkspaceLockError("workspace_id may contain only letters, numbers, dot, underscore, and hyphen")
+        raise WorkspaceLockError(
+            "workspace_id may contain only letters, numbers, dot, underscore, and hyphen"
+        )
     return workspace_id
 
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_timestamp(value: str) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).timestamp()
 
 
 def lock_path_for(workspace_id: str, lock_root: Path = DEFAULT_LOCK_ROOT) -> Path:
@@ -93,10 +108,21 @@ def stale_reason(path: Path, *, stale_after_seconds: int, now: float | None = No
     if host == socket.gethostname() and isinstance(pid, int) and not pid_is_alive(pid):
         return "dead_pid"
 
-    age = current_time - path.stat().st_mtime
+    heartbeat_at = metadata.get("heartbeat_at")
+    heartbeat_timestamp = parse_timestamp(heartbeat_at) if isinstance(heartbeat_at, str) else None
+    if heartbeat_timestamp is None:
+        age = current_time - path.stat().st_mtime
+    else:
+        age = current_time - heartbeat_timestamp
     if age >= stale_after_seconds:
         return "heartbeat_expired"
     return None
+
+
+def heartbeat_refresh_interval_seconds(stale_after_seconds: int) -> float:
+    if stale_after_seconds <= 0:
+        return HEARTBEAT_REFRESH_INTERVAL_SECONDS
+    return max(0.01, min(HEARTBEAT_REFRESH_INTERVAL_SECONDS, stale_after_seconds / 3.0))
 
 
 def quarantine_stale_lock(path: Path, *, reason: str, quarantine_root: Path | None = None) -> Path:
@@ -160,28 +186,65 @@ def acquire_workspace_lock(
             except BlockingIOError as exc:
                 handle.close()
                 if not wait or (timeout_seconds and time.monotonic() - start >= timeout_seconds):
-                    raise WorkspaceLockError(f"workspace lock is already held: {lock_path}") from exc
+                    raise WorkspaceLockError(
+                        f"workspace lock is already held: {lock_path}"
+                    ) from exc
                 time.sleep(0.1)
                 continue
 
-            reason = stale_reason(lock_path, stale_after_seconds=stale_after_seconds) if lock_path.stat().st_size else None
+            reason = (
+                stale_reason(lock_path, stale_after_seconds=stale_after_seconds)
+                if lock_path.stat().st_size
+                else None
+            )
             if reason and break_stale:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
                 quarantine_stale_lock(lock_path, reason=reason)
                 continue
             if reason and not break_stale:
-                raise WorkspaceLockError(f"workspace lock appears stale ({reason}) and break_stale is false: {lock_path}")
+                raise WorkspaceLockError(
+                    f"workspace lock appears stale ({reason}) and break_stale is false: {lock_path}"
+                )
 
-            write_metadata(handle, metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path))
+            metadata = metadata_for(workspace_id=workspace_id, command=command, lock_path=lock_path)
+            write_metadata(handle, metadata)
+            refresh_stop = threading.Event()
+            refresh_lock = threading.Lock()
+            refresh_interval = heartbeat_refresh_interval_seconds(stale_after_seconds)
+
+            def refresh_heartbeat(
+                *,
+                _stop: threading.Event = refresh_stop,
+                _interval: float = refresh_interval,
+                _lock: threading.Lock = refresh_lock,
+                _handle=handle,
+                _metadata=metadata,
+            ) -> None:
+                while not _stop.wait(_interval):
+                    with _lock:
+                        try:
+                            write_metadata(_handle, _metadata)
+                        except OSError:
+                            return
+
+            heartbeat_thread = threading.Thread(
+                target=refresh_heartbeat,
+                name=f"workspace-lock-heartbeat-{workspace_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
             try:
                 yield lock_path
             finally:
                 try:
-                    handle.seek(0)
-                    handle.truncate()
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                    refresh_stop.set()
+                    heartbeat_thread.join()
+                    with refresh_lock:
+                        handle.seek(0)
+                        handle.truncate()
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 finally:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     handle.close()
@@ -189,16 +252,16 @@ def acquire_workspace_lock(
             return
         except Exception:
             if not handle.closed:
-                try:
+                with suppress(OSError):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
                 handle.close()
             raise
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Acquire a workspace lock and optionally run a command.")
+    parser = argparse.ArgumentParser(
+        description="Acquire a workspace lock and optionally run a command."
+    )
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--lock-root", default=str(DEFAULT_LOCK_ROOT))
     parser.add_argument("--command-name", default="workspace-lock")
@@ -233,11 +296,17 @@ def main() -> int:
             if args.print_path:
                 print(path)
             if command:
-                timeout_seconds = args.command_timeout_seconds if args.command_timeout_seconds > 0 else None
+                timeout_seconds = (
+                    args.command_timeout_seconds if args.command_timeout_seconds > 0 else None
+                )
                 try:
                     return subprocess.run(command, check=False, timeout=timeout_seconds).returncode
                 except subprocess.TimeoutExpired:
-                    timeout_text = f"{args.command_timeout_seconds:g}" if args.command_timeout_seconds > 0 else "0"
+                    timeout_text = (
+                        f"{args.command_timeout_seconds:g}"
+                        if args.command_timeout_seconds > 0
+                        else "0"
+                    )
                     print(
                         f"Error: command timed out after {timeout_text} seconds: {' '.join(command)}",
                         file=sys.stderr,

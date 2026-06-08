@@ -13,7 +13,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -40,14 +39,29 @@ def run_check(path: Path, *, quick: bool = False) -> dict[str, Any]:
     try:
         conn = connect_readonly(path)
     except (sqlite3.DatabaseError, SQLiteSafetyError) as exc:
-        return {"database": str(path), "operation": pragma, "status": "fail", "messages": [str(exc)]}
+        return {
+            "database": str(path),
+            "operation": pragma,
+            "status": "fail",
+            "messages": [str(exc)],
+        }
     try:
         rows = [row[0] for row in conn.execute(f"PRAGMA {pragma}").fetchall()]
     except sqlite3.DatabaseError as exc:
-        return {"database": str(path), "operation": pragma, "status": "fail", "messages": [str(exc)]}
+        return {
+            "database": str(path),
+            "operation": pragma,
+            "status": "fail",
+            "messages": [str(exc)],
+        }
     finally:
         conn.close()
-    return {"database": str(path), "operation": pragma, "status": "pass" if rows == ["ok"] else "fail", "messages": rows}
+    return {
+        "database": str(path),
+        "operation": pragma,
+        "status": "pass" if rows == ["ok"] else "fail",
+        "messages": rows,
+    }
 
 
 def checkpoint(path: Path, *, mode: str = "PASSIVE") -> dict[str, Any]:
@@ -56,7 +70,13 @@ def checkpoint(path: Path, *, mode: str = "PASSIVE") -> dict[str, Any]:
         row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
     finally:
         conn.close()
-    return {"database": str(path), "operation": "checkpoint", "mode": mode, "status": "pass", "result": list(row) if row else []}
+    return {
+        "database": str(path),
+        "operation": "checkpoint",
+        "mode": mode,
+        "status": "pass",
+        "result": list(row) if row else [],
+    }
 
 
 def backup_database(
@@ -131,7 +151,12 @@ def backup_database(
 
 def restore_verify(backup_path: Path) -> dict[str, Any]:
     if not backup_path.exists():
-        return {"backup_path": str(backup_path), "operation": "restore-verify", "status": "fail", "messages": ["backup not found"]}
+        return {
+            "backup_path": str(backup_path),
+            "operation": "restore-verify",
+            "status": "fail",
+            "messages": ["backup not found"],
+        }
     with tempfile.TemporaryDirectory(prefix="sqlite-restore-verify-") as temp_dir:
         restored = Path(temp_dir) / backup_path.name
         shutil.copy2(backup_path, restored)
@@ -175,7 +200,9 @@ def parse_args() -> argparse.Namespace:
     for name in ("integrity-check", "quick-check", "checkpoint", "profile"):
         cmd = sub.add_parser(name)
         cmd.add_argument("database", type=Path)
-    sub.choices["checkpoint"].add_argument("--mode", default="PASSIVE", choices=("PASSIVE", "FULL", "RESTART", "TRUNCATE"))
+    sub.choices["checkpoint"].add_argument(
+        "--mode", default="PASSIVE", choices=("PASSIVE", "FULL", "RESTART", "TRUNCATE")
+    )
 
     backup = sub.add_parser("backup")
     backup.add_argument("database", type=Path)

@@ -18,7 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(REPO_ROOT) not in sys.path:
@@ -26,18 +25,18 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
+import validate_subject_manifest  # noqa: E402
+import validate_topic_workspace_registry  # noqa: E402
+
 from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
-    is_tracked_registry_path,
     is_path_within,
+    is_tracked_registry_path,
     load_or_initialize_registry_json,
     reference_path_for_registry,
     resolve_existing_path,
     write_registry_json,
 )
-import validate_subject_manifest  # noqa: E402
-import validate_topic_workspace_registry  # noqa: E402
-
 
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -67,26 +66,35 @@ def parse_args() -> argparse.Namespace:
             "Example:\n"
             "  tools/scripts/Index_New_Topic.sh --non-interactive --format json \\\n"
             "    --topic-label 'Monarch butterflies' \\\n"
-            "    --workspace-root \"$HOME/indexer-workspaces/monarch_butterflies\" \\\n"
+            '    --workspace-root "$HOME/indexer-workspaces/monarch_butterflies" \\\n'
             "    --domain-pack organism.v1\n"
         ),
     )
-    parser.add_argument("--registry", help="Optional path to the topic workspace registry JSON file.")
+    parser.add_argument(
+        "--registry", help="Optional path to the topic workspace registry JSON file."
+    )
     parser.add_argument(
         "--allow-tracked-registry",
         action="store_true",
         help="Allow writing a registry file under tracked config/ paths.",
     )
     parser.add_argument("--topic-label", help="Human-readable label for the topic/workspace.")
-    parser.add_argument("--workspace-id", help="Stable workspace identifier. Defaults from topic label.")
+    parser.add_argument(
+        "--workspace-id", help="Stable workspace identifier. Defaults from topic label."
+    )
     parser.add_argument(
         "--workspace-root",
         help="New isolated root directory for this topic workspace. Must not already exist.",
     )
     parser.add_argument("--domain-pack", help="Domain pack ID such as general.v1 or organism.v1.")
-    parser.add_argument("--subject-id", help="Subject manifest ID. Defaults from the domain-pack family and workspace ID.")
+    parser.add_argument(
+        "--subject-id",
+        help="Subject manifest ID. Defaults from the domain-pack family and workspace ID.",
+    )
     parser.add_argument("--display-name", help="Subject display name. Defaults from topic label.")
-    parser.add_argument("--scope-statement", help="Subject scope statement. Defaults to a bootstrap scaffold.")
+    parser.add_argument(
+        "--scope-statement", help="Subject scope statement. Defaults to a bootstrap scaffold."
+    )
     parser.add_argument(
         "--languages",
         help="Comma-separated languages. Defaults to en.",
@@ -210,9 +218,13 @@ def load_domain_pack(domain_pack: str) -> dict[str, Any]:
     except OSError as exc:
         raise BootstrapError(f"domain pack file not found: {pack_path}") from exc
     except UnicodeDecodeError as exc:
-        raise BootstrapError(f"domain pack file could not be decoded as UTF-8: {pack_path}") from exc
+        raise BootstrapError(
+            f"domain pack file could not be decoded as UTF-8: {pack_path}"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise BootstrapError(f"domain pack file could not be parsed: {pack_path} (line {exc.lineno})") from exc
+        raise BootstrapError(
+            f"domain pack file could not be parsed: {pack_path} (line {exc.lineno})"
+        ) from exc
     if not isinstance(payload, dict):
         raise BootstrapError(f"domain pack file must contain a JSON object: {pack_path}")
     return payload
@@ -333,9 +345,7 @@ def build_registry_entry(
         "lifecycle_state": lifecycle_state,
         "schedule_posture": schedule_posture,
         "workspace_policy_class": workspace_policy_class,
-        "notes": [
-            "Bootstrap-created workspace entry. Review before unattended production use."
-        ],
+        "notes": ["Bootstrap-created workspace entry. Review before unattended production use."],
     }
 
 
@@ -410,11 +420,15 @@ def validate_manifest_payload_or_raise(manifest_payload: dict[str, Any]) -> None
 
 
 def validate_registry_or_raise(registry_path: Path) -> None:
-    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
+        registry_path
+    )
     if exit_code != validate_topic_workspace_registry.EXIT_PASS:
         errors = result.get("errors", [])
         if errors:
-            raise BootstrapError(errors[0].get("message", "topic workspace registry validation failed"))
+            raise BootstrapError(
+                errors[0].get("message", "topic workspace registry validation failed")
+            )
         raise BootstrapError("topic workspace registry validation failed")
 
 
@@ -454,11 +468,15 @@ def bootstrap_workspace(args: argparse.Namespace) -> dict[str, Any]:
     workspace_root = resolve_workspace_root(workspace_root_raw)
 
     registry_path = discover_registry_path(args.registry)
-    ensure_bootstrap_safe_registry_path(registry_path, allow_tracked_registry=args.allow_tracked_registry)
+    ensure_bootstrap_safe_registry_path(
+        registry_path, allow_tracked_registry=args.allow_tracked_registry
+    )
 
     existing_registry = load_or_initialize_registry_json(registry_path)
     registry_existed_before = registry_path.exists()
-    original_registry_text = registry_path.read_text(encoding="utf-8") if registry_existed_before else None
+    original_registry_text = (
+        registry_path.read_text(encoding="utf-8") if registry_existed_before else None
+    )
     if registry_path.exists():
         validate_registry_or_raise(registry_path)
 
@@ -523,9 +541,13 @@ def bootstrap_workspace(args: argparse.Namespace) -> dict[str, Any]:
     excluded_senses = parse_csv(args.excluded_senses)
 
     allowed_facets = pack.get("enabled_facets")
-    if not isinstance(allowed_facets, list) or not all(isinstance(item, str) for item in allowed_facets):
+    if not isinstance(allowed_facets, list) or not all(
+        isinstance(item, str) for item in allowed_facets
+    ):
         raise BootstrapError(f"domain pack enabled_facets must be a string array: {domain_pack}")
-    enabled_facets = unique_subset(parse_csv(args.enabled_facets), allowed_facets, label="enabled_facets")
+    enabled_facets = unique_subset(
+        parse_csv(args.enabled_facets), allowed_facets, label="enabled_facets"
+    )
 
     allowed_query_families = pack.get("query_families")
     if not isinstance(allowed_query_families, list) or not all(

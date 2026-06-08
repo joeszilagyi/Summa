@@ -17,6 +17,7 @@ try:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -37,8 +39,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.local_search_contract import (  # noqa: E402
-    RESULTS_SCHEMA_VERSION,
     RESULT_CLASS_BY_OBJECT_TYPE,
+    RESULTS_SCHEMA_VERSION,
     SEARCH_SCOPE_TO_OBJECT_TYPES,
     VISIBILITY_PROFILES,
 )
@@ -49,7 +51,6 @@ from tools.common.search_leak_policy import (  # noqa: E402
     is_raw_payload_field,
     is_restricted_public_field,
 )
-
 
 VALIDATOR_NAME = "local_search_results"
 CONTRACT_VERSION = "1"
@@ -433,12 +434,14 @@ def validate_local_search_results(target: Path) -> tuple[dict[str, Any], int]:
 
 def main() -> int:
     args = parse_args()
-    report, exit_code = validate_local_search_results(Path(args.target))
+    target = Path(args.target)
+    report, exit_code = validate_local_search_results(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     rendered = render_text_report(report)
     if args.report_json:
-        write_json(Path(args.report_json), report)
+        write_json(Path(args.report_json), report, root=report_root)
     if args.report_text:
-        write_text(Path(args.report_text), rendered)
+        write_text(Path(args.report_text), rendered, root=report_root)
     sys.stdout.write(rendered)
     return exit_code
 

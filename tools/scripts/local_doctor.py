@@ -30,7 +30,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common import workspace_lock  # noqa: E402
-from tools.common.operator_text import format_operator_text_value, strip_terminal_escapes  # noqa: E402
+from tools.common.operator_text import (  # noqa: E402
+    format_operator_text_value,
+    strip_terminal_escapes,
+)
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
 from tools.common.topic_workspace_registry import (  # noqa: E402
     TopicWorkspaceRegistryError,
     discover_registry_path,
@@ -87,19 +94,16 @@ def git_status(repo_root: Path) -> tuple[str, str]:
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        proc = subprocess.run(
+        proc = run_streaming_command(
             ["git", "status", "--short"],
             cwd=repo_root,
-            text=True,
-            capture_output=True,
-            check=False,
-            env=env,
             timeout=10,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return "git_status_failed", "git status timed out after 10 seconds"
     if proc.returncode != 0:
-        return "git_status_failed", proc.stderr
+        return "git_status_failed", command_output_excerpt(proc)
     return ("dirty" if proc.stdout.strip() else "clean"), proc.stdout
 
 
@@ -299,7 +303,9 @@ def inspect_databases(
     )
     sampled_quick_check_paths = set(paths if quick_check else paths[: max(0, quick_check_sample)])
     databases = [
-        sqlite_integrity_for_path(path, quick_check=quick_check or path in sampled_quick_check_paths)
+        sqlite_integrity_for_path(
+            path, quick_check=quick_check or path in sampled_quick_check_paths
+        )
         for path in paths
     ]
     findings = []
@@ -640,7 +646,11 @@ def load_migration_ledger_receipt(path: Path) -> dict[str, Any] | None:
     counts = payload.get("counts")
     latest_event = payload.get("latest_event")
     status = payload.get("status")
-    if not isinstance(counts, dict) or not isinstance(latest_event, dict) or status not in {"pass", "warn", "fail"}:
+    if (
+        not isinstance(counts, dict)
+        or not isinstance(latest_event, dict)
+        or status not in {"pass", "warn", "fail"}
+    ):
         return None
     return payload
 
@@ -785,7 +795,7 @@ def inspect_scheduler(
             )
         )
         return scheduler, findings
-    proc = subprocess.run(
+    proc = run_streaming_command(
         [
             sys.executable,
             str(repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py"),
@@ -795,9 +805,6 @@ def inspect_scheduler(
             "json",
         ],
         cwd=repo_root,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if proc.returncode != 0:
         scheduler["status"] = "fail"
@@ -806,7 +813,7 @@ def inspect_scheduler(
                 "SCHEDULER_SELECTOR_FAILED",
                 "operator_action_required",
                 "scheduler selector failed",
-                stderr=proc.stderr,
+                stderr=command_output_excerpt(proc),
             )
         )
         return scheduler, findings
@@ -1137,7 +1144,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional canonical SQLite path to summarize read-only. Defaults to <repo-root>/canonical.sqlite.",
     )
     database_mode = parser.add_mutually_exclusive_group()
-    database_mode.add_argument("--fast", action="store_true", help="Use metadata-only database checks (default).")
+    database_mode.add_argument(
+        "--fast", action="store_true", help="Use metadata-only database checks (default)."
+    )
     database_mode.add_argument(
         "--database-quick-check",
         action="store_true",

@@ -16,6 +16,7 @@ try:
         EXIT_VALIDATION_FAILED,
         add_report_args,
         display_path,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -26,6 +27,7 @@ except ModuleNotFoundError:
         EXIT_VALIDATION_FAILED,
         add_report_args,
         display_path,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -310,6 +312,7 @@ def render_text(report: dict[str, Any]) -> str:
 def main() -> int:
     args = parse_args()
     bundle_root = Path(args.target)
+    report_root = resolve_report_root(bundle_root, report_root=args.report_root)
     try:
         report = aggregate_release_readiness(bundle_root)
     except ReleaseReadinessError as exc:
@@ -323,8 +326,8 @@ def main() -> int:
     }
 
     text_report = render_text(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
 
     if args.format == "json":
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")

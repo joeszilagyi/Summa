@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = "runtime-ledger.v1"
 LEDGER_METADATA_SCHEMA_VERSION = "runtime-ledger-metadata.v1"
 DEFAULT_LEDGER_ROOT = Path("runtime") / "ledgers"
@@ -125,7 +124,9 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
         "ledger_path": str(ledger_path),
         "line_count": next_line_count,
     }
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:
@@ -197,7 +198,9 @@ def main(argv: list[str] | None = None) -> int:
             inputs=parse_json_object(args.inputs_json, "--inputs-json"),
             artifact_refs=parse_json_object(args.artifact_refs_json, "--artifact-refs-json"),
             lock_event=parse_json_object(args.lock_event_json, "--lock-event-json"),
-            validation_posture=parse_json_object(args.validation_posture_json, "--validation-posture-json"),
+            validation_posture=parse_json_object(
+                args.validation_posture_json, "--validation-posture-json"
+            ),
             failure=parse_json_object(args.failure_json, "--failure-json"),
             occurred_at=args.occurred_at,
         )
@@ -205,7 +208,12 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeLedgerError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({"status": "appended", "ledger_path": str(ledger_path), "event_id": event["event_id"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": "appended", "ledger_path": str(ledger_path), "event_id": event["event_id"]},
+            sort_keys=True,
+        )
+    )
     return 0
 
 

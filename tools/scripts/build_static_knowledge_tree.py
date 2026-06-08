@@ -13,9 +13,9 @@ import shutil
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
@@ -31,18 +31,25 @@ from tools.common.atomic_write import atomic_write_json, atomic_write_text  # no
 from tools.common.operator_text import format_operator_text_value  # noqa: E402
 from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
     EXIT_PASS as EXIT_BUILD_MANIFEST_PASS,
+)
+from tools.validators.validate_knowledge_tree_build_manifest import (  # noqa: E402
+    BuildManifestReceipt,
     hash_file,
     validate_build_manifest,
+    validate_build_manifest_receipt,
 )
 from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     EXIT_PASS as EXIT_EXPORT_PASS,
+)
+from tools.validators.validate_knowledge_tree_export import (  # noqa: E402
     validate_knowledge_tree_export,
 )
 from tools.validators.validate_public_knowledge_tree_presentation import (  # noqa: E402
     EXIT_PASS as EXIT_PRESENTATION_PASS,
+)
+from tools.validators.validate_public_knowledge_tree_presentation import (  # noqa: E402
     validate_public_knowledge_tree_presentation,
 )
-
 
 SCRIPT_PATH = "tools/scripts/build_static_knowledge_tree.py"
 SCHEMA_VERSION = "knowledge-tree-build-manifest.v1"
@@ -117,7 +124,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a static knowledge tree from validated export and presentation artifacts."
     )
-    parser.add_argument("--export", required=True, help="Path to a knowledge-tree export JSON artifact.")
+    parser.add_argument(
+        "--export", required=True, help="Path to a knowledge-tree export JSON artifact."
+    )
     parser.add_argument(
         "--presentation",
         required=True,
@@ -153,7 +162,7 @@ def now_rfc3339() -> str:
 
 
 def default_build_id(*, export_sha256: str, presentation_sha256: str) -> str:
-    digest_input = f"{export_sha256}|{presentation_sha256}".encode("utf-8")
+    digest_input = f"{export_sha256}|{presentation_sha256}".encode()
     digest = hashlib.sha256(digest_input).hexdigest()
     return f"build-{digest[:16]}"
 
@@ -194,7 +203,12 @@ def resolve_publish_root(raw_path: str) -> Path:
     path = resolve_path(raw_path)
     if path.exists() and not path.is_dir():
         raise StaticKnowledgeTreeBuildError(f"publish root exists and is not a directory: {path}")
-    if path.exists() and path.is_dir() and not _is_empty_directory(path) and not _is_static_knowledge_tree_publish_root(path):
+    if (
+        path.exists()
+        and path.is_dir()
+        and not _is_empty_directory(path)
+        and not _is_static_knowledge_tree_publish_root(path)
+    ):
         raise StaticKnowledgeTreeBuildError(
             f"publish root exists but is not a recognized static-tree output directory: {path}"
         )
@@ -227,7 +241,9 @@ def ensure_valid_presentation(path: Path) -> dict[str, Any]:
     report, exit_code = validate_public_knowledge_tree_presentation(path)
     if exit_code != EXIT_PRESENTATION_PASS:
         first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
-        raise StaticKnowledgeTreeBuildError(f"presentation failed validation: {path}: {first_error}")
+        raise StaticKnowledgeTreeBuildError(
+            f"presentation failed validation: {path}: {first_error}"
+        )
     return load_json(path, label="presentation")
 
 
@@ -262,7 +278,9 @@ def validate_cross_artifact_consistency(
     route_index, family_index = build_presentation_indexes(presentation_payload)
     export_pages = export_payload.get("pages")
     if not isinstance(export_pages, list) or not export_pages:
-        raise StaticKnowledgeTreeBuildError("export pages array is missing or empty after validation")
+        raise StaticKnowledgeTreeBuildError(
+            "export pages array is missing or empty after validation"
+        )
     if len(export_pages) != len(route_index):
         raise StaticKnowledgeTreeBuildError(
             "presentation page_inventory count does not match export page count"
@@ -276,8 +294,14 @@ def validate_cross_artifact_consistency(
         page_id = page.get("page_id")
         page_family = page.get("page_family")
         route = page.get("route")
-        if not isinstance(page_id, str) or not isinstance(page_family, str) or not isinstance(route, str):
-            raise StaticKnowledgeTreeBuildError("validated export pages are missing required identifiers")
+        if (
+            not isinstance(page_id, str)
+            or not isinstance(page_family, str)
+            or not isinstance(route, str)
+        ):
+            raise StaticKnowledgeTreeBuildError(
+                "validated export pages are missing required identifiers"
+            )
         presentation_page = route_index.get(route)
         if presentation_page is None:
             raise StaticKnowledgeTreeBuildError(f"presentation missing route from export: {route}")
@@ -308,7 +332,9 @@ def escape(value: Any) -> str:
 
 
 def stylesheet_href(route: str) -> str:
-    return os.path.relpath(STYLESHEET_PATH, start=str(PurePosixPath(route).parent)).replace(os.sep, "/")
+    return os.path.relpath(STYLESHEET_PATH, start=str(PurePosixPath(route).parent)).replace(
+        os.sep, "/"
+    )
 
 
 def route_href(from_route: str, to_route: str) -> str:
@@ -376,12 +402,12 @@ def render_page_html(
     stylesheet = stylesheet_href(route)
 
     summary_cards = page.get("summary_cards")
-    summary_html = ["<div class=\"summary-grid\">"]
+    summary_html = ['<div class="summary-grid">']
     if isinstance(summary_cards, list):
         for card in summary_cards:
             if not isinstance(card, dict):
                 continue
-            summary_html.append("<div class=\"summary-card\">")
+            summary_html.append('<div class="summary-card">')
             summary_html.append(f"<strong>{escape(card.get('label', ''))}</strong>")
             summary_html.append(f"<div>{escape(card.get('value', ''))}</div>")
             summary_html.append("</div>")
@@ -393,7 +419,9 @@ def render_page_html(
         target_route = page_route_map.get(str(page_id))
         if target_route is None:
             continue
-        related_links.append(f'<a href="{escape(route_href(route, target_route))}">{escape(target_route)}</a>')
+        related_links.append(
+            f'<a href="{escape(route_href(route, target_route))}">{escape(target_route)}</a>'
+        )
 
     breadcrumbs = presentation_page.get("breadcrumbs", [])
     breadcrumb_links: list[str] = []
@@ -424,27 +452,33 @@ def render_page_html(
         ("Source transparency", presentation_page.get("source_transparency")),
         ("Workspace", export_payload.get("workspace_id")),
     ]
-    state_table = ["<table class=\"state-table\">"]
+    state_table = ['<table class="state-table">']
     for label, value in state_rows:
-        state_table.append(f"<tr><td><strong>{escape(label)}</strong></td><td>{escape(value)}</td></tr>")
+        state_table.append(
+            f"<tr><td><strong>{escape(label)}</strong></td><td>{escape(value)}</td></tr>"
+        )
     state_table.append("</table>")
 
     empty_state = presentation_page.get("empty_state")
-    gates = [escape(item) for item in presentation_page.get("redaction_gate_refs", []) if isinstance(item, str)]
+    gates = [
+        escape(item)
+        for item in presentation_page.get("redaction_gate_refs", [])
+        if isinstance(item, str)
+    ]
 
     return "\n".join(
         [
             "<!DOCTYPE html>",
-            "<html lang=\"en\">",
+            '<html lang="en">',
             "<head>",
-            "  <meta charset=\"utf-8\">",
-            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+            '  <meta charset="utf-8">',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">',
             f"  <title>{escape(title)}</title>",
-            f"  <link rel=\"stylesheet\" href=\"{escape(stylesheet)}\">",
+            f'  <link rel="stylesheet" href="{escape(stylesheet)}">',
             "</head>",
             "<body>",
             "<header>",
-            f"  <p class=\"eyebrow\">{escape(export_payload.get('display_name'))}</p>",
+            f'  <p class="eyebrow">{escape(export_payload.get("display_name"))}</p>',
             f"  <h1>{escape(title)}</h1>",
             f"  <p>{lede}</p>",
             "</header>",
@@ -503,6 +537,7 @@ def build_manifest_payload(
     export_payload: dict[str, Any],
     page_records: list[dict[str, Any]],
     asset_records: list[dict[str, Any]],
+    presentation_sha256: str | None = None,
     durable_paths: bool = False,
 ) -> dict[str, Any]:
     export_path_value = (
@@ -523,7 +558,9 @@ def build_manifest_payload(
         "export_path": export_path_value,
         "export_sha256": hash_file(export_path),
         "presentation_path": presentation_path_value,
-        "presentation_sha256": hash_file(presentation_path),
+        "presentation_sha256": (
+            presentation_sha256 if presentation_sha256 is not None else hash_file(presentation_path)
+        ),
         "built_at": built_at,
         "output_root": ".",
         "page_count": len(page_records),
@@ -552,6 +589,7 @@ def write_static_tree(
     presentation_payload: dict[str, Any],
     build_id: str,
     built_at: str,
+    presentation_sha256: str | None = None,
 ) -> dict[str, Any]:
     route_index, _ = build_presentation_indexes(presentation_payload)
     page_route_map = {
@@ -598,6 +636,7 @@ def write_static_tree(
         export_payload=export_payload,
         page_records=page_records,
         asset_records=asset_records,
+        presentation_sha256=presentation_sha256,
     )
     manifest_path = stage_root / "build-manifest.json"
     atomic_write_json(manifest_path, manifest_payload)
@@ -631,7 +670,9 @@ def publish_stage_dir(
     publish_root.parent.mkdir(parents=True, exist_ok=True)
     try:
         if publish_root.exists():
-            backup_root = publish_root.parent / f".{publish_root.name}.backup.{uuid.uuid4().hex[:8]}"
+            backup_root = (
+                publish_root.parent / f".{publish_root.name}.backup.{uuid.uuid4().hex[:8]}"
+            )
             publish_root.replace(backup_root)
             _fsync_directory(publish_root.parent)
             if after_backup_hook is not None:
@@ -684,7 +725,9 @@ def build_static_knowledge_tree(
     effective_built_at = built_at or now_rfc3339()
 
     stage_parent = Path(
-        tempfile.mkdtemp(prefix=f".{resolved_publish_root.name}.stage.", dir=resolved_publish_root.parent)
+        tempfile.mkdtemp(
+            prefix=f".{resolved_publish_root.name}.stage.", dir=resolved_publish_root.parent
+        )
     )
     stage_site = stage_parent / resolved_publish_root.name
     stage_site.mkdir(parents=True, exist_ok=True)
@@ -698,6 +741,7 @@ def build_static_knowledge_tree(
             presentation_payload=presentation_payload,
             build_id=effective_build_id,
             built_at=effective_built_at,
+            presentation_sha256=presentation_sha256,
         )
         final_manifest_payload = dict(stage_result["manifest"])
         final_manifest_payload["export_path"] = relative_manifest_path(
@@ -709,9 +753,20 @@ def build_static_knowledge_tree(
         publish_stage_dir(stage_site, resolved_publish_root, after_backup_hook=after_backup_hook)
         final_manifest_path = resolved_publish_root / BUILD_MANIFEST_FILENAME
         atomic_write_json(final_manifest_path, final_manifest_payload)
-        report, exit_code = validate_build_manifest(final_manifest_path)
+        receipt = BuildManifestReceipt(
+            manifest=final_manifest_payload,
+            export_payload=export_payload,
+            presentation_payload=presentation_payload,
+            export_sha256=export_sha256,
+            presentation_sha256=presentation_sha256,
+            asset_records=final_manifest_payload["assets"],
+            page_records=final_manifest_payload["pages"],
+        )
+        report, exit_code = validate_build_manifest_receipt(receipt)
         if exit_code != EXIT_BUILD_MANIFEST_PASS:
-            first_error = report["errors"][0]["message"] if report["errors"] else "validation failed"
+            first_error = (
+                report["errors"][0]["message"] if report["errors"] else "validation failed"
+            )
             raise StaticKnowledgeTreeBuildError(
                 f"generated build manifest failed validation: {first_error}"
             )

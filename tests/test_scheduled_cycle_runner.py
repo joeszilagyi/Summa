@@ -106,6 +106,7 @@ def write_fake_cycle_runner(tmp_path: Path, *, exit_code: int = 0) -> Path:
                 "parser.add_argument('--candidate-batch-fixture')",
                 "parser.add_argument('--execution-run-fixture')",
                 "parser.add_argument('--build-next-feedback-plan', action='store_true')",
+                "parser.add_argument('--skip-workspace-lock', action='store_true')",
                 "args = parser.parse_args()",
                 "run_dir = pathlib.Path(args.run_dir)",
                 "run_dir.mkdir(parents=True, exist_ok=True)",
@@ -143,11 +144,11 @@ def test_scheduled_runner_python_and_wrapper_help() -> None:
         capture_output=True,
         check=False,
     )
+    assert wrapper.returncode == 0, wrapper.stderr
+    assert "--selection" in wrapper.stdout
 
 
-def run_scheduled_in_dir(
-    args: list[str], *, cwd: Path
-) -> subprocess.CompletedProcess[str]:
+def run_scheduled_in_dir(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=cwd,
@@ -155,8 +156,6 @@ def run_scheduled_in_dir(
         capture_output=True,
         check=False,
     )
-    assert wrapper.returncode == 0, wrapper.stderr
-    assert "--selection" in wrapper.stdout
 
 
 def test_scheduled_runner_rejects_invalid_child_manifest_json(tmp_path: Path) -> None:
@@ -170,14 +169,18 @@ def test_scheduled_runner_rejects_invalid_child_manifest_json(tmp_path: Path) ->
         scheduled_runner.resolve_child_manifest(child_manifest_path=child_manifest_path, proc=None)
 
 
-def test_scheduled_runner_write_json_uses_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scheduled_runner_write_json_uses_atomic_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "scheduled-topic-cycles-run.json"
     payload = {"schema_version": "scheduled-topic-cycles-run.v1", "status": "completed"}
     calls: list[tuple[Path, dict[str, object]]] = []
 
     def fake_atomic_write_json(target: Path, body: dict[str, object]) -> None:
         calls.append((target, dict(body)))
-        target.write_text(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        target.write_text(
+            json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     monkeypatch.setattr(scheduled_runner, "atomic_write_json", fake_atomic_write_json)
 
@@ -239,7 +242,7 @@ def test_scheduled_runner_consumes_selection_runs_cycles_and_writes_ledgers(tmp_
 
 def test_scheduled_runner_manifest_paths_are_run_relative_even_outside_cwd(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "scheduled_subject")
-    selection = write_selection(
+    write_selection(
         tmp_path,
         [planned_record(workspace_id="scheduled_subject", workspace=workspace, manifest=manifest)],
     )
@@ -346,16 +349,20 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
         "2026-06-03T12:00:10Z",
         "2026-06-03T12:00:30Z",
     }
-    assert captured_commands[0][captured_commands[0].index("--timestamp") + 1] != payload[
-        "started_at"
-    ]
+    assert (
+        captured_commands[0][captured_commands[0].index("--timestamp") + 1] != payload["started_at"]
+    )
     first_ledger_lines = [
         json.loads(line)
-        for line in (ledger_root / "first_subject.runtime-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (ledger_root / "first_subject.runtime-ledger.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     second_ledger_lines = [
         json.loads(line)
-        for line in (ledger_root / "second_subject.runtime-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (ledger_root / "second_subject.runtime-ledger.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert [line["event_type"] for line in first_ledger_lines] == ["command_start", "command_end"]
     assert [line["event_type"] for line in second_ledger_lines] == ["command_start", "command_end"]
@@ -403,7 +410,9 @@ def test_scheduled_runner_rejects_workspace_id_path_traversal(tmp_path: Path) ->
 
 def test_normalize_timestamp_preserves_utc_and_rejects_invalid_values() -> None:
     assert scheduled_runner.normalize_timestamp("2026-06-03T12:00:00Z") == "2026-06-03T12:00:00Z"
-    assert scheduled_runner.normalize_timestamp("2026-06-03T12:00:00-07:00") == "2026-06-03T19:00:00Z"
+    assert (
+        scheduled_runner.normalize_timestamp("2026-06-03T12:00:00-07:00") == "2026-06-03T19:00:00Z"
+    )
 
     with pytest.raises(scheduled_runner.ScheduledCycleError, match="RFC3339"):
         scheduled_runner.normalize_timestamp("not-a-timestamp")
@@ -486,7 +495,7 @@ def test_read_runtime_ledger_ignores_truncated_final_line(tmp_path: Path) -> Non
                     },
                     sort_keys=True,
                 ),
-                "{\"schema_version\": \"runtime-ledger.v1\", \"event_id\": \"event-2\"",
+                '{"schema_version": "runtime-ledger.v1", "event_id": "event-2"',
             ]
         ),
         encoding="utf-8",
@@ -623,6 +632,64 @@ def test_scheduled_runner_enforces_max_runtime_seconds_with_injected_clock(tmp_p
     assert [line["event_type"] for line in lines] == ["command_start", "command_failure"]
 
 
+def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "timed_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="timed_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_runtime_seconds=11,
+            )
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    observed_timeouts: list[float | None] = []
+    commands: list[list[str]] = []
+
+    def invoker(command: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        observed_timeouts.append(timeout)
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = command[command.index("--run-id") + 1]
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": "completed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_SUCCESS
+    assert observed_timeouts == [11.0]
+    assert commands[0][commands[0].index("--format") + 1] == "text"
+    assert payload["workspace_results"][0]["outcome"] == "completed"
+
+
 def test_scheduled_runner_has_no_direct_canonical_family_inserts() -> None:
     body = SCRIPT.read_text(encoding="utf-8")
     for needle in (
@@ -680,19 +747,30 @@ def test_scheduled_runner_stable_failure_reason_contract_fields(tmp_path: Path) 
 
     assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
     assert proc.stdout == ""
-    assert "planned-run record is missing required field: resolved_default_subject_manifest" in proc.stderr
+    assert (
+        "planned-run record is missing required field: resolved_default_subject_manifest"
+        in proc.stderr
+    )
 
 
-def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path, monkeypatch) -> None:
+def test_scheduled_runner_generates_collision_safe_child_run_ids(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace, manifest = write_workspace(tmp_path, "duplicate_subject")
     selection = write_selection(
         tmp_path,
         [
             planned_record(
-                workspace_id="duplicate_subject", workspace=workspace, manifest=manifest, max_attempts=3
+                workspace_id="duplicate_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=3,
             ),
             planned_record(
-                workspace_id="duplicate_subject", workspace=workspace, manifest=manifest, max_attempts=3
+                workspace_id="duplicate_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=3,
             ),
         ],
     )
@@ -701,6 +779,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     db_path.write_text("fixture\n", encoding="utf-8")
 
     invocations: list[str] = []
+    commands: list[list[str]] = []
     monkeypatch.setattr(
         scheduled_runner,
         "_next_workspace_token",
@@ -713,6 +792,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     )
 
     def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
         run_id = command[command.index("--run-id") + 1]
         invocations.append(run_id)
         run_dir = Path(command[command.index("--run-dir") + 1])
@@ -749,6 +829,7 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
 
     assert exit_code == scheduled_runner.EXIT_SUCCESS
     assert len(invocations) == 2
+    assert all("--skip-workspace-lock" in command for command in commands)
     assert (
         payload["workspace_results"][0]["cycle_run_id"]
         != payload["workspace_results"][1]["cycle_run_id"]
@@ -757,35 +838,43 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(tmp_path: Path,
     assert payload["workspace_results"][1]["cycle_run_id"].endswith("same-token-1")
 
 
-def test_scheduled_runner_does_not_double_run_locked_workspace(tmp_path: Path, monkeypatch) -> None:
+def test_scheduled_runner_does_not_double_run_locked_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace, manifest = write_workspace(tmp_path, "locked_subject")
     selection = write_selection(
         tmp_path,
         [
             planned_record(
-                workspace_id="locked_subject", workspace=workspace, manifest=manifest, max_attempts=3
+                workspace_id="locked_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=3,
             ),
             planned_record(
-                workspace_id="locked_subject", workspace=workspace, manifest=manifest, max_attempts=3
+                workspace_id="locked_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=3,
             ),
         ],
     )
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
 
-@contextlib.contextmanager
-def fake_lock(*_args, **_kwargs):
-    call_count = fake_lock.__dict__.setdefault("calls", 0)
-    if call_count:
-        raise scheduled_runner.WorkspaceLockError("workspace lock is already held")
-    fake_lock.__dict__["calls"] = call_count + 1
-    yield Path("/tmp/scheduled-topic-lock.test")
+    @contextlib.contextmanager
+    def fake_lock(*_args, **_kwargs):
+        call_count = fake_lock.__dict__.setdefault("calls", 0)
+        if call_count:
+            raise scheduled_runner.WorkspaceLockError("workspace lock is already held")
+        fake_lock.__dict__["calls"] = call_count + 1
+        yield Path("/tmp/scheduled-topic-lock.test")
 
-    lock = fake_lock
     invocations: list[list[str]] = []
 
     def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
         invocations.append(command)
+        assert "--skip-workspace-lock" in command
         run_dir = Path(command[command.index("--run-dir") + 1])
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "topic-cycle-run.json").write_text(
@@ -831,10 +920,12 @@ def fake_lock(*_args, **_kwargs):
 
 def test_scheduled_runner_stdout_stderr_contract_validation_and_help(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "subject")
-    selection = write_selection(tmp_path, [planned_record(workspace_id="subject", workspace=workspace, manifest=manifest)])
+    selection = write_selection(
+        tmp_path, [planned_record(workspace_id="subject", workspace=workspace, manifest=manifest)]
+    )
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
-    runner = write_fake_cycle_runner(tmp_path)
+    _ = write_fake_cycle_runner(tmp_path)
     missing_run_file = tmp_path / "missing.json"
 
     help_proc = run_scheduled(["--help"])
@@ -943,9 +1034,7 @@ def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> 
             ),
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(
-            command, 5, "", "x" * 5000 + " end-marker"
-        )
+        return subprocess.CompletedProcess(command, 5, "", "x" * 5000 + " end-marker")
 
     args = scheduled_runner.parse_args(
         [
@@ -970,7 +1059,9 @@ def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> 
     assert result["failure_reason"].endswith("chars omitted)")
 
 
-def test_scheduled_runner_uses_child_stdout_manifest_when_available(tmp_path: Path) -> None:
+def test_scheduled_runner_uses_child_manifest_file_before_stdout_when_available(
+    tmp_path: Path,
+) -> None:
     workspace, manifest = write_workspace(tmp_path, "stdout_subject")
     selection = write_selection(
         tmp_path,
@@ -983,15 +1074,17 @@ def test_scheduled_runner_uses_child_stdout_manifest_when_available(tmp_path: Pa
         run_dir = Path(command[command.index("--run-dir") + 1])
         run_dir.mkdir(parents=True, exist_ok=True)
         run_id = command[command.index("--run-id") + 1]
-        payload = json.dumps(
-            {
-                "schema_version": "topic-cycle-run.v1",
-                "run_id": run_id,
-                "cycle_event_id": f"cycle:{run_id}",
-                "status": "completed",
-            }
+        payload = {
+            "schema_version": "topic-cycle-run.v1",
+            "run_id": run_id,
+            "cycle_event_id": f"cycle:{run_id}",
+            "status": "completed",
+        }
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(payload, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, payload, "")
+        return subprocess.CompletedProcess(command, 0, "not-json", "")
 
     args = scheduled_runner.parse_args(
         [

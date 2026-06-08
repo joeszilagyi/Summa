@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT / "tools" / "common",
@@ -39,8 +38,9 @@ from tools.common.local_search_contract import (  # noqa: E402
 )
 from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS  # noqa: E402
 from tools.validators.validate_correction_ledger import validate_correction_ledger  # noqa: E402
-from tools.validators.validate_local_search_projection import validate_local_search_projection_payload  # noqa: E402
-
+from tools.validators.validate_local_search_projection import (  # noqa: E402
+    validate_local_search_projection_payload,  # noqa: E402
+)
 
 SCRIPT_PATH = "tools/scripts/build_local_search_projection.py"
 SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -137,6 +137,7 @@ TARGETS: tuple[SearchTarget, ...] = (
         ),
     ),
 )
+INDEX_TARGETS: tuple[SearchTarget, ...] = tuple(sorted(TARGETS, key=lambda target: target.object_type))
 
 
 class SearchProjectionError(RuntimeError):
@@ -176,6 +177,11 @@ def parse_args() -> argparse.Namespace:
         choices=("json", "text"),
         default="json",
         help="Stdout format for the emitted projection artifact.",
+    )
+    parser.add_argument(
+        "--validate-index-file",
+        action="store_true",
+        help="Run a full post-write index validation pass before replacing the temp DB.",
     )
     return parser.parse_args()
 
@@ -391,7 +397,9 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 ORDER BY object_type ASC, object_pk ASC, projection_id ASC
                 """
             )
-            actual_records_digest, indexed_records_count = projection_records_digest_from_cursor(indexed_records_cursor)
+            actual_records_digest, indexed_records_count = projection_records_digest_from_cursor(
+                indexed_records_cursor
+            )
             if actual_records_digest != expected_records_digest:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: projection records digest mismatch"
@@ -417,39 +425,67 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
         raise SearchProjectionError(f"projection index validation failed for {index_path}") from exc
 
 
+def validate_projection_index_post_write(index_path: Path, payload: dict[str, Any]) -> None:
+    try:
+        conn = connect_read_only(index_path)
+        try:
+            if not has_projection_index_marker(conn):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing marker"
+                )
+            metadata = conn.execute(
+                """
+                SELECT projection_schema_version, profile, source_database_fingerprint, projection_records_digest
+                FROM projection_metadata
+                LIMIT 1
+                """
+            ).fetchone()
+            if metadata is None:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing metadata"
+                )
+            if str(metadata["projection_schema_version"]) != str(payload["schema_version"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: schema version mismatch"
+                )
+            if str(metadata["profile"]) != str(payload["profile"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: profile mismatch"
+                )
+            if str(metadata["source_database_fingerprint"]) != str(
+                payload["source"]["database_fingerprint"]
+            ):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: source fingerprint mismatch"
+                )
+            expected_records_digest = payload.get("_projection_records_digest")
+            if isinstance(expected_records_digest, str):
+                expected_records_digest = str(expected_records_digest)
+            else:
+                expected_records_digest = projection_records_digest(payload["records"])
+            if str(metadata["projection_records_digest"]) != expected_records_digest:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: projection records digest mismatch"
+                )
+            expected_count = int(payload["counts"]["indexed_rows"])
+            projection_count = conn.execute("SELECT COUNT(*) FROM search_projection").fetchone()
+            fts_count = conn.execute("SELECT COUNT(*) FROM search_projection_fts").fetchone()
+            if projection_count is None or int(projection_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection row count mismatch"
+                )
+            if fts_count is None or int(fts_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection_fts row count mismatch"
+                )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise SearchProjectionError(f"projection index validation failed for {index_path}") from exc
+
+
 def projection_records_digest(records: list[dict[str, Any]]) -> str:
-    hasher = hashlib.sha256()
-    hasher.update(b"[")
-    for index, record in enumerate(records):
-        if index:
-            hasher.update(b",")
-        canonical_record = {
-            "authority_level": record["authority_level"],
-            "confidence_score": record["confidence_score"],
-            "indexed_fields": record["indexed_fields"],
-            "lineage_state": record["lineage_state"],
-            "object_pk": record["object_pk"],
-            "object_ref": record["object_ref"],
-            "object_type": record["object_type"],
-            "projection_id": record["projection_id"],
-            "public_blocker": record["public_blocker"],
-            "publication_state": record["publication_state"],
-            "review_state": record["review_state"],
-            "subtitle": record["subtitle"],
-            "suppressed_fields": record["suppressed_fields"],
-            "title": record["title"],
-            "visible_profiles": record["visible_profiles"],
-        }
-        canonical_json = json.dumps(
-            canonical_record,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        hasher.update(canonical_json.encode("utf-8"))
-    hasher.update(b"]")
-    return hasher.hexdigest()
+    return projection_records_digest_from_iter(iter(records))[0]
 
 
 def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, int]:
@@ -492,7 +528,57 @@ def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, in
     return hasher.hexdigest(), row_count
 
 
-def build_visible_profiles(publication_state: str, *, public_blocker: str | None, lineage_state: str) -> list[str]:
+def insert_projection_metadata(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO projection_metadata (
+          projection_schema_version,
+          source_database_name,
+          source_database_fingerprint,
+          source_schema_version,
+          profile,
+          generated_at,
+          projection_records_digest,
+          raw_payload_indexed,
+          full_text_indexed,
+          private_paths_exposed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload["schema_version"],
+            payload["source"]["database_name"],
+            payload["source"]["database_fingerprint"],
+            None
+            if payload["source"]["schema_version"] is None
+            else str(payload["source"]["schema_version"]),
+            payload["profile"],
+            payload["generated_at"],
+            payload["_projection_records_digest"],
+            int(bool(payload["policy"]["raw_payload_indexed"])),
+            int(bool(payload["policy"]["full_text_indexed"])),
+            int(bool(payload["policy"]["private_paths_exposed"])),
+        ),
+    )
+
+
+def write_projection_metadata(
+    index_path: Path, payload: dict[str, Any], *, validate_index_file: bool = False
+) -> None:
+    conn = sqlite3.connect(index_path)
+    try:
+        insert_projection_metadata(conn, payload)
+        conn.commit()
+    finally:
+        conn.close()
+    if validate_index_file:
+        validate_projection_index_file(index_path, payload)
+    else:
+        validate_projection_index_post_write(index_path, payload)
+
+
+def build_visible_profiles(
+    publication_state: str, *, public_blocker: str | None, lineage_state: str
+) -> list[str]:
     profiles = ["local"]
     if public_blocker or lineage_state == "superseded":
         return profiles
@@ -504,10 +590,17 @@ def build_visible_profiles(publication_state: str, *, public_blocker: str | None
 
 
 def looks_like_private_path(value: str) -> bool:
-    return value.startswith("/") or value.startswith("~") or value.startswith("file://") or (len(value) > 2 and value[1:3] == ":\\")
+    return (
+        value.startswith("/")
+        or value.startswith("~")
+        or value.startswith("file://")
+        or (len(value) > 2 and value[1:3] == ":\\")
+    )
 
 
-def filter_fields(target: SearchTarget, row: sqlite3.Row, *, profile: str) -> tuple[list[dict[str, str]], list[str]]:
+def filter_fields(
+    target: SearchTarget, row: sqlite3.Row, *, profile: str
+) -> tuple[list[dict[str, str]], list[str]]:
     present_fields: list[dict[str, str]] = []
     suppressed_fields: list[str] = []
     for field_spec in target.field_specs:
@@ -527,9 +620,15 @@ def filter_fields(target: SearchTarget, row: sqlite3.Row, *, profile: str) -> tu
     return present_fields, suppressed_fields
 
 
-def choose_title(target: SearchTarget, fields: list[dict[str, str]], object_pk: int) -> tuple[str, str | None]:
-    title_candidates = {field_spec.field_name for field_spec in target.field_specs if field_spec.title_hint}
-    subtitle_candidates = {field_spec.field_name for field_spec in target.field_specs if field_spec.subtitle_hint}
+def choose_title(
+    target: SearchTarget, fields: list[dict[str, str]], object_pk: int
+) -> tuple[str, str | None]:
+    title_candidates = {
+        field_spec.field_name for field_spec in target.field_specs if field_spec.title_hint
+    }
+    subtitle_candidates = {
+        field_spec.field_name for field_spec in target.field_specs if field_spec.subtitle_hint
+    }
     title: str | None = None
     for field in fields:
         if field["field"] in title_candidates and field["text"].strip():
@@ -540,7 +639,11 @@ def choose_title(target: SearchTarget, fields: list[dict[str, str]], object_pk: 
 
     subtitle: str | None = None
     for field in fields:
-        if field["field"] in subtitle_candidates and field["text"].strip() and field["text"].strip() != title:
+        if (
+            field["field"] in subtitle_candidates
+            and field["text"].strip()
+            and field["text"].strip() != title
+        ):
             subtitle = field["text"].strip()
             break
     return title, subtitle
@@ -552,7 +655,10 @@ def load_correction_resolution(raw_path: str | None) -> tuple[set[str], set[str]
     ledger_path = resolve_existing_file(raw_path)
     report, exit_code = validate_correction_ledger(ledger_path)
     if exit_code != EXIT_LEDGER_PASS:
-        message = "; ".join(error["message"] for error in report["errors"]) or "correction ledger validation failed"
+        message = (
+            "; ".join(error["message"] for error in report["errors"])
+            or "correction ledger validation failed"
+        )
         raise SearchProjectionError(message)
     resolution = report.get("resolution", {})
     current_refs = set(resolution.get("current_object_refs", []))
@@ -576,7 +682,9 @@ def projection_record(
     if is_public_profile(profile) and not is_searchable_review_state(review_state):
         return None, "review_state_not_searchable"
 
-    publication_state = normalize_publication_state(row["publication_state"] if "publication_state" in columns else None)
+    publication_state = normalize_publication_state(
+        row["publication_state"] if "publication_state" in columns else None
+    )
     authority_level = first_nonblank(row, "authority_level", "authority_tier", "authority_status")
     confidence_score = first_nonblank_float(row, "confidence_score", "confidence")
     public_blocker = first_nonblank(row, "public_blocker")
@@ -597,7 +705,9 @@ def projection_record(
         return None, "no_indexable_fields"
 
     title, subtitle = choose_title(target, indexed_fields, object_pk)
-    visible_profiles = build_visible_profiles(publication_state, public_blocker=public_blocker, lineage_state=lineage_state)
+    visible_profiles = build_visible_profiles(
+        publication_state, public_blocker=public_blocker, lineage_state=lineage_state
+    )
     return (
         {
             "projection_id": f"{profile}:{object_ref}",
@@ -620,7 +730,9 @@ def projection_record(
     )
 
 
-def fetch_rows_in_batches(cursor: sqlite3.Cursor, *, batch_size: int) -> Iterator[list[sqlite3.Row]]:
+def fetch_rows_in_batches(
+    cursor: sqlite3.Cursor, *, batch_size: int
+) -> Iterator[list[sqlite3.Row]]:
     while True:
         rows = cursor.fetchmany(batch_size)
         if not rows:
@@ -635,7 +747,211 @@ def iter_record_batches(
         yield records[start : start + batch_size]
 
 
-def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
+def write_jsonl_record(handle: Any, row: dict[str, Any]) -> None:
+    handle.write(
+        json.dumps(
+            row,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+    handle.write("\n")
+
+
+def iter_jsonl_records(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            yield json.loads(line)
+
+
+def projection_records_digest_from_iter(records: Iterator[dict[str, Any]]) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    hasher.update(b"[")
+    seen_record = False
+    row_count = 0
+    for record in records:
+        canonical_record = {
+            "authority_level": record["authority_level"],
+            "confidence_score": record["confidence_score"],
+            "indexed_fields": record["indexed_fields"],
+            "lineage_state": record["lineage_state"],
+            "object_pk": record["object_pk"],
+            "object_ref": record["object_ref"],
+            "object_type": record["object_type"],
+            "projection_id": record["projection_id"],
+            "public_blocker": record["public_blocker"],
+            "publication_state": record["publication_state"],
+            "review_state": record["review_state"],
+            "subtitle": record["subtitle"],
+            "suppressed_fields": record["suppressed_fields"],
+            "title": record["title"],
+            "visible_profiles": record["visible_profiles"],
+        }
+        if seen_record:
+            hasher.update(b",")
+        hasher.update(
+            json.dumps(
+                canonical_record,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        row_count += 1
+        seen_record = True
+    hasher.update(b"]")
+    return hasher.hexdigest(), row_count
+
+
+def build_projection_payload_streaming(
+    args: argparse.Namespace, *, index_path: Path
+) -> dict[str, Any]:
+    db_path = resolve_existing_file(args.db)
+    _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    temp_index_path: Path | None = None
+    conn = connect_read_only(db_path)
+    try:
+        source_schema_version = read_schema_version(conn)
+        candidate_records = 0
+        projected_count = 0
+        excluded_count = 0
+        private_paths_exposed = False
+        blocked_records_included = False
+        superseded_records_included = False
+        temp_dir = tempfile.TemporaryDirectory(prefix=".local-search-projection.")
+        projected_records_path = Path(temp_dir.name) / "projected_records.jsonl"
+        excluded_records_path = Path(temp_dir.name) / "excluded_records.jsonl"
+        with (
+            projected_records_path.open("w", encoding="utf-8") as projected_handle,
+            excluded_records_path.open("w", encoding="utf-8") as excluded_handle,
+        ):
+            for target in INDEX_TARGETS:
+                if not SQL_IDENTIFIER_RE.fullmatch(target.table):
+                    raise RuntimeError(f"invalid projection target table: {target.table}")
+                if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
+                    raise RuntimeError(
+                        f"invalid projection target primary key column: {target.pk_column}"
+                    )
+                if not table_exists(conn, target.table):
+                    continue
+                table_columns = table_column_names(conn, target.table)
+                projection_columns = projection_columns_for_target(target, table_columns)
+                if not projection_columns:
+                    continue
+                cursor = conn.execute(
+                    f"SELECT {', '.join(projection_columns)} FROM {target.table} ORDER BY {target.pk_column}"
+                )
+                for rows in fetch_rows_in_batches(cursor, batch_size=PROJECTION_FETCH_BATCH_SIZE):
+                    for row in rows:
+                        candidate_records += 1
+                        record, excluded_reason = projection_record(
+                            target,
+                            row,
+                            profile=args.profile,
+                            superseded_refs=superseded_refs,
+                        )
+                        object_ref = f"{target.object_type}:{row[target.pk_column]}"
+                        if record is None:
+                            write_jsonl_record(
+                                excluded_handle,
+                                {
+                                    "object_ref": object_ref,
+                                    "reason": excluded_reason or "excluded",
+                                },
+                            )
+                            excluded_count += 1
+                            continue
+                        write_jsonl_record(projected_handle, record)
+                        projected_count += 1
+                        if not private_paths_exposed and any(
+                            looks_like_private_path(field["text"]) for field in record["indexed_fields"]
+                        ):
+                            private_paths_exposed = True
+                        if not blocked_records_included and (
+                            record["public_blocker"] is not None
+                            or record["publication_state"]
+                            in {"blocked", "local_only", "private_working"}
+                        ):
+                            blocked_records_included = True
+                        if not superseded_records_included and record["lineage_state"] == "superseded":
+                            superseded_records_included = True
+        payload_base = {
+            "schema_version": PROJECTION_SCHEMA_VERSION,
+            "generated_at": getattr(args, "generated_at", None) or now_rfc3339(),
+            "source": {
+                "database_name": db_path.name,
+                "schema_version": source_schema_version,
+                "correction_ledger_applied": ledger_applied,
+            },
+            "profile": args.profile,
+            "policy": {
+                "raw_payload_indexed": False,
+                "full_text_indexed": False,
+                "private_paths_exposed": private_paths_exposed,
+                "superseded_records_included": superseded_records_included,
+                "blocked_records_included": blocked_records_included,
+            },
+            "counts": {
+                "candidate_records": candidate_records,
+                "projected_records": projected_count,
+                "excluded_records": excluded_count,
+                "indexed_rows": projected_count,
+            },
+            "warnings": [],
+            "errors": [],
+        }
+        temp_index_path = write_index(
+            index_path,
+            payload_base,
+            records_path=projected_records_path,
+            defer_metadata=True,
+        )
+        projected_records = list(iter_jsonl_records(projected_records_path))
+        excluded_records = list(iter_jsonl_records(excluded_records_path))
+        logical_fingerprint_source = {
+            "candidate_records": candidate_records,
+            "excluded_records": excluded_records,
+            "profile": args.profile,
+            "projected_records": projected_records,
+            "schema_version": source_schema_version,
+            "source_database_name": db_path.name,
+            "source_ledger_applied": ledger_applied,
+        }
+        payload = {
+            **payload_base,
+            "source": {
+                **payload_base["source"],
+                "database_fingerprint": database_fingerprint(logical_fingerprint_source),
+            },
+            "excluded_records": excluded_records,
+            "records": projected_records,
+        }
+        assert temp_index_path is not None
+        write_projection_metadata(
+            temp_index_path, payload, validate_index_file=args.validate_index_file
+        )
+        temp_index_path.replace(index_path)
+        temp_index_path = None
+        return payload
+    finally:
+        conn.close()
+        if temp_index_path is not None:
+            temp_index_path.unlink(missing_ok=True)
+        if temp_dir is not None:
+            temp_dir.cleanup()
+
+
+def build_projection_payload(
+    args: argparse.Namespace, *, index_path: Path | None = None
+) -> dict[str, Any]:
+    if index_path is not None:
+        return build_projection_payload_streaming(args, index_path=index_path)
     db_path = resolve_existing_file(args.db)
     _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
     conn = connect_read_only(db_path)
@@ -647,11 +963,13 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         private_paths_exposed = False
         blocked_records_included = False
         superseded_records_included = False
-        for target in TARGETS:
+        for target in INDEX_TARGETS:
             if not SQL_IDENTIFIER_RE.fullmatch(target.table):
                 raise RuntimeError(f"invalid projection target table: {target.table}")
             if not SQL_IDENTIFIER_RE.fullmatch(target.pk_column):
-                raise RuntimeError(f"invalid projection target primary key column: {target.pk_column}")
+                raise RuntimeError(
+                    f"invalid projection target primary key column: {target.pk_column}"
+                )
             if not table_exists(conn, target.table):
                 continue
             table_columns = table_column_names(conn, target.table)
@@ -672,7 +990,9 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     object_ref = f"{target.object_type}:{row[target.pk_column]}"
                     if record is None:
-                        excluded_records.append({"object_ref": object_ref, "reason": excluded_reason or "excluded"})
+                        excluded_records.append(
+                            {"object_ref": object_ref, "reason": excluded_reason or "excluded"}
+                        )
                         continue
                     projected_records.append(record)
                     if not private_paths_exposed and any(
@@ -681,7 +1001,8 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
                         private_paths_exposed = True
                     if not blocked_records_included and (
                         record["public_blocker"] is not None
-                        or record["publication_state"] in {"blocked", "local_only", "private_working"}
+                        or record["publication_state"]
+                        in {"blocked", "local_only", "private_working"}
                     ):
                         blocked_records_included = True
                     if not superseded_records_included and record["lineage_state"] == "superseded":
@@ -700,7 +1021,7 @@ def build_projection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "source_ledger_applied": ledger_applied,
     }
 
-    generated_at = args.generated_at or now_rfc3339()
+    generated_at = getattr(args, "generated_at", None) or now_rfc3339()
     return {
         "schema_version": PROJECTION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -752,7 +1073,14 @@ def render_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_index(index_path: Path, payload: dict[str, Any]) -> None:
+def write_index(
+    index_path: Path,
+    payload: dict[str, Any],
+    *,
+    validate_index_file: bool = False,
+    records_path: Path | None = None,
+    defer_metadata: bool = False,
+) -> Path | None:
     index_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     conn: sqlite3.Connection | None = None
@@ -765,8 +1093,6 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
         ) as handle:
             temp_path = Path(handle.name)
         conn = sqlite3.connect(temp_path)
-        records_digest = projection_records_digest(payload["records"])
-        payload["_projection_records_digest"] = records_digest
         conn.executescript(
             """
             PRAGMA journal_mode=DELETE;
@@ -810,40 +1136,48 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
             );
             """
         )
-        conn.execute(
-            """
-            INSERT INTO projection_metadata (
-              projection_schema_version,
-              source_database_name,
-              source_database_fingerprint,
-              source_schema_version,
-              profile,
-              generated_at,
-              projection_records_digest,
-              raw_payload_indexed,
-              full_text_indexed,
-              private_paths_exposed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payload["schema_version"],
-                payload["source"]["database_name"],
-                payload["source"]["database_fingerprint"],
-                None if payload["source"]["schema_version"] is None else str(payload["source"]["schema_version"]),
-                payload["profile"],
-                payload["generated_at"],
-                records_digest,
-                int(bool(payload["policy"]["raw_payload_indexed"])),
-                int(bool(payload["policy"]["full_text_indexed"])),
-                int(bool(payload["policy"]["private_paths_exposed"])),
-            ),
-        )
-        for record_batch in iter_record_batches(
-            payload["records"], batch_size=PROJECTION_INSERT_BATCH_SIZE
-        ):
-            search_projection_rows = []
-            search_projection_fts_rows = []
-            for record in record_batch:
+        if records_path is None:
+            records_digest = projection_records_digest(payload["records"])
+            payload["_projection_records_digest"] = records_digest
+            record_iter: Iterator[dict[str, Any]] = iter(payload["records"])
+        else:
+            record_iter = iter_jsonl_records(records_path)
+            hasher = hashlib.sha256()
+            hasher.update(b"[")
+            seen_record = False
+        search_projection_rows: list[tuple[Any, ...]] = []
+        search_projection_fts_rows: list[tuple[Any, ...]] = []
+        if records_path is not None:
+            for record in record_iter:
+                canonical_record = {
+                    "authority_level": record["authority_level"],
+                    "confidence_score": record["confidence_score"],
+                    "indexed_fields": record["indexed_fields"],
+                    "lineage_state": record["lineage_state"],
+                    "object_pk": record["object_pk"],
+                    "object_ref": record["object_ref"],
+                    "object_type": record["object_type"],
+                    "projection_id": record["projection_id"],
+                    "public_blocker": record["public_blocker"],
+                    "publication_state": record["publication_state"],
+                    "review_state": record["review_state"],
+                    "subtitle": record["subtitle"],
+                    "suppressed_fields": record["suppressed_fields"],
+                    "title": record["title"],
+                    "visible_profiles": record["visible_profiles"],
+                }
+                if seen_record:
+                    hasher.update(b",")
+                hasher.update(
+                    json.dumps(
+                        canonical_record,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                        allow_nan=False,
+                    ).encode("utf-8")
+                )
+                seen_record = True
                 indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])
                 search_projection_rows.append(
                     (
@@ -875,6 +1209,27 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                         indexed_text,
                     )
                 )
+                if len(search_projection_rows) >= PROJECTION_INSERT_BATCH_SIZE:
+                    conn.executemany(
+                        """
+                        INSERT INTO search_projection (
+                          projection_id, object_ref, object_type, object_pk, title, subtitle,
+                          review_state, publication_state, confidence_score, authority_level, public_blocker,
+                          lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        search_projection_rows,
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO search_projection_fts (
+                          projection_id, object_ref, object_type, title, subtitle, indexed_text
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        search_projection_fts_rows,
+                    )
+                    search_projection_rows = []
+                    search_projection_fts_rows = []
             if search_projection_rows:
                 conn.executemany(
                     """
@@ -895,12 +1250,82 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
                     """,
                     search_projection_fts_rows,
                 )
+            hasher.update(b"]")
+            payload["_projection_records_digest"] = hasher.hexdigest()
+        else:
+            for record_batch in iter_record_batches(
+                payload["records"], batch_size=PROJECTION_INSERT_BATCH_SIZE
+            ):
+                search_projection_rows = []
+                search_projection_fts_rows = []
+                for record in record_batch:
+                    indexed_text = "\n".join(field["text"] for field in record["indexed_fields"])
+                    search_projection_rows.append(
+                        (
+                            record["projection_id"],
+                            record["object_ref"],
+                            record["object_type"],
+                            record["object_pk"],
+                            record["title"],
+                            record["subtitle"],
+                            record["review_state"],
+                            record["publication_state"],
+                            record["confidence_score"],
+                            record["authority_level"],
+                            record["public_blocker"],
+                            record["lineage_state"],
+                            payload["profile"],
+                            json.dumps(record["visible_profiles"], sort_keys=True),
+                            json.dumps(record["suppressed_fields"], sort_keys=True),
+                            json.dumps(record["indexed_fields"], sort_keys=True),
+                        )
+                    )
+                    search_projection_fts_rows.append(
+                        (
+                            record["projection_id"],
+                            record["object_ref"],
+                            record["object_type"],
+                            record["title"],
+                            record["subtitle"] or "",
+                            indexed_text,
+                        )
+                    )
+                if search_projection_rows:
+                    conn.executemany(
+                        """
+                        INSERT INTO search_projection (
+                          projection_id, object_ref, object_type, object_pk, title, subtitle,
+                          review_state, publication_state, confidence_score, authority_level, public_blocker,
+                          lineage_state, profile, visible_profiles_json, suppressed_fields_json, indexed_fields_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        search_projection_rows,
+                    )
+                if search_projection_fts_rows:
+                    conn.executemany(
+                        """
+                        INSERT INTO search_projection_fts (
+                          projection_id, object_ref, object_type, title, subtitle, indexed_text
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        search_projection_fts_rows,
+                    )
+        if not defer_metadata:
+            insert_projection_metadata(conn, payload)
         conn.commit()
         conn.close()
         conn = None
-        validate_projection_index_file(temp_path, payload)
+        if defer_metadata:
+            returned_temp_path = temp_path
+            temp_path = None
+            return returned_temp_path
+        if validate_index_file:
+            validate_projection_index_file(temp_path, payload)
+        else:
+            validate_projection_index_post_write(temp_path, payload)
         temp_path.replace(index_path)
         temp_path = None
+        return None
     finally:
         if conn is not None:
             conn.close()
@@ -914,7 +1339,7 @@ def main() -> int:
         source_db_path = resolve_existing_file(args.db)
         index_path = resolve_path(args.index_db)
         ensure_safe_index_target(source_db_path, index_path)
-        payload = build_projection_payload(args)
+        payload = build_projection_payload(args, index_path=index_path)
         if is_public_profile(args.profile):
             validation_errors = validate_local_search_projection_payload(payload)
             if validation_errors:
@@ -923,7 +1348,6 @@ def main() -> int:
                     for error in validation_errors[:5]
                 )
                 raise SearchProjectionError(f"public search leak validation failed: {summary}")
-        write_index(index_path, payload)
         if args.output_json:
             atomic_write_json(resolve_path(args.output_json), payload)
     except (SearchProjectionError, sqlite3.DatabaseError, OSError, ValueError) as exc:

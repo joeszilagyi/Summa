@@ -8,6 +8,8 @@ gather prompt files under `tools/prompts/general/`. Domain packs map active
 prompt bundles to those files through `prompt_bundles`; `general.v1` currently
 maps `gather.sources`, `gather.timeline`, `gather.people`, `gather.places`,
 `gather.works`, and `gather.open_questions` to checked-in prompt templates.
+Seed gather prompts prepend the shared governance header from
+`tools/prompts/_shared/gather_governance_header.prompt` at render time.
 `tools/scripts/run_topic_gather.py` renders those bundles, and dry-run mode
 shows the exact rendered prompt without invoking an engine.
 
@@ -28,6 +30,7 @@ The wrapper contract is anchored in:
 ## Current prompt surface
 
 - prompt directory: `tools/prompts/general/`
+- shared governance header: `tools/prompts/_shared/gather_governance_header.prompt`
 - domain pack mapping: `config/domain_packs/general.v1.json`
 - active bundle keys: `gather.sources`, `gather.timeline`, `gather.people`,
   `gather.places`, `gather.works`, and `gather.open_questions`

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import signal
+import socket
 import subprocess
 
 import pytest
@@ -10,7 +11,6 @@ from tests_support import (
     module_from_spec_with_registration,
     subprocess_run_with_default_timeout,
 )
-
 
 # Register dynamically loaded test modules before execution so dataclass and
 # similar runtime-introspection code can resolve sys.modules[__name__] safely.
@@ -53,3 +53,16 @@ def _enforce_test_timeout(request: pytest.FixtureRequest):
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.fixture(autouse=True)
+def _block_network_access(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    if request.node.get_closest_marker("network_fixture") is not None:
+        yield
+        return
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("network access attempted in non-network test")
+
+    monkeypatch.setattr(socket, "create_connection", _fail)
+    yield

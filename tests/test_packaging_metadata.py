@@ -7,8 +7,8 @@ import venv
 from pathlib import Path
 from typing import Any
 
-from packaging.version import Version
 import pytest
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HYGIENE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "repo-hygiene.yml"
@@ -135,8 +135,7 @@ def create_isolated_install_venv(tmp_path: Path) -> Path:
 def write_fake_console_command(bin_dir: Path, command: str, capture_path: Path) -> Path:
     script_path = bin_dir / command
     script_path.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n',
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$SUMMA_WRAPPER_CAPTURE"\n',
         encoding="utf-8",
     )
     script_path.chmod(0o755)
@@ -236,7 +235,9 @@ def test_live_index_wrappers_are_packaged_or_explicitly_excluded() -> None:
         assert (REPO_ROOT / "tools" / "scripts" / wrapper_name).is_file()
 
 
-@pytest.mark.parametrize("wrapper_name,console_command", sorted(INDEX_WRAPPER_CONSOLE_COMMANDS.items()))
+@pytest.mark.parametrize(
+    "wrapper_name,console_command", sorted(INDEX_WRAPPER_CONSOLE_COMMANDS.items())
+)
 def test_live_index_wrappers_prefer_installed_console_commands(
     wrapper_name: str, console_command: str, tmp_path: Path
 ) -> None:
@@ -270,7 +271,7 @@ def test_pytest_config_moved_into_pyproject() -> None:
     pyproject = load_pyproject()
 
     pytest_options = pyproject["tool"]["pytest"]["ini_options"]
-    assert pytest_options["addopts"] == "--import-mode=importlib"
+    assert pytest_options["addopts"] == "--import-mode=importlib --timeout=300"
     assert pytest_options["testpaths"] == ["tests", "tools/source_db_tools/tests"]
     assert "tools/source_db_tools/tests" in pytest_options["pythonpath"]
 
@@ -307,13 +308,12 @@ def test_coverage_tooling_is_configured_in_pyproject_and_ci() -> None:
 
     coverage_report = pyproject["tool"]["coverage"]["report"]
     assert coverage_report["show_missing"] is True
-    assert coverage_report["fail_under"] == 60
+    assert coverage_report["fail_under"] == 70
 
     workflow = HYGIENE_WORKFLOW.read_text(encoding="utf-8")
     assert 'python -m pip install pytest "pytest-cov>=5" "jsonschema>=4.23"' in workflow
     assert (
-        "python -m pytest -q --cov=tools/validators --cov=tools/common "
-        "--cov-report=term-missing --cov-report=xml"
+        "python -m pytest -q --cov=tools --cov-report=term-missing --cov-report=xml"
     ) in workflow
 
 

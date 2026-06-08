@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
 import re
-import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +27,22 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
+from tools.common.candidate_feedback_contract import (  # noqa: E402
+    compact_candidate_record_payload,
+    compact_next_action_prompt_payload,
+)
+from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
     load_template,
     parse_wrapped_blocks,
     render_wrapped_block,
 )
-from tools.common.leak_scanner import scan_text  # noqa: E402
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+    timeout_output_excerpt,
+)
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
@@ -51,11 +63,15 @@ DEFAULT_MODE = "dry-run"
 DEFAULT_PHASE = "01a"
 DEFAULT_ENGINE = "codex"
 DEFAULT_CYCLE_DEPTH = 1
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 RUNS_ROOT = Path("runs") / "gather"
+GATHER_PROMPT_HEADER_PATH = REPO_ROOT / "tools" / "prompts" / "_shared" / "gather_governance_header.prompt"
 LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 STAMP_RUN_TS_FORMAT = "%Y-%m-%dT%H%M%SZ"
+SOURCE_TEXT_BLOCK_BYTE_CAP = 256 * 1024
+SOURCE_TEXT_HAZARD_SCAN_OVERLAP = 256
 HOSTILE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "prompt_injection_text": (
         re.compile(r"ignore previous instructions", re.IGNORECASE),
@@ -117,7 +133,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--facet",
-        help="One enabled gather facet from the resolved subject runtime. Optional when --feedback-plan supplies the next action.",
+        help=(
+            "One enabled gather facet from the resolved subject runtime, or a "
+            "comma-separated batch such as sources,timeline. Optional when "
+            "--feedback-plan supplies the next action."
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -127,9 +147,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--phase",
-        choices=resolve_subject_runtime.PHASE_KEYS,
         default=DEFAULT_PHASE,
-        help="Prompt phase within the selected bundle (default: 01a).",
+        help=(
+            "Prompt phase within the selected bundle (default: 01a). "
+            "Use a comma-separated batch such as 01a,01r to fan out one process across phases."
+        ),
     )
     parser.add_argument(
         "--engine",
@@ -139,11 +161,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-id",
-        help="Optional stable run identifier. Required for deterministic fixture output.",
+        help=(
+            "Optional stable run identifier. Defaults to a prompt-hash-derived run id and "
+            "is required for deterministic fixture output."
+        ),
     )
     parser.add_argument(
         "--created-at",
         help="Optional RFC3339 UTC timestamp override, for example 2026-06-03T12:34:56Z.",
+    )
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help=(
+            "Maximum seconds to allow each child subprocess call. Defaults to 600 seconds "
+            "when not supplied."
+        ),
     )
     parser.add_argument(
         "--source-text-file",
@@ -204,6 +237,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include the full rendered prompt in the batch artifact after leak scanning.",
     )
+    parser.add_argument(
+        "--allow-hostile-source-text",
+        action="store_true",
+        help=(
+            "Allow live mode to proceed even when wrapped source text triggers hazard flags. "
+            "Dry-run mode still records the detected hazards."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -226,17 +267,15 @@ def slugify_run_component(value: str) -> str:
     return normalized or "gather"
 
 
-def build_run_id(subject_id: str, facet: str, phase: str, created_at: str) -> str:
-    created_compact = (
-        created_at.replace("-", "").replace(":", "").replace("T", "t").replace("Z", "z").lower()
-    )
+def build_run_id(subject_id: str, facet: str, phase: str, prompt_hash: str) -> str:
+    prompt_key = prompt_hash[:16].lower()
     return ".".join(
         (
             "gather",
             slugify_run_component(subject_id),
             slugify_run_component(facet),
             slugify_run_component(phase),
-            created_compact,
+            prompt_key,
         )
     )
 
@@ -245,9 +284,27 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def render_json_payload(payload: dict[str, Any]) -> str:
+    return compact_json_text(payload)
+
+
 def source_text_fingerprint(source_text: str) -> tuple[int, str]:
     encoded_text = source_text.encode("utf-8")
     return len(encoded_text), hashlib.sha256(encoded_text).hexdigest()
+
+
+def build_source_text_block_identity(
+    index: int, *, chunk_index: int | None = None
+) -> tuple[str, str]:
+    block_suffix = f"{index:04d}" if chunk_index is None else f"{index:04d}:chunk:{chunk_index:04d}"
+    return (
+        f"source:{block_suffix}",
+        f"local_text_file:{block_suffix}",
+    )
 
 
 def hash_file(path: Path) -> str:
@@ -256,6 +313,15 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
+    timeout_seconds = getattr(args, "command_timeout_seconds", None)
+    if timeout_seconds is None:
+        return DEFAULT_COMMAND_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise GatherDriverError("--command-timeout-seconds must be greater than zero")
+    return float(timeout_seconds)
 
 
 def read_text_file(path: Path, *, label: str) -> str:
@@ -267,6 +333,19 @@ def read_text_file(path: Path, *, label: str) -> str:
         raise GatherDriverError(f"could not read {label}: {path}") from exc
     except UnicodeDecodeError as exc:
         raise GatherDriverError(f"{label} must be valid UTF-8 text: {path}") from exc
+
+
+@cache
+def load_gather_prompt_header() -> str:
+    return read_text_file(GATHER_PROMPT_HEADER_PATH, label="gather prompt header").rstrip("\n")
+
+
+def load_prompt_body(path: Path, *, label: str) -> str:
+    prompt_body = read_text_file(path, label=label)
+    if path.name.endswith(".seed.prompt"):
+        header = load_gather_prompt_header()
+        return header.rstrip("\n") + "\n\n" + prompt_body.lstrip("\n")
+    return prompt_body
 
 
 def ensure_file(path: Path, *, label: str) -> Path:
@@ -283,39 +362,174 @@ def detect_hazard_flags(source_text: str) -> list[str]:
     return flags
 
 
+def collect_source_text_hazard_flags(blocks: list[dict[str, Any]]) -> list[str]:
+    hazard_flags: list[str] = []
+    seen_flags: set[str] = set()
+    for block in blocks:
+        raw_flags = block.get("hazard_flags")
+        if not isinstance(raw_flags, list):
+            continue
+        for raw_flag in raw_flags:
+            if not isinstance(raw_flag, str) or raw_flag in seen_flags:
+                continue
+            seen_flags.add(raw_flag)
+            hazard_flags.append(raw_flag)
+    return hazard_flags
+
+
+def ensure_live_source_text_is_allowed(
+    *, args: argparse.Namespace, source_wrapping_blocks: list[dict[str, Any]]
+) -> None:
+    if args.mode != "live" or getattr(args, "allow_hostile_source_text", False):
+        return
+    hazard_flags = collect_source_text_hazard_flags(source_wrapping_blocks)
+    if not hazard_flags:
+        return
+    hazard_flags_text = ", ".join(hazard_flags)
+    raise GatherDriverError(
+        "live mode is blocked because wrapped source text triggered hazard flags "
+        f"({hazard_flags_text}); rerun with --allow-hostile-source-text to acknowledge the risk"
+    )
+
+
+def split_cli_values(
+    raw_value: str | None, *, field_name: str, default: list[str] | None = None
+) -> list[str]:
+    if raw_value is None:
+        values = list(default or [])
+    else:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not values:
+        raise GatherDriverError(f"{field_name} must contain at least one non-blank value")
+    return values
+
+
+def iter_source_text_chunks(
+    path: Path, *, byte_cap: int = SOURCE_TEXT_BLOCK_BYTE_CAP
+) -> Iterator[str]:
+    if byte_cap <= 0:
+        raise GatherDriverError("source text byte cap must be greater than zero")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    with path.open("rb") as handle:
+        while True:
+            raw_chunk = handle.read(byte_cap)
+            if not raw_chunk:
+                break
+            text_chunk = decoder.decode(raw_chunk, final=False)
+            if text_chunk:
+                yield text_chunk
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            yield tail
+
+
 def resolve_source_text_blocks(
     paths: list[str], *, template: WrapperTemplate
 ) -> tuple[list[dict[str, Any]], list[str]]:
     blocks: list[dict[str, Any]] = []
     rendered_blocks: list[str] = []
+    rendered_block_cursor = 0
     for index, raw_path in enumerate(paths, start=1):
         source_path = Path(raw_path).expanduser()
         if not source_path.is_absolute():
             source_path = (Path.cwd() / source_path).resolve()
-        source_text = read_text_file(source_path, label="source text file")
-        hazard_flags = detect_hazard_flags(source_text)
-        source_ref = f"file:{source_path}"
-        provenance = f"local_text_file:{source_path}"
-        rendered_blocks.append(
-            render_wrapped_block(
-                source_ref=source_ref,
-                provenance=provenance,
-                hazard_flags=hazard_flags,
-                source_text=source_text,
-                template=template,
+        source_ref, provenance = build_source_text_block_identity(index)
+        ensure_file(source_path, label="source text file")
+        try:
+            source_size = source_path.stat().st_size
+        except OSError as exc:
+            raise GatherDriverError(f"could not stat source text file: {source_path}") from exc
+
+        if source_size <= SOURCE_TEXT_BLOCK_BYTE_CAP:
+            source_text = read_text_file(source_path, label="source text file")
+            hazard_flags = detect_hazard_flags(source_text)
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=source_ref,
+                    provenance=provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
             )
-        )
-        byte_count, sha256 = source_text_fingerprint(source_text)
-        blocks.append(
-            {
-                "block_id": f"source-block-{index:04d}",
-                "source_ref": source_ref,
-                "provenance": provenance,
-                "hazard_flags": hazard_flags,
-                "byte_count": byte_count,
-                "sha256": sha256,
-            }
-        )
+            byte_count, sha256 = source_text_fingerprint(source_text)
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}",
+                    "source_ref": source_ref,
+                    "provenance": provenance,
+                    "resolved_source_path": str(source_path),
+                    "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
+                    "byte_count": byte_count,
+                    "sha256": sha256,
+                }
+            )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
+            continue
+
+        chunk_count = 0
+        hazard_scan_tail = ""
+        for chunk_index, source_text in enumerate(iter_source_text_chunks(source_path), start=1):
+            chunk_count = chunk_index
+            chunk_bytes = source_text.encode("utf-8")
+            digest = hashlib.sha256()
+            digest.update(chunk_bytes)
+            chunk_source_ref, chunk_provenance = build_source_text_block_identity(
+                index, chunk_index=chunk_index
+            )
+            hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
+            hazard_scan_tail = (hazard_scan_tail + source_text)[-SOURCE_TEXT_HAZARD_SCAN_OVERLAP:]
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=chunk_source_ref,
+                    provenance=chunk_provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
+            )
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}-{chunk_index:04d}",
+                    "source_ref": chunk_source_ref,
+                    "provenance": chunk_provenance,
+                    "resolved_source_path": str(source_path),
+                    "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
+                    "byte_count": len(chunk_bytes),
+                    "sha256": digest.hexdigest(),
+                }
+            )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
+        if chunk_count == 0:
+            source_text = ""
+            hazard_flags = detect_hazard_flags(source_text)
+            rendered_blocks.append(
+                render_wrapped_block(
+                    source_ref=source_ref,
+                    provenance=provenance,
+                    hazard_flags=hazard_flags,
+                    source_text=source_text,
+                    template=template,
+                )
+            )
+            blocks.append(
+                {
+                    "block_id": f"source-block-{index:04d}",
+                    "source_ref": source_ref,
+                    "provenance": provenance,
+                    "resolved_source_path": str(source_path),
+                    "hazard_flags": hazard_flags,
+                    "start_offset": rendered_block_cursor,
+                    "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
+                    "byte_count": 0,
+                    "sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                }
+            )
+            rendered_block_cursor += len(rendered_blocks[-1]) + 2
     return blocks, rendered_blocks
 
 
@@ -328,18 +542,24 @@ def resolve_gather_inputs(
     runtime: dict[str, Any],
     facet: str,
     phase: str,
+    pack: dict[str, Any] | None = None,
+    resolved_bundles: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     subject = runtime["subject"]
     if facet not in subject["enabled_facets"]:
         raise GatherDriverError(f"facet not enabled in subject manifest: {facet}")
 
-    pack = resolve_gather_domain_pack.load_domain_pack(subject["domain_pack"])
+    if pack is None:
+        pack = resolve_gather_domain_pack.load_domain_pack(subject["domain_pack"])
     enabled_facets = pack.get("enabled_facets")
     if not isinstance(enabled_facets, list) or facet not in enabled_facets:
         raise GatherDriverError(f"facet not enabled by domain pack: {facet}")
 
     try:
-        bundle = resolve_subject_runtime.resolve_prompt_bundles(pack, [facet])[facet]
+        if resolved_bundles is None:
+            bundle = resolve_subject_runtime.resolve_prompt_bundles(pack, [facet])[facet]
+        else:
+            bundle = resolved_bundles[facet]
     except resolve_subject_runtime.ResolutionError as exc:
         raise GatherDriverError(str(exc)) from exc
 
@@ -404,6 +624,37 @@ def validate_iteration_args(args: argparse.Namespace) -> None:
             raise GatherDriverError("--previous-run-id requires --use-prior-state")
         if args.cycle_depth != DEFAULT_CYCLE_DEPTH:
             raise GatherDriverError("--cycle-depth > 1 requires --use-prior-state")
+
+
+def resolve_batch_targets(
+    args: argparse.Namespace,
+    *,
+    next_action: dict[str, Any] | None,
+) -> tuple[list[str], list[str]]:
+    if args.facet is None:
+        if next_action is None:
+            raise GatherDriverError(
+                "--facet is required unless --feedback-plan supplies the next action"
+            )
+        selected_facet = next_action.get("selected_facet")
+        if not isinstance(selected_facet, str) or not selected_facet.strip():
+            raise GatherDriverError("feedback plan next_action.selected_facet is required")
+        facet_values = [selected_facet.strip()]
+    else:
+        facet_values = split_cli_values(args.facet, field_name="--facet")
+
+    phase_values = split_cli_values(args.phase, field_name="--phase", default=[DEFAULT_PHASE])
+    invalid_phases = [
+        phase for phase in phase_values if phase not in resolve_subject_runtime.PHASE_KEYS
+    ]
+    if invalid_phases:
+        valid = ", ".join(resolve_subject_runtime.PHASE_KEYS)
+        raise GatherDriverError(f"--phase must be one of: {valid}")
+    if next_action is not None and (len(facet_values) > 1 or len(phase_values) > 1):
+        raise GatherDriverError(
+            "batch mode is not supported when a feedback plan supplies next_action"
+        )
+    return facet_values, phase_values
 
 
 def load_feedback_plan(raw_path: str) -> dict[str, Any]:
@@ -480,6 +731,174 @@ def apply_feedback_plan_defaults(
     return next_action
 
 
+def execute_gather_run(
+    *,
+    args: argparse.Namespace,
+    created_at: str,
+    runtime: dict[str, Any],
+    pack: dict[str, Any],
+    resolved_bundles: dict[str, dict[str, Any]],
+    facet: str,
+    phase: str,
+    command_timeout_seconds: float,
+    prior_state: dict[str, Any] | None,
+    feedback_plan: dict[str, Any] | None,
+    next_action: dict[str, Any] | None,
+    batch_run_count: int,
+) -> dict[str, Any]:
+    gather_inputs = resolve_gather_inputs(
+        runtime=runtime,
+        facet=facet,
+        phase=phase,
+        pack=pack,
+        resolved_bundles=resolved_bundles,
+    )
+    if next_action is not None:
+        selected_bundle_id = next_action.get("selected_prompt_bundle_id")
+        if (
+            isinstance(selected_bundle_id, str)
+            and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]
+        ):
+            raise GatherDriverError(
+                "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
+            )
+    workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
+
+    prompt_body = load_prompt_body(gather_inputs["selected_template_path"], label="prompt file")
+    prior_state_context = prior_state
+    source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
+        args.source_text_file,
+        template=gather_inputs["wrapper_template"],
+    )
+    ensure_live_source_text_is_allowed(
+        args=args,
+        source_wrapping_blocks=source_wrapping_blocks,
+    )
+    rendered_prompt = render_prompt_text(
+        prompt_body=prompt_body,
+        subject=gather_inputs["subject"],
+        facet=gather_inputs["facet"],
+        phase=gather_inputs["phase"],
+        bundle=gather_inputs["bundle"],
+        wrapped_blocks=rendered_blocks,
+        next_action=next_action,
+        prior_state=prior_state_context,
+        template=gather_inputs["wrapper_template"],
+    )
+    parsed_blocks = parse_wrapped_blocks(
+        rendered_prompt, template=gather_inputs["wrapper_template"]
+    )
+    rendered_source_blocks = [
+        block for block in parsed_blocks if block.source_ref.startswith("source:")
+    ]
+    if len(rendered_source_blocks) != len(source_wrapping_blocks):
+        raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
+
+    rendered_prompt_hash = sha256_text(rendered_prompt)
+    run_id = args.run_id or build_run_id(
+        gather_inputs["subject"]["subject_id"],
+        gather_inputs["facet"],
+        gather_inputs["phase"],
+        rendered_prompt_hash,
+    )
+    if args.run_id and batch_run_count > 1:
+        run_id = ".".join(
+            (
+                args.run_id.strip(),
+                slugify_run_component(facet),
+                slugify_run_component(phase),
+            )
+        )
+
+    run_dir = workspace_root / RUNS_ROOT / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    rendered_prompt_path = run_dir / "rendered-prompt.txt"
+    write_text(rendered_prompt_path, rendered_prompt, sync=False)
+
+    live_result: dict[str, Any] | None = None
+    should_call_llm = True
+    if isinstance(next_action, dict):
+        should_call_llm = bool(next_action.get("should_call_llm", True))
+    if args.mode == "live" and should_call_llm:
+        live_result = load_cached_live_result(
+            run_dir=run_dir,
+            rendered_prompt_hash=rendered_prompt_hash,
+            subject_id=gather_inputs["subject"]["subject_id"],
+            facet=gather_inputs["facet"],
+            phase=gather_inputs["phase"],
+            engine=args.engine,
+            prior_state_hash=prior_state_context["context_hash"] if prior_state_context else None,
+        )
+        if live_result is None:
+            live_result = run_live_engine(
+                run_dir=run_dir,
+                rendered_prompt_path=rendered_prompt_path,
+                subject_id=gather_inputs["subject"]["subject_id"],
+                facet=gather_inputs["facet"],
+                phase=gather_inputs["phase"],
+                engine=args.engine,
+                command_timeout_seconds=command_timeout_seconds,
+            )
+
+    batch = build_candidate_batch(
+        args=args,
+        created_at=created_at,
+        run_id=run_id,
+        run_dir=run_dir,
+        gather_inputs=gather_inputs,
+        prompt_body=prompt_body,
+        rendered_prompt=rendered_prompt,
+        rendered_prompt_path=rendered_prompt_path,
+        source_wrapping_blocks=source_wrapping_blocks,
+        live_result=live_result,
+        prior_state=prior_state_context,
+        feedback_plan=feedback_plan,
+        next_action=next_action,
+    )
+    batch_path = run_dir / "gather-candidate-batch.json"
+    if args.debug_rendered_prompt:
+        findings = scan_text(
+            rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle"
+        )
+        if findings:
+            sample = "; ".join(f"{finding['code']}@{finding['path']}" for finding in findings[:5])
+            raise GatherDriverError(f"debug rendered prompt failed leak scan: {sample}")
+    write_json(batch_path, batch, sync=False)
+
+    validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
+    if validation_exit_code != 0:
+        messages = "; ".join(
+            f"{error['code']}: {error['message']}" for error in validation_result["errors"]
+        )
+        raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
+
+    if args.mode != "dry-run":
+        sync_paths([rendered_prompt_path, batch_path])
+
+    summary_json = render_summary_json(
+        batch_path=batch_path,
+        rendered_prompt_path=rendered_prompt_path,
+        batch=batch,
+        rendered_prompt_sha256=rendered_prompt_hash,
+        candidate_batch_sha256=hash_file(batch_path),
+        live_result=live_result,
+    )
+    summary_text = render_summary_text(
+        batch_path=batch_path,
+        rendered_prompt_path=rendered_prompt_path,
+        batch=batch,
+        live_result=live_result,
+    )
+    return {
+        "batch_path": batch_path,
+        "batch": batch,
+        "summary_json": summary_json,
+        "summary_text": summary_text,
+        "rendered_prompt_path": rendered_prompt_path,
+    }
+
+
 def resolve_prior_state_context(
     args: argparse.Namespace,
     *,
@@ -493,18 +912,22 @@ def resolve_prior_state_context(
 
     db_path = canonical_store.resolve_db_path(args.db)
     try:
-        canonical_store.check_canonical_store(db_path)
         conn = canonical_store.connect_existing_read_only(db_path)
     except canonical_store.CanonicalStoreError as exc:
         raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     try:
-        prior_state = canonical_store.load_gather_prior_state(
-            conn,
-            subject_id=subject_id,
-            per_family_limit=args.prior_state_limit,
-            high_confidence_threshold=canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
-            policy=args.prior_state_policy,
-        )
+        try:
+            outline = canonical_store.load_canonical_outline()
+            canonical_store.validate_existing_store(conn, outline=outline)
+            prior_state = canonical_store.load_gather_prior_state(
+                conn,
+                subject_id=subject_id,
+                per_family_limit=args.prior_state_limit,
+                high_confidence_threshold=canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
+                policy=args.prior_state_policy,
+            )
+        except (canonical_store.CanonicalStoreError, sqlite3.DatabaseError) as exc:
+            raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     finally:
         conn.close()
 
@@ -530,7 +953,7 @@ def render_untrusted_json_block(
         source_ref=source_ref,
         provenance=provenance,
         hazard_flags=["prompt_injection_text"],
-        source_text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        source_text=compact_json_text(payload),
         template=template,
     )
 
@@ -564,7 +987,7 @@ def render_prompt_text(
         render_untrusted_json_block(
             source_ref="metadata:feedback-plan",
             provenance="candidate feedback plan next action",
-            payload=next_action,
+            payload=compact_next_action_prompt_payload(next_action),
             template=template,
         )
         if isinstance(next_action, dict)
@@ -581,18 +1004,13 @@ def render_prompt_text(
         else ""
     )
     metadata_sections = [
-        "Untrusted subject metadata:\n"
-        f"{subject_block}\n",
+        f"Untrusted subject metadata:\n{subject_block}\n",
     ]
     if next_action_block:
-        metadata_sections.append(
-            "Untrusted feedback-plan metadata:\n"
-            f"{next_action_block}\n"
-        )
+        metadata_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
     if prior_state_block:
         metadata_sections.append(
-            "Untrusted prior canonical state metadata:\n"
-            f"{prior_state_block}\n"
+            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
         )
     return (
         f"{prompt_body.rstrip()}\n\n"
@@ -637,11 +1055,7 @@ def sync_paths(paths: list[Path]) -> None:
 
 
 def write_json(path: Path, payload: dict[str, Any], *, sync: bool = True) -> None:
-    write_text(
-        path,
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        sync=sync,
-    )
+    write_text(path, compact_json_text(payload) + "\n", sync=sync)
 
 
 def parse_stamp_footer(text: str) -> dict[str, str]:
@@ -674,16 +1088,24 @@ def parse_stamp_footer(text: str) -> dict[str, str]:
     }
 
 
-def invoke_llm_runner_bridge(command: list[str], *, label: str) -> None:
-    proc = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def invoke_llm_runner_bridge(
+    command: list[str], *, label: str, timeout_seconds: float | None
+) -> None:
+    try:
+        proc = run_streaming_command(
+            command,
+            cwd=REPO_ROOT,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_value = timeout_seconds if timeout_seconds is not None else "unset"
+        detail = timeout_output_excerpt(exc)
+        message = f"{label} exceeded timeout after {timeout_value} seconds"
+        if detail:
+            message = f"{message}: {detail}"
+        raise GatherDriverError(message) from exc
     if proc.returncode != 0:
-        message = (proc.stdout + proc.stderr).strip()
+        message = command_output_excerpt(proc)
         raise GatherDriverError(
             f"{label} failed via llm_runner bridge: {message or f'exit {proc.returncode}'}"
         )
@@ -697,6 +1119,7 @@ def run_live_engine(
     facet: str,
     phase: str,
     engine: str,
+    command_timeout_seconds: float | None,
 ) -> dict[str, Any]:
     ensure_file(LLM_RUNNER_BRIDGE_PATH, label="llm_runner bridge")
     ensure_file(LLM_RUNNER_PATH, label="llm_runner library")
@@ -718,41 +1141,140 @@ def run_live_engine(
             str(raw_engine_output_path),
             "--phase",
             phase,
+            "--stamped-output-file",
+            str(stamped_output_path),
+            "--stamp-place",
+            subject_id,
+            "--stamp-facet",
+            facet,
+            "--stamp-phase",
+            phase,
             "--engine",
             engine,
             "--tool-name",
             DRIVER_NAME,
         ],
         label="live engine run",
+        timeout_seconds=command_timeout_seconds,
     )
     raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
-
-    shutil.copyfile(raw_engine_output_path, stamped_output_path)
-    invoke_llm_runner_bridge(
-        [
-            "bash",
-            str(LLM_RUNNER_BRIDGE_PATH),
-            "stamp",
-            "--file",
-            str(stamped_output_path),
-            "--place",
-            subject_id,
-            "--facet",
-            facet,
-            "--phase",
-            phase,
-            "--engine",
-            engine,
-        ],
-        label="llm_runner output stamp",
-    )
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
     stamp_footer = parse_stamp_footer(stamped_output_text)
+    raw_engine_output_hash = sha256_text(raw_engine_output)
+    stamped_output_hash = sha256_text(stamped_output_text)
+    stamped_output_footer_hash = sha256_text(
+        json.dumps(stamp_footer, ensure_ascii=False, sort_keys=True)
+    )
 
     return {
+        "invoked": True,
+        "cache_hit": False,
         "raw_engine_output_path": str(raw_engine_output_path),
         "raw_engine_output": raw_engine_output,
+        "raw_engine_output_hash": raw_engine_output_hash,
         "stamped_output_path": str(stamped_output_path),
+        "stamped_output_hash": stamped_output_hash,
+        "stamped_output_footer_hash": stamped_output_footer_hash,
+        "stamp_footer": stamp_footer,
+    }
+
+
+def load_cached_live_result(
+    *,
+    run_dir: Path,
+    rendered_prompt_hash: str,
+    subject_id: str,
+    facet: str,
+    phase: str,
+    engine: str,
+    prior_state_hash: str | None,
+) -> dict[str, Any] | None:
+    batch_path = run_dir / "gather-candidate-batch.json"
+    if not batch_path.is_file():
+        return None
+    try:
+        payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("mode") != "live":
+        return None
+    prompt = payload.get("prompt")
+    facet_payload = payload.get("facet")
+    subject_payload = payload.get("subject")
+    engine_payload = payload.get("engine")
+    provenance = payload.get("provenance")
+    if not all(
+        isinstance(section, dict)
+        for section in (prompt, facet_payload, subject_payload, engine_payload, provenance)
+    ):
+        return None
+    if prompt.get("rendered_prompt_hash") != rendered_prompt_hash:
+        return None
+    if subject_payload.get("subject_id") != subject_id:
+        return None
+    if facet_payload.get("name") != facet or facet_payload.get("phase") != phase:
+        return None
+    if engine_payload.get("requested_engine") != engine or provenance.get("engine_name") != engine:
+        return None
+    if provenance.get("prior_state_hash") != prior_state_hash:
+        return None
+
+    raw_engine_output_path = payload.get("engine_output_ref")
+    stamped_output_path = provenance.get("stamped_output_path")
+    raw_engine_output = payload.get("raw_engine_output")
+    raw_engine_output_hash = payload.get("raw_engine_output_hash")
+    stamped_output_hash = provenance.get("stamped_output_hash")
+    stamped_output_footer_hash = provenance.get("stamped_output_footer_hash")
+    stamp_footer = provenance.get("stamped_output_footer")
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            raw_engine_output_path,
+            stamped_output_path,
+            raw_engine_output_hash,
+            stamped_output_hash,
+            stamped_output_footer_hash,
+        )
+    ):
+        return None
+    if not isinstance(raw_engine_output, str) or not raw_engine_output:
+        return None
+    if not isinstance(stamp_footer, dict):
+        return None
+
+    raw_output_path = Path(raw_engine_output_path)
+    stamped_output_path_obj = Path(stamped_output_path)
+    if not raw_output_path.is_file() or not stamped_output_path_obj.is_file():
+        return None
+
+    cached_raw_engine_output = read_text_file(raw_output_path, label="cached raw engine output")
+    cached_stamped_output_text = read_text_file(
+        stamped_output_path_obj, label="cached stamped engine output"
+    )
+    cached_stamp_footer = parse_stamp_footer(cached_stamped_output_text)
+    if cached_stamp_footer is None:
+        return None
+    cached_raw_engine_output_hash = sha256_text(cached_raw_engine_output)
+    cached_stamped_output_hash = sha256_text(cached_stamped_output_text)
+    cached_stamp_footer_hash = sha256_text(
+        json.dumps(cached_stamp_footer, ensure_ascii=False, sort_keys=True)
+    )
+    if cached_raw_engine_output != raw_engine_output or cached_raw_engine_output_hash != raw_engine_output_hash:
+        return None
+    if cached_stamped_output_hash != stamped_output_hash:
+        return None
+    if cached_stamp_footer_hash != stamped_output_footer_hash or cached_stamp_footer != stamp_footer:
+        return None
+
+    return {
+        "invoked": False,
+        "cache_hit": True,
+        "raw_engine_output_path": raw_engine_output_path,
+        "raw_engine_output": raw_engine_output,
+        "raw_engine_output_hash": raw_engine_output_hash,
+        "stamped_output_path": stamped_output_path,
+        "stamped_output_hash": stamped_output_hash,
+        "stamped_output_footer_hash": stamped_output_footer_hash,
         "stamp_footer": stamp_footer,
     }
 
@@ -772,7 +1294,6 @@ def build_candidate_batch(
     prior_state: dict[str, Any] | None,
     feedback_plan: dict[str, Any] | None,
     next_action: dict[str, Any] | None,
-    debug_rendered_prompt: bool,
 ) -> dict[str, Any]:
     subject = gather_inputs["subject"]
     pack = gather_inputs["domain_pack"]
@@ -781,10 +1302,16 @@ def build_candidate_batch(
     phase = gather_inputs["phase"]
     mode = args.mode.replace("-", "_")
     iteration_mode = "prior_state" if args.use_prior_state else "one_shot"
-    engine_invoked = live_result is not None
+    engine_present = live_result is not None
+    engine_invoked = bool(live_result.get("invoked", False)) if isinstance(live_result, dict) else False
     candidate_type_hint = candidate_type_hint_for_facet(facet)
     candidates: list[dict[str, Any]] = []
+    engine_cache_hit = bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     if live_result is not None:
+        candidate_record = compact_candidate_record_payload(
+            candidate_type=candidate_type_hint,
+            raw_output=live_result["raw_engine_output"],
+        )
         candidates.append(
             {
                 "candidate_id": "cand:0001",
@@ -792,7 +1319,7 @@ def build_candidate_batch(
                 "review_status": "unverified",
                 "persistence_status": "workspace_run_only",
                 "origin": "llm_proposed",
-                "text": live_result["raw_engine_output"],
+                "text": compact_json_text(candidate_record),
             }
         )
 
@@ -809,9 +1336,10 @@ def build_candidate_batch(
         "phase": phase,
         "engine": {
             "requested_engine": args.engine,
-            "resolved_engine": args.engine if engine_invoked else None,
+            "resolved_engine": args.engine if engine_present else None,
             "invoked": engine_invoked,
-            "engine_present": engine_invoked,
+            "cache_hit": engine_cache_hit,
+            "engine_present": engine_present,
             "runner_path": str(LLM_RUNNER_PATH),
             "bridge_path": str(LLM_RUNNER_BRIDGE_PATH),
         },
@@ -845,8 +1373,6 @@ def build_candidate_batch(
         "prompt_bundle": {
             "bundle_key": bundle["bundle_key"],
             "bundle_id": bundle["bundle_id"],
-            "template_ids": bundle["template_ids"],
-            "template_files": bundle["template_files"],
             "selected_template_id": gather_inputs["selected_template_id"],
             "selected_template_file": gather_inputs["selected_template_file"],
             "wrapper_template_id": bundle["source_text_wrapper_template_id"],
@@ -870,7 +1396,8 @@ def build_candidate_batch(
             "llm_runner_bridge_path": str(LLM_RUNNER_BRIDGE_PATH),
             "engine_name": args.engine,
             "engine_invoked": engine_invoked,
-            "engine_present": engine_invoked,
+            "engine_cache_hit": engine_cache_hit,
+            "engine_present": engine_present,
             "timestamp": created_at,
             "network_access_attempted": False,
             "prior_state_enabled": args.use_prior_state,
@@ -885,12 +1412,21 @@ def build_candidate_batch(
             "stamped_output_path": live_result["stamped_output_path"]
             if live_result is not None
             else None,
+            "stamped_output_hash": live_result["stamped_output_hash"]
+            if live_result is not None
+            else None,
+            "stamped_output_footer_hash": live_result["stamped_output_footer_hash"]
+            if live_result is not None
+            else None,
             "stamped_output_footer": live_result["stamp_footer"]
             if live_result is not None
             else None,
         },
         "candidates": candidates,
         "raw_engine_output": live_result["raw_engine_output"] if live_result is not None else None,
+        "raw_engine_output_hash": live_result["raw_engine_output_hash"]
+        if live_result is not None
+        else None,
         "engine_output_ref": live_result["raw_engine_output_path"]
         if live_result is not None
         else None,
@@ -901,8 +1437,17 @@ def build_candidate_batch(
         },
     }
     if prior_state is not None:
-        batch["prior_state"] = prior_state
+        prior_state_rendered_text = render_json_payload(prior_state)
+        batch["prior_state"] = {
+            **prior_state,
+            "prior_state_rendered_source_ref": "metadata:prior-state",
+            "prior_state_rendered_provenance": "prior canonical state context",
+            "prior_state_rendered_hash": sha256_text(prior_state_rendered_text),
+            "prior_state_rendered_byte_count": len(prior_state_rendered_text.encode("utf-8")),
+        }
     if feedback_plan is not None and next_action is not None:
+        next_action_prompt_payload = compact_next_action_prompt_payload(next_action)
+        next_action_rendered_text = render_json_payload(next_action_prompt_payload)
         batch["feedback_plan"] = {
             "schema_version": feedback_plan["payload"]["schema_version"],
             "plan_path": str(feedback_plan["path"]),
@@ -920,10 +1465,12 @@ def build_candidate_batch(
             "use_prior_state": next_action["use_prior_state"],
             "cycle_depth": next_action["cycle_depth"],
             "previous_run_ids_considered": list(next_action["previous_run_ids_considered"]),
+            "next_action_rendered_source_ref": "metadata:feedback-plan",
+            "next_action_rendered_provenance": "candidate feedback plan next action",
+            "next_action_rendered_hash": sha256_text(next_action_rendered_text),
+            "next_action_rendered_byte_count": len(next_action_rendered_text.encode("utf-8")),
             "next_action": next_action,
         }
-    if debug_rendered_prompt:
-        batch["prompt"]["rendered_prompt"] = rendered_prompt
     return batch
 
 
@@ -997,7 +1544,7 @@ def render_summary_json(
         if live_result is not None
         else None,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return compact_json_text(payload) + "\n"
 
 
 def main() -> int:
@@ -1008,6 +1555,7 @@ def main() -> int:
             if args.created_at
             else utc_now_text()
         )
+        command_timeout_seconds = resolve_command_timeout_seconds(args)
         runtime = resolve_runtime_inputs(args)
         feedback_plan = load_feedback_plan(args.feedback_plan) if args.feedback_plan else None
         next_action = apply_feedback_plan_defaults(
@@ -1018,137 +1566,54 @@ def main() -> int:
         if args.cycle_depth is None:
             args.cycle_depth = DEFAULT_CYCLE_DEPTH
         validate_iteration_args(args)
-        gather_inputs = resolve_gather_inputs(
-            runtime=runtime,
-            facet=args.facet.strip(),
-            phase=args.phase,
-        )
-        if next_action is not None:
-            selected_bundle_id = next_action.get("selected_prompt_bundle_id")
-            if (
-                isinstance(selected_bundle_id, str)
-                and selected_bundle_id != gather_inputs["bundle"]["bundle_id"]
-            ):
-                raise GatherDriverError(
-                    "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
-                )
-        run_id = args.run_id or build_run_id(
-            gather_inputs["subject"]["subject_id"],
-            gather_inputs["facet"],
-            gather_inputs["phase"],
-            created_at,
-        )
-
-        workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
-        run_dir = workspace_root / RUNS_ROOT / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
+        facet_values, phase_values = resolve_batch_targets(args, next_action=next_action)
+        pack = resolve_gather_domain_pack.load_domain_pack(runtime["subject"]["domain_pack"])
+        resolved_bundles = resolve_subject_runtime.resolve_prompt_bundles(pack, facet_values)
         prior_state = resolve_prior_state_context(
             args,
-            subject_id=gather_inputs["subject"]["subject_id"],
+            subject_id=runtime["subject"]["subject_id"],
         )
-        source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
-            args.source_text_file,
-            template=gather_inputs["wrapper_template"],
-        )
-        rendered_prompt = render_prompt_text(
-            prompt_body=prompt_body,
-            subject=gather_inputs["subject"],
-            facet=gather_inputs["facet"],
-            phase=gather_inputs["phase"],
-            bundle=gather_inputs["bundle"],
-            wrapped_blocks=rendered_blocks,
-            next_action=next_action,
-            prior_state=prior_state,
-            template=gather_inputs["wrapper_template"],
-        )
-        parsed_blocks = parse_wrapped_blocks(
-            rendered_prompt, template=gather_inputs["wrapper_template"]
-        )
-        rendered_source_blocks = [
-            block for block in parsed_blocks if block.source_ref.startswith("file:")
-        ]
-        if len(rendered_source_blocks) != len(source_wrapping_blocks):
-            raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
-
-        rendered_prompt_path = run_dir / "rendered-prompt.txt"
-        write_text(rendered_prompt_path, rendered_prompt, sync=False)
-
-        live_result: dict[str, Any] | None = None
-        should_call_llm = True
-        if isinstance(next_action, dict):
-            should_call_llm = bool(next_action.get("should_call_llm", True))
-        if args.mode == "live" and should_call_llm:
-            live_result = run_live_engine(
-                run_dir=run_dir,
-                rendered_prompt_path=rendered_prompt_path,
-                subject_id=gather_inputs["subject"]["subject_id"],
-                facet=gather_inputs["facet"],
-                phase=gather_inputs["phase"],
-                engine=args.engine,
-            )
-
-        batch = build_candidate_batch(
-            args=args,
-            created_at=created_at,
-            run_id=run_id,
-            run_dir=run_dir,
-            gather_inputs=gather_inputs,
-            prompt_body=prompt_body,
-            rendered_prompt=rendered_prompt,
-            rendered_prompt_path=rendered_prompt_path,
-            source_wrapping_blocks=source_wrapping_blocks,
-            live_result=live_result,
-            prior_state=prior_state,
-            feedback_plan=feedback_plan,
-            next_action=next_action,
-            debug_rendered_prompt=args.debug_rendered_prompt,
-        )
-        batch_path = run_dir / "gather-candidate-batch.json"
-        if args.debug_rendered_prompt:
-            findings = scan_text(rendered_prompt, rel_path=str(rendered_prompt_path), profile="public_bundle")
-            if findings:
-                sample = "; ".join(
-                    f"{finding['code']}@{finding['path']}" for finding in findings[:5]
+        results: list[dict[str, Any]] = []
+        batch_run_count = len(facet_values) * len(phase_values)
+        for facet in facet_values:
+            for phase in phase_values:
+                results.append(
+                    execute_gather_run(
+                        args=args,
+                        created_at=created_at,
+                        runtime=runtime,
+                        pack=pack,
+                        resolved_bundles=resolved_bundles,
+                        facet=facet,
+                        phase=phase,
+                        command_timeout_seconds=command_timeout_seconds,
+                        prior_state=prior_state,
+                        feedback_plan=feedback_plan,
+                        next_action=next_action,
+                        batch_run_count=batch_run_count,
+                    )
                 )
-                raise GatherDriverError(
-                    f"debug rendered prompt failed leak scan: {sample}"
-                )
-        write_json(batch_path, batch, sync=False)
 
-        validation_result, validation_exit_code = validate_gather_candidate_batch(batch_path)
-        if validation_exit_code != 0:
-            messages = "; ".join(
-                f"{error['code']}: {error['message']}" for error in validation_result["errors"]
-            )
-            raise GatherDriverError(f"emitted candidate batch failed validation: {messages}")
-
-        if args.mode != "dry-run":
-            sync_paths([rendered_prompt_path, batch_path])
-
-        if args.format == "json":
-            candidate_batch_sha256 = hash_file(batch_path)
-            rendered_prompt_sha256 = sha256_text(rendered_prompt)
-            sys.stdout.write(
-                render_summary_json(
-                    batch_path=batch_path,
-                    rendered_prompt_path=rendered_prompt_path,
-                    batch=batch,
-                    rendered_prompt_sha256=rendered_prompt_sha256,
-                    candidate_batch_sha256=candidate_batch_sha256,
-                    live_result=live_result,
-                )
-            )
+        if len(results) == 1:
+            result = results[0]
+            if args.format == "json":
+                sys.stdout.write(result["summary_json"])
+            else:
+                sys.stdout.write(result["summary_text"])
         else:
-            sys.stdout.write(
-                render_summary_text(
-                    batch_path=batch_path,
-                    rendered_prompt_path=rendered_prompt_path,
-                    batch=batch,
-                    live_result=live_result,
-                )
-            )
+            if args.format == "json":
+                payload = {
+                    "batch_mode": True,
+                    "run_count": len(results),
+                    "runs": [json.loads(result["summary_json"]) for result in results],
+                }
+                sys.stdout.write(compact_json_text(payload) + "\n")
+            else:
+                lines = ["batch_mode=true", f"run_count={len(results)}"]
+                for result in results:
+                    lines.append("---")
+                    lines.append(result["summary_text"].rstrip())
+                sys.stdout.write("\n".join(lines) + "\n")
         return 0
     except (
         GatherDriverError,

@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "jsonl_syntax"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_jsonl.py"
@@ -36,6 +35,8 @@ def run_fixture(tmp_path: Path, scenario: str) -> tuple[subprocess.CompletedProc
             scenario,
             "--target-id",
             str(target),
+            "--report-root",
+            ".",
             "--report-json",
             "actual/report.json",
             "--report-text",

@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
 QUERY_TOOL = REPO_ROOT / "tools" / "scripts" / "query_local_search.py"
@@ -213,6 +212,7 @@ def test_query_cli_normalizes_plain_text_and_validates_json(tmp_path: Path) -> N
     assert payload["query"]["normalized_query"] == 'Public!!! +claim? "summary"'
     assert payload["query"]["terms"] == ["public", "claim", "summary"]
     assert payload["counts"]["returned"] == 2
+    assert payload["counts"]["total_estimate"] is None
     assert payload["results"][0]["object_id"] == "claim:1"
     assert payload["results"][0]["result_class"] == "claim"
 
@@ -261,7 +261,7 @@ def test_load_matching_rows_pushes_pagination_into_sqlite(tmp_path: Path) -> Non
     traces: list[str] = []
     try:
         conn.set_trace_callback(traces.append)
-        rows, total = query_tool.load_matching_rows(
+        rows, total, truncated = query_tool.load_matching_rows(
             conn,
             fts_query='"alpha"',
             scope="all",
@@ -272,9 +272,43 @@ def test_load_matching_rows_pushes_pagination_into_sqlite(tmp_path: Path) -> Non
         conn.set_trace_callback(None)
         conn.close()
 
-    assert total == 3
+    assert total is None
+    assert truncated is True
     assert [int(row["object_pk"]) for row in rows] == [1]
-    assert any("ORDER BY" in statement and "LIMIT 1 OFFSET 1" in statement for statement in traces)
+    assert any("ORDER BY" in statement and "LIMIT 2 OFFSET 1" in statement for statement in traces)
+    assert not any("COUNT(*)" in statement for statement in traces)
+
+
+def test_load_matching_rows_computes_total_when_requested(tmp_path: Path) -> None:
+    index_db = build_ranked_index(
+        tmp_path,
+        [
+            (1, "alpha ranking sample", "secondary", 0.55),
+            (2, "alpha ranking sample", "primary", 0.55),
+            (3, "alpha ranking sample", "trusted", 0.10),
+        ],
+    )
+
+    conn = query_tool.connect_read_only(index_db)
+    traces: list[str] = []
+    try:
+        conn.set_trace_callback(traces.append)
+        rows, total, truncated = query_tool.load_matching_rows(
+            conn,
+            fts_query='"alpha"',
+            scope="all",
+            limit=1,
+            offset=1,
+            include_total=True,
+        )
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert total == 3
+    assert truncated is True
+    assert [int(row["object_pk"]) for row in rows] == [1]
+    assert sum("search_projection_fts MATCH" in statement for statement in traces) == 2
 
 
 def test_query_cli_suppresses_private_path_snippets(tmp_path: Path) -> None:
@@ -361,7 +395,34 @@ def test_query_cli_treats_sql_injection_like_input_as_plain_text(tmp_path: Path)
     assert payload["query"]["normalized_query"] == "work; DROP TABLE search_projection; --"
     assert payload["query"]["terms"] == ["work", "drop", "table", "search", "projection"]
     assert payload["counts"]["returned"] == 0
-    assert payload["counts"]["total_estimate"] == 0
+    assert payload["counts"]["total_estimate"] is None
+
+
+def test_query_cli_can_include_total_estimate(tmp_path: Path) -> None:
+    index_db = build_ranked_index(
+        tmp_path,
+        [
+            (1, "alpha ranking sample", "secondary", 0.55),
+            (2, "alpha ranking sample", "primary", 0.55),
+            (3, "alpha ranking sample", "trusted", 0.10),
+        ],
+    )
+
+    result = run_query(
+        "--index-db",
+        str(index_db),
+        "--query",
+        "alpha",
+        "--include-total",
+        "--generated-at",
+        "2026-06-02T00:00:00Z",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["counts"]["returned"] == 3
+    assert payload["counts"]["total_estimate"] == 3
+    assert payload["counts"]["truncated"] is False
 
 
 def test_results_validator_rejects_secret_and_private_note_findings(tmp_path: Path) -> None:

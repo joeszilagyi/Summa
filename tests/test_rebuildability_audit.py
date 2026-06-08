@@ -11,6 +11,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 try:
     from jsonschema import validators
 except ModuleNotFoundError:  # pragma: no cover - optional test dependency in this environment
@@ -45,10 +47,7 @@ def load_json(path: Path) -> dict[str, Any]:
 def test_direct_file_import_registers_modules_before_exec(tmp_path: Path) -> None:
     module_path = tmp_path / "dataclass_module.py"
     module_path.write_text(
-        "from dataclasses import dataclass\n\n"
-        "@dataclass\n"
-        "class Payload:\n"
-        "    value: int\n",
+        "from dataclasses import dataclass\n\n@dataclass\nclass Payload:\n    value: int\n",
         encoding="utf-8",
     )
 
@@ -167,7 +166,9 @@ def rewrite_schema_version(path: Path, schema_version: str) -> None:
 
 
 def rewrite_jsonl_schema_version(path: Path, schema_version: str) -> None:
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     for record in records:
         record["schema_version"] = schema_version
     path.write_text(
@@ -178,11 +179,23 @@ def rewrite_jsonl_schema_version(path: Path, schema_version: str) -> None:
 
 def stage_legacy_runs_dir(tmp_path: Path) -> Path:
     runs_dir = stage_runs_dir(tmp_path)
-    rewrite_schema_version(runs_dir / "gather" / "run-001" / "gather-candidate-batch.json", "gather-candidate-batch.v0")
-    rewrite_schema_version(runs_dir / "acquisition" / "exec-001" / "execution-record.json", "source-acquisition-execution.v0")
-    rewrite_jsonl_schema_version(runs_dir / "acquisition" / "exec-001" / "capture-events.jsonl", "source-capture-event.v0")
-    rewrite_jsonl_schema_version(runs_dir / "acquisition" / "exec-001" / "extraction-records.jsonl", "source-extraction-record.v0")
-    rewrite_schema_version(runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json", "topic-cycle-run.v0")
+    rewrite_schema_version(
+        runs_dir / "gather" / "run-001" / "gather-candidate-batch.json", "gather-candidate-batch.v0"
+    )
+    rewrite_schema_version(
+        runs_dir / "acquisition" / "exec-001" / "execution-record.json",
+        "source-acquisition-execution.v0",
+    )
+    rewrite_jsonl_schema_version(
+        runs_dir / "acquisition" / "exec-001" / "capture-events.jsonl", "source-capture-event.v0"
+    )
+    rewrite_jsonl_schema_version(
+        runs_dir / "acquisition" / "exec-001" / "extraction-records.jsonl",
+        "source-extraction-record.v0",
+    )
+    rewrite_schema_version(
+        runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json", "topic-cycle-run.v0"
+    )
 
     review_dir = runs_dir / "review"
     review_dir.mkdir(exist_ok=True)
@@ -271,7 +284,9 @@ def stage_hostile_runs_dir(tmp_path: Path) -> Path:
 
     malformed_review = runs_dir / "review" / "review-decision-apply-result.json"
     malformed_review.parent.mkdir(parents=True, exist_ok=True)
-    malformed_review.write_text("{\"schema_version\": \"review-decision-apply-result.v1\",\n", encoding="utf-8")
+    malformed_review.write_text(
+        '{"schema_version": "review-decision-apply-result.v1",\n', encoding="utf-8"
+    )
 
     topic_cycle_dir = runs_dir / "topic-cycle" / "cycle-002"
     topic_cycle_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +300,9 @@ def stage_hostile_runs_dir(tmp_path: Path) -> Path:
                     {
                         "name": "missing_reference",
                         "status": "passed",
-                        "artifacts": {"candidate_batch": "../../gather/run-999/gather-candidate-batch.json"},
+                        "artifacts": {
+                            "candidate_batch": "../../gather/run-999/gather-candidate-batch.json"
+                        },
                     }
                 ],
             },
@@ -320,17 +337,17 @@ def ingest_fixture_artifacts(db_path: Path, runs_dir: Path) -> None:
                 db_path=db_path,
             )
         execution_dir = runs_dir / "acquisition" / "exec-001"
-        execution_record, captures, extractions, paths, hashes = (
-            canonical_ingest.load_validated_execution_artifacts(execution_dir)
+        execution_record, paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+            execution_dir
         )
         with conn:
             canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                captures,
-                extractions,
                 paths=paths,
                 input_hashes=hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
     finally:
@@ -583,7 +600,9 @@ def test_db_summary_reuses_prevalidated_store_summary_counts(
         raise AssertionError("db_summary should reuse the provided store summary")
 
     def fail_row_count_summary(_path: Path) -> dict[str, int]:
-        raise AssertionError("row_count_summary should not be called when table_counts are provided")
+        raise AssertionError(
+            "row_count_summary should not be called when table_counts are provided"
+        )
 
     monkeypatch.setattr(audit.canonical_store, "check_canonical_store", fail_check)
     monkeypatch.setattr(audit, "row_count_summary", fail_row_count_summary)
@@ -604,7 +623,7 @@ def test_find_missing_artifacts_resolves_absolute_path_aliases(tmp_path: Path) -
     data_dir = runs_dir / "data"
     data_dir.mkdir(parents=True)
     actual = data_dir / "candidate-batch.json"
-    actual.write_text("{\"schema_version\":\"demo\"}\n", encoding="utf-8")
+    actual.write_text('{"schema_version":"demo"}\n', encoding="utf-8")
     alias = runs_dir / "topic-cycle" / "cycle-001" / ".." / ".." / "data" / "candidate-batch.json"
     cycle_dir.mkdir(parents=True)
     (cycle_dir / "topic-cycle-run.json").write_text(
@@ -650,7 +669,7 @@ def test_find_missing_artifacts_rejects_absolute_refs_outside_runs_root(tmp_path
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir(parents=True)
     outside_ref = outside_dir / "escaped-candidate-batch.json"
-    outside_ref.write_text("{\"schema_version\":\"demo\"}\n", encoding="utf-8")
+    outside_ref.write_text('{"schema_version":"demo"}\n', encoding="utf-8")
     cycle_dir.mkdir(parents=True)
     (cycle_dir / "topic-cycle-run.json").write_text(
         json.dumps(
@@ -760,7 +779,9 @@ def test_find_missing_artifacts_reuses_discovered_manifest_payload_without_rerea
     assert missing == []
 
 
-def test_discover_artifacts_validates_replayable_artifacts_in_parallel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_artifacts_validates_replayable_artifacts_in_parallel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runs_dir = stage_runs_dir(tmp_path)
     barrier = threading.Barrier(2)
     active = 0
@@ -845,13 +866,17 @@ def test_replay_artifacts_reuses_discovery_validation_receipts(
 
     def fail_execution_artifacts(
         *_args: object, **_kwargs: object
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]]:
+    ) -> tuple[
+        dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]
+    ]:
         raise AssertionError("execution artifacts should reuse discovery inputs")
 
     def fail_spool_record(*_args: object, **_kwargs: object) -> dict[str, Any]:
         raise AssertionError("spool records should reuse discovery inputs")
 
-    monkeypatch.setattr(audit.canonical_ingest, "load_validated_candidate_batch", fail_candidate_batch)
+    monkeypatch.setattr(
+        audit.canonical_ingest, "load_validated_candidate_batch", fail_candidate_batch
+    )
     monkeypatch.setattr(
         audit.canonical_ingest,
         "load_validated_execution_artifacts",
@@ -894,10 +919,10 @@ def test_replay_artifacts_prepares_validations_in_parallel(
             with lock:
                 active -= 1
 
-    def wrap_execution(path: Path) -> tuple[
+    def wrap_execution(
+        path: Path,
+    ) -> tuple[
         dict[str, Any],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
         dict[str, Path],
         dict[str, str],
     ]:
@@ -913,17 +938,23 @@ def test_replay_artifacts_prepares_validations_in_parallel(
                 "capture_events": path / "capture-events.jsonl",
                 "extraction_records": path / "extraction-records.jsonl",
             }
-            return execution_record, [], [], empty_paths, {
-                "execution_record": "record-hash",
-                "capture_events": "capture-hash",
-                "extraction_records": "extraction-hash",
-            }
+            return (
+                execution_record,
+                empty_paths,
+                {
+                    "execution_record": "record-hash",
+                    "capture_events": "capture-hash",
+                    "extraction_records": "extraction-hash",
+                },
+            )
         finally:
             with lock:
                 active -= 1
 
     monkeypatch.setattr(audit.canonical_ingest, "load_validated_candidate_batch", wrap_candidate)
-    monkeypatch.setattr(audit.canonical_ingest, "load_validated_execution_artifacts", wrap_execution)
+    monkeypatch.setattr(
+        audit.canonical_ingest, "load_validated_execution_artifacts", wrap_execution
+    )
     monkeypatch.setattr(
         audit,
         "replay_candidate_batch",
@@ -979,14 +1010,14 @@ def test_table_content_hash_summary_streams_key_rows_without_fetchall(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(audit.canonical_store, "connect_existing_read_only", lambda _path: FakeConnection())
+    monkeypatch.setattr(
+        audit.canonical_store, "connect_existing_read_only", lambda _path: FakeConnection()
+    )
     monkeypatch.setattr(audit.canonical_store, "actual_tables", lambda _conn: ["authority_record"])
 
     summary = audit.table_content_hash_summary(tmp_path / "fake.sqlite")
 
-    assert summary == {
-        "authority_record": hashlib.sha256("alpha\nbeta".encode()).hexdigest()
-    }
+    assert summary == {"authority_record": hashlib.sha256(b"alpha\nbeta").hexdigest()}
 
 
 def test_table_content_hash_summary_forces_allow_nan_false(
@@ -1101,7 +1132,9 @@ def test_reference_artifacts_reject_future_schema_versions(tmp_path: Path) -> No
     cycle_path = runs_dir / "topic-cycle" / "cycle-001" / "topic-cycle-run.json"
     cycle_payload = load_json(cycle_path)
     cycle_payload["schema_version"] = "topic-cycle-run.v999"
-    cycle_path.write_text(json.dumps(cycle_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    cycle_path.write_text(
+        json.dumps(cycle_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     review_dir = runs_dir / "review"
     review_dir.mkdir()
@@ -1168,9 +1201,13 @@ def test_legacy_artifacts_remain_readable_after_schema_changes(tmp_path: Path) -
     assert report["final_status"] == "incomplete_support"
     discovered = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
     assert discovered["gather_candidate_batch"]["schema_id"] == "gather-candidate-batch.v0"
-    assert discovered["source_acquisition_execution"]["schema_id"] == "source-acquisition-execution.v0"
+    assert (
+        discovered["source_acquisition_execution"]["schema_id"] == "source-acquisition-execution.v0"
+    )
     assert discovered["topic_cycle_manifest"]["schema_id"] == "topic-cycle-run.v0"
-    assert discovered["review_decision_apply_result"]["schema_id"] == "review-decision-apply-result.v0"
+    assert (
+        discovered["review_decision_apply_result"]["schema_id"] == "review-decision-apply-result.v0"
+    )
     assert discovered["publication_artifact"]["schema_id"] == "publication-artifacts-report.v0"
     assert discovered["network_safety_gate_report"]["schema_id"] == "network-safety-gate-report.v0"
     assert discovered["rebuildability_report"]["schema_id"] == "canonical-rebuildability-report.v0"
@@ -1207,7 +1244,9 @@ def test_rebuildable_report_can_reconstruct_row_provenance_chain(tmp_path: Path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     report = load_json(report_path)
     artifact_by_type = {item["artifact_type"]: item for item in report["artifacts_discovered"]}
-    assert artifact_by_type["gather_candidate_batch"]["originating_run_id"] == "fixture-gather-ingest"
+    assert (
+        artifact_by_type["gather_candidate_batch"]["originating_run_id"] == "fixture-gather-ingest"
+    )
     assert artifact_by_type["source_acquisition_execution"]["originating_run_id"] == "fixture-exec"
     assert report["canonical_validation_result"]["status"] == "pass"
     assert report["graph_closure_result"]["status"] in {"pass", "pass_with_unresolved"}
@@ -1272,7 +1311,8 @@ def test_rebuildability_audit_survives_hostile_run_directories(tmp_path: Path) -
     assert report["artifacts_missing"]
     assert any(item["validation_status"] == "invalid" for item in report["artifacts_discovered"])
     assert any(
-        item["artifact_type"] == "review_decision_apply_result" and item["validation_status"] == "invalid"
+        item["artifact_type"] == "review_decision_apply_result"
+        and item["validation_status"] == "invalid"
         for item in report["artifacts_discovered"]
     )
     outside_path = (tmp_path / "outside" / "escaped-gather-candidate-batch.json").resolve()

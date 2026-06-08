@@ -10,7 +10,6 @@ from typing import Any
 
 from tools.common.search_leak_policy import contains_private_path, contains_secret_marker
 
-
 ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v1"
 REPORT_SCHEMA_VERSION = "leak-scan-report.v1"
 TEXT_SUFFIXES = {".css", ".html", ".json", ".log", ".md", ".txt"}
@@ -325,6 +324,7 @@ def scan_directory(
     *,
     profile: str,
     allowlist_payload: dict[str, Any] | None = None,
+    exclude_globs: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     if profile not in PROFILES:
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
@@ -337,11 +337,17 @@ def scan_directory(
 
     raw_findings: list[dict[str, Any]] = []
     files_scanned = 0
+    normalized_exclude_globs = tuple(exclude_globs or ())
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        files_scanned += 1
         rel_path = path.relative_to(root).as_posix()
+        if normalized_exclude_globs and any(
+            fnmatch(rel_path, pattern) or fnmatch(path.name, pattern)
+            for pattern in normalized_exclude_globs
+        ):
+            continue
+        files_scanned += 1
         if PROFILES[profile]["scan_runtime_log_paths"] and RUNTIME_LOG_PATH_RE.search(rel_path):
             raw_findings.append(
                 _finding(

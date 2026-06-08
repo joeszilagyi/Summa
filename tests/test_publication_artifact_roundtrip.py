@@ -12,6 +12,7 @@ from tests.publication_fixture_store import (
     UNREVIEWED_SENTINEL,
     create_populated_canonical_store,
 )
+from tools.scripts.build_publication_artifacts import scan_public_site_for_leaks
 from tools.validators.validate_knowledge_tree_export import EXIT_PASS as EXIT_EXPORT_PASS
 from tools.validators.validate_knowledge_tree_export import validate_knowledge_tree_export
 from tools.validators.validate_public_knowledge_tree_presentation import (
@@ -273,3 +274,19 @@ def test_index_build_knowledge_tree_docs_example_executes_in_dry_run(tmp_path: P
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "DRY-RUN:" in proc.stdout
     assert "build_publication_artifacts.py" in proc.stdout
+
+
+def test_publication_leak_scan_helper_excludes_build_manifest(tmp_path: Path) -> None:
+    publish_root = tmp_path / "static"
+    publish_root.mkdir()
+    (publish_root / "index.html").write_text("<p>safe</p>\n", encoding="utf-8")
+    (publish_root / "build-manifest.json").write_text(
+        '{"note":"Authorization: Bearer excluded-token"}\n',
+        encoding="utf-8",
+    )
+
+    report = scan_public_site_for_leaks(publish_root)
+
+    assert report["status"] == "pass"
+    assert report["counts"]["files_scanned"] == 1
+    assert report["findings"] == []

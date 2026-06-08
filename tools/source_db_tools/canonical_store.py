@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -25,14 +26,17 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 7
-CURRENT_MIGRATION_ID = "0007_source_claim_open_question_status"
+CURRENT_SCHEMA_VERSION = 8
+CURRENT_MIGRATION_ID = "0008_source_reconciliation_hot_path_indexes"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
 CLI_PATH = "tools/source_db_tools/init_canonical_store.py"
 OUTLINE_PATH = REPO_ROOT / "config" / "canonical_graph_model_outline.json"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "schema" / "migrations"
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000
+DEFAULT_SQLITE_WAL_SYNCHRONOUS = "NORMAL"
+DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS = "FULL"
 
 REQUIRED_INDEXES = {
     "ix_authority_identifier_record",
@@ -65,11 +69,13 @@ REQUIRED_INDEXES = {
     "ux_source_access_lead_identity_global",
     "ix_source_claim_about",
     "ix_source_claim_review",
+    "ix_source_claim_provenance_event_claim_type",
     "ix_source_claim_workspace_type_review",
     "ix_source_claim_workspace_question_review",
     "ix_source_relationship_refs",
     "ix_source_relationship_review",
     "ix_source_relationship_workspace_provenance_predicate",
+    "ix_source_relationship_provenance_workspace_predicate",
     "ix_topic_extension_topic",
     "ix_work_identifier_work",
     "ux_work_identifier_scheme_value",
@@ -181,6 +187,7 @@ DEFAULT_GATHER_PRIOR_STATE_LIMIT = 5
 DEFAULT_GATHER_PRIOR_STATE_MAX_CHARS = 5000
 DEFAULT_GATHER_PRIOR_STATE_MAX_PREVIOUS_RUNS = 5
 DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE = 0.8
+GATHER_PRIOR_STATE_SOURCE_NAMESPACE = "topic_subject"
 PRIOR_STATE_ESTABLISHED_REVIEW_STATES = frozenset({"accepted", "approved", "curated", "reviewed"})
 PRIOR_STATE_LEAD_REVIEW_STATES = frozenset(
     {"machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
@@ -244,9 +251,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=7,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0007_source_claim_open_question_status",
         sql_path=MIGRATIONS_DIR / "0007_source_claim_open_question_status.sql",
         notes="Persist open-question claim status for planner hot-path queries.",
+    ),
+    MigrationSpec(
+        version=8,
+        migration_id=CURRENT_MIGRATION_ID,
+        sql_path=MIGRATIONS_DIR / "0008_source_reconciliation_hot_path_indexes.sql",
+        notes="Add remaining source_claim and source_relationship reconciliation indexes.",
     ),
 )
 
@@ -262,23 +275,103 @@ def resolve_db_path(db_path: Path | str) -> Path:
     return path
 
 
-def connect_canonical_store(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+def _configure_connection_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    journal_mode: str | None = None,
+    synchronous: str | None = None,
+) -> None:
+    conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
+    if journal_mode is not None:
+        row = conn.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()
+        if row is None or str(row[0]).strip().lower() != journal_mode.strip().lower():
+            raise CanonicalStoreError(
+                f"could not configure canonical store journal_mode={journal_mode}"
+            )
+    if synchronous is not None:
+        conn.execute(f"PRAGMA synchronous={synchronous}")
+
+
+def connect_canonical_store(
+    db_path: Path,
+    *,
+    journal_mode: str = "WAL",
+    synchronous: str | None = None,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
+    normalized_journal_mode = journal_mode.strip().upper()
+    if not normalized_journal_mode:
+        raise CanonicalStoreError("journal_mode may not be blank")
+    normalized_synchronous = synchronous
+    if normalized_synchronous is None:
+        normalized_synchronous = (
+            DEFAULT_SQLITE_WAL_SYNCHRONOUS
+            if normalized_journal_mode == "WAL"
+            else DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS
+        )
+    conn = sqlite3.connect(db_path, timeout=busy_timeout_ms / 1000.0)
     conn.row_factory = sqlite3.Row
+    _configure_connection_pragmas(
+        conn,
+        busy_timeout_ms=busy_timeout_ms,
+        journal_mode=normalized_journal_mode,
+        synchronous=normalized_synchronous,
+    )
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
-def connect_existing_read_only(db_path: Path) -> sqlite3.Connection:
+def connect_existing_read_only(
+    db_path: Path,
+    *,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
     if not db_path.exists():
         raise CanonicalStoreError(f"database not found: {db_path}")
     if not db_path.is_file():
         raise CanonicalStoreError(f"database path is not a file: {db_path}")
     uri = db_path.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
     conn.row_factory = sqlite3.Row
+    _configure_connection_pragmas(conn, busy_timeout_ms=busy_timeout_ms)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def parse_gather_candidate_batch_ingest_note(note_text: Any) -> dict[str, Any]:
+    if not isinstance(note_text, str) or not note_text.strip():
+        return {}
+    raw_text = note_text.strip()
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines or lines[0] != "gather_candidate_batch_ingest":
+        return {}
+    parsed: dict[str, Any] = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if key == "previous_run_ids":
+            parsed[key] = [item.strip() for item in value.split(",") if item.strip()]
+            continue
+        if key in {"candidate_count", "cycle_depth"}:
+            try:
+                parsed[key] = int(value)
+            except ValueError:
+                parsed[key] = value
+            continue
+        parsed[key] = value
+    return parsed
 
 
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -699,10 +792,8 @@ def apply_migrations(
     try:
         conn.executescript(script)
     except sqlite3.Error as exc:
-        try:
+        with contextlib.suppress(sqlite3.Error):
             conn.rollback()
-        except sqlite3.Error:
-            pass
         raise CanonicalStoreError(f"failed to apply canonical store migrations: {exc}") from exc
 
     final_version = get_schema_version(conn)
@@ -957,8 +1048,14 @@ def _lookup_row(
     return conn.execute(query, tuple(params)).fetchone()
 
 
-def _require_provenance_event(conn: sqlite3.Connection, provenance_event_ref: str) -> int:
+def _require_provenance_event(
+    conn: sqlite3.Connection,
+    provenance_event_ref: str,
+    provenance_event_id: int | None = None,
+) -> int:
     key = _require_nonblank(provenance_event_ref, "provenance_event_ref")
+    if provenance_event_id is not None:
+        return int(provenance_event_id)
     row = conn.execute(
         """
         SELECT provenance_event_id
@@ -979,7 +1076,7 @@ def _resolve_detected_entity_workspace_id(
     extraction_id: int | None,
     capture_event_id: int | None,
     existing_workspace_id: Any = None,
-) -> str:
+) -> str | None:
     explicit_workspace_id = _optional_nonblank(workspace_id, "workspace_id")
     existing_workspace = _optional_nonblank(existing_workspace_id, "workspace_id")
     inferred_workspace_ids: list[str] = []
@@ -1014,7 +1111,9 @@ def _resolve_detected_entity_workspace_id(
 
     if inferred_workspace_ids:
         first_inferred_workspace_id = inferred_workspace_ids[0]
-        if any(candidate != first_inferred_workspace_id for candidate in inferred_workspace_ids[1:]):
+        if any(
+            candidate != first_inferred_workspace_id for candidate in inferred_workspace_ids[1:]
+        ):
             raise CanonicalStoreError(
                 "detected entity workspace_id must match linked extraction/capture workspace_id"
             )
@@ -1026,16 +1125,12 @@ def _resolve_detected_entity_workspace_id(
         existing_workspace,
         first_inferred_workspace_id,
     )
-    if resolved_workspace_id is None:
-        raise CanonicalStoreError(
-            "detected entity workspace_id is required and could not be inferred from extraction/capture"
-        )
     for candidate in (explicit_workspace_id, existing_workspace, first_inferred_workspace_id):
         if candidate is not None and candidate != resolved_workspace_id:
             raise CanonicalStoreError(
                 "detected entity workspace_id must match linked extraction/capture workspace_id"
             )
-    return str(resolved_workspace_id)
+    return None if resolved_workspace_id is None else str(resolved_workspace_id)
 
 
 def _update_row(
@@ -1169,6 +1264,7 @@ def upsert_work(
     *,
     work_key_v1: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     work_type: str | None = None,
     title: str | None = None,
     rights_posture: str | None = None,
@@ -1186,7 +1282,7 @@ def upsert_work(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     work_key = _require_nonblank(work_key_v1, "work_key_v1")
     review_state_value = _normalize_review_state(review_state, default=DEFAULT_WORK_REVIEW_STATE)
     timestamp = _normalize_timestamp(
@@ -1262,16 +1358,20 @@ def upsert_work(
     proposed_state_text = review_state_value.strip().lower()
     is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
     is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
-    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+    if is_existing_established and (
+        is_proposed_established or _pending_review_state(review_state_value)
+    ):
         preserve_established_envelope = True
-    confidence_value = existing["confidence_score"] if preserve_established_envelope else _first_present(
-        score,
-        existing["confidence_score"],
+    confidence_value = (
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(
+            score,
+            existing["confidence_score"],
+        )
     )
     provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     publication_state_value = (
         existing["publication_state"]
@@ -1349,6 +1449,7 @@ def record_source_access(
     *,
     original_locator: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     work_id: int | None = None,
     source_locus_id: str | None = None,
     source_lead_id: str | None = None,
@@ -1366,7 +1467,7 @@ def record_source_access(
     last_seen_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     locator = _require_nonblank(original_locator, "original_locator")
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_SOURCE_ACCESS_REVIEW_STATE
@@ -1455,13 +1556,19 @@ def record_source_access(
                 "source_access_id",
                 int(existing["source_access_id"]),
                 {
-                    "review_state": _merged_review_state(existing["review_state"], review_state_value),
+                    "review_state": _merged_review_state(
+                        existing["review_state"], review_state_value
+                    ),
                     "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
                     "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
-                    "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
+                    "record_last_updated": _max_nonnull_iso(
+                        existing["record_last_updated"], timestamp
+                    ),
                 },
             )
-            return CanonicalWriteResult("source_access", int(existing["source_access_id"]), None, False)
+            return CanonicalWriteResult(
+                "source_access", int(existing["source_access_id"]), None, False
+            )
 
     _update_row(
         conn,
@@ -1564,6 +1671,7 @@ def record_source_claim(
     *,
     claim_text: str,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     source_claim_key_v1: str | None = None,
     about_object_ref: str | None = None,
     public_summary: str | None = None,
@@ -1580,7 +1688,7 @@ def record_source_claim(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_type_value = _optional_nonblank(claim_type, "claim_type")
     claim_key = source_claim_key_v1 or stable_write_key(
@@ -1660,19 +1768,21 @@ def record_source_claim(
     proposed_state_text = review_state_value.strip().lower()
     is_existing_established = existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
     is_proposed_established = proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
-    if is_existing_established and (is_proposed_established or _pending_review_state(review_state_value)):
+    if is_existing_established and (
+        is_proposed_established or _pending_review_state(review_state_value)
+    ):
         preserve_established_envelope = True
 
     claim_text_update_value = (
         existing["claim_text"] if preserve_established_envelope else claim_text_value
     )
     claim_confidence_value = (
-        existing["confidence_score"] if preserve_established_envelope else _first_present(score, existing["confidence_score"])
+        existing["confidence_score"]
+        if preserve_established_envelope
+        else _first_present(score, existing["confidence_score"])
     )
     claim_provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     claim_publication_state_value = (
         existing["publication_state"]
@@ -1744,6 +1854,7 @@ def record_capture_event(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     original_locator: str,
     captured_at: str,
     capture_method: str,
@@ -1763,7 +1874,7 @@ def record_capture_event(
     public_blocker: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     locator = _require_nonblank(original_locator, "original_locator")
     captured_at_value = _normalize_timestamp(captured_at, field_name="captured_at")
     timestamp = _normalize_timestamp(
@@ -1896,6 +2007,7 @@ def record_extraction_record(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     capture_event_id: int,
     extraction_method: str,
     extraction_status: str,
@@ -1916,7 +2028,7 @@ def record_extraction_record(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     extraction_method_value = _require_nonblank(extraction_method, "extraction_method")
     extraction_status_value = _require_nonblank(extraction_status, "extraction_status")
     review_state_value = _normalize_review_state(
@@ -2054,6 +2166,7 @@ def record_extraction_detected_entity(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     entity_label: str,
     extraction_id: int | None = None,
     capture_event_id: int | None = None,
@@ -2067,7 +2180,7 @@ def record_extraction_detected_entity(
     workspace_id: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     entity_label_value = _require_nonblank(entity_label, "entity_label")
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_DETECTED_ENTITY_REVIEW_STATE
@@ -2162,6 +2275,7 @@ def record_source_relationship(
     conn: sqlite3.Connection,
     *,
     provenance_event_ref: str,
+    provenance_event_id: int | None = None,
     from_object_ref: str,
     predicate: str,
     to_object_ref: str | None = None,
@@ -2177,7 +2291,7 @@ def record_source_relationship(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
-    _require_provenance_event(conn, provenance_event_ref)
+    _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     from_ref = _require_nonblank(from_object_ref, "from_object_ref")
     predicate_value = _require_nonblank(predicate, "predicate")
     review_state_value = _normalize_review_state(
@@ -2255,9 +2369,7 @@ def record_source_relationship(
         else _first_present(score, existing["confidence_score"])
     )
     relationship_provenance_value = (
-        existing["provenance_event_ref"]
-        if preserve_established_envelope
-        else provenance_event_ref
+        existing["provenance_event_ref"] if preserve_established_envelope else provenance_event_ref
     )
     relationship_publication_state_value = (
         existing["publication_state"]
@@ -2420,6 +2532,20 @@ def _count_known_tables(
     return counts
 
 
+def _has_known_table_rows(
+    conn: sqlite3.Connection,
+    table_names: Iterable[str],
+    *,
+    existing_tables: set[str] | None = None,
+) -> bool:
+    table_set = actual_tables(conn) if existing_tables is None else existing_tables
+    for table_name in sorted({name for name in table_names if name in table_set}):
+        row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+        if row is not None:
+            return True
+    return False
+
+
 def _latest_provenance_event(
     conn: sqlite3.Connection,
     *,
@@ -2462,7 +2588,13 @@ def _recommended_store_interpretation(status: str) -> str:
     return interpretations.get(status, "Canonical store state is unknown.")
 
 
-def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
+def summarize_canonical_store_population(
+    db_path: Path | str,
+    *,
+    include_counts: bool = True,
+    conn: sqlite3.Connection | None = None,
+    validation: CheckResult | None = None,
+) -> dict[str, Any]:
     path = resolve_db_path(db_path)
     summary: dict[str, Any] = {
         "path": str(path),
@@ -2493,30 +2625,122 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
         summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
         return summary
 
+    owns_conn = conn is None
+    if conn is None:
+        try:
+            conn = connect_existing_read_only(path)
+        except (CanonicalStoreError, sqlite3.Error) as exc:
+            summary["status"] = "invalid"
+            summary["errors"].append(f"could not open canonical store read-only: {exc}")
+            summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
+            return summary
     try:
-        conn = connect_existing_read_only(path)
-    except (CanonicalStoreError, sqlite3.Error) as exc:
-        summary["status"] = "invalid"
-        summary["errors"].append(f"could not open canonical store read-only: {exc}")
-        summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
-        return summary
+        outline = load_canonical_outline()
+        family_mapping = family_table_mapping(outline)
+        expected_tables = expected_tables_from_outline(outline)
+        supporting_tables = supporting_tables_from_outline(outline)
+        substantive_tables = expected_tables | supporting_tables
+        metadata_tables = schema_metadata_tables_from_outline(outline)
 
-    outline = load_canonical_outline()
-    family_mapping = family_table_mapping(outline)
-    expected_tables = expected_tables_from_outline(outline)
-    supporting_tables = supporting_tables_from_outline(outline)
-    substantive_tables = expected_tables | supporting_tables
-    try:
-        table_set = actual_tables(conn)
-        summary["table_counts"] = _count_known_tables(
-            conn,
-            substantive_tables | schema_metadata_tables_from_outline(outline),
-            existing_tables=table_set,
-        )
-        summary["family_counts"] = {
-            family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
-            for family, tables in sorted(family_mapping.items())
-        }
+        if validation is None:
+            table_set = actual_tables(conn)
+            last_provenance = _latest_provenance_event(conn)
+            if last_provenance is not None:
+                summary["last_provenance_event_at"] = last_provenance["event_timestamp"]
+                summary["last_provenance_event_type"] = last_provenance["event_type"]
+                summary["last_provenance_event_id"] = last_provenance["provenance_event_id"]
+            last_ingest = _latest_provenance_event(conn, event_types=RECOGNIZED_INGEST_EVENT_TYPES)
+            if last_ingest is not None:
+                summary["last_ingest_at"] = last_ingest["event_timestamp"]
+                summary["last_ingest_event_type"] = last_ingest["event_type"]
+                summary["last_ingest_provenance_event_id"] = last_ingest["provenance_event_id"]
+
+            if not metadata_tables.issubset(table_set):
+                missing = ", ".join(sorted(metadata_tables - table_set))
+                summary["status"] = "uninitialized"
+                summary["errors"].append(f"missing canonical schema metadata tables: {missing}")
+                summary["recommended_interpretation"] = _recommended_store_interpretation(
+                    "uninitialized"
+                )
+                return summary
+
+            if include_counts:
+                summary["table_counts"] = _count_known_tables(
+                    conn,
+                    substantive_tables | metadata_tables,
+                    existing_tables=table_set,
+                )
+                summary["family_counts"] = {
+                    family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
+                    for family, tables in sorted(family_mapping.items())
+                }
+            else:
+                summary["table_counts"] = {}
+                summary["family_counts"] = {}
+
+            schema_row = get_schema_version(conn)
+            if schema_row is None:
+                summary["status"] = "uninitialized"
+                summary["errors"].append(
+                    "canonical schema metadata tables exist, but schema_version row for canonical_store is missing"
+                )
+                summary["recommended_interpretation"] = _recommended_store_interpretation(
+                    "uninitialized"
+                )
+                return summary
+
+            summary["initialized"] = True
+            summary["schema_version"] = schema_row.schema_version
+            summary["current_migration_id"] = schema_row.current_migration_id
+
+            try:
+                validate_existing_store(conn, outline=outline)
+            except CanonicalStoreError as exc:
+                summary["status"] = "invalid"
+                summary["errors"].append(str(exc))
+                summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
+                return summary
+
+            summary["valid"] = True
+            if include_counts:
+                substantive_total = sum(
+                    summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
+                )
+                non_event_total = sum(
+                    summary["table_counts"].get(table_name, 0)
+                    for table_name in (substantive_tables - {"provenance_event"})
+                )
+                summary["total_rows"] = substantive_total
+                summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
+                if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
+                    summary["warnings"].append(
+                        "provenance events exist, but no substantive canonical family rows were found"
+                    )
+                if substantive_total > 0 and summary["last_ingest_at"] is None:
+                    summary["warnings"].append("no recognized ingest provenance events were found")
+            else:
+                has_substantive_rows = _has_known_table_rows(
+                    conn,
+                    substantive_tables,
+                    existing_tables=table_set,
+                )
+                has_non_event_rows = _has_known_table_rows(
+                    conn,
+                    substantive_tables - {"provenance_event"},
+                    existing_tables=table_set,
+                )
+                summary["total_rows"] = None
+                summary["status"] = "initialized_empty" if not has_substantive_rows else "populated"
+                if has_substantive_rows and not has_non_event_rows:
+                    summary["warnings"].append(
+                        "provenance events exist, but no substantive canonical family rows were found"
+                    )
+                if has_substantive_rows and summary["last_ingest_at"] is None:
+                    summary["warnings"].append("no recognized ingest provenance events were found")
+            summary["recommended_interpretation"] = _recommended_store_interpretation(summary["status"])
+            return summary
+
+        table_set = set(validation.tables)
         last_provenance = _latest_provenance_event(conn)
         if last_provenance is not None:
             summary["last_provenance_event_at"] = last_provenance["event_timestamp"]
@@ -2528,59 +2752,59 @@ def summarize_canonical_store_population(db_path: Path | str) -> dict[str, Any]:
             summary["last_ingest_event_type"] = last_ingest["event_type"]
             summary["last_ingest_provenance_event_id"] = last_ingest["provenance_event_id"]
 
-        metadata_tables = schema_metadata_tables_from_outline(outline)
-        if not metadata_tables.issubset(table_set):
-            missing = ", ".join(sorted(metadata_tables - table_set))
-            summary["status"] = "uninitialized"
-            summary["errors"].append(f"missing canonical schema metadata tables: {missing}")
-            summary["recommended_interpretation"] = _recommended_store_interpretation(
-                "uninitialized"
-            )
-            return summary
-
-        schema_row = get_schema_version(conn)
-        if schema_row is None:
-            summary["status"] = "uninitialized"
-            summary["errors"].append(
-                "canonical schema metadata tables exist, but schema_version row for canonical_store is missing"
-            )
-            summary["recommended_interpretation"] = _recommended_store_interpretation(
-                "uninitialized"
-            )
-            return summary
-
         summary["initialized"] = True
-        summary["schema_version"] = schema_row.schema_version
-        summary["current_migration_id"] = schema_row.current_migration_id
-
-        try:
-            validate_existing_store(conn, outline=outline)
-        except CanonicalStoreError as exc:
-            summary["status"] = "invalid"
-            summary["errors"].append(str(exc))
-            summary["recommended_interpretation"] = _recommended_store_interpretation("invalid")
-            return summary
-
+        summary["schema_version"] = validation.schema_version
+        summary["current_migration_id"] = validation.current_migration_id
         summary["valid"] = True
-        substantive_total = sum(
-            summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
-        )
-        non_event_total = sum(
-            summary["table_counts"].get(table_name, 0)
-            for table_name in (substantive_tables - {"provenance_event"})
-        )
-        summary["total_rows"] = substantive_total
-        summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
-        if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
-            summary["warnings"].append(
-                "provenance events exist, but no substantive canonical family rows were found"
+        if include_counts:
+            summary["table_counts"] = _count_known_tables(
+                conn,
+                substantive_tables | metadata_tables,
+                existing_tables=table_set,
             )
-        if substantive_total > 0 and summary["last_ingest_at"] is None:
-            summary["warnings"].append("no recognized ingest provenance events were found")
+            summary["family_counts"] = {
+                family: sum(summary["table_counts"].get(table_name, 0) for table_name in tables)
+                for family, tables in sorted(family_mapping.items())
+            }
+            substantive_total = sum(
+                summary["table_counts"].get(table_name, 0) for table_name in substantive_tables
+            )
+            non_event_total = sum(
+                summary["table_counts"].get(table_name, 0)
+                for table_name in (substantive_tables - {"provenance_event"})
+            )
+            summary["total_rows"] = substantive_total
+            summary["status"] = "initialized_empty" if substantive_total == 0 else "populated"
+            if summary["table_counts"].get("provenance_event", 0) > 0 and non_event_total == 0:
+                summary["warnings"].append(
+                    "provenance events exist, but no substantive canonical family rows were found"
+                )
+            if substantive_total > 0 and summary["last_ingest_at"] is None:
+                summary["warnings"].append("no recognized ingest provenance events were found")
+        else:
+            has_substantive_rows = _has_known_table_rows(
+                conn,
+                substantive_tables,
+                existing_tables=table_set,
+            )
+            has_non_event_rows = _has_known_table_rows(
+                conn,
+                substantive_tables - {"provenance_event"},
+                existing_tables=table_set,
+            )
+            summary["total_rows"] = None
+            summary["status"] = "initialized_empty" if not has_substantive_rows else "populated"
+            if has_substantive_rows and not has_non_event_rows:
+                summary["warnings"].append(
+                    "provenance events exist, but no substantive canonical family rows were found"
+                )
+            if has_substantive_rows and summary["last_ingest_at"] is None:
+                summary["warnings"].append("no recognized ingest provenance events were found")
         summary["recommended_interpretation"] = _recommended_store_interpretation(summary["status"])
         return summary
     finally:
-        conn.close()
+        if owns_conn and conn is not None:
+            conn.close()
 
 
 def _stringify_score(value: Any) -> str:
@@ -2658,6 +2882,17 @@ def _fetch_scoped_work_ids(conn: sqlite3.Connection, *, subject_id: str) -> list
     return [int(row["work_id"]) for row in rows]
 
 
+def _fetch_rows_with_total(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[Any, ...],
+) -> tuple[int, list[sqlite3.Row]]:
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return 0, []
+    return int(rows[0]["total_count"]), rows
+
+
 def _state_label(
     review_state: Any,
     confidence_score: Any,
@@ -2707,25 +2942,11 @@ def load_gather_prior_state(
         work_scope = f"({work_scope} OR work_id IN ({', '.join('?' for _ in work_ids)}))"
         work_scope_params.extend(work_ids)
 
-    work_total = conn.execute(
+    work_total, work_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM work
-        WHERE {work_scope}
-          AND review_state NOT IN ({excluded_placeholders})
-          AND (
-            review_state IN ({established_placeholders})
-            OR COALESCE(confidence_score, 0.0) >= ?
-          )
-        """,
-        tuple(work_scope_params)
-        + excluded_params
-        + established_params
-        + (high_confidence_threshold,),
-    ).fetchone()
-    work_rows = conn.execute(
-        f"""
-        SELECT work_id, work_type, title, review_state, confidence_score,
+        SELECT COUNT(*) OVER () AS total_count,
+               work_id, work_type, title, review_state, confidence_score,
                provenance_event_ref, first_seen_at, last_seen_at, created_at, record_last_updated
         FROM work
         WHERE {work_scope}
@@ -2747,28 +2968,13 @@ def load_gather_prior_state(
         + (high_confidence_threshold,)
         + established_params
         + (per_family_limit,),
-    ).fetchall()
+    )
 
-    entity_total = conn.execute(
+    entity_total, entity_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM extraction_detected_entity entity
-        LEFT JOIN extraction_record extraction
-          ON extraction.extraction_id = entity.extraction_id
-        LEFT JOIN capture_event capture
-          ON capture.capture_event_id = entity.capture_event_id
-        WHERE COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id) = ?
-          AND entity.review_state NOT IN ({excluded_placeholders})
-          AND (
-            entity.review_state IN ({established_placeholders})
-            OR COALESCE(entity.confidence_score, 0.0) >= ?
-          )
-        """,
-        (subject_key,) + excluded_params + established_params + (high_confidence_threshold,),
-    ).fetchone()
-    entity_rows = conn.execute(
-        f"""
-        SELECT entity.detected_entity_id, entity.entity_label, entity.normalized_label,
+        SELECT COUNT(*) OVER () AS total_count,
+               entity.detected_entity_id, entity.entity_label, entity.normalized_label,
                entity.entity_type, entity.review_state, entity.confidence_score,
                entity.provenance_event_ref, entity.extraction_id, entity.capture_event_id,
                COALESCE(extraction.created_at, capture.captured_at, entity.record_last_updated) AS activity_at
@@ -2796,7 +3002,7 @@ def load_gather_prior_state(
         + (high_confidence_threshold,)
         + established_params
         + (per_family_limit,),
-    ).fetchall()
+    )
 
     claim_scope = "workspace_id=?"
     claim_scope_params: list[Any] = [subject_key]
@@ -2805,18 +3011,11 @@ def load_gather_prior_state(
             f"({claim_scope} OR about_object_ref IN ({', '.join('?' for _ in work_refs)}))"
         )
         claim_scope_params.extend(work_refs)
-    claim_total = conn.execute(
+    claim_total, claim_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_claim
-        WHERE {claim_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(claim_scope_params) + lead_params,
-    ).fetchone()
-    claim_rows = conn.execute(
-        f"""
-        SELECT source_claim_id, about_object_ref, claim_text, claim_type, review_state,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_claim_id, about_object_ref, claim_text, claim_type, review_state,
                confidence_score, provenance_event_ref, created_at
         FROM source_claim
         WHERE {claim_scope}
@@ -2829,25 +3028,18 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(claim_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
     access_scope = "workspace_id=?"
     access_scope_params: list[Any] = [subject_key]
     if work_ids:
         access_scope = f"({access_scope} OR work_id IN ({', '.join('?' for _ in work_ids)}))"
         access_scope_params.extend(work_ids)
-    access_total = conn.execute(
+    access_total, access_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_access
-        WHERE {access_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(access_scope_params) + lead_params,
-    ).fetchone()
-    access_rows = conn.execute(
-        f"""
-        SELECT source_access_id, work_id, source_lead_id, original_locator, canonical_url,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_access_id, work_id, source_lead_id, original_locator, canonical_url,
                citation_hint, review_state, authority_level, workspace_id,
                first_seen_at, last_seen_at
         FROM source_access
@@ -2859,7 +3051,7 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(access_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
     relationship_scope = "workspace_id=?"
     relationship_scope_params: list[Any] = [subject_key]
@@ -2868,18 +3060,11 @@ def load_gather_prior_state(
         relationship_scope = f"({relationship_scope} OR from_object_ref IN ({placeholders}) OR to_object_ref IN ({placeholders}))"
         relationship_scope_params.extend(work_refs)
         relationship_scope_params.extend(work_refs)
-    relationship_total = conn.execute(
+    relationship_total, relationship_rows = _fetch_rows_with_total(
+        conn,
         f"""
-        SELECT COUNT(*) AS count
-        FROM source_relationship
-        WHERE {relationship_scope}
-          AND review_state IN ({lead_placeholders})
-        """,
-        tuple(relationship_scope_params) + lead_params,
-    ).fetchone()
-    relationship_rows = conn.execute(
-        f"""
-        SELECT source_relationship_id, from_object_ref, to_object_ref, predicate,
+        SELECT COUNT(*) OVER () AS total_count,
+               source_relationship_id, from_object_ref, to_object_ref, predicate,
                target_label, review_state, confidence_score, provenance_event_ref, created_at
         FROM source_relationship
         WHERE {relationship_scope}
@@ -2891,19 +3076,13 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         tuple(relationship_scope_params) + lead_params + (per_family_limit,),
-    ).fetchall()
+    )
 
-    extraction_total = conn.execute(
+    extraction_total, extraction_rows = _fetch_rows_with_total(
+        conn,
         """
-        SELECT COUNT(*) AS count
-        FROM extraction_record
-        WHERE workspace_id=?
-        """,
-        (subject_key,),
-    ).fetchone()
-    extraction_rows = conn.execute(
-        """
-        SELECT extraction_id, capture_event_id, summary_short, extraction_status, review_state,
+        SELECT COUNT(*) OVER () AS total_count,
+               extraction_id, capture_event_id, summary_short, extraction_status, review_state,
                created_at, provenance_event_ref
         FROM extraction_record
         WHERE workspace_id=?
@@ -2911,40 +3090,32 @@ def load_gather_prior_state(
         LIMIT ?
         """,
         (subject_key, per_family_limit),
-    ).fetchall()
+    )
 
-    subject_pattern = f'%"subject_id": "{subject_key}"%'
-    previous_total = conn.execute(
+    previous_total, previous_rows = _fetch_rows_with_total(
+        conn,
         """
-        SELECT COUNT(*) AS count
+        SELECT COUNT(*) OVER () AS total_count,
+               provenance_event_id, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
-        """,
-        (subject_pattern,),
-    ).fetchone()
-    previous_rows = conn.execute(
-        """
-        SELECT provenance_event_id, run_id, event_timestamp, note_text
-        FROM provenance_event
-        WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND source_object_namespace=?
+          AND source_object_id=?
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         LIMIT ?
         """,
-        (subject_pattern, max_previous_runs),
-    ).fetchall()
+        (GATHER_PRIOR_STATE_SOURCE_NAMESPACE, subject_key, max_previous_runs),
+    )
 
     previous_runs: list[dict[str, Any]] = []
     for row in previous_rows:
-        note_payload = _load_json_note(row["note_text"])
+        note = parse_gather_candidate_batch_ingest_note(row["note_text"])
+        note_cycle_depth = note.get("cycle_depth")
         previous_runs.append(
             {
                 "run_id": None if row["run_id"] is None else str(row["run_id"]),
                 "event_timestamp": str(row["event_timestamp"]),
-                "cycle_depth": note_payload.get("cycle_depth")
-                if isinstance(note_payload, dict)
-                else None,
+                "cycle_depth": None if note_cycle_depth is None else int(note_cycle_depth),
             }
         )
 
@@ -2965,37 +3136,37 @@ def load_gather_prior_state(
         },
         "record_counts": {
             "works": {
-                "total": int(work_total["count"]),
+                "total": int(work_total),
                 "selected": len(work_rows),
                 "rendered": 0,
             },
             "entities": {
-                "total": int(entity_total["count"]),
+                "total": int(entity_total),
                 "selected": len(entity_rows),
                 "rendered": 0,
             },
             "source_claims": {
-                "total": int(claim_total["count"]),
+                "total": int(claim_total),
                 "selected": len(claim_rows),
                 "rendered": 0,
             },
             "source_access": {
-                "total": int(access_total["count"]),
+                "total": int(access_total),
                 "selected": len(access_rows),
                 "rendered": 0,
             },
             "relationships": {
-                "total": int(relationship_total["count"]),
+                "total": int(relationship_total),
                 "selected": len(relationship_rows),
                 "rendered": 0,
             },
             "extraction_summaries": {
-                "total": int(extraction_total["count"]),
+                "total": int(extraction_total),
                 "selected": len(extraction_rows),
                 "rendered": 0,
             },
             "previous_runs": {
-                "total": int(previous_total["count"]),
+                "total": int(previous_total),
                 "selected": len(previous_runs),
                 "rendered": 0,
             },

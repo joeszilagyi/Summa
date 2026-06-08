@@ -17,19 +17,21 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import source_types
-    import identifier_normalization
-    import rights_retention
-    import relationship_predicates
     import claim_types
     import confidence_model
+    import identifier_normalization
+    import relationship_predicates
+    import rights_retention
+    import source_types
 except ImportError:  # pragma: no cover - package import fallback
-    from tools.source_db_tools import source_types  # type: ignore
-    from tools.source_db_tools import identifier_normalization  # type: ignore
-    from tools.source_db_tools import rights_retention  # type: ignore
-    from tools.source_db_tools import relationship_predicates  # type: ignore
-    from tools.source_db_tools import claim_types  # type: ignore
-    from tools.source_db_tools import confidence_model  # type: ignore
+    from tools.source_db_tools import (
+        claim_types,  # type: ignore
+        confidence_model,  # type: ignore
+        identifier_normalization,  # type: ignore
+        relationship_predicates,  # type: ignore
+        rights_retention,  # type: ignore
+        source_types,  # type: ignore
+    )
 
 PROFILE_PATH = Path(__file__).resolve().with_name("schema_profiles.json")
 REPORT_SCHEMA_VERSION = "schema-profile-validation-report.v1"
@@ -90,10 +92,7 @@ def values_for_path(obj: Any, path: str) -> list[Any]:
         list_part = part.endswith("[]")
         key = part[:-2] if list_part else part
         for value in current:
-            if isinstance(value, dict):
-                child = value.get(key)
-            else:
-                child = None
+            child = value.get(key) if isinstance(value, dict) else None
             if list_part:
                 if isinstance(child, list):
                     next_values.extend(child)
@@ -280,7 +279,11 @@ def validate_identifier_policy(
                 f"{profile_name} identifier scheme is unsupported: {scheme}",
             )
         elif status in {"invalid", "needs_review"}:
-            severity = invalid_severity if status == "invalid" else policy.get("needs_review_severity", "warning")
+            severity = (
+                invalid_severity
+                if status == "invalid"
+                else policy.get("needs_review_severity", "warning")
+            )
             append(
                 severity,
                 "INVALID_IDENTIFIER" if status == "invalid" else "IDENTIFIER_NEEDS_REVIEW",
@@ -525,7 +528,9 @@ def validate_record(
 
         if not condition_matches(record, condition):
             continue
-        missing_required = [field for field in rule.get("require_all", []) if not path_present(record, field)]
+        missing_required = [
+            field for field in rule.get("require_all", []) if not path_present(record, field)
+        ]
         if missing_required:
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
@@ -538,7 +543,9 @@ def validate_record(
                     message=rule.get("message", "invalid field combination"),
                 )
             )
-        forbidden_present = [field for field in rule.get("forbid_present", []) if path_present(record, field)]
+        forbidden_present = [
+            field for field in rule.get("forbid_present", []) if path_present(record, field)
+        ]
         if forbidden_present:
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
@@ -551,7 +558,12 @@ def validate_record(
                     message=rule.get("message", "invalid field combination"),
                 )
             )
-        if not missing_required and not forbidden_present and not rule.get("require_all") and not rule.get("forbid_present"):
+        if (
+            not missing_required
+            and not forbidden_present
+            and not rule.get("require_all")
+            and not rule.get("forbid_present")
+        ):
             target = errors if rule.get("severity") == "error" else warnings
             target.append(
                 issue(
@@ -620,4 +632,9 @@ def validate_records(records: list[dict[str, Any]], profile_name: str) -> dict[s
 
 
 def render_report(records: list[dict[str, Any]], profile_name: str) -> str:
-    return json.dumps(validate_records(records, profile_name), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return (
+        json.dumps(
+            validate_records(records, profile_name), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    )

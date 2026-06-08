@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INDEX = REPO_ROOT / "config" / "repository_capabilities.v1.json"
 PROFILE_ROOT = REPO_ROOT / "config" / "standards_profiles"
 SCHEMA_INVENTORY_PATH = REPO_ROOT / "runtime" / "config" / "schema_inventory.json"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 VALID_STATUSES = {
     "live",
@@ -263,24 +266,32 @@ def validate_index(index: dict[str, Any]) -> dict[str, Any]:
         command = entry.get("package_command")
         if isinstance(command, str) and command:
             indexed_console_commands.add(command)
-        if command not in package_scripts:
-            add_error(
-                errors,
-                code="missing_package_command",
-                message=f"package command is not declared in pyproject.toml: {command}",
-                capability_id=capability_id,
-            )
-        else:
-            target = package_scripts[command]
-            if not isinstance(target, str):
+        if entry.get("kind") == "console_script":
+            if not isinstance(command, str) or not command:
                 add_error(
                     errors,
-                    code="invalid_command_target",
-                    message=f"package command target must be a string: {command}",
+                    code="missing_package_command",
+                    message="console_script capabilities must declare package_command",
+                    capability_id=capability_id,
+                )
+            elif command not in package_scripts:
+                add_error(
+                    errors,
+                    code="missing_package_command",
+                    message=f"package command is not declared in pyproject.toml: {command}",
                     capability_id=capability_id,
                 )
             else:
-                validate_command_importability(command, target, errors, capability_id=capability_id)
+                target = package_scripts[command]
+                if not isinstance(target, str):
+                    add_error(
+                        errors,
+                        code="invalid_command_target",
+                        message=f"package command target must be a string: {command}",
+                        capability_id=capability_id,
+                    )
+                else:
+                    validate_command_importability(command, target, errors, capability_id=capability_id)
 
         wrapper_path = entry.get("wrapper_path")
         if isinstance(wrapper_path, str) and wrapper_path:

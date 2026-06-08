@@ -9,12 +9,10 @@ import hashlib
 import json
 import shutil
 import sys
-import tempfile
-from functools import lru_cache
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -22,9 +20,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.crown_jewel_store_manifest import load_manifest  # noqa: E402
-from tools.common.runtime_ledger import append_event, build_event, default_ledger_path, new_run_id  # noqa: E402
+from tools.common.runtime_ledger import (  # noqa: E402
+    append_event,
+    build_event,
+    default_ledger_path,
+    new_run_id,
+)
 from tools.source_db_tools.sqlite_safety import backup_database, run_check  # noqa: E402
-
 
 SNAPSHOT_SCHEMA_VERSION = "topic-backup-snapshot.v1"
 
@@ -54,7 +56,9 @@ def cached_asset_matches(workspace_root_value: str, pattern: str) -> tuple[str, 
     return tuple(str(path.resolve()) for path in matches if path.is_file())
 
 
-def resolve_asset_paths(workspace_root: Path, manifest: dict[str, Any]) -> list[tuple[dict[str, Any], Path]]:
+def resolve_asset_paths(
+    workspace_root: Path, manifest: dict[str, Any]
+) -> list[tuple[dict[str, Any], Path]]:
     resolved = []
     workspace_root_value = str(workspace_root.resolve())
     for asset in manifest["assets"]:
@@ -74,7 +78,9 @@ def relative_snapshot_path(workspace_root: Path, source: Path) -> Path:
             return Path("external") / source.name
 
 
-def backup_asset(source: Path, destination: Path, *, asset_class: str, workspace_id: str) -> dict[str, Any]:
+def backup_asset(
+    source: Path, destination: Path, *, asset_class: str, workspace_id: str
+) -> dict[str, Any]:
     if asset_class == "sqlite_db" or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
         report = backup_database(source, destination, workspace_id=workspace_id)
         status = report["status"]
@@ -126,7 +132,11 @@ def verify_restored_snapshot(snapshot_manifest: dict[str, Any]) -> list[dict[str
             sha_ok = sha256_file(source) == artifact["sha256"]
             sqlite_ok = True
             sqlite_messages: Any = []
-            if artifact["asset_class"] == "sqlite_db" or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
+            if artifact["asset_class"] == "sqlite_db" or source.suffix.lower() in {
+                ".sqlite",
+                ".sqlite3",
+                ".db",
+            }:
                 check = run_check(source)
                 sqlite_ok = check["status"] == "pass"
                 sqlite_messages = check["messages"]
@@ -155,7 +165,9 @@ def backup_asset_task(
     workspace_id: str,
 ) -> dict[str, Any]:
     destination = snapshot_root / "files" / relative_snapshot_path(workspace_root, source)
-    artifact = backup_asset(source, destination, asset_class=asset["asset_class"], workspace_id=workspace_id)
+    artifact = backup_asset(
+        source, destination, asset_class=asset["asset_class"], workspace_id=workspace_id
+    )
     artifact["asset_id"] = asset["asset_id"]
     return artifact
 
@@ -180,7 +192,9 @@ def build_snapshot(
         {
             "asset_id": asset["asset_id"],
             "source_path": str(path),
-            "snapshot_path": str(snapshot_root / "files" / relative_snapshot_path(workspace_root, path)),
+            "snapshot_path": str(
+                snapshot_root / "files" / relative_snapshot_path(workspace_root, path)
+            ),
         }
         for asset, path in assets
     ]
@@ -194,8 +208,7 @@ def build_snapshot(
         }
     if check_only:
         source_checks = [
-            check_asset(path, asset_class=asset["asset_class"])
-            for asset, path in assets
+            check_asset(path, asset_class=asset["asset_class"]) for asset, path in assets
         ]
         return {
             "schema_version": "topic-backup-drill-report.v1",
@@ -219,8 +232,15 @@ def build_snapshot(
     )
     artifacts = []
     try:
-        sqlite_assets = [(asset, source) for asset, source in assets if asset["asset_class"] == "sqlite_db" or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}]
-        other_assets = [(asset, source) for asset, source in assets if (asset, source) not in sqlite_assets]
+        sqlite_assets = [
+            (asset, source)
+            for asset, source in assets
+            if asset["asset_class"] == "sqlite_db"
+            or source.suffix.lower() in {".sqlite", ".sqlite3", ".db"}
+        ]
+        other_assets = [
+            (asset, source) for asset, source in assets if (asset, source) not in sqlite_assets
+        ]
         for asset, source in sqlite_assets:
             artifacts.append(
                 backup_asset_task(
@@ -258,7 +278,9 @@ def build_snapshot(
         }
         verifications = verify_restored_snapshot(snapshot_manifest)
         snapshot_manifest["restore_verifications"] = verifications
-        snapshot_manifest["status"] = "pass" if all(item["status"] == "pass" for item in verifications) else "fail"
+        snapshot_manifest["status"] = (
+            "pass" if all(item["status"] == "pass" for item in verifications) else "fail"
+        )
         atomic_write_json(snapshot_root / "manifest.json", snapshot_manifest)
         append_event(
             ledger,
@@ -268,7 +290,9 @@ def build_snapshot(
                 event_type="restore_verified",
                 command="topic_backup_drill",
                 status=snapshot_manifest["status"],
-                artifact_refs=[{"path": str(snapshot_root / "manifest.json"), "role": "snapshot_manifest"}],
+                artifact_refs=[
+                    {"path": str(snapshot_root / "manifest.json"), "role": "snapshot_manifest"}
+                ],
                 validation_posture={"restore_drill": snapshot_manifest["status"]},
             ),
         )
@@ -316,7 +340,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ledger", type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument("--check", action="store_true", help="Validate matched sources without writing a snapshot or ledger event.")
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate matched sources without writing a snapshot or ledger event.",
+    )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser.parse_args()
 

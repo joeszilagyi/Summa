@@ -18,6 +18,7 @@ try:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -30,6 +31,7 @@ except ModuleNotFoundError:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -44,7 +46,6 @@ from tools.common.scheduler_failure_reconciliation_contract import (  # noqa: E4
     RECOMMENDATIONS,
     SCHEMA_VERSION,
 )
-
 
 VALIDATOR_NAME = "scheduler_failure_state_reconciliation"
 CONTRACT_VERSION = "1"
@@ -304,12 +305,14 @@ def validate_scheduler_failure_state_reconciliation(target: Path) -> tuple[dict[
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args()
-    report, exit_code = validate_scheduler_failure_state_reconciliation(Path(args.target))
+    target = Path(args.target)
+    report, exit_code = validate_scheduler_failure_state_reconciliation(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     rendered = render_text_report(report)
     if args.report_json:
-        write_json(Path(args.report_json), report)
+        write_json(Path(args.report_json), report, root=report_root)
     if args.report_text:
-        write_text(Path(args.report_text), rendered)
+        write_text(Path(args.report_text), rendered, root=report_root)
     sys.stdout.write(rendered)
     return exit_code
 

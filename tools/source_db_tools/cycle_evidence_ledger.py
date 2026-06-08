@@ -79,7 +79,13 @@ def build_cycle_event_id(
 
 
 def json_dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def _json_mapping(value: Mapping[str, object] | None) -> str:
@@ -104,6 +110,19 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_rfc3339_timestamp(value: object, field_name: str) -> dt.datetime:
+    text = _require_nonblank(value, field_name)
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CycleEvidenceLedgerError(
+            f"{field_name} must be an RFC3339 timestamp: {text}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise CycleEvidenceLedgerError(f"{field_name} must be an RFC3339 timestamp: {text}")
+    return parsed.astimezone(dt.UTC)
 
 
 def _load_json_mapping(raw_text: Any) -> dict[str, Any]:
@@ -153,6 +172,122 @@ def _count_for_event(conn: sqlite3.Connection, table_name: str, event_key: str) 
     )
 
 
+def _batch_record_append_only_rows(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    id_field_name: str,
+    select_sql: str,
+    expected_rows: Sequence[tuple[str, dict[str, Any], tuple[object, ...]]],
+) -> list[str]:
+    if not expected_rows:
+        return []
+    recorded_ids: list[str] = []
+    for row_id, expected, _ in expected_rows:
+        existing_row = conn.execute(select_sql, (row_id,)).fetchone()
+        if existing_row is None:
+            raise CycleEvidenceLedgerError(
+                f"{table_name} row {id_field_name}={row_id} was not inserted"
+            )
+        _assert_append_only_replay_compatible(
+            table_name,
+            f"{id_field_name}={row_id}",
+            existing_row,
+            expected,
+            ignore=frozenset({"created_at", "record_last_updated"}),
+        )
+        recorded_ids.append(row_id)
+    return recorded_ids
+
+
+def _prepare_cycle_candidate_considered_row(
+    *,
+    cycle_event_id: str,
+    candidate_kind: str,
+    stage_event_id: str | None = None,
+    candidate_ref_type: str | None = None,
+    candidate_ref_id: str | None = None,
+    candidate_label: str | None = None,
+    score: float | int | None = None,
+    score_policy_id: str | None = None,
+    rationale: str | None = None,
+    reason: Mapping[str, object] | None = None,
+    selected: bool = False,
+    created_at: str | None = None,
+    candidate_considered_id: str | None = None,
+) -> tuple[str, dict[str, Any], tuple[object, ...]]:
+    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
+    kind = _require_nonblank(candidate_kind, "candidate_kind")
+    candidate_id = candidate_considered_id or stable_id(
+        "considered", event_id, stage_event_id, kind, candidate_ref_type, candidate_ref_id
+    )
+    now = now_rfc3339()
+    created = created_at or now
+    normalized_score = None if score is None else float(score)
+    expected = {
+        "candidate_considered_id": candidate_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "candidate_kind": kind,
+        "candidate_ref_type": candidate_ref_type,
+        "candidate_ref_id": candidate_ref_id,
+        "candidate_label": candidate_label,
+        "score": normalized_score,
+        "score_policy_id": score_policy_id,
+        "rationale": rationale,
+        "reason_json": _json_mapping(reason),
+        "selected": _bool_int(selected),
+        "created_at": created,
+        "record_last_updated": now,
+    }
+    return candidate_id, expected, tuple(expected.values())
+
+
+def _prepare_cycle_candidate_excluded_row(
+    *,
+    cycle_event_id: str,
+    candidate_kind: str,
+    exclusion_reason: str,
+    stage_event_id: str | None = None,
+    candidate_ref_type: str | None = None,
+    candidate_ref_id: str | None = None,
+    candidate_label: str | None = None,
+    policy_id: str | None = None,
+    retryable: bool = False,
+    created_at: str | None = None,
+    candidate_excluded_id: str | None = None,
+) -> tuple[str, dict[str, Any], tuple[object, ...]]:
+    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
+    kind = _require_nonblank(candidate_kind, "candidate_kind")
+    reason_text = _require_nonblank(exclusion_reason, "exclusion_reason")
+    excluded_id = candidate_excluded_id or stable_id(
+        "excluded",
+        event_id,
+        stage_event_id,
+        kind,
+        candidate_ref_type,
+        candidate_ref_id,
+        reason_text,
+    )
+    now = now_rfc3339()
+    created = created_at or now
+    expected = {
+        "candidate_excluded_id": excluded_id,
+        "cycle_event_id": event_id,
+        "stage_event_id": stage_event_id,
+        "candidate_kind": kind,
+        "candidate_ref_type": candidate_ref_type,
+        "candidate_ref_id": candidate_ref_id,
+        "candidate_label": candidate_label,
+        "exclusion_reason": reason_text,
+        "policy_id": policy_id,
+        "retryable": _bool_int(retryable),
+        "created_at": created,
+        "record_last_updated": now,
+    }
+    return excluded_id, expected, tuple(expected.values())
+
+
 def _load_gather_event(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
@@ -184,7 +319,9 @@ def _cycle_metrics_from_event(
     facet: str | None,
     status: str,
 ) -> dict[str, Any]:
-    table_counts = {table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES}
+    table_counts = {
+        table_name: _count_for_event(conn, table_name, event_key) for table_name in PER_CYCLE_TABLES
+    }
     accepted_counts = {
         table_name: _review_state_count(
             conn,
@@ -265,17 +402,15 @@ def _assert_append_only_replay_compatible(
     ignore: frozenset[str] = frozenset(),
 ) -> None:
     if row is None:
-        raise CycleEvidenceLedgerError(f"ledger replay conflict for {table} {key}: existing row not found")
+        raise CycleEvidenceLedgerError(
+            f"ledger replay conflict for {table} {key}: existing row not found"
+        )
     mismatches = [
-        field
-        for field, value in expected.items()
-        if field not in ignore and row[field] != value
+        field for field, value in expected.items() if field not in ignore and row[field] != value
     ]
     if mismatches:
         field_list = ", ".join(mismatches)
-        raise CycleEvidenceLedgerError(
-            f"ledger replay mismatch for {table} {key}: {field_list}"
-        )
+        raise CycleEvidenceLedgerError(f"ledger replay mismatch for {table} {key}: {field_list}")
 
 
 def _file_size(path: Path) -> int | None:
@@ -296,6 +431,20 @@ def _file_hash(path: Path) -> str | None:
         return "sha256:" + digest.hexdigest()
     except OSError:
         return None
+
+
+def _payload_hash(value: object) -> str | None:
+    try:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def record_cycle_event_start(
@@ -394,6 +543,20 @@ def record_cycle_event_finish(
     error_count: int | None = None,
 ) -> None:
     now = now_rfc3339()
+    existing_row = conn.execute(
+        "SELECT started_at FROM cycle_event WHERE cycle_event_id=?",
+        (_require_nonblank(cycle_event_id, "cycle_event_id"),),
+    ).fetchone()
+    if existing_row is None:
+        raise CycleEvidenceLedgerError(
+            f"cycle_event finish target not found: cycle_event_id={cycle_event_id}"
+        )
+    started = _parse_rfc3339_timestamp(existing_row["started_at"], "started_at")
+    finished = _parse_rfc3339_timestamp(ended_at or now, "ended_at")
+    if finished < started:
+        raise CycleEvidenceLedgerError(
+            f"ended_at must not be earlier than started_at for cycle_event_id={cycle_event_id}"
+        )
     cursor = conn.execute(
         """
         UPDATE cycle_event
@@ -451,15 +614,15 @@ def record_cycle_stage_start(
     stage = _require_nonblank(stage_name, "stage_name")
     run_id_text = _require_nonblank(run_id, "run_id")
     stage_id = stage_event_id or stable_id("stage", event_id, stage_order, stage)
-    created = started_at or now_rfc3339()
-    now = now_rfc3339()
+    started_at_value = started_at if started_at is not None or status != "skipped" else None
+    created = now_rfc3339()
     expected = {
         "stage_event_id": stage_id,
         "cycle_event_id": event_id,
         "run_id": run_id_text,
         "stage_name": stage,
         "stage_order": int(stage_order),
-        "started_at": created,
+        "started_at": started_at_value,
         "status": _require_nonblank(status, "status"),
         "required_stage": _bool_int(required_stage),
         "skipped_reason": skipped_reason,
@@ -471,7 +634,7 @@ def record_cycle_stage_start(
         "error_summary": error_summary,
         "metadata_json": _json_mapping(metadata),
         "created_at": created,
-        "record_last_updated": now,
+        "record_last_updated": created,
     }
     cursor = conn.execute(
         """
@@ -510,6 +673,23 @@ def record_cycle_stage_finish(
     error_summary: str | None = None,
 ) -> None:
     now = now_rfc3339()
+    existing_row = conn.execute(
+        "SELECT started_at FROM cycle_stage_event WHERE stage_event_id=?",
+        (_require_nonblank(stage_event_id, "stage_event_id"),),
+    ).fetchone()
+    if existing_row is None:
+        raise CycleEvidenceLedgerError(
+            f"cycle_stage_event finish target not found: stage_event_id={stage_event_id}"
+        )
+    started_at_value = _optional_text(existing_row["started_at"])
+    finished_at_value = ended_at if ended_at is not None or status == "skipped" else now
+    if started_at_value is not None and finished_at_value is not None:
+        started = _parse_rfc3339_timestamp(started_at_value, "started_at")
+        finished = _parse_rfc3339_timestamp(finished_at_value, "ended_at")
+        if finished < started:
+            raise CycleEvidenceLedgerError(
+                f"ended_at must not be earlier than started_at for stage_event_id={stage_event_id}"
+            )
     cursor = conn.execute(
         """
         UPDATE cycle_stage_event
@@ -522,7 +702,7 @@ def record_cycle_stage_finish(
         """,
         (
             _require_nonblank(status, "status"),
-            ended_at or now,
+            finished_at_value,
             validation_status,
             error_summary,
             now,
@@ -568,7 +748,9 @@ def record_cycle_artifact_ref(
         "artifact_path": artifact_path_text,
         "artifact_hash": artifact_hash,
         "byte_count": byte_count,
-        "privacy_classification": _require_nonblank(privacy_classification, "privacy_classification"),
+        "privacy_classification": _require_nonblank(
+            privacy_classification, "privacy_classification"
+        ),
         "public_safe": _bool_int(public_safe),
         "schema_id": schema_id,
         "validation_status": validation_status,
@@ -620,30 +802,21 @@ def record_cycle_candidate_considered(
     created_at: str | None = None,
     candidate_considered_id: str | None = None,
 ) -> str:
-    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
-    kind = _require_nonblank(candidate_kind, "candidate_kind")
-    candidate_id = candidate_considered_id or stable_id(
-        "considered", event_id, stage_event_id, kind, candidate_ref_type, candidate_ref_id
+    candidate_id, expected, params = _prepare_cycle_candidate_considered_row(
+        cycle_event_id=cycle_event_id,
+        candidate_kind=candidate_kind,
+        stage_event_id=stage_event_id,
+        candidate_ref_type=candidate_ref_type,
+        candidate_ref_id=candidate_ref_id,
+        candidate_label=candidate_label,
+        score=score,
+        score_policy_id=score_policy_id,
+        rationale=rationale,
+        reason=reason,
+        selected=selected,
+        created_at=created_at,
+        candidate_considered_id=candidate_considered_id,
     )
-    now = now_rfc3339()
-    created = created_at or now
-    normalized_score = None if score is None else float(score)
-    expected = {
-        "candidate_considered_id": candidate_id,
-        "cycle_event_id": event_id,
-        "stage_event_id": stage_event_id,
-        "candidate_kind": kind,
-        "candidate_ref_type": candidate_ref_type,
-        "candidate_ref_id": candidate_ref_id,
-        "candidate_label": candidate_label,
-        "score": normalized_score,
-        "score_policy_id": score_policy_id,
-        "rationale": rationale,
-        "reason_json": _json_mapping(reason),
-        "selected": _bool_int(selected),
-        "created_at": created,
-        "record_last_updated": now,
-    }
     conn.execute(
         """
         INSERT INTO cycle_candidate_considered (
@@ -653,7 +826,7 @@ def record_cycle_candidate_considered(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(candidate_considered_id) DO NOTHING
         """,
-        tuple(expected.values()),
+        params,
     )
     existing_row = conn.execute(
         "SELECT * FROM cycle_candidate_considered WHERE candidate_considered_id=?",
@@ -684,34 +857,19 @@ def record_cycle_candidate_excluded(
     created_at: str | None = None,
     candidate_excluded_id: str | None = None,
 ) -> str:
-    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
-    kind = _require_nonblank(candidate_kind, "candidate_kind")
-    reason_text = _require_nonblank(exclusion_reason, "exclusion_reason")
-    excluded_id = candidate_excluded_id or stable_id(
-        "excluded",
-        event_id,
-        stage_event_id,
-        kind,
-        candidate_ref_type,
-        candidate_ref_id,
-        reason_text,
+    excluded_id, expected, params = _prepare_cycle_candidate_excluded_row(
+        cycle_event_id=cycle_event_id,
+        candidate_kind=candidate_kind,
+        exclusion_reason=exclusion_reason,
+        stage_event_id=stage_event_id,
+        candidate_ref_type=candidate_ref_type,
+        candidate_ref_id=candidate_ref_id,
+        candidate_label=candidate_label,
+        policy_id=policy_id,
+        retryable=retryable,
+        created_at=created_at,
+        candidate_excluded_id=candidate_excluded_id,
     )
-    now = now_rfc3339()
-    created = created_at or now
-    expected = {
-        "candidate_excluded_id": excluded_id,
-        "cycle_event_id": event_id,
-        "stage_event_id": stage_event_id,
-        "candidate_kind": kind,
-        "candidate_ref_type": candidate_ref_type,
-        "candidate_ref_id": candidate_ref_id,
-        "candidate_label": candidate_label,
-        "exclusion_reason": reason_text,
-        "policy_id": policy_id,
-        "retryable": _bool_int(retryable),
-        "created_at": created,
-        "record_last_updated": now,
-    }
     conn.execute(
         """
         INSERT INTO cycle_candidate_excluded (
@@ -721,7 +879,7 @@ def record_cycle_candidate_excluded(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(candidate_excluded_id) DO NOTHING
         """,
-        tuple(expected.values()),
+        params,
     )
     existing_row = conn.execute(
         "SELECT * FROM cycle_candidate_excluded WHERE candidate_excluded_id=?",
@@ -735,6 +893,117 @@ def record_cycle_candidate_excluded(
         ignore=frozenset({"created_at", "record_last_updated"}),
     )
     return excluded_id
+
+
+def record_cycle_candidates_considered(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    selection_explanation_id: str,
+    candidates: Iterable[Mapping[str, object]],
+    stage_event_id: str | None = None,
+    score_policy_id: str | None = None,
+    created_at: str | None = None,
+) -> list[str]:
+    prepared_rows = [
+        _prepare_cycle_candidate_considered_row(
+            cycle_event_id=cycle_event_id,
+            candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
+            stage_event_id=stage_event_id,
+            candidate_ref_type="selection_explanation",
+            candidate_ref_id=str(candidate.get("candidate_id") or ""),
+            candidate_label=None
+            if candidate.get("label") is None
+            else str(candidate.get("label")),
+            score=candidate.get("score")
+            if isinstance(candidate.get("score"), (int, float))
+            else None,
+            score_policy_id=score_policy_id,
+            rationale=None
+            if candidate.get("rationale") is None
+            else str(candidate.get("rationale")),
+            reason={
+                "selection_explanation_id": selection_explanation_id,
+                "reason_codes": candidate.get("reason_codes", []),
+                "eligibility_status": candidate.get("eligibility_status"),
+            },
+            selected=bool(candidate.get("selected")),
+            created_at=created_at,
+            candidate_considered_id=None,
+        )
+        for candidate in candidates
+        if isinstance(candidate, Mapping)
+    ]
+    if not prepared_rows:
+        return []
+    conn.executemany(
+        """
+        INSERT INTO cycle_candidate_considered (
+          candidate_considered_id, cycle_event_id, stage_event_id, candidate_kind,
+          candidate_ref_type, candidate_ref_id, candidate_label, score, score_policy_id,
+          rationale, reason_json, selected, created_at, record_last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_considered_id) DO NOTHING
+        """,
+        [params for _, _, params in prepared_rows],
+    )
+    return _batch_record_append_only_rows(
+        conn,
+        table_name="cycle_candidate_considered",
+        id_field_name="candidate_considered_id",
+        select_sql="SELECT * FROM cycle_candidate_considered WHERE candidate_considered_id=?",
+        expected_rows=prepared_rows,
+    )
+
+
+def record_cycle_candidates_excluded(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    candidates: Iterable[Mapping[str, object]],
+    stage_event_id: str | None = None,
+    policy_id: str | None = None,
+    created_at: str | None = None,
+) -> list[str]:
+    prepared_rows = [
+        _prepare_cycle_candidate_excluded_row(
+            cycle_event_id=cycle_event_id,
+            candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
+            exclusion_reason=str(candidate.get("reason") or "deferred_by_feedback_plan"),
+            stage_event_id=stage_event_id,
+            candidate_ref_type="selection_explanation",
+            candidate_ref_id=str(candidate.get("candidate_id") or ""),
+            candidate_label=None
+            if candidate.get("label") is None
+            else str(candidate.get("label")),
+            policy_id=policy_id,
+            retryable=bool(candidate.get("retryable", True)),
+            created_at=created_at,
+            candidate_excluded_id=None,
+        )
+        for candidate in candidates
+        if isinstance(candidate, Mapping)
+    ]
+    if not prepared_rows:
+        return []
+    conn.executemany(
+        """
+        INSERT INTO cycle_candidate_excluded (
+          candidate_excluded_id, cycle_event_id, stage_event_id, candidate_kind,
+          candidate_ref_type, candidate_ref_id, candidate_label, exclusion_reason,
+          policy_id, retryable, created_at, record_last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_excluded_id) DO NOTHING
+        """,
+        [params for _, _, params in prepared_rows],
+    )
+    return _batch_record_append_only_rows(
+        conn,
+        table_name="cycle_candidate_excluded",
+        id_field_name="candidate_excluded_id",
+        select_sql="SELECT * FROM cycle_candidate_excluded WHERE candidate_excluded_id=?",
+        expected_rows=prepared_rows,
+    )
 
 
 def record_cycle_tool_failure(
@@ -1129,13 +1398,19 @@ def _record_stage_artifacts(
     for key, value in sorted(artifacts.items()):
         if key.endswith("_sha256") or key == "mutated":
             continue
-        if not isinstance(value, str) or not value:
+        artifact_hash: str | None = None
+        if isinstance(value, str) and value:
+            path = Path(value)
+            hash_value = artifacts.get(f"{key}_sha256")
+            artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
+            if artifact_hash is None:
+                artifact_hash = _file_hash(path)
+        elif isinstance(value, Mapping):
+            artifact_hash = _payload_hash(value)
+            if artifact_hash is None:
+                continue
+        else:
             continue
-        path = Path(value)
-        hash_value = artifacts.get(f"{key}_sha256")
-        artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
-        if artifact_hash is None:
-            artifact_hash = _file_hash(path)
         schema_id = _stage_artifact_schema_id(stage, key)
         if schema_id is None and artifact_schema_ids is not None:
             schema_id = artifact_schema_ids.get(key)
@@ -1144,9 +1419,9 @@ def _record_stage_artifacts(
             cycle_event_id=cycle_event_id,
             stage_event_id=stage_event_id,
             artifact_type=key,
-            artifact_path=value,
+            artifact_path=value if isinstance(value, str) else json.dumps(value, sort_keys=True),
             artifact_hash=artifact_hash,
-            byte_count=_file_size(path),
+            byte_count=_file_size(Path(value)) if isinstance(value, str) else None,
             public_safe=False,
             schema_id=schema_id,
             validation_status=_optional_text((stage.get("validation") or {}).get("status"))
@@ -1282,9 +1557,11 @@ def _record_feedback_candidates_payload(
             if not isinstance(item, dict):
                 continue
             candidate_id = _optional_text(item.get("candidate_id")) or f"deferred:{index}"
-            candidate_kind = _optional_text(item.get("candidate_kind")) or _optional_text(
-                item.get("proposal_kind")
-            ) or "feedback_candidate"
+            candidate_kind = (
+                _optional_text(item.get("candidate_kind"))
+                or _optional_text(item.get("proposal_kind"))
+                or "feedback_candidate"
+            )
             reason = _optional_text(item.get("reason")) or "deferred_by_feedback_plan"
             record_cycle_candidate_excluded(
                 conn,

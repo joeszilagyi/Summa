@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import sqlite3
 import sys
@@ -17,7 +18,7 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "scripts"):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.atomic_write import atomic_write_text  # noqa: E402
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     ACCEPTED_REVIEW_STATES,
     CANDIDATE_FEEDBACK_SCORE_MAX,
@@ -58,7 +59,9 @@ FACET_SCORE_SIGNAL_CAP = 5
 LEAD_SCORE_SIGNAL_CAP = 3
 RELATED_SCORE_SIGNAL_CAP = 3
 SOURCE_DIVERSITY_BONUS_STEP = 0.25
-QUESTION_TERMS = frozenset({"what", "which", "who", "whom", "whose", "where", "when", "why", "how", "whether"})
+QUESTION_TERMS = frozenset(
+    {"what", "which", "who", "whom", "whose", "where", "when", "why", "how", "whether"}
+)
 
 
 def classify_extraction_status(raw_status: Any) -> tuple[int, int, str | None]:
@@ -95,8 +98,39 @@ def _pick_facet_for_entity_type(entity_type: str, enabled_facets: list[str]) -> 
     return enabled_facets[0] if enabled_facets else candidate
 
 
+def _entity_facet_resolution_sql(enabled_facets: list[str]) -> tuple[str, tuple[str, ...]]:
+    normalized_facets = [
+        str(facet).strip().casefold().replace(" ", "_")
+        for facet in enabled_facets
+        if str(facet).strip()
+    ]
+    if not normalized_facets:
+        return "", ()
+    fallback_facet = normalized_facets[0]
+    resolution_sql = """
+        CASE LOWER(REPLACE(entity_type, ' ', '_'))
+            WHEN 'person' THEN 'people'
+            WHEN 'person_or_group' THEN 'people'
+            WHEN 'place' THEN 'places'
+            WHEN 'organization' THEN 'organizations'
+            WHEN 'org' THEN 'organizations'
+            WHEN 'work' THEN 'works'
+            WHEN 'event' THEN 'events'
+            WHEN 'concept' THEN 'concepts'
+            WHEN 'topic' THEN 'topics'
+            WHEN 'product' THEN 'products'
+            ELSE ?
+        END
+    """
+    return resolution_sql, (fallback_facet,)
+
+
 class CandidateFeedbackError(RuntimeError):
     """Raised when planner inputs are missing or malformed."""
+
+
+def compact_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -217,13 +251,7 @@ def load_checked_connection(
 
 
 def parse_note_text(note_text: Any) -> dict[str, Any]:
-    if not isinstance(note_text, str) or not note_text.strip():
-        return {}
-    try:
-        payload = json.loads(note_text)
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return canonical_store.parse_gather_candidate_batch_ingest_note(note_text)
 
 
 def scope_work_ids(conn: sqlite3.Connection, subject_id: str) -> list[int]:
@@ -241,6 +269,22 @@ def scope_work_ids(conn: sqlite3.Connection, subject_id: str) -> list[int]:
         (subject_id, subject_id),
     ).fetchall()
     return [int(row["work_id"]) for row in rows]
+
+
+def seed_scoped_work_ids(conn: sqlite3.Connection, work_ids: list[int]) -> None:
+    conn.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS scoped_work_ids (
+            work_id INTEGER PRIMARY KEY
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute("DELETE FROM scoped_work_ids")
+    if work_ids:
+        conn.executemany(
+            "INSERT OR IGNORE INTO scoped_work_ids (work_id) VALUES (?)",
+            ((int(work_id),) for work_id in work_ids),
+        )
 
 
 def work_ref(work_id: int) -> str:
@@ -280,7 +324,9 @@ def accepted_review_placeholder_sql() -> tuple[str, tuple[str, ...]]:
     return placeholders, tuple(sorted(ACCEPTED_REVIEW_STATES))
 
 
-def open_question_quality_bonus(*, claim_text: str, claim_type: str, provenance_payload: dict[str, Any]) -> float:
+def open_question_quality_bonus(
+    *, claim_text: str, claim_type: str, provenance_payload: dict[str, Any]
+) -> float:
     text = " ".join(str(claim_text or "").split())
     if not text:
         return -0.75
@@ -440,16 +486,16 @@ def _family_yields_for_events(
 
 
 def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[str, Any]]:
-    pattern = f'%"subject_id": "{subject_id}"%'
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND source_object_namespace='topic_subject'
+          AND source_object_id=?
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         """,
-        (pattern,),
+        (subject_id,),
     ).fetchall()
     history: list[dict[str, Any]] = []
     event_artifacts: list[tuple[str, str | None]] = []
@@ -478,13 +524,16 @@ def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[
         event_artifacts.append((event_key, artifact_hash))
     yields_by_event = _family_yields_for_events(conn, event_artifacts)
     for entry in history:
-        yields = yields_by_event.get(entry["event_key"], {
-            "work": 0,
-            "source_claim": 0,
-            "extraction_detected_entity": 0,
-            "source_relationship": 0,
-            "source_access": 0,
-        })
+        yields = yields_by_event.get(
+            entry["event_key"],
+            {
+                "work": 0,
+                "source_claim": 0,
+                "extraction_detected_entity": 0,
+                "source_relationship": 0,
+                "source_access": 0,
+            },
+        )
         entry["yields"] = yields
         entry["total_yield"] = sum(yields.values())
     return history
@@ -502,24 +551,19 @@ def lead_scope_sql(
 ) -> tuple[str, tuple[Any, ...]]:
     workspace_column = "workspace_id" if table_alias is None else f"{table_alias}.workspace_id"
     work_id_column = "work_id" if table_alias is None else f"{table_alias}.work_id"
-    if work_ids:
-        placeholders = ", ".join("?" for _ in work_ids)
-        return (
-            f"({workspace_column}=? OR {work_id_column} IN ({placeholders}))",
-            (subject_id, *work_ids),
-        )
-    return f"{workspace_column}=?", (subject_id,)
+    del work_ids
+    return (
+        f"({workspace_column}=? OR EXISTS (SELECT 1 FROM scoped_work_ids WHERE scoped_work_ids.work_id = {work_id_column}))",
+        (subject_id,),
+    )
 
 
 def claim_scope_sql(subject_id: str, work_ids: list[int]) -> tuple[str, tuple[Any, ...]]:
-    work_refs = [work_ref(work_id) for work_id in work_ids]
-    if work_refs:
-        placeholders = ", ".join("?" for _ in work_refs)
-        return (
-            f"(workspace_id=? OR about_object_ref IN ({placeholders}))",
-            (subject_id, *work_refs),
-        )
-    return "workspace_id=?", (subject_id,)
+    del work_ids
+    return (
+        "(workspace_id=? OR about_object_ref IN (SELECT 'work:' || work_id FROM scoped_work_ids))",
+        (subject_id,),
+    )
 
 
 def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
@@ -535,14 +579,15 @@ def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
 def run_ids_for_events(conn: sqlite3.Connection, event_keys: set[str]) -> dict[str, str]:
     if not event_keys:
         return {}
-    placeholders = ", ".join("?" for _ in sorted(event_keys))
+    sorted_event_keys = sorted(event_keys)
+    placeholders = ", ".join("?" for _ in sorted_event_keys)
     rows = conn.execute(
         f"""
         SELECT provenance_event_key_v1, run_id
         FROM provenance_event
         WHERE provenance_event_key_v1 IN ({placeholders})
         """,
-        tuple(sorted(event_keys)),
+        tuple(sorted_event_keys),
     ).fetchall()
     result: dict[str, str] = {}
     for row in rows:
@@ -560,17 +605,39 @@ def extraction_outcome_counts(
     subject_id: str,
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
-    requested_locators: list[str] = []
-    seen_locators: set[str] = set()
-    if source_locus_id:
-        requested_locators.append(source_locus_id)
-        seen_locators.add(source_locus_id)
-    for locator in locators:
-        if locator not in seen_locators:
-            requested_locators.append(locator)
-            seen_locators.add(locator)
-    if not requested_locators:
-        return {
+    batch = batch_extraction_outcome_counts(
+        conn,
+        source_access_requests=[
+            {
+                "source_access_id": 0,
+                "source_locus_id": source_locus_id,
+                "locators": locators,
+            }
+        ],
+        subject_id=subject_id,
+        warnings=warnings,
+    )
+    return batch[0]
+
+
+def batch_extraction_outcome_counts(
+    conn: sqlite3.Connection,
+    *,
+    source_access_requests: list[dict[str, Any]],
+    subject_id: str,
+    warnings: list[str] | None = None,
+) -> dict[int, dict[str, Any]]:
+    if not source_access_requests:
+        return {}
+
+    requested_locators: list[tuple[int, str]] = []
+    query_params: list[Any] = []
+    result: dict[int, dict[str, Any]] = {}
+    related_event_keys_by_source_access_id: dict[int, set[str]] = {}
+    unknown_statuses: set[str] = set()
+    for request in source_access_requests:
+        source_access_id = int(request["source_access_id"])
+        result[source_access_id] = {
             "successful_extractions": 0,
             "failed_extractions": 0,
             "capture_count": 0,
@@ -578,79 +645,103 @@ def extraction_outcome_counts(
             "extraction_ids": [],
             "related_run_ids": [],
         }
-    lookup_values = ", ".join("(?)" for _ in requested_locators)
-    query = f"""
-    WITH requested_locators(locator) AS (
-        VALUES {lookup_values}
-    ),
-    matching_captures AS (
-        SELECT capture.capture_event_id, capture.provenance_event_ref
-        FROM capture_event AS capture
-        JOIN requested_locators
-          ON requested_locators.locator = capture.source_locus_ref
-        WHERE capture.workspace_id=?
-        UNION
-        SELECT capture.capture_event_id, capture.provenance_event_ref
-        FROM capture_event AS capture
-        JOIN requested_locators
-          ON requested_locators.locator = capture.original_locator
-        WHERE capture.workspace_id=?
-    )
-    SELECT capture_event_id, provenance_event_ref
-    FROM matching_captures
-    ORDER BY capture_event_id
-    """
-    run_ids: set[str] = set()
-    capture_rows = conn.execute(query, tuple(requested_locators) + (subject_id, subject_id)).fetchall()
-    capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
-    if not capture_ids:
-        return {
-            "successful_extractions": 0,
-            "failed_extractions": 0,
-            "capture_count": 0,
-            "capture_ids": [],
-            "extraction_ids": [],
-            "related_run_ids": sorted(run_ids),
-        }
-    placeholders = ", ".join("?" for _ in capture_ids)
-    extraction_rows = conn.execute(
-        f"""
-        SELECT extraction_id, extraction_status, provenance_event_ref
-        FROM extraction_record
-        WHERE capture_event_id IN ({placeholders})
-        ORDER BY extraction_id
-        """,
-        tuple(capture_ids),
-    ).fetchall()
-    extraction_ids = [int(row["extraction_id"]) for row in extraction_rows]
+        related_event_keys_by_source_access_id[source_access_id] = set()
+        seen_locators: set[str] = set()
+        for locator in [request.get("source_locus_id"), *(request.get("locators") or [])]:
+            if not isinstance(locator, str) or not locator or locator in seen_locators:
+                continue
+            seen_locators.add(locator)
+            requested_locators.append((source_access_id, locator))
+            query_params.extend([source_access_id, locator])
+
+    if requested_locators:
+        lookup_values = ", ".join("(?, ?)" for _ in requested_locators)
+        query = f"""
+        WITH requested_source_accesses(source_access_id, locator) AS (
+            VALUES {lookup_values}
+        ),
+        matching_captures AS (
+            SELECT DISTINCT
+                requested_source_accesses.source_access_id AS source_access_id,
+                capture.capture_event_id AS capture_event_id,
+                capture.provenance_event_ref AS capture_provenance_event_ref
+            FROM requested_source_accesses
+            JOIN capture_event AS capture
+              ON capture.workspace_id=?
+             AND (
+                capture.source_locus_ref = requested_source_accesses.locator
+                OR capture.original_locator = requested_source_accesses.locator
+             )
+        ),
+        matching_extractions AS (
+            SELECT DISTINCT
+                matching_captures.source_access_id AS source_access_id,
+                matching_captures.capture_event_id AS capture_event_id,
+                matching_captures.capture_provenance_event_ref AS capture_provenance_event_ref,
+                extraction.extraction_id AS extraction_id,
+                extraction.extraction_status AS extraction_status,
+                extraction.provenance_event_ref AS extraction_provenance_event_ref
+            FROM matching_captures
+            LEFT JOIN extraction_record AS extraction
+              ON extraction.capture_event_id = matching_captures.capture_event_id
+        )
+        SELECT source_access_id, capture_event_id, capture_provenance_event_ref,
+               extraction_id, extraction_status, extraction_provenance_event_ref
+        FROM matching_extractions
+        ORDER BY source_access_id, capture_event_id, extraction_id
+        """
+        rows = conn.execute(query, tuple(query_params) + (subject_id,)).fetchall()
+        for row in rows:
+            source_access_id = int(row["source_access_id"])
+            entry = result[source_access_id]
+            capture_id = int(row["capture_event_id"])
+            if capture_id not in entry.setdefault("_capture_id_set", set()):
+                entry["_capture_id_set"].add(capture_id)  # type: ignore[union-attr]
+                entry["capture_ids"].append(capture_id)
+            if row["capture_provenance_event_ref"] is not None:
+                related_event_keys_by_source_access_id[source_access_id].add(
+                    str(row["capture_provenance_event_ref"])
+                )
+            extraction_id = row["extraction_id"]
+            if extraction_id is None:
+                continue
+            extraction_id_int = int(extraction_id)
+            if extraction_id_int not in entry.setdefault("_extraction_id_set", set()):
+                entry["_extraction_id_set"].add(extraction_id_int)  # type: ignore[union-attr]
+                entry["extraction_ids"].append(extraction_id_int)
+            if row["extraction_provenance_event_ref"] is not None:
+                related_event_keys_by_source_access_id[source_access_id].add(
+                    str(row["extraction_provenance_event_ref"])
+                )
+            success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
+            entry["successful_extractions"] += success
+            entry["failed_extractions"] += failed_delta
+            if unknown_status is not None:
+                unknown_statuses.add(unknown_status)
+
     provenance_event_keys = {
-        str(row["provenance_event_ref"])
-        for row in capture_rows + extraction_rows
-        if row["provenance_event_ref"] is not None
+        event_key
+        for keys in related_event_keys_by_source_access_id.values()
+        for event_key in keys
     }
-    run_ids = set(run_ids_for_events(conn, provenance_event_keys).values())
-    successful = 0
-    failed = 0
-    unknown_statuses: set[str] = set()
-    for row in extraction_rows:
-        success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
-        successful += success
-        failed += failed_delta
-        if unknown_status is not None:
-            unknown_statuses.add(unknown_status)
+    run_ids_by_event = run_ids_for_events(conn, provenance_event_keys)
+    for source_access_id, entry in result.items():
+        entry.pop("_capture_id_set", None)
+        entry.pop("_extraction_id_set", None)
+        entry["capture_count"] = len(entry["capture_ids"])
+        entry["related_run_ids"] = sorted(
+            {
+                run_id
+                for event_key in related_event_keys_by_source_access_id[source_access_id]
+                if (run_id := run_ids_by_event.get(event_key)) is not None
+            }
+        )
     if warnings is not None and unknown_statuses:
         warnings.extend(
             f"unknown extraction_status treated as failure for source-access lead scoring: {status!r}"
             for status in sorted(unknown_statuses)
         )
-    return {
-        "successful_extractions": successful,
-        "failed_extractions": failed,
-        "capture_count": len(capture_ids),
-        "capture_ids": capture_ids,
-        "extraction_ids": extraction_ids,
-        "related_run_ids": sorted(run_ids),
-    }
+    return result
 
 
 def load_source_access_leads(
@@ -660,11 +751,18 @@ def load_source_access_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     scope_sql, scope_params = lead_scope_sql(subject_id, work_ids, table_alias="access")
     accepted_placeholders, accepted_states = accepted_review_placeholder_sql()
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*scope_params, *tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         SELECT access.source_access_id, access.work_id, access.source_locus_id,
@@ -678,57 +776,106 @@ def load_source_access_leads(
         WHERE {scope_sql}
           AND access.review_state IN ({placeholders})
         ORDER BY COALESCE(access.last_seen_at, access.first_seen_at, access.record_last_updated) DESC, access.source_access_id ASC
+        {limit_clause}
         """,
-        scope_params + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
 
-    leads: list[dict[str, Any]] = []
+    lead_rows: list[dict[str, Any]] = []
+    work_refs: list[str] = []
+    seen_work_refs: set[str] = set()
+    source_access_requests: list[dict[str, Any]] = []
     for row in rows:
         provenance = history_by_event_key.get(str(row["work_provenance_event_ref"] or ""))
         facet = provenance["facet"] if provenance is not None else "sources"
-        metrics = extraction_outcome_counts(
-            conn,
-            source_locus_id=None if row["source_locus_id"] is None else str(row["source_locus_id"]),
-            locators=[
-                locator
-                for locator in {
-                    row["original_locator"] if isinstance(row["original_locator"], str) else None,
-                    row["canonical_url"] if isinstance(row["canonical_url"], str) else None,
-                }
-                if isinstance(locator, str) and locator
-            ],
-            subject_id=subject_id,
-            warnings=warnings,
-        )
-        related_claims = 0
-        related_works = 0
+        work_ref_value: str | None = None
         if row["work_id"] is not None:
-            related_works = 1
-            related_claims = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM source_claim
-                    WHERE about_object_ref=?
-                      AND review_state IN ({accepted_placeholders})
-                    """,
-                    (work_ref(int(row["work_id"])), *accepted_states),
-                ).fetchone()["count"]
-            )
-        related_entities = 0
-        if metrics["capture_ids"]:
-            capture_placeholders = ", ".join("?" for _ in metrics["capture_ids"])
-            related_entities = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM extraction_detected_entity
-                    WHERE capture_event_id IN ({capture_placeholders})
-                      AND review_state IN ({accepted_placeholders})
-                    """,
-                    tuple(metrics["capture_ids"]) + accepted_states,
-                ).fetchone()["count"]
-            )
+            work_ref_value = work_ref(int(row["work_id"]))
+            if work_ref_value not in seen_work_refs:
+                seen_work_refs.add(work_ref_value)
+                work_refs.append(work_ref_value)
+        source_access_requests.append(
+            {
+                "source_access_id": int(row["source_access_id"]),
+                "source_locus_id": None if row["source_locus_id"] is None else str(row["source_locus_id"]),
+                "locators": [
+                    locator
+                    for locator in {
+                        row["original_locator"] if isinstance(row["original_locator"], str) else None,
+                        row["canonical_url"] if isinstance(row["canonical_url"], str) else None,
+                    }
+                    if isinstance(locator, str) and locator
+                ],
+            }
+        )
+        lead_rows.append(
+            {
+                "row": row,
+                "provenance": provenance,
+                "facet": facet,
+                "work_ref": work_ref_value,
+            }
+        )
+    metrics_by_source_access_id = batch_extraction_outcome_counts(
+        conn,
+        source_access_requests=source_access_requests,
+        subject_id=subject_id,
+        warnings=warnings,
+    )
+    capture_ids = sorted(
+        {
+            capture_id
+            for metrics in metrics_by_source_access_id.values()
+            for capture_id in metrics["capture_ids"]
+        }
+    )
+    related_claim_counts: dict[str, int] = {}
+    if work_refs:
+        work_placeholders = ", ".join("?" for _ in work_refs)
+        related_claim_rows = conn.execute(
+            f"""
+            SELECT about_object_ref, COUNT(*) AS count
+            FROM source_claim
+            WHERE about_object_ref IN ({work_placeholders})
+              AND review_state IN ({accepted_placeholders})
+            GROUP BY about_object_ref
+            """,
+            tuple(work_refs) + accepted_states,
+        ).fetchall()
+        related_claim_counts = {
+            str(row["about_object_ref"]): int(row["count"])
+            for row in related_claim_rows
+        }
+    related_entity_counts: dict[int, int] = {}
+    if capture_ids:
+        capture_placeholders = ", ".join("?" for _ in capture_ids)
+        related_entity_rows = conn.execute(
+            f"""
+            SELECT capture_event_id, COUNT(*) AS count
+            FROM extraction_detected_entity
+            WHERE capture_event_id IN ({capture_placeholders})
+              AND review_state IN ({accepted_placeholders})
+            GROUP BY capture_event_id
+            """,
+            tuple(capture_ids) + accepted_states,
+        ).fetchall()
+        related_entity_counts = {
+            int(row["capture_event_id"]): int(row["count"])
+            for row in related_entity_rows
+        }
+
+    leads: list[dict[str, Any]] = []
+    for item in lead_rows:
+        row = item["row"]
+        provenance = item["provenance"]
+        facet = item["facet"]
+        metrics = metrics_by_source_access_id[int(row["source_access_id"])]
+        work_ref_value = item["work_ref"]
+        related_works = 1 if row["work_id"] is not None else 0
+        related_claims = related_claim_counts.get(work_ref_value or "", 0)
+        related_entities = sum(
+            related_entity_counts.get(capture_id, 0) for capture_id in metrics["capture_ids"]
+        )
         related_claims_score = capped_count(related_claims, RELATED_SCORE_SIGNAL_CAP)
         related_entities_score = capped_count(related_entities, RELATED_SCORE_SIGNAL_CAP)
         related_yield = related_works + related_claims_score + related_entities_score
@@ -747,9 +894,12 @@ def load_source_access_leads(
             + weights["work_yield"] * signals["related_works"]
             + weights["claim_yield"] * related_claims_score
             + weights["entity_yield"] * related_entities_score
-            + weights["successful_extraction"] * capped_count(signals["successful_extractions"], LEAD_SCORE_SIGNAL_CAP)
-            - weights["failed_extraction_penalty"] * capped_count(signals["failed_extractions"], LEAD_SCORE_SIGNAL_CAP)
-            - weights["zero_yield_penalty"] * capped_count(signals["zero_yield_attempts"], LEAD_SCORE_SIGNAL_CAP)
+            + weights["successful_extraction"]
+            * capped_count(signals["successful_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["failed_extraction_penalty"]
+            * capped_count(signals["failed_extractions"], LEAD_SCORE_SIGNAL_CAP)
+            - weights["zero_yield_penalty"]
+            * capped_count(signals["zero_yield_attempts"], LEAD_SCORE_SIGNAL_CAP)
         )
         reason_codes = ["open_lead_yield"]
         if signals["related_works"] or signals["related_claims"] or signals["related_entities"]:
@@ -809,9 +959,16 @@ def load_open_question_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     scope_sql, scope_params = claim_scope_sql(subject_id, work_ids)
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*scope_params, *tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         SELECT source_claim_id, about_object_ref, claim_text, claim_type, review_state,
@@ -821,16 +978,21 @@ def load_open_question_leads(
           AND is_open_question=1
           AND review_state IN ({placeholders})
         ORDER BY created_at DESC, source_claim_id ASC
+        {limit_clause}
         """,
-        scope_params + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
         provenance = history_by_event_key.get(str(row["provenance_event_ref"] or ""))
-        score = weights["open_lead"] + weights["claim_yield"] + open_question_quality_bonus(
-            claim_text=str(row["claim_text"] or ""),
-            claim_type=str(row["claim_type"] or ""),
-            provenance_payload=provenance or {},
+        score = (
+            weights["open_lead"]
+            + weights["claim_yield"]
+            + open_question_quality_bonus(
+                claim_text=str(row["claim_text"] or ""),
+                claim_type=str(row["claim_type"] or ""),
+                provenance_payload=provenance or {},
+            )
         )
         leads.append(
             {
@@ -873,23 +1035,53 @@ def load_entity_leads(
     enabled_facets: list[str],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    facet_resolution_sql, facet_resolution_params = _entity_facet_resolution_sql(enabled_facets)
+    if not facet_resolution_sql:
+        return []
+    enabled_facet_filters = ", ".join("?" for _ in sorted({str(facet).strip().casefold().replace(" ", "_") for facet in enabled_facets if str(facet).strip()}))
+    limit_clause = ""
+    query_params: list[Any] = [
+        subject_id,
+        *tuple(sorted(LEAD_REVIEW_STATES)),
+        *facet_resolution_params,
+        *tuple(
+            sorted(
+                {
+                    str(facet).strip().casefold().replace(" ", "_")
+                    for facet in enabled_facets
+                    if str(facet).strip()
+                }
+            )
+        ),
+    ]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
-        SELECT entity.detected_entity_id, entity.entity_label, entity.entity_type, entity.review_state,
-               entity.provenance_event_ref, extraction.extraction_status
-        FROM extraction_detected_entity entity
-        LEFT JOIN extraction_record extraction
-          ON extraction.extraction_id = entity.extraction_id
-        LEFT JOIN capture_event capture
-          ON capture.capture_event_id = entity.capture_event_id
-        WHERE entity.workspace_id=?
-          AND entity.review_state IN ({placeholders})
-        ORDER BY entity.detected_entity_id
+        WITH entity_rows AS (
+            SELECT entity.detected_entity_id, entity.entity_label, entity.entity_type, entity.review_state,
+                   entity.provenance_event_ref, extraction.extraction_status
+            FROM extraction_detected_entity entity
+            LEFT JOIN extraction_record extraction
+              ON extraction.extraction_id = entity.extraction_id
+            LEFT JOIN capture_event capture
+              ON capture.capture_event_id = entity.capture_event_id
+            WHERE entity.workspace_id=?
+              AND entity.review_state IN ({placeholders})
+        )
+        SELECT detected_entity_id, entity_label, entity_type, review_state,
+               provenance_event_ref, extraction_status
+        FROM entity_rows
+        WHERE {facet_resolution_sql.strip()} IN ({enabled_facet_filters})
+        ORDER BY detected_entity_id
+        {limit_clause}
         """,
-        (subject_id,) + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -945,28 +1137,28 @@ def load_work_leads(
     conn: sqlite3.Connection,
     *,
     subject_id: str,
+    work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     review_placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
-        WITH scoped_work_ids(work_id) AS (
-            SELECT work_id
-            FROM work
-            WHERE workspace_id=?
-            UNION
-            SELECT work_id
-            FROM work_subject
-            WHERE subject_object_ref=?
-        )
         SELECT work.work_id, work.title, work.review_state, work.provenance_event_ref
         FROM work
         JOIN scoped_work_ids USING (work_id)
         WHERE work.review_state IN ({review_placeholders})
         ORDER BY work.work_id
+        {limit_clause}
         """,
-        (subject_id, subject_id) + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -1059,7 +1251,9 @@ def aggregate_facet_scores(
     facet_scores: list[dict[str, Any]] = []
     for facet in enabled_facets:
         signal_bucket = metrics[facet]
-        capped_productive_runs = capped_count(signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP)
+        capped_productive_runs = capped_count(
+            signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP
+        )
         capped_open_leads = capped_count(signal_bucket["open_leads"], FACET_SCORE_SIGNAL_CAP)
         capped_works = capped_count(signal_bucket["works"], FACET_SCORE_SIGNAL_CAP)
         capped_claims = capped_count(signal_bucket["claims"], FACET_SCORE_SIGNAL_CAP)
@@ -1068,16 +1262,16 @@ def aggregate_facet_scores(
         capped_successful_extractions = capped_count(
             signal_bucket["successful_extractions"], FACET_SCORE_SIGNAL_CAP
         )
-        capped_failed_extractions = capped_count(signal_bucket["failed_extractions"], FACET_SCORE_SIGNAL_CAP)
+        capped_failed_extractions = capped_count(
+            signal_bucket["failed_extractions"], FACET_SCORE_SIGNAL_CAP
+        )
         distinct_run_ids = {
             str(event["run_id"])
             for event in history_by_facet[facet]
             if isinstance(event.get("run_id"), str) and event.get("run_id")
         }
         apply_recent_low_yield_penalty = bool(
-            last_run_zero_yield[facet]
-            and capped_productive_runs == 0
-            and capped_open_leads == 0
+            last_run_zero_yield[facet] and capped_productive_runs == 0 and capped_open_leads == 0
         )
         score = (
             weights["productive_run"] * capped_productive_runs
@@ -1088,7 +1282,8 @@ def aggregate_facet_scores(
             + weights["relationship_yield"] * capped_relationships
             + weights["successful_extraction"] * capped_successful_extractions
             - weights["failed_extraction_penalty"] * capped_failed_extractions
-            - weights["zero_yield_penalty"] * capped_count(signal_bucket["zero_yield_runs"], FACET_SCORE_SIGNAL_CAP)
+            - weights["zero_yield_penalty"]
+            * capped_count(signal_bucket["zero_yield_runs"], FACET_SCORE_SIGNAL_CAP)
             - (weights["recent_low_yield_penalty"] if apply_recent_low_yield_penalty else 0.0)
             + SOURCE_DIVERSITY_BONUS_STEP * min(max(len(distinct_run_ids) - 1, 0), 4)
         )
@@ -1137,16 +1332,21 @@ def aggregate_lead_scores(
     *,
     enabled_facets: list[str],
     lead_candidates: list[dict[str, Any]],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
     facet_order = {facet: index for index, facet in enumerate(enabled_facets)}
-    scored = sorted(
-        lead_candidates,
-        key=lambda item: (
+    lead_candidates = [item for item in lead_candidates if item["facet"] in facet_order]
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+        return (
             -float(item["score"]),
             facet_order.get(item["facet"], len(enabled_facets)),
             item["candidate_id"],
-        ),
-    )
+        )
+
+    if max_candidates is not None and max_candidates < len(lead_candidates):
+        scored = heapq.nsmallest(max_candidates, lead_candidates, key=sort_key)
+    else:
+        scored = sorted(lead_candidates, key=sort_key)
     for rank, item in enumerate(scored, start=1):
         item["rank"] = rank
     return scored
@@ -1183,7 +1383,12 @@ def select_next_action(
     if not facet_scores:
         raise CandidateFeedbackError("feedback planner requires at least one enabled facet")
     top_facet = facet_scores[0]
-    productive_leads = [item for item in lead_scores if float(item["score"]) > 0.0]
+    facet_score_by_name = {item["facet"]: item for item in facet_scores}
+    productive_leads = [
+        item
+        for item in lead_scores
+        if float(item["score"]) > 0.0 and item["facet"] in facet_score_by_name
+    ]
     if productive_leads:
         selected = productive_leads[0]
         action_kind = "facet_lead"
@@ -1217,11 +1422,7 @@ def select_next_action(
     selected_prompt_bundle_id = (
         top_facet["prompt_bundle_id"]
         if not productive_leads
-        else next(
-            item["prompt_bundle_id"]
-            for item in facet_scores
-            if item["facet"] == productive_leads[0]["facet"]
-        )
+        else facet_score_by_name[productive_leads[0]["facet"]]["prompt_bundle_id"]
     )
     cli_args = ["--facet", selected_facet]
     if use_prior_state:
@@ -1257,28 +1458,54 @@ def build_deferred_candidates(
     selected_next_action: dict[str, Any],
     facet_scores: list[dict[str, Any]],
     lead_scores: list[dict[str, Any]],
+    all_facet_scores: list[dict[str, Any]],
+    all_lead_candidates: list[dict[str, Any]],
     max_deferred: int,
 ) -> list[dict[str, Any]]:
     deferred: list[dict[str, Any]] = []
+    deferred_from_retained = 0
     selected_facet = selected_next_action.get("selected_facet")
     selected_facet_id = f"facet:{selected_facet}" if isinstance(selected_facet, str) else None
     for item in facet_scores:
         if selected_facet_id is not None and item.get("candidate_id") == selected_facet_id:
             continue
+        reason = "lower_score_than_selected"
+        if deferred_from_retained >= max_deferred:
+            reason = "not_retained_due_to_limit"
+        elif "repeated_low_yield" in item["reason_codes"]:
+            reason = "repeated_low_yield"
         deferred.append(
             {
                 "candidate_id": item["candidate_id"],
                 "candidate_kind": "facet",
                 "score": item["score"],
-                "reason": "lower_score_than_selected",
+                "reason": reason,
+            }
+        )
+        if reason != "not_retained_due_to_limit":
+            deferred_from_retained += 1
+    for item in all_facet_scores[len(facet_scores) :]:
+        deferred.append(
+            {
+                "candidate_id": item["candidate_id"],
+                "candidate_kind": "facet",
+                "score": item["score"],
+                "reason": "not_retained_due_to_limit",
             }
         )
     selected_object_ref = selected_next_action.get("selected_object_ref")
+    retained_lead_ids = {
+        item["candidate_id"]
+        for item in lead_scores
+        if isinstance(item.get("candidate_id"), str) and item.get("candidate_id")
+    }
     for item in lead_scores:
         if item["object_ref"] == selected_object_ref:
             continue
         reason = "lower_score_than_selected"
-        if "repeated_low_yield" in item["reason_codes"]:
+        if deferred_from_retained >= max_deferred:
+            reason = "not_retained_due_to_limit"
+        elif "repeated_low_yield" in item["reason_codes"]:
             reason = "repeated_low_yield"
         deferred.append(
             {
@@ -1288,7 +1515,20 @@ def build_deferred_candidates(
                 "reason": reason,
             }
         )
-    return deferred[:max_deferred]
+        if reason != "not_retained_due_to_limit":
+            deferred_from_retained += 1
+    for item in all_lead_candidates:
+        if item["candidate_id"] in retained_lead_ids or item["object_ref"] == selected_object_ref:
+            continue
+        deferred.append(
+            {
+                "candidate_id": item["candidate_id"],
+                "candidate_kind": "lead",
+                "score": item["score"],
+                "reason": "not_retained_due_to_limit",
+            }
+        )
+    return deferred
 
 
 def build_plan(
@@ -1311,6 +1551,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
         warnings=warnings,
     )
     open_question_leads = load_open_question_leads(
@@ -1319,6 +1560,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
     )
     entity_leads = load_entity_leads(
         conn,
@@ -1326,26 +1568,32 @@ def build_plan(
         enabled_facets=list(subject["enabled_facets"]),
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
         warnings=warnings,
     )
     work_leads = load_work_leads(
         conn,
         subject_id=subject["subject_id"],
+        work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
-    facet_scores = aggregate_facet_scores(
+    all_lead_candidates = [item for item in lead_candidates if item["facet"] in subject["enabled_facets"]]
+    all_facet_scores = aggregate_facet_scores(
         enabled_facets=list(subject["enabled_facets"]),
         bundles=bundles,
         history=history,
         lead_candidates=lead_candidates,
         weights=DEFAULT_SCORING_WEIGHTS,
-    )[: args.max_facet_candidates]
+    )
+    facet_scores = all_facet_scores[: args.max_facet_candidates]
     lead_scores = aggregate_lead_scores(
         enabled_facets=list(subject["enabled_facets"]),
         lead_candidates=lead_candidates,
-    )[: args.max_lead_candidates]
+        max_candidates=args.max_lead_candidates,
+    )
     previous_run_ids = sorted_previous_run_ids(history)
     cycle_depth = next_cycle_depth(history)
     next_action = select_next_action(
@@ -1367,6 +1615,8 @@ def build_plan(
         selected_next_action=next_action,
         facet_scores=facet_scores,
         lead_scores=lead_scores,
+        all_facet_scores=all_facet_scores,
+        all_lead_candidates=all_lead_candidates,
         max_deferred=args.max_deferred_candidates,
     )
 
@@ -1414,8 +1664,13 @@ def build_plan(
         "counts": {
             "gather_runs_considered": len(history),
             "facet_candidates": len(facet_scores),
+            "facet_candidates_total": len(all_facet_scores),
             "lead_candidates": len(lead_scores),
+            "lead_candidates_total": len(all_lead_candidates),
             "productive_leads": sum(1 for item in lead_scores if float(item["score"]) > 0.0),
+            "productive_leads_total": sum(
+                1 for item in all_lead_candidates if float(item["score"]) > 0.0
+            ),
             "deferred_candidates": len(deferred),
         },
         "facet_scores": facet_scores,
@@ -1432,9 +1687,7 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
     explanation = payload.get("selection_explanation")
     if not isinstance(explanation, dict):
         raise CandidateFeedbackError("selection_explanation is missing")
-    warning_count = (
-        len(payload["warnings"]) if isinstance(payload.get("warnings"), list) else 0
-    )
+    warning_count = len(payload["warnings"]) if isinstance(payload.get("warnings"), list) else 0
     error_count = len(payload["errors"]) if isinstance(payload.get("errors"), list) else 0
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -1487,50 +1740,31 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
                 ended_at=str(payload["generated_at"]),
             )
             policy_id = str(payload["scoring_policy"]["policy_id"])
-            for candidate in explanation.get("considered_candidates", []):
-                if not isinstance(candidate, dict):
-                    continue
-                cycle_evidence_ledger.record_cycle_candidate_considered(
-                    conn,
-                    cycle_event_id=event_id,
-                    stage_event_id=stage_id,
-                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
-                    candidate_ref_type="selection_explanation",
-                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
-                    candidate_label=None
-                    if candidate.get("label") is None
-                    else str(candidate.get("label")),
-                    score=candidate.get("score")
-                    if isinstance(candidate.get("score"), (int, float))
-                    else None,
-                    score_policy_id=policy_id,
-                    rationale=None
-                    if candidate.get("rationale") is None
-                    else str(candidate.get("rationale")),
-                    reason={
-                        "selection_explanation_id": explanation["explanation_id"],
-                        "reason_codes": candidate.get("reason_codes", []),
-                        "eligibility_status": candidate.get("eligibility_status"),
-                    },
-                    selected=bool(candidate.get("selected")),
-                )
-            for candidate in explanation.get("excluded_candidates", []):
-                if not isinstance(candidate, dict):
-                    continue
-                cycle_evidence_ledger.record_cycle_candidate_excluded(
-                    conn,
-                    cycle_event_id=event_id,
-                    stage_event_id=stage_id,
-                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
-                    candidate_ref_type="selection_explanation",
-                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
-                    candidate_label=None
-                    if candidate.get("label") is None
-                    else str(candidate.get("label")),
-                    exclusion_reason=str(candidate.get("reason") or "deferred_by_feedback_plan"),
-                    policy_id=policy_id,
-                    retryable=bool(candidate.get("retryable", True)),
-                )
+            cycle_evidence_ledger.record_cycle_candidates_considered(
+                conn,
+                cycle_event_id=event_id,
+                selection_explanation_id=explanation["explanation_id"],
+                stage_event_id=stage_id,
+                score_policy_id=policy_id,
+                candidates=[
+                    candidate
+                    for candidate in explanation.get("considered_candidates", [])
+                    if isinstance(candidate, dict)
+                ],
+                created_at=str(payload["generated_at"]),
+            )
+            cycle_evidence_ledger.record_cycle_candidates_excluded(
+                conn,
+                cycle_event_id=event_id,
+                stage_event_id=stage_id,
+                policy_id=policy_id,
+                candidates=[
+                    candidate
+                    for candidate in explanation.get("excluded_candidates", [])
+                    if isinstance(candidate, dict)
+                ],
+                created_at=str(payload["generated_at"]),
+            )
             cycle_evidence_ledger.record_cycle_event_finish(
                 conn,
                 cycle_event_id=event_id,
@@ -1601,16 +1835,14 @@ def main() -> int:
 
         if args.output_json:
             output_path = resolve_path(args.output_json)
-            atomic_write_json(output_path, payload)
+            atomic_write_text(output_path, compact_json_text(payload) + "\n")
             validate_emitted_plan(output_path)
         else:
             with tempfile.NamedTemporaryFile(
                 "w", encoding="utf-8", suffix=".json", delete=False
             ) as handle:
                 temp_path = Path(handle.name)
-                handle.write(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-                )
+                handle.write(compact_json_text(payload) + "\n")
             try:
                 validate_emitted_plan(temp_path)
             finally:
@@ -1625,7 +1857,7 @@ def main() -> int:
         if args.format == "text":
             sys.stdout.write(render_text_plan(payload))
         else:
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            sys.stdout.write(compact_json_text(payload))
             sys.stdout.write("\n")
         return 0
     except CandidateFeedbackError as exc:

@@ -22,6 +22,7 @@ try:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 
 
@@ -155,6 +157,8 @@ EXTRACTION_RECORD_ALLOWED_KEYS = {
     "byte_count_out",
     "encoding_result",
     "truncation_status",
+    "chunk_index",
+    "chunk_count",
     "hostile_replay_flags",
     "failure_reason",
     "extracted_text_path",
@@ -177,8 +181,6 @@ EXTRACTION_RECORD_ALLOWED_KEYS = {
 @dataclass(frozen=True)
 class ExecutionArtifactReceipt:
     execution_record: dict[str, Any]
-    capture_events: list[dict[str, Any]]
-    extraction_records: list[dict[str, Any]]
     paths: dict[str, Path]
     input_hashes: dict[str, str]
     manifest: dict[str, Any]
@@ -220,8 +222,14 @@ def add_error(
     errors.append({"code": code, "line": line, "message": message, "path": path})
 
 
-def _validation_failure_result(code: str, message: str, exit_code: int) -> tuple[dict[str, Any], int]:
-    result = {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []}
+def _validation_failure_result(
+    code: str, message: str, exit_code: int
+) -> tuple[dict[str, Any], int]:
+    result = {
+        "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
+        "errors": [],
+        "warnings": [],
+    }
     add_error(result["errors"], code=code, message=message)
     return result, exit_code
 
@@ -254,19 +262,35 @@ def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
             parse_constant=reject_json_constant,
         )
     except UnicodeDecodeError as exc:
-        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8") from exc
+        raise UnicodeDecodeError(
+            exc.encoding, exc.object, exc.start, exc.end, f"{label} is not UTF-8"
+        ) from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{label} top-level JSON value must be an object")
     return payload, raw_hash
 
 
-def _load_jsonl_records(path: Path, *, label: str) -> tuple[list[dict[str, Any]], str]:
-    records: list[dict[str, Any]] = []
+def hash_file(path: Path, *, label: str | None = None) -> str:
     digest = hashlib.sha256()
     try:
         with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except FileNotFoundError as exc:
+        if label is None:
+            raise FileNotFoundError(f"path does not exist: {path}") from exc
+        raise FileNotFoundError(f"{label} path does not exist: {path}") from exc
+    except OSError as exc:
+        if label is None:
+            raise OSError(f"could not be read: {path}") from exc
+        raise OSError(f"{label} could not be read: {path}") from exc
+    return digest.hexdigest()
+
+
+def _iter_jsonl_records(path: Path, *, label: str):
+    try:
+        with path.open("rb") as handle:
             for line_number, raw_line in enumerate(handle, start=1):
-                digest.update(raw_line)
                 if not raw_line.strip():
                     continue
                 try:
@@ -285,12 +309,11 @@ def _load_jsonl_records(path: Path, *, label: str) -> tuple[list[dict[str, Any]]
                     ) from exc
                 if not isinstance(value, dict):
                     raise ValueError(f"{label} line {line_number} must contain a JSON object")
-                records.append(value)
+                yield value
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"{label} path does not exist: {path}") from exc
     except OSError as exc:
         raise OSError(f"{label} could not be read: {path}") from exc
-    return records, digest.hexdigest()
 
 
 def resolve_execution_artifact_paths(target: Path) -> dict[str, Path]:
@@ -315,12 +338,8 @@ def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
     execution_record, execution_record_hash = _load_json_object(
         paths["execution_record"], label="execution record"
     )
-    capture_events, capture_events_hash = _load_jsonl_records(
-        paths["capture_events"], label="capture events"
-    )
-    extraction_records, extraction_records_hash = _load_jsonl_records(
-        paths["extraction_records"], label="extraction records"
-    )
+    capture_events_hash = hash_file(paths["capture_events"], label="capture events")
+    extraction_records_hash = hash_file(paths["extraction_records"], label="extraction records")
     manifest, manifest_hash = _load_json_object(paths["manifest"], label="manifest")
     output_artifacts = execution_record.get("output_artifacts")
     if not isinstance(output_artifacts, dict):
@@ -339,19 +358,13 @@ def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
         )
     return ExecutionArtifactReceipt(
         execution_record=execution_record,
-        capture_events=capture_events,
-        extraction_records=extraction_records,
         paths=paths,
         input_hashes={
             "execution_record": execution_record_hash,
             "capture_events": capture_events_hash,
             "extraction_records": extraction_records_hash,
             "manifest": manifest_hash,
-            **(
-                {"denial_record": denial_record_hash}
-                if denial_record_hash is not None
-                else {}
-            ),
+            **({"denial_record": denial_record_hash} if denial_record_hash is not None else {}),
             **(
                 {"network_safety_report": network_safety_report_hash}
                 if network_safety_report_hash is not None
@@ -364,18 +377,14 @@ def load_execution_artifacts(target: Path) -> ExecutionArtifactReceipt:
     )
 
 
-def validate_execution_artifact_receipt(receipt: ExecutionArtifactReceipt) -> tuple[dict[str, Any], int]:
+def validate_execution_artifact_receipt(
+    receipt: ExecutionArtifactReceipt,
+) -> tuple[dict[str, Any], int]:
     counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
     warnings: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
     counts["inspected"] = 1
-    validate_execution_record(
-        receipt.execution_record,
-        capture_events=receipt.capture_events,
-        extraction_records=receipt.extraction_records,
-        errors=errors,
-    )
     expected_run_id = (
         receipt.execution_record.get("run_id")
         if isinstance(receipt.execution_record.get("run_id"), str)
@@ -384,28 +393,25 @@ def validate_execution_artifact_receipt(receipt: ExecutionArtifactReceipt) -> tu
     expected_input_handoff_hash = receipt.execution_record.get("input_handoff_hash")
     if not isinstance(expected_input_handoff_hash, str):
         expected_input_handoff_hash = ""
-    validate_capture_events(
-        receipt.capture_events,
+    capture_event_count, capture_ids, capture_records = validate_capture_events(
+        _iter_jsonl_records(receipt.paths["capture_events"], label="capture events"),
         expected_run_id=expected_run_id,
         expected_input_handoff_hash=expected_input_handoff_hash,
         artifact_root=receipt.paths["run_dir"],
         errors=errors,
     )
-    capture_ids = {
-        record["capture_id"]
-        for record in receipt.capture_events
-        if isinstance(record.get("capture_id"), str)
-    }
-    validate_extraction_records(
-        receipt.extraction_records,
+    extraction_record_count = validate_extraction_records(
+        _iter_jsonl_records(receipt.paths["extraction_records"], label="extraction records"),
         expected_run_id=expected_run_id,
         capture_ids=capture_ids,
-        capture_records={
-            str(record["capture_id"]): record
-            for record in receipt.capture_events
-            if isinstance(record.get("capture_id"), str)
-        },
+        capture_records=capture_records,
         artifact_root=receipt.paths["run_dir"],
+        errors=errors,
+    )
+    validate_execution_record(
+        receipt.execution_record,
+        capture_event_count=capture_event_count,
+        extraction_record_count=extraction_record_count,
         errors=errors,
     )
     validate_run_manifest(
@@ -574,8 +580,8 @@ def _require_artifact_path(
 def validate_execution_record(
     payload: dict[str, Any],
     *,
-    capture_events: list[dict[str, Any]],
-    extraction_records: list[dict[str, Any]],
+    capture_event_count: int,
+    extraction_record_count: int,
     errors: list[dict[str, Any]],
 ) -> None:
     _reject_unknown_fields(
@@ -669,14 +675,14 @@ def validate_execution_record(
         code="COUNT_REQUIRED",
         message="extraction_record_count must be a non-negative integer",
     )
-    if payload.get("capture_event_count") != len(capture_events):
+    if payload.get("capture_event_count") != capture_event_count:
         add_error(
             errors,
             code="CAPTURE_COUNT_MISMATCH",
             message="capture_event_count does not match capture-events.jsonl row count",
             path="$.capture_event_count",
         )
-    if payload.get("extraction_record_count") != len(extraction_records):
+    if payload.get("extraction_record_count") != extraction_record_count:
         add_error(
             errors,
             code="EXTRACTION_COUNT_MISMATCH",
@@ -742,14 +748,24 @@ def validate_execution_record(
         )
     for key in ("timeout_seconds",):
         value = payload.get(key)
-        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0):
+        if value is not None and (
+            not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0
+        ):
             add_error(
                 errors,
                 code="INVALID_TIMEOUT_SECONDS",
                 message="timeout_seconds must be a positive number",
                 path=f"$.{key}",
             )
-    for key in ("max_response_bytes", "urls_planned", "urls_attempted", "urls_succeeded", "urls_failed", "urls_denied", "bytes_captured"):
+    for key in (
+        "max_response_bytes",
+        "urls_planned",
+        "urls_attempted",
+        "urls_succeeded",
+        "urls_failed",
+        "urls_denied",
+        "bytes_captured",
+    ):
         value = payload.get(key)
         if value is not None:
             _require_nonnegative_int(
@@ -760,14 +776,17 @@ def validate_execution_record(
                 message=f"{key} must be a non-negative integer",
             )
     if payload.get("adapter_type") == "remote_url_manifest":
-        if payload.get("status") in {"denied", "dry_run"} and payload.get("network_access_attempted") is not False:
+        if (
+            payload.get("status") in {"denied", "dry_run"}
+            and payload.get("network_access_attempted") is not False
+        ):
             add_error(
                 errors,
                 code="REMOTE_DENIAL_ATTEMPTED_NETWORK",
                 message="remote denied and dry-run execution records must set network_access_attempted false",
                 path="$.network_access_attempted",
             )
-        if capture_events and payload.get("network_access_attempted") is not True:
+        if capture_event_count > 0 and payload.get("network_access_attempted") is not True:
             add_error(
                 errors,
                 code="REMOTE_CAPTURE_WITHOUT_NETWORK_ATTEMPT",
@@ -777,16 +796,19 @@ def validate_execution_record(
 
 
 def validate_capture_events(
-    records: list[dict[str, Any]],
+    records: Any,
     *,
     expected_run_id: str,
     expected_input_handoff_hash: str,
     artifact_root: Path,
     errors: list[dict[str, Any]],
-) -> None:
+) -> tuple[int, set[str], dict[str, dict[str, Any]]]:
     artifact_root_resolved = artifact_root.resolve()
     seen_capture_ids: set[str] = set()
+    capture_records: dict[str, dict[str, Any]] = {}
+    record_count = 0
     for index, record in enumerate(records):
+        record_count += 1
         base = f"$[{index}]"
         _reject_unknown_fields(
             record,
@@ -811,8 +833,8 @@ def validate_capture_events(
             "workspace_id",
             "adapter_type",
             "capture_method",
-        "status",
-        "verification_status",
+            "status",
+            "verification_status",
         ):
             _require_string(
                 record.get(key),
@@ -847,6 +869,10 @@ def validate_capture_events(
                 )
             else:
                 seen_capture_ids.add(capture_id)
+                capture_records[capture_id] = {
+                    "content_hash": record.get("content_hash"),
+                    "byte_count": record.get("byte_count"),
+                }
         if record.get("handoff_hash") != expected_input_handoff_hash:
             add_error(
                 errors,
@@ -889,7 +915,10 @@ def validate_capture_events(
             code="INVALID_CONTENT_HASH",
             message="content_hash must be null or a 64-character lowercase SHA-256 hex digest",
         )
-        if record.get("adapter_type") == "remote_url_manifest" or record.get("capture_method") == "remote_url_fetch":
+        if (
+            record.get("adapter_type") == "remote_url_manifest"
+            or record.get("capture_method") == "remote_url_fetch"
+        ):
             for key in ("normalized_url", "final_url", "request_method", "user_agent"):
                 _require_string(
                     record.get(key),
@@ -961,20 +990,23 @@ def validate_capture_events(
                         message="transient_payload_path points to a missing artifact",
                         path=f"{base}.transient_payload_path",
                     )
+    return record_count, seen_capture_ids, capture_records
 
 
 def validate_extraction_records(
-    records: list[dict[str, Any]],
+    records: Any,
     *,
     expected_run_id: str,
     capture_ids: set[str],
     capture_records: dict[str, dict[str, Any]],
     artifact_root: Path,
     errors: list[dict[str, Any]],
-) -> None:
+) -> int:
     artifact_root_resolved = artifact_root.resolve()
     seen_extraction_ids: set[str] = set()
+    record_count = 0
     for index, record in enumerate(records):
+        record_count += 1
         base = f"$[{index}]"
         _reject_unknown_fields(
             record,
@@ -1000,9 +1032,9 @@ def validate_extraction_records(
             "adapter_type",
             "extraction_method",
             "encoding_result",
-        "status",
-        "verification_status",
-        "truncation_status",
+            "status",
+            "verification_status",
+            "truncation_status",
         ):
             _require_string(
                 record.get(key),
@@ -1118,7 +1150,7 @@ def validate_extraction_records(
                 )
                 continue
             try:
-                artifact_bytes = artifact_path.read_bytes()
+                actual_hash = hash_file(artifact_path, label="extracted text artifact")
             except FileNotFoundError:
                 add_error(
                     errors,
@@ -1135,7 +1167,6 @@ def validate_extraction_records(
                     path=f"{base}.extracted_text_path",
                 )
                 continue
-            actual_hash = hashlib.sha256(artifact_bytes).hexdigest()
             if record.get("content_hash") != actual_hash:
                 add_error(
                     errors,
@@ -1143,13 +1174,14 @@ def validate_extraction_records(
                     message="extracted text artifact hash does not match content_hash",
                     path=f"{base}.content_hash",
                 )
-            if record.get("byte_count_out") != len(artifact_bytes):
+            if record.get("byte_count_out") != artifact_path.stat().st_size:
                 add_error(
                     errors,
                     code="EXTRACTED_TEXT_BYTE_COUNT_MISMATCH",
                     message="extracted text artifact byte_count does not match byte_count_out",
                     path=f"{base}.byte_count_out",
                 )
+    return record_count
 
 
 def validate_run_manifest(
@@ -1247,8 +1279,8 @@ def validate_denial_record(
     considered_urls = payload.pop("considered_urls", None)
     validate_execution_record(
         payload,
-        capture_events=[],
-        extraction_records=[],
+        capture_event_count=0,
+        extraction_record_count=0,
         errors=errors,
     )
     if not isinstance(considered_urls, list) or not all(
@@ -1355,7 +1387,9 @@ def validate_source_acquisition_execution(target: Path) -> tuple[dict[str, Any],
     except DuplicateJsonKeyError as exc:
         return _validation_failure_result("DUPLICATE_JSON_KEY", str(exc), EXIT_VALIDATION_FAILED)
     except NonStandardJsonConstantError as exc:
-        return _validation_failure_result("NON_STANDARD_JSON_CONSTANT", str(exc), EXIT_VALIDATION_FAILED)
+        return _validation_failure_result(
+            "NON_STANDARD_JSON_CONSTANT", str(exc), EXIT_VALIDATION_FAILED
+        )
     except (json.JSONDecodeError, ValueError) as exc:
         return _validation_failure_result("JSON_PARSE_ERROR", str(exc), EXIT_VALIDATION_FAILED)
 
@@ -1367,6 +1401,7 @@ def main() -> int:
     target = Path(args.target)
     result, exit_code = validate_source_acquisition_execution(target)
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     output_artifacts = {
         "report_json": display_path(args.report_json),
         "report_text": display_path(args.report_text),
@@ -1383,6 +1418,7 @@ def main() -> int:
         target=args.target_id or display_path(args.target) or str(target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

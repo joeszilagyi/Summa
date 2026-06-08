@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCK_TOOL = REPO_ROOT / "tools" / "common" / "workspace_lock.py"
-sys.path.insert(0, str(REPO_ROOT))
-
-from tools.common.workspace_lock import (  # noqa: E402
+from tools.common import workspace_lock as workspace_lock_module
+from tools.common.workspace_lock import (
     WorkspaceLockError,
     acquire_workspace_lock,
     lock_path_for,
     quarantine_stale_lock,
+    stale_reason,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LOCK_TOOL = REPO_ROOT / "tools" / "common" / "workspace_lock.py"
 
 
 def test_workspace_lock_writes_heartbeat_metadata_and_releases(tmp_path: Path) -> None:
@@ -35,13 +35,71 @@ def test_workspace_lock_writes_heartbeat_metadata_and_releases(tmp_path: Path) -
     assert not lock_path.exists()
 
 
+def test_workspace_lock_refreshes_heartbeat_metadata_while_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_root = tmp_path / "locks"
+    writes: list[str] = []
+    real_write_metadata = workspace_lock_module.write_metadata
+
+    def counting_write_metadata(handle, metadata):
+        writes.append(str(metadata["heartbeat_at"]))
+        return real_write_metadata(handle, metadata)
+
+    monkeypatch.setattr(workspace_lock_module, "HEARTBEAT_REFRESH_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(workspace_lock_module, "write_metadata", counting_write_metadata)
+
+    with acquire_workspace_lock(
+        "workspace_refresh", command="pytest", lock_root=lock_root, stale_after_seconds=2
+    ) as lock_path:
+        time.sleep(0.05)
+        refreshed = json.loads(lock_path.read_text(encoding="utf-8"))
+
+    assert len(writes) >= 2
+    assert refreshed["heartbeat_at"]
+    assert not lock_path.exists()
+
+
+def test_workspace_lock_stale_reason_uses_heartbeat_metadata_not_mtime(
+    tmp_path: Path,
+) -> None:
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir()
+    lock_path = lock_path_for("workspace_heartbeat", lock_root)
+    heartbeat_at = workspace_lock_module.utc_now()
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "workspace-lock.v1",
+                "workspace_id": "workspace_heartbeat",
+                "pid": os.getpid(),
+                "host": "fixture-host",
+                "command": "pytest",
+                "lock_path": str(lock_path),
+                "acquired_at": heartbeat_at,
+                "heartbeat_at": heartbeat_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    stale_mtime = time.time() - 7200
+    os.utime(lock_path, (stale_mtime, stale_mtime))
+
+    assert stale_reason(lock_path, stale_after_seconds=3600, now=time.time()) is None
+
+
 def test_workspace_lock_fail_fast_contention(tmp_path: Path) -> None:
     lock_root = tmp_path / "locks"
 
-    with acquire_workspace_lock("workspace_a", command="outer", lock_root=lock_root):
-        with pytest.raises(WorkspaceLockError, match="already held"):
-            with acquire_workspace_lock("workspace_a", command="inner", lock_root=lock_root):
-                pass
+    with (
+        acquire_workspace_lock("workspace_a", command="outer", lock_root=lock_root),
+        pytest.raises(WorkspaceLockError, match="already held"),
+        acquire_workspace_lock("workspace_a", command="inner", lock_root=lock_root),
+    ):
+        pass
 
 
 def test_workspace_lock_cli_waits_for_release(tmp_path: Path) -> None:

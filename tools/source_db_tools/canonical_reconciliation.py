@@ -275,7 +275,9 @@ def candidate_identifiers(structured: dict[str, Any] | None) -> list[dict[str, s
     deduped: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in identifiers:
-        normalized = identifier_normalization.identifier_storage_values(item["scheme"], item["value"])
+        normalized = identifier_normalization.identifier_storage_values(
+            item["scheme"], item["value"]
+        )
         key = (str(normalized["scheme"]), str(normalized["value"]))
         if key in seen:
             continue
@@ -386,7 +388,7 @@ def record_work_identifier(
     confidence_score: float | int | None = None,
     review_state: str | None = None,
     record_last_updated: str | None = None,
-    ) -> canonical_store.CanonicalWriteResult:
+) -> canonical_store.CanonicalWriteResult:
     normalized = identifier_normalization.identifier_storage_values(scheme, value)
     timestamp = _normalize_timestamp(
         record_last_updated,
@@ -468,9 +470,13 @@ def record_work_identifier(
                 or canonical_store._pending_review_state(review_state_value)
             )
         )
-        merged_review_state = existing["review_state"] if preserve_established else canonical_store._merged_review_state(
-            existing["review_state"],
-            review_state_value,
+        merged_review_state = (
+            existing["review_state"]
+            if preserve_established
+            else canonical_store._merged_review_state(
+                existing["review_state"],
+                review_state_value,
+            )
         )
     conn.execute(
         """
@@ -509,50 +515,68 @@ def find_existing_work_match(
     workspace_id: str | None,
 ) -> WorkMatch | None:
     identifiers = candidate_identifiers(structured)
-    for identifier in identifiers:
+    identifier_rows: list[tuple[int, str, str]] = []
+    seen_identifier_keys: set[tuple[str, str]] = set()
+    for index, identifier in enumerate(identifiers):
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
+        normalized_key = (normalized["scheme"], normalized["value"])
+        if normalized_key in seen_identifier_keys:
+            continue
+        seen_identifier_keys.add(normalized_key)
+        identifier_rows.append((index, normalized["scheme"], normalized["value"]))
+    if identifier_rows:
         review_state_placeholders = ", ".join("?" for _ in WORK_MATCH_REVIEW_STATES)
+        candidate_identifier_values = ", ".join("(?, ?, ?)" for _ in identifier_rows)
         rows = conn.execute(
-            """
-            SELECT work.work_id, work.work_key_v1
-            FROM work_identifier
+            f"""
+            WITH candidate_identifiers(candidate_index, scheme, value) AS (
+                VALUES {candidate_identifier_values}
+            )
+            SELECT candidate_identifiers.candidate_index, work.work_id, work.work_key_v1
+            FROM candidate_identifiers
+            INNER JOIN work_identifier
+                ON work_identifier.scheme = candidate_identifiers.scheme
+               AND work_identifier.value = candidate_identifiers.value
             INNER JOIN work ON work.work_id = work_identifier.work_id
-            WHERE work_identifier.scheme=? AND work_identifier.value=?
-              AND work_identifier.validity_status='valid'
-              AND work.review_state IN ({})
-              AND work_identifier.review_state IN ({})
+            WHERE work_identifier.validity_status='valid'
+              AND work.review_state IN ({review_state_placeholders})
+              AND work_identifier.review_state IN ({review_state_placeholders})
               AND work_identifier.confidence_score IS NOT NULL
               AND work_identifier.confidence_score >= ?
-            ORDER BY work.work_id
-            """.format(
-                review_state_placeholders, review_state_placeholders
-            ),
+            ORDER BY candidate_identifiers.candidate_index, work.work_id
+            """,
             (
-                normalized["scheme"],
-                normalized["value"],
+                *(value for row in identifier_rows for value in row),
                 *WORK_MATCH_REVIEW_STATES,
                 *WORK_MATCH_REVIEW_STATES,
                 AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
             ),
         ).fetchall()
-        distinct_ids = {int(row["work_id"]) for row in rows}
-        if len(distinct_ids) > 1:
-            raise CanonicalReconciliationError(
-                f"identifier {normalized['scheme']}:{normalized['value']} maps to multiple works"
-            )
-        if rows:
+        rows_by_index: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            rows_by_index.setdefault(int(row["candidate_index"]), []).append(row)
+        for candidate_index, scheme, value in identifier_rows:
+            candidate_rows = rows_by_index.get(candidate_index)
+            if not candidate_rows:
+                continue
+            distinct_ids = {int(row["work_id"]) for row in candidate_rows}
+            if len(distinct_ids) > 1:
+                raise CanonicalReconciliationError(
+                    f"identifier {scheme}:{value} maps to multiple works"
+                )
+            row = candidate_rows[0]
             return WorkMatch(
-                work_id=int(rows[0]["work_id"]),
-                work_key_v1=str(rows[0]["work_key_v1"]),
+                work_id=int(row["work_id"]),
+                work_key_v1=str(row["work_key_v1"]),
                 method="exact_work_identifier",
                 confidence_score=WORK_MATCH_EXACT_IDENTIFIER,
                 identity_key=normalize_work_key(
                     title=title,
                     work_type=work_type,
-                    identifier_scheme=normalized["scheme"],
-                    identifier_value=normalized["value"],
+                    identifier_scheme=scheme,
+                    identifier_value=value,
                 )
-                or f"identifier:{normalized['scheme']}:{normalized['value']}",
+                or f"identifier:{scheme}:{value}",
             )
 
     source_identifier = normalize_locator(
@@ -682,21 +706,19 @@ def find_existing_authority_match(
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
         review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
         row = conn.execute(
-            """
+            f"""
             SELECT authority_record.authority_record_id
             FROM authority_identifier
             INNER JOIN authority_record
               ON authority_record.authority_record_id = authority_identifier.authority_record_id
             WHERE authority_identifier.scheme=? AND authority_identifier.value=?
               AND authority_identifier.validity_status='valid'
-              AND authority_record.review_state IN ({})
-              AND authority_identifier.review_state IN ({})
+              AND authority_record.review_state IN ({review_state_placeholders})
+              AND authority_identifier.review_state IN ({review_state_placeholders})
               AND authority_identifier.confidence_score IS NOT NULL
               AND authority_identifier.confidence_score >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
-            """.format(
-                review_state_placeholders, review_state_placeholders
-            ),
+            """,
             (
                 normalized["scheme"],
                 normalized["value"],
@@ -1154,6 +1176,117 @@ def _claims_for_ref_and_type(
     return list(rows)
 
 
+def _claim_rows_for_work_items(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    claim_work_items: list[tuple[str | None, str | None, str]],
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    seen_keys: set[tuple[str | None, str | None, str]] = set()
+    for workspace_id, about_object_ref, claim_type in claim_work_items:
+        if about_object_ref is None or not claim_type.strip():
+            continue
+        key = (workspace_id, about_object_ref, claim_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        clauses = [
+            "provenance_event_ref=?",
+            "about_object_ref=?",
+            "claim_type=?",
+        ]
+        params: list[Any] = [provenance_event_ref, about_object_ref, claim_type]
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT *
+                FROM source_claim
+                WHERE {" AND ".join(clauses)}
+                ORDER BY source_claim_id
+                """,
+                tuple(params),
+            ).fetchall()
+        )
+    return rows
+
+
+def _relationship_rows_for_work_items(
+    conn: sqlite3.Connection,
+    *,
+    provenance_event_ref: str,
+    relationship_work_items: list[tuple[str | None, str, str, str | None]],
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    seen_keys: set[tuple[str | None, str, str, str | None]] = set()
+    for workspace_id, from_object_ref, predicate, to_object_ref in relationship_work_items:
+        if not from_object_ref.strip() or not predicate.strip():
+            continue
+        key = (workspace_id, from_object_ref, predicate, to_object_ref)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        clauses = [
+            "provenance_event_ref=?",
+            "from_object_ref=?",
+            "predicate=?",
+        ]
+        params: list[Any] = [provenance_event_ref, from_object_ref, predicate]
+        if to_object_ref is None:
+            clauses.append("to_object_ref IS NULL")
+        else:
+            clauses.append("to_object_ref=?")
+            params.append(to_object_ref)
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT *
+                FROM source_relationship
+                WHERE {" AND ".join(clauses)}
+                ORDER BY source_relationship_id
+                """,
+                tuple(params),
+            ).fetchall()
+        )
+    return rows
+
+
+def _cached_claims_for_ref_and_type(
+    conn: sqlite3.Connection,
+    *,
+    about_object_ref: str,
+    claim_type: str,
+    workspace_id: str | None,
+    excluded_review_states: tuple[str, ...] = CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+    claims_for_ref_type_cache: dict[tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]]
+    | None = None,
+) -> list[sqlite3.Row]:
+    if claims_for_ref_type_cache is None:
+        return _claims_for_ref_and_type(
+            conn,
+            about_object_ref=about_object_ref,
+            claim_type=claim_type,
+            workspace_id=workspace_id,
+            excluded_review_states=excluded_review_states,
+        )
+    key = (workspace_id, about_object_ref, claim_type, excluded_review_states)
+    if key not in claims_for_ref_type_cache:
+        claims_for_ref_type_cache[key] = _claims_for_ref_and_type(
+            conn,
+            about_object_ref=about_object_ref,
+            claim_type=claim_type,
+            workspace_id=workspace_id,
+            excluded_review_states=excluded_review_states,
+        )
+    return claims_for_ref_type_cache[key]
+
+
 def _claims_for_ref_and_types(
     conn: sqlite3.Connection,
     *,
@@ -1232,6 +1365,29 @@ def load_relationship_endpoint_facts(
         birth_years=tuple(birth_facts),
         death_years=tuple(death_facts),
     )
+
+
+def _cached_relationship_endpoint_facts(
+    conn: sqlite3.Connection,
+    *,
+    object_ref: str,
+    workspace_id: str | None,
+    endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] | None = None,
+) -> EndpointFacts:
+    if endpoint_facts_cache is None:
+        return load_relationship_endpoint_facts(
+            conn,
+            object_ref=object_ref,
+            workspace_id=workspace_id,
+        )
+    key = (workspace_id, object_ref)
+    if key not in endpoint_facts_cache:
+        endpoint_facts_cache[key] = load_relationship_endpoint_facts(
+            conn,
+            object_ref=object_ref,
+            workspace_id=workspace_id,
+        )
+    return endpoint_facts_cache[key]
 
 
 def _relationship_structured_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -1492,6 +1648,7 @@ def detect_relational_contradictions_for_relationship(
     relationship_row: sqlite3.Row | None = None,
     subject_facts: EndpointFacts | None = None,
     object_facts: EndpointFacts | None = None,
+    endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] | None = None,
 ) -> dict[str, Any]:
     if relationship_row is None:
         relationship_row = _load_relationship_row(conn, source_relationship_id)
@@ -1518,16 +1675,18 @@ def detect_relational_contradictions_for_relationship(
         return {"results": [], "skipped": ["relationship has no to_object_ref"]}
     workspace_id = None if row["workspace_id"] is None else str(row["workspace_id"])
     if subject_facts is None:
-        subject_facts = load_relationship_endpoint_facts(
+        subject_facts = _cached_relationship_endpoint_facts(
             conn,
             object_ref=str(row["from_object_ref"]),
             workspace_id=workspace_id,
+            endpoint_facts_cache=endpoint_facts_cache,
         )
     if object_facts is None:
-        object_facts = load_relationship_endpoint_facts(
+        object_facts = _cached_relationship_endpoint_facts(
             conn,
             object_ref=to_object_ref,
             workspace_id=workspace_id,
+            endpoint_facts_cache=endpoint_facts_cache,
         )
     contradictions, skipped = evaluate_temporal_relation_constraint(
         row=row,
@@ -1555,43 +1714,34 @@ def run_relational_constraint_pass(
     changed_at: str,
     source_run_id: str | None = None,
     skip_structured_claim_counterparts: bool = False,
+    relationship_rows: list[sqlite3.Row] | None = None,
 ) -> dict[str, int]:
-    params: list[Any] = [CONTRADICTION_PREDICATE]
-    clauses = ["predicate<>?"]
-    if provenance_event_ref is not None:
-        clauses.append("provenance_event_ref=?")
-        params.append(provenance_event_ref)
-    if workspace_id is not None:
-        clauses.append("workspace_id=?")
-        params.append(workspace_id)
-    rows = conn.execute(
-        f"""
-        SELECT *
-        FROM source_relationship
-        WHERE {" AND ".join(clauses)}
-        ORDER BY source_relationship_id
-        """,
-        tuple(params),
-    ).fetchall()
+    if relationship_rows is None:
+        params: list[Any] = [CONTRADICTION_PREDICATE]
+        clauses = ["predicate<>?"]
+        if provenance_event_ref is not None:
+            clauses.append("provenance_event_ref=?")
+            params.append(provenance_event_ref)
+        if workspace_id is not None:
+            clauses.append("workspace_id=?")
+            params.append(workspace_id)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM source_relationship
+            WHERE {" AND ".join(clauses)}
+            ORDER BY source_relationship_id
+            """,
+            tuple(params),
+        ).fetchall()
+    else:
+        rows = relationship_rows
     counts = {
         "relational_constraints_checked": 0,
         "relational_constraints_skipped": 0,
         "relational_contradictions_detected": 0,
     }
     endpoint_facts_cache: dict[tuple[str | None, str], EndpointFacts] = {}
-
-    def endpoint_facts_for_cache(
-        object_ref: str,
-        workspace_id: str | None,
-    ) -> EndpointFacts:
-        key = (workspace_id, object_ref)
-        if key not in endpoint_facts_cache:
-            endpoint_facts_cache[key] = load_relationship_endpoint_facts(
-                conn,
-                object_ref=object_ref,
-                workspace_id=workspace_id,
-            )
-        return endpoint_facts_cache[key]
 
     for row in rows:
         predicate = str(row["predicate"]).strip().casefold()
@@ -1601,14 +1751,6 @@ def run_relational_constraint_pass(
         to_object_ref = row["to_object_ref"]
         if not isinstance(to_object_ref, str):
             continue
-        subject_facts = endpoint_facts_for_cache(
-            object_ref=str(row["from_object_ref"]),
-            workspace_id=workspace_id,
-        )
-        object_facts = endpoint_facts_for_cache(
-            object_ref=to_object_ref,
-            workspace_id=workspace_id,
-        )
         if skip_structured_claim_counterparts and _relationship_has_structured_claim_counterpart(
             conn, row
         ):
@@ -1619,8 +1761,7 @@ def run_relational_constraint_pass(
             conn,
             source_relationship_id=int(row["source_relationship_id"]),
             relationship_row=row,
-            subject_facts=subject_facts,
-            object_facts=object_facts,
+            endpoint_facts_cache=endpoint_facts_cache,
             changed_at=changed_at,
             source_run_id=source_run_id,
         )
@@ -1643,7 +1784,9 @@ def _structured_contradictions_for_claim_group(
     for row in claim_rows:
         payloads[int(row["source_claim_id"])] = _structured_claim_payload(row)
 
-    claims_for_key: dict[tuple[str | None, str, str], list[sqlite3.Row]] = {}
+    claims_for_ref_type_cache: dict[
+        tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]
+    ] = {}
 
     for left_row in claim_rows:
         left_claim_id = int(left_row["source_claim_id"])
@@ -1652,24 +1795,25 @@ def _structured_contradictions_for_claim_group(
             continue
 
         left_about_ref = _claim_about_ref(left_row, left_payload)
-        left_claim_type = str(left_row["claim_type"] or left_payload.get("claim_type") or "").strip()
-        left_workspace_id = None if left_row["workspace_id"] is None else str(left_row["workspace_id"])
+        left_claim_type = str(
+            left_row["claim_type"] or left_payload.get("claim_type") or ""
+        ).strip()
+        left_workspace_id = (
+            None if left_row["workspace_id"] is None else str(left_row["workspace_id"])
+        )
 
         left_numeric = _structured_numeric_value(left_payload)
         if left_numeric is not None and left_claim_type and left_about_ref is not None:
-            claim_key = (left_workspace_id, left_about_ref, left_claim_type)
-            peer_rows = claims_for_key.get(claim_key)
-            if peer_rows is None:
-                peer_rows = _claims_for_ref_and_type(
-                    conn,
-                    about_object_ref=left_about_ref,
-                    claim_type=left_claim_type,
-                    workspace_id=left_workspace_id,
-                    excluded_review_states=()
-                    if include_excluded_claim_states
-                    else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
-                )
-                claims_for_key[claim_key] = peer_rows
+            peer_rows = _cached_claims_for_ref_and_type(
+                conn,
+                about_object_ref=left_about_ref,
+                claim_type=left_claim_type,
+                workspace_id=left_workspace_id,
+                excluded_review_states=()
+                if include_excluded_claim_states
+                else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                claims_for_ref_type_cache=claims_for_ref_type_cache,
+            )
             for right_row in peer_rows:
                 right_claim_id = int(right_row["source_claim_id"])
                 right_payload = payloads.get(right_claim_id)
@@ -1732,7 +1876,10 @@ def _structured_contradictions_for_claim_group(
 
         relation_type = left_claim_type.casefold()
         left_predicate = str(left_payload.get("predicate") or "").strip().casefold()
-        if relation_type in {"taught_by", "relationship_taught_by"} or left_predicate == "taught_by":
+        if (
+            relation_type in {"taught_by", "relationship_taught_by"}
+            or left_predicate == "taught_by"
+        ):
             subject_ref = left_about_ref
             object_ref = left_payload.get("to_object_ref") or left_payload.get("object_object_ref")
             if (
@@ -1741,7 +1888,7 @@ def _structured_contradictions_for_claim_group(
                 and isinstance(object_ref, str)
                 and object_ref
             ):
-                birth_rows = _claims_for_ref_and_type(
+                birth_rows = _cached_claims_for_ref_and_type(
                     conn,
                     about_object_ref=subject_ref,
                     claim_type="birth_year",
@@ -1749,8 +1896,9 @@ def _structured_contradictions_for_claim_group(
                     excluded_review_states=()
                     if include_excluded_claim_states
                     else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                    claims_for_ref_type_cache=claims_for_ref_type_cache,
                 )
-                death_rows = _claims_for_ref_and_type(
+                death_rows = _cached_claims_for_ref_and_type(
                     conn,
                     about_object_ref=object_ref,
                     claim_type="death_year",
@@ -1758,6 +1906,7 @@ def _structured_contradictions_for_claim_group(
                     excluded_review_states=()
                     if include_excluded_claim_states
                     else CONTRADICTION_EXCLUDED_CLAIM_REVIEW_STATES,
+                    claims_for_ref_type_cache=claims_for_ref_type_cache,
                 )
                 for birth_row in birth_rows:
                     birth_payload = _structured_claim_payload(birth_row)
@@ -1793,7 +1942,9 @@ def _structured_contradictions_for_claim_group(
                                 conn,
                                 offending_namespace="source_claim",
                                 offending_id=left_claim_id,
-                                target_object_ref=_source_claim_ref(int(death_row["source_claim_id"])),
+                                target_object_ref=_source_claim_ref(
+                                    int(death_row["source_claim_id"])
+                                ),
                                 provenance_event_ref=provenance_event_ref,
                                 workspace_id=left_workspace_id,
                                 rule_id=TAUGHT_BY_IMPOSSIBLE_RULE,
@@ -1863,6 +2014,8 @@ def run_reconciliation_pass_for_ingest(
     changed_at: str,
     entity_candidates: list[dict[str, Any]] | None = None,
     source_run_id: str | None = None,
+    claim_work_items: list[tuple[str | None, str | None, str]] | None = None,
+    relationship_work_items: list[tuple[str | None, str, str, str | None]] | None = None,
 ) -> dict[str, int]:
     counts = {
         "work_deduped": 0,
@@ -1943,20 +2096,31 @@ def run_reconciliation_pass_for_ingest(
             if result.created:
                 counts["authority_reconciled"] += 1
 
-    claim_rows = conn.execute(
-        """
-        SELECT *
-        FROM source_claim
-        WHERE provenance_event_ref=?
-        ORDER BY source_claim_id
-        """,
-        (provenance_event_ref,),
-    ).fetchall()
+    if claim_work_items is None:
+        claim_rows = conn.execute(
+            """
+            SELECT *
+            FROM source_claim
+            WHERE provenance_event_ref=?
+            ORDER BY source_claim_id
+            """,
+            (provenance_event_ref,),
+        ).fetchall()
+    else:
+        claim_rows = _claim_rows_for_work_items(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            claim_work_items=claim_work_items,
+        )
     grouped_claim_rows: dict[tuple[str | None, str | None, str], list[sqlite3.Row]] = {}
     for claim_row in claim_rows:
-        about_object_ref = None if claim_row["about_object_ref"] is None else str(claim_row["about_object_ref"])
+        about_object_ref = (
+            None if claim_row["about_object_ref"] is None else str(claim_row["about_object_ref"])
+        )
         claim_type = "" if claim_row["claim_type"] is None else str(claim_row["claim_type"])
-        workspace_key = None if claim_row["workspace_id"] is None else str(claim_row["workspace_id"])
+        workspace_key = (
+            None if claim_row["workspace_id"] is None else str(claim_row["workspace_id"])
+        )
         key = (workspace_key, about_object_ref, claim_type)
         grouped_claim_rows.setdefault(key, []).append(claim_row)
 
@@ -1983,6 +2147,15 @@ def run_reconciliation_pass_for_ingest(
             if relationship_row is not None:
                 seen_relationship_rows.add(int(relationship_row["source_relationship_id"]))
     counts["relationships_contradicted"] = len(seen_relationship_rows)
+    relationship_rows: list[sqlite3.Row] | None
+    if relationship_work_items is None:
+        relationship_rows = None
+    else:
+        relationship_rows = _relationship_rows_for_work_items(
+            conn,
+            provenance_event_ref=provenance_event_ref,
+            relationship_work_items=relationship_work_items,
+        )
     relational_counts = run_relational_constraint_pass(
         conn,
         provenance_event_ref=provenance_event_ref,
@@ -1990,6 +2163,7 @@ def run_reconciliation_pass_for_ingest(
         changed_at=changed_at,
         source_run_id=source_run_id,
         skip_structured_claim_counterparts=True,
+        relationship_rows=relationship_rows,
     )
     counts["relational_constraints_checked"] = relational_counts["relational_constraints_checked"]
     counts["relational_constraints_skipped"] = relational_counts["relational_constraints_skipped"]

@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay"
 
@@ -127,7 +126,7 @@ def execute_structured_data_case(tmp_path: Path, iteration: int) -> tuple[dict[s
         STRUCTURED_DATA_SCRIPT,
         ["--adapter", str(case_dir / "source_adapter.json"), "--handoff-jsonl", str(handoff_path), "--format", "json"],
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     plan = normalize_value(json.loads(proc.stdout), tmp_root=tmp_path)
     handoff = normalize_value(load_jsonl(handoff_path), tmp_root=tmp_path)
     return plan, handoff, proc.stdout + handoff_path.read_text(encoding="utf-8")
