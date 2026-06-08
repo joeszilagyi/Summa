@@ -604,7 +604,13 @@ def serialize_structured_value(value: Any) -> str:
     if isinstance(value, ET.Element):
         body = ET.tostring(value, encoding="unicode")
         return body if body.endswith("\n") else body + "\n"
-    body = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+    body = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     return body if body.endswith("\n") else body + "\n"
 
 

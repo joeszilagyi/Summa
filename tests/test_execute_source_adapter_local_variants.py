@@ -161,8 +161,10 @@ def test_execute_structured_data_reads_each_source_file_once_per_grouped_capture
     assert [extraction["extraction_method"] for extraction in extraction_records] == [
         "structured_record_extract"
     ] * 4
-    assert text_artifacts["extracted-text/extraction-0001.txt"].startswith("{\n")
-    assert text_artifacts["extracted-text/extraction-0002.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0001.txt"].startswith("{")
+    assert not text_artifacts["extracted-text/extraction-0001.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0002.txt"].startswith("{")
+    assert not text_artifacts["extracted-text/extraction-0002.txt"].startswith("{\n")
     assert text_artifacts["extracted-text/extraction-0003.txt"].startswith("<")
     assert extraction_records[-1]["status"] == "skipped"
     assert extraction_records[-1]["failure_reason"] == "oversized_payload"
