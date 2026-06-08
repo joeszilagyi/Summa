@@ -661,8 +661,10 @@ def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path)
     )
 
     observed_timeouts: list[float | None] = []
+    commands: list[list[str]] = []
 
     def invoker(command: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
         observed_timeouts.append(timeout)
         run_dir = Path(command[command.index("--run-dir") + 1])
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -684,6 +686,7 @@ def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path)
 
     assert exit_code == scheduled_runner.EXIT_SUCCESS
     assert observed_timeouts == [11.0]
+    assert commands[0][commands[0].index("--format") + 1] == "text"
     assert payload["workspace_results"][0]["outcome"] == "completed"
 
 
