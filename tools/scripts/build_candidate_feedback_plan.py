@@ -692,7 +692,11 @@ def load_source_access_leads(
         scope_params + tuple(sorted(LEAD_REVIEW_STATES)),
     ).fetchall()
 
-    leads: list[dict[str, Any]] = []
+    lead_rows: list[dict[str, Any]] = []
+    work_refs: list[str] = []
+    seen_work_refs: set[str] = set()
+    capture_ids: list[int] = []
+    seen_capture_ids: set[int] = set()
     for row in rows:
         provenance = history_by_event_key.get(str(row["work_provenance_event_ref"] or ""))
         facet = provenance["facet"] if provenance is not None else "sources"
@@ -710,35 +714,72 @@ def load_source_access_leads(
             subject_id=subject_id,
             warnings=warnings,
         )
-        related_claims = 0
-        related_works = 0
+        work_ref_value: str | None = None
         if row["work_id"] is not None:
-            related_works = 1
-            related_claims = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM source_claim
-                    WHERE about_object_ref=?
-                      AND review_state IN ({accepted_placeholders})
-                    """,
-                    (work_ref(int(row["work_id"])), *accepted_states),
-                ).fetchone()["count"]
-            )
-        related_entities = 0
-        if metrics["capture_ids"]:
-            capture_placeholders = ", ".join("?" for _ in metrics["capture_ids"])
-            related_entities = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM extraction_detected_entity
-                    WHERE capture_event_id IN ({capture_placeholders})
-                      AND review_state IN ({accepted_placeholders})
-                    """,
-                    tuple(metrics["capture_ids"]) + accepted_states,
-                ).fetchone()["count"]
-            )
+            work_ref_value = work_ref(int(row["work_id"]))
+            if work_ref_value not in seen_work_refs:
+                seen_work_refs.add(work_ref_value)
+                work_refs.append(work_ref_value)
+        for capture_id in metrics["capture_ids"]:
+            if capture_id not in seen_capture_ids:
+                seen_capture_ids.add(capture_id)
+                capture_ids.append(capture_id)
+        lead_rows.append(
+            {
+                "row": row,
+                "provenance": provenance,
+                "facet": facet,
+                "metrics": metrics,
+                "work_ref": work_ref_value,
+            }
+        )
+    related_claim_counts: dict[str, int] = {}
+    if work_refs:
+        work_placeholders = ", ".join("?" for _ in work_refs)
+        related_claim_rows = conn.execute(
+            f"""
+            SELECT about_object_ref, COUNT(*) AS count
+            FROM source_claim
+            WHERE about_object_ref IN ({work_placeholders})
+              AND review_state IN ({accepted_placeholders})
+            GROUP BY about_object_ref
+            """,
+            tuple(work_refs) + accepted_states,
+        ).fetchall()
+        related_claim_counts = {
+            str(row["about_object_ref"]): int(row["count"])
+            for row in related_claim_rows
+        }
+    related_entity_counts: dict[int, int] = {}
+    if capture_ids:
+        capture_placeholders = ", ".join("?" for _ in capture_ids)
+        related_entity_rows = conn.execute(
+            f"""
+            SELECT capture_event_id, COUNT(*) AS count
+            FROM extraction_detected_entity
+            WHERE capture_event_id IN ({capture_placeholders})
+              AND review_state IN ({accepted_placeholders})
+            GROUP BY capture_event_id
+            """,
+            tuple(capture_ids) + accepted_states,
+        ).fetchall()
+        related_entity_counts = {
+            int(row["capture_event_id"]): int(row["count"])
+            for row in related_entity_rows
+        }
+
+    leads: list[dict[str, Any]] = []
+    for item in lead_rows:
+        row = item["row"]
+        provenance = item["provenance"]
+        facet = item["facet"]
+        metrics = item["metrics"]
+        work_ref_value = item["work_ref"]
+        related_works = 1 if row["work_id"] is not None else 0
+        related_claims = related_claim_counts.get(work_ref_value or "", 0)
+        related_entities = sum(
+            related_entity_counts.get(capture_id, 0) for capture_id in metrics["capture_ids"]
+        )
         related_claims_score = capped_count(related_claims, RELATED_SCORE_SIGNAL_CAP)
         related_entities_score = capped_count(related_entities, RELATED_SCORE_SIGNAL_CAP)
         related_yield = related_works + related_claims_score + related_entities_score

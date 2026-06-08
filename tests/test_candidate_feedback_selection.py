@@ -677,11 +677,9 @@ def test_unscored_productive_lead_is_filtered_before_next_action() -> None:
 
 
 def test_candidate_feedback_validator_rejects_out_of_range_selection_score(tmp_path: Path) -> None:
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
     subject_id = "feedback_subject"
     db_path = bootstrap_db(tmp_path)
-    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    manifest_path = write_manifest(tmp_path / "workspace", subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
     _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
@@ -1028,6 +1026,128 @@ def test_source_access_leads_ignore_unreviewed_related_records_but_count_accepte
     assert updated_lead["signals"]["related_claims"] == 1
     assert updated_lead["signals"]["related_entities"] == 1
     assert updated_lead["score"] > baseline_lead["score"]
+
+
+def test_source_access_leads_batch_related_claim_and_entity_counts(
+    tmp_path: Path,
+) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        high_work_id_row = conn.execute(
+            """
+            SELECT work_id
+            FROM source_access
+            WHERE citation_hint=?
+            """,
+            ("High yield source lead",),
+        ).fetchone()
+        assert high_work_id_row is not None
+        high_work_id = int(high_work_id_row["work_id"])
+
+        extra_gather = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="candidate-feedback-tests",
+            object_id="source-access-duplicate",
+            event_type="gather_candidate_batch_ingest",
+            tool_name="pytest.candidate_feedback_selection",
+            run_id="source-access-duplicate",
+            event_timestamp=FIXED_CREATED_AT,
+            note_text=gather_note(
+                subject_id=subject_id,
+                facet="sources",
+                run_id="source-access-duplicate",
+                cycle_depth=1,
+                prompt_bundle_id="general.gather.sources.v1",
+            ),
+            provenance_event_key_v1="prov:feedback:source-access-duplicate",
+        )
+        canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=extra_gather.event_key,
+            work_id=high_work_id,
+            source_locus_id="locus:high-duplicate",
+            source_lead_id="lead:high-duplicate",
+            original_locator="https://example.test/high-duplicate",
+            canonical_url="https://example.test/high-duplicate",
+            citation_hint="High yield source lead duplicate",
+            workspace_id=subject_id,
+            review_state="needs_review",
+            first_seen_at="2026-06-02T15:00:00Z",
+            last_seen_at="2026-06-02T15:00:00Z",
+            record_last_updated="2026-06-02T15:00:00Z",
+        )
+        with conn:
+            conn.execute(
+                """
+                UPDATE source_claim
+                SET review_state='accepted'
+                WHERE claim_text='High lead produced a concrete follow-up claim.'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE extraction_detected_entity
+                SET review_state='accepted'
+                WHERE entity_label='High Yield Person'
+                """
+            )
+
+        work_ids = planner.scope_work_ids(conn, subject_id)
+        history = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+        leads = planner.load_source_access_leads(
+            conn,
+            subject_id=subject_id,
+            work_ids=work_ids,
+            history_by_event_key=history,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+            warnings=[],
+        )
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        conn.close()
+
+    source_claim_count_queries = [
+        sql
+        for sql in executed_sql
+        if "FROM source_claim" in sql
+        and "GROUP BY about_object_ref" in sql
+        and "COUNT(*) AS count" in sql
+    ]
+    entity_count_queries = [
+        sql
+        for sql in executed_sql
+        if "FROM extraction_detected_entity" in sql
+        and "GROUP BY capture_event_id" in sql
+        and "COUNT(*) AS count" in sql
+    ]
+    assert len(source_claim_count_queries) == 1
+    assert len(entity_count_queries) == 1
+
+    high_lead = next(
+        item for item in leads if item["object_ref"] == source_access_ref(db_path, citation_hint="High yield source lead")
+    )
+    duplicate_lead = next(
+        item
+        for item in leads
+        if item["object_ref"] == source_access_ref(db_path, citation_hint="High yield source lead duplicate")
+    )
+    assert high_lead["signals"]["related_claims"] == 1
+    assert duplicate_lead["signals"]["related_claims"] == 1
+    assert high_lead["signals"]["related_entities"] == 1
 
 
 def test_open_question_leads_reward_more_specific_questions(tmp_path: Path) -> None:
