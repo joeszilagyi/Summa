@@ -688,6 +688,60 @@ def test_selector_append_planned_runs_uses_streaming_reader_for_existing_file(tm
     assert read_jsonl(planned_runs) == [record]
 
 
+def test_selector_planned_run_record_reuses_policy_snapshots_without_deepcopy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    manifest_path = tmp_path / "manifest.json"
+    run_budget = {"max_attempts": 2, "max_runtime_seconds": 900}
+    retry_policy = {"backoff_seconds": 60, "max_retryable_failures": 3}
+    failure_state = {"status": "retryable", "attempt_count": 1}
+    saturation = {
+        "schema_version": "topic-saturation.v1",
+        "policy_id": "topic-saturation.test",
+        "workspace_id": "selected_workspace",
+        "subject_id": "subject.selected",
+    }
+    entry = {
+        "workspace_id": "selected_workspace",
+        "schedule_posture": "scheduled",
+        "reasons": [],
+        "workspace_root": str(workspace_root),
+        "resolved_workspace_root": str(workspace_root),
+        "default_subject_manifest": str(manifest_path),
+        "resolved_default_subject_manifest": str(manifest_path),
+        "saturation": saturation,
+        "saturation_override": True,
+    }
+    registry_path = tmp_path / "registry.json"
+
+    def fail_deepcopy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("planned_run_record should reuse existing policy snapshots")
+
+    monkeypatch.setattr(selector.copy, "deepcopy", fail_deepcopy)
+
+    record = selector.planned_run_record(
+        entry=entry,
+        decision="selected",
+        registry_path=registry_path,
+        planner_run_id="planner-fixture",
+        planned_at="2026-01-01T00:00:00Z",
+        run_budget=run_budget,
+        retry_policy=retry_policy,
+        failure_state=failure_state,
+    )
+
+    assert record["run_budget"] is run_budget
+    assert record["retry_policy"] is retry_policy
+    assert record["failure_state"] is failure_state
+    assert record["saturation"] is saturation
+    assert record["workspace_root"] == str(workspace_root)
+    assert record["resolved_workspace_root"] == str(workspace_root)
+    assert record["default_subject_manifest"] == str(manifest_path)
+    assert record["resolved_default_subject_manifest"] == str(manifest_path)
+
+
 def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspaces" / "selected"
     workspace_root.mkdir(parents=True)

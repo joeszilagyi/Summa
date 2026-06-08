@@ -424,12 +424,10 @@ def planned_run_record(
         "cadence_reason": cadence_reason(entry),
         "skipped_reason": reasons[0] if reasons else None,
         "skipped_reasons": reasons,
-        "run_budget": dict(run_budget),
-        "retry_policy": copy.deepcopy(retry_policy) if retry_policy is not None else None,
-        "failure_state": copy.deepcopy(failure_state) if failure_state is not None else None,
-        "saturation": copy.deepcopy(entry.get("saturation"))
-        if isinstance(entry.get("saturation"), dict)
-        else None,
+        "run_budget": run_budget,
+        "retry_policy": retry_policy,
+        "failure_state": failure_state,
+        "saturation": entry.get("saturation") if isinstance(entry.get("saturation"), dict) else None,
         "saturation_override": bool(entry.get("saturation_override", False)),
         "workspace_root": entry.get("workspace_root"),
         "resolved_workspace_root": entry.get("resolved_workspace_root"),
