@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "leak_scanner.py"
 SCRIPT_PATH = REPO_ROOT / "tools" / "scripts" / "scan_for_leaks.py"
@@ -73,6 +72,26 @@ def test_clean_public_bundle_fixture_passes(tmp_path: Path) -> None:
     report = scanner.scan_directory(root, profile="public_bundle")
 
     assert report["status"] == "pass"
+    assert report["findings"] == []
+
+
+def test_scan_directory_honors_exclude_globs(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("<p>safe</p>\n", encoding="utf-8")
+    (root / "build-manifest.json").write_text(
+        '{"leak":"Authorization: Bearer excluded-token"}\n',
+        encoding="utf-8",
+    )
+
+    report = scanner.scan_directory(
+        root,
+        profile="public_bundle",
+        exclude_globs=("build-manifest.json",),
+    )
+
+    assert report["status"] == "pass"
+    assert report["counts"]["files_scanned"] == 1
     assert report["findings"] == []
 
 

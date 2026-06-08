@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -99,19 +97,12 @@ def report_path(path: Path, *, base_dir: Path) -> str:
         return path.name
 
 
-def stage_public_scan_root(publish_root: Path) -> Path:
-    stage_parent = Path(tempfile.mkdtemp(prefix=".publication-leak-scan.", dir=publish_root.parent))
-    stage_root = stage_parent / "public-site"
-    for path in sorted(publish_root.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(publish_root)
-        if relative.as_posix() == "build-manifest.json":
-            continue
-        destination = stage_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, destination)
-    return stage_root
+def scan_public_site_for_leaks(publish_root: Path) -> dict[str, object]:
+    return scan_directory(
+        publish_root,
+        profile="public_bundle",
+        exclude_globs=("build-manifest.json",),
+    )
 
 
 def main() -> int:
@@ -164,21 +155,17 @@ def main() -> int:
             "publish_root": report_path(publish_root, base_dir=output_dir),
             "manifest_path": report_path(publish_root / "build-manifest.json", base_dir=output_dir),
         }
-        leak_stage_root = stage_public_scan_root(publish_root)
-        try:
-            leak_report = scan_directory(leak_stage_root, profile="public_bundle")
-            atomic_write_json(leak_report_path, leak_report)
-            if leak_report["status"] != "pass":
-                finding_codes = ", ".join(
-                    finding["code"]
-                    for finding in leak_report.get("findings", [])
-                    if isinstance(finding, dict) and isinstance(finding.get("code"), str)
-                )
-                raise PublicationBuildError(
-                    "public leak scan failed" + (f": {finding_codes}" if finding_codes else "")
-                )
-        finally:
-            shutil.rmtree(leak_stage_root.parent, ignore_errors=True)
+        leak_report = scan_public_site_for_leaks(publish_root)
+        atomic_write_json(leak_report_path, leak_report)
+        if leak_report["status"] != "pass":
+            finding_codes = ", ".join(
+                finding["code"]
+                for finding in leak_report.get("findings", [])
+                if isinstance(finding, dict) and isinstance(finding.get("code"), str)
+            )
+            raise PublicationBuildError(
+                "public leak scan failed" + (f": {finding_codes}" if finding_codes else "")
+            )
     except (
         PublicationBuildError,
         StaticKnowledgeTreeBuildError,
