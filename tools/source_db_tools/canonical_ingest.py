@@ -928,26 +928,27 @@ def ingest_candidate_batch(
             )
 
     if not dry_run:
-        try:
-            curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
-                conn,
-                provenance_event_ref=provenance_event_key,
-                workspace_id=workspace_id,
-                changed_at=created_at,
-                entity_candidates=entity_candidates,
-                source_run_id=str(batch.get("run_id") or ""),
-                claim_work_items=sorted(
-                    claim_work_items,
-                    key=lambda item: tuple("" if part is None else str(part) for part in item),
-                ),
-                relationship_work_items=sorted(
-                    relationship_work_items,
-                    key=lambda item: tuple("" if part is None else str(part) for part in item),
-                ),
-            )
-        except canonical_reconciliation.CanonicalReconciliationError as exc:
-            raise CanonicalIngestError(f"candidate-batch reconciliation failed: {exc}") from exc
-        _apply_curation_counts(report, curation_counts)
+        if entity_candidates or claim_work_items or relationship_work_items:
+            try:
+                curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    workspace_id=workspace_id,
+                    changed_at=created_at,
+                    entity_candidates=entity_candidates,
+                    source_run_id=str(batch.get("run_id") or ""),
+                    claim_work_items=sorted(
+                        claim_work_items,
+                        key=lambda item: tuple("" if part is None else str(part) for part in item),
+                    ),
+                    relationship_work_items=sorted(
+                        relationship_work_items,
+                        key=lambda item: tuple("" if part is None else str(part) for part in item),
+                    ),
+                )
+            except canonical_reconciliation.CanonicalReconciliationError as exc:
+                raise CanonicalIngestError(f"candidate-batch reconciliation failed: {exc}") from exc
+            _apply_curation_counts(report, curation_counts)
         report["transaction_status"] = "committed"
     return report
 

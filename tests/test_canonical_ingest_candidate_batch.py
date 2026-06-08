@@ -12,6 +12,7 @@ import pytest
 from tests.test_canonical_dedup_and_contradiction import (
     build_batch,
     relationship_candidate,
+    source_lead_candidate,
     structured_claim_candidate,
 )
 from tools.source_db_tools import canonical_ingest, canonical_reconciliation, canonical_store
@@ -273,6 +274,66 @@ def test_candidate_batch_ingest_passes_incremental_reconciliation_work_items(
     assert captured["relationship_work_items"] == [
         ("fixture_subject", "authority:person-a", "taught_by", "authority:person-b")
     ]
+
+
+def test_candidate_batch_ingest_skips_reconciliation_when_no_work_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    payload = build_batch(
+        [
+            source_lead_candidate(
+                "cand:lead.only",
+                original_locator="https://example.test/source.pdf",
+                canonical_url="https://example.test/source.pdf",
+                source_lead_id="lead:only",
+            )
+        ],
+        run_id="source-lead-only",
+    )
+    called = False
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        nonlocal called
+        called = True
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                payload,
+                batch_path=tmp_path / "source-lead-only.json",
+                batch_hash=batch_hash(payload),
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert called is False
+    assert report["transaction_status"] == "committed"
+    assert report["counts"]["reconciled"] == {}
+    assert report["counts"]["contradicted"] == {}
+    assert report["counts"]["deduped"] == {}
 
 
 def test_candidate_batch_validation_happens_before_write(tmp_path: Path) -> None:
