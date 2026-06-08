@@ -124,6 +124,45 @@ def fixture_server() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://{host}:{port}"
 
 
+def test_read_limited_response_uses_incremental_buffering() -> None:
+    chunks = [b"ab", b"cd", b"ef", b""]
+    read_calls = {"count": 0}
+
+    class FakeResponse:
+        def read(self, size: int) -> bytes:
+            del size
+            read_calls["count"] += 1
+            if chunks:
+                return chunks.pop(0)
+            return b""
+
+    payload, truncated = source_executor.read_limited_response(
+        FakeResponse(), max_response_bytes=6
+    )
+
+    assert payload == b"abcdef"
+    assert truncated is False
+    assert read_calls["count"] == 4
+
+
+def test_read_limited_response_truncates_without_extra_copy() -> None:
+    chunks = [b"abc", b"def", b"ghi"]
+
+    class FakeResponse:
+        def read(self, size: int) -> bytes:
+            del size
+            if chunks:
+                return chunks.pop(0)
+            return b""
+
+    payload, truncated = source_executor.read_limited_response(
+        FakeResponse(), max_response_bytes=5
+    )
+
+    assert payload == b"abcde"
+    assert truncated is True
+
+
 def test_remote_fetch_one_spools_captured_payload_to_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

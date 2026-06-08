@@ -1600,21 +1600,18 @@ def is_extractable_content_type(content_type: str) -> bool:
 
 
 def read_limited_response(response: Any, *, max_response_bytes: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    total = 0
+    payload = bytearray()
     limit = max_response_bytes + 1
-    while total <= max_response_bytes:
-        chunk = response.read(min(64 * 1024, limit - total))
+    while len(payload) <= max_response_bytes:
+        chunk = response.read(min(64 * 1024, limit - len(payload)))
         if not chunk:
             break
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > max_response_bytes:
+        payload.extend(chunk)
+        if len(payload) > max_response_bytes:
             break
-    payload = b"".join(chunks)
     if len(payload) > max_response_bytes:
-        return payload[:max_response_bytes], True
-    return payload, False
+        return bytes(payload[:max_response_bytes]), True
+    return bytes(payload), False
 
 
 def spool_limited_response(
