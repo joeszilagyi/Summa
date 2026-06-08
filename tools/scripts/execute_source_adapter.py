@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import mimetypes
 import shutil
@@ -415,11 +416,15 @@ def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) 
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 
-def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+def load_csv_row_map(payload: bytes) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
     row_map: dict[str, dict[str, str]] = {}
     errors: list[dict[str, str]] = []
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    try:
+        with io.StringIO(text) as handle:
             reader = csv.DictReader(handle, restkey="__EXTRA_FIELDS__")
             if reader.fieldnames is None:
                 return {}, [{"context": "line:1", "reason": "csv header row is missing"}]
@@ -443,19 +448,18 @@ def load_csv_row_map(path: Path) -> tuple[dict[str, dict[str, str]], list[dict[s
                     )
                     continue
                 row_map[f"row:{row_index}"] = dict(row)
-    except UnicodeDecodeError:
-        errors.append({"context": "file", "reason": "file is not valid UTF-8"})
     except csv.Error as exc:
         errors.append({"context": "file", "reason": str(exc)})
     return row_map, errors
 
 
 def load_json_record_map(
-    path: Path, *, record_path: str | None
+    payload: bytes, *, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"),
+        decoded_payload = payload.decode("utf-8")
+        parsed_payload = json.loads(
+            decoded_payload,
             object_pairs_hook=no_duplicate_object_pairs,
             parse_constant=reject_json_constant,
         )
@@ -468,7 +472,7 @@ def load_json_record_map(
     except ValueError as exc:
         return {}, [{"context": "line:1", "reason": str(exc)}]
 
-    selected, record_path_error = resolve_json_record_path(payload, record_path)
+    selected, record_path_error = resolve_json_record_path(parsed_payload, record_path)
     if record_path_error is not None:
         return {}, [{"context": f"record_path:{record_path}", "reason": record_path_error}]
     if isinstance(selected, list):
@@ -476,11 +480,11 @@ def load_json_record_map(
     return {"object:1": selected}, []
 
 
-def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_jsonl_record_map(payload: bytes) -> tuple[dict[str, Any], list[dict[str, str]]]:
     record_map: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     for line_number, raw_line in enumerate(lines, start=1):
@@ -506,17 +510,16 @@ def load_jsonl_record_map(path: Path) -> tuple[dict[str, Any], list[dict[str, st
 
 
 def load_xml_record_map(
-    path: Path, *, record_path: str | None
+    payload: bytes, *, record_path: str | None
 ) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
     try:
-        tree = ET.parse(path)
+        root = ET.fromstring(payload)
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     except ET.ParseError as exc:
         line_number, column = getattr(exc, "position", (1, 1))
         return {}, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
 
-    root = tree.getroot()
     path_map = build_xml_path_map(root)
     if record_path:
         matches = root.findall(record_path)
@@ -536,16 +539,16 @@ def load_xml_record_map(
 
 
 def load_structured_record_map(
-    path: Path, *, structured_format: str, record_path: str | None
+    payload: bytes, *, structured_format: str, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if structured_format == "csv":
-        return load_csv_row_map(path)
+        return load_csv_row_map(payload)
     if structured_format == "json":
-        return load_json_record_map(path, record_path=record_path)
+        return load_json_record_map(payload, record_path=record_path)
     if structured_format == "jsonl":
-        return load_jsonl_record_map(path)
+        return load_jsonl_record_map(payload)
     if structured_format == "xml":
-        return load_xml_record_map(path, record_path=record_path)
+        return load_xml_record_map(payload, record_path=record_path)
     return {}, [
         {"context": "file", "reason": f"unsupported structured format: {structured_format}"}
     ]
@@ -1154,7 +1157,7 @@ def execute_structured_data(
             source_path_value, structured_format, record_path
         )
         record_map, parse_errors = load_structured_record_map(
-            source_path, structured_format=structured_format, record_path=record_path
+            payload, structured_format=structured_format, record_path=record_path
         )
         record_map_cache[cache_key] = (record_map, parse_errors)
 

@@ -105,3 +105,63 @@ def test_execute_structured_data_branch_emits_artifacts_for_hostile_replay_fixtu
     assert (output / "capture-events.jsonl").read_bytes() == canonical_jsonl_bytes(captures)
     assert (output / "extraction-records.jsonl").read_bytes() == canonical_jsonl_bytes(extractions)
     assert (output / "manifest.json").read_bytes() == canonical_json_bytes(manifest)
+
+
+def test_execute_structured_data_reads_each_source_file_once_per_grouped_capture(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    handoff = materialize_handoff(
+        STRUCTURED_FIXTURE_ROOT / "expected_handoff.jsonl",
+        tmp_path / "structured-data-handoff.jsonl",
+    )
+    adapter_payload = source_executor.load_validated_adapter(ADAPTER)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff, adapter_path=ADAPTER
+    )
+
+    source_paths = {
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "injection.jsonl").resolve(),
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "markup.xml").resolve(),
+        (STRUCTURED_FIXTURE_ROOT / "corpus" / "oversize.json").resolve(),
+    }
+    read_counts = {path: 0 for path in source_paths}
+    original_open = Path.open
+
+    def count_if_source(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in read_counts:
+            read_counts[resolved] += 1
+
+    def guarded_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        count_if_source(self)
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open, raising=True)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = (
+        source_executor.execute_structured_data(
+            records=records,
+            adapter_payload=adapter_payload,
+            adapter_path=ADAPTER,
+            run_id="structured-data-execution",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash=handoff_hash,
+        )
+    )
+
+    assert failed is True
+    assert local_paths == [
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "injection.jsonl"),
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "markup.xml"),
+        str(STRUCTURED_FIXTURE_ROOT / "corpus" / "oversize.json"),
+    ]
+    assert [capture["capture_method"] for capture in capture_events] == ["structured_data_load"] * 3
+    assert [extraction["extraction_method"] for extraction in extraction_records] == [
+        "structured_record_extract"
+    ] * 4
+    assert text_artifacts["extracted-text/extraction-0001.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0002.txt"].startswith("{\n")
+    assert text_artifacts["extracted-text/extraction-0003.txt"].startswith("<")
+    assert extraction_records[-1]["status"] == "skipped"
+    assert extraction_records[-1]["failure_reason"] == "oversized_payload"
+    assert all(count == 1 for count in read_counts.values())
