@@ -1163,13 +1163,19 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     batch_path = batch_path_for(workspace_root, run_id)
-    report, exit_code = validator.validate_gather_candidate_batch(batch_path)
-    assert exit_code == validator.EXIT_PASS, report
-
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "live"
     assert payload["raw_engine_output"] == fake_output
+    assert payload["raw_engine_output_hash"] == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
     assert payload["engine_output_ref"]
+    assert payload["provenance"]["stamped_output_hash"] == hashlib.sha256(
+        Path(payload["provenance"]["stamped_output_path"]).read_text(encoding="utf-8").encode("utf-8")
+    ).hexdigest()
+    assert payload["provenance"]["stamped_output_footer_hash"] == hashlib.sha256(
+        json.dumps(payload["provenance"]["stamped_output_footer"], ensure_ascii=False, sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
 
     stamped_text = Path(payload["provenance"]["stamped_output_path"]).read_text(encoding="utf-8")
@@ -1178,6 +1184,24 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp
     assert "arg[1]=exec" in log_text
     assert "--skip-git-repo-check" in log_text
     assert "workspace-write" in log_text
+
+    blocked_paths = {
+        Path(payload["engine_output_ref"]).resolve(),
+        Path(payload["provenance"]["stamped_output_path"]).resolve(),
+    }
+    original_read_text = validator.Path.read_text
+
+    def guarded_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.resolve() in blocked_paths:
+            raise AssertionError(f"validator should not reread engine output files: {self}")
+        return original_read_text(self, *args, **kwargs)
+
+    validator.Path.read_text = guarded_read_text  # type: ignore[assignment]
+    try:
+        report, exit_code = validator.validate_gather_candidate_batch_payload(payload, target=batch_path)
+    finally:
+        validator.Path.read_text = original_read_text  # type: ignore[assignment]
+    assert exit_code == validator.EXIT_PASS, report
 
 
 def test_run_topic_gather_live_engine_uses_command_timeout(

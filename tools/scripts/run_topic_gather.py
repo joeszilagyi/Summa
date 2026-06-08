@@ -1063,11 +1063,19 @@ def run_live_engine(
     raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
     stamp_footer = parse_stamp_footer(stamped_output_text)
+    raw_engine_output_hash = sha256_text(raw_engine_output)
+    stamped_output_hash = sha256_text(stamped_output_text)
+    stamped_output_footer_hash = sha256_text(
+        json.dumps(stamp_footer, ensure_ascii=False, sort_keys=True)
+    )
 
     return {
         "raw_engine_output_path": str(raw_engine_output_path),
         "raw_engine_output": raw_engine_output,
+        "raw_engine_output_hash": raw_engine_output_hash,
         "stamped_output_path": str(stamped_output_path),
+        "stamped_output_hash": stamped_output_hash,
+        "stamped_output_footer_hash": stamped_output_footer_hash,
         "stamp_footer": stamp_footer,
     }
 
@@ -1200,12 +1208,21 @@ def build_candidate_batch(
             "stamped_output_path": live_result["stamped_output_path"]
             if live_result is not None
             else None,
+            "stamped_output_hash": live_result["stamped_output_hash"]
+            if live_result is not None
+            else None,
+            "stamped_output_footer_hash": live_result["stamped_output_footer_hash"]
+            if live_result is not None
+            else None,
             "stamped_output_footer": live_result["stamp_footer"]
             if live_result is not None
             else None,
         },
         "candidates": candidates,
         "raw_engine_output": live_result["raw_engine_output"] if live_result is not None else None,
+        "raw_engine_output_hash": live_result["raw_engine_output_hash"]
+        if live_result is not None
+        else None,
         "engine_output_ref": live_result["raw_engine_output_path"]
         if live_result is not None
         else None,

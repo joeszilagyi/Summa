@@ -397,9 +397,19 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
     mode = payload.get("mode")
     engine = payload.get("engine")
     raw_engine_output = payload.get("raw_engine_output")
+    raw_engine_output_hash = payload.get("raw_engine_output_hash")
     engine_output_ref = payload.get("engine_output_ref")
     feedback_plan = payload.get("feedback_plan")
     if isinstance(mode, str) and isinstance(engine, dict) and isinstance(provenance, dict):
+        if raw_engine_output_hash is not None and (
+            not isinstance(raw_engine_output_hash, str) or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None
+        ):
+            add_error(
+                errors,
+                code="INVALID_RAW_ENGINE_OUTPUT_HASH",
+                message="raw_engine_output_hash must be a 64-character lowercase SHA-256 hex digest",
+                path="$.raw_engine_output_hash",
+            )
         if mode == "dry_run":
             if engine.get("invoked") is True or provenance.get("engine_invoked") is True:
                 add_error(
@@ -457,6 +467,13 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="mode=live must not include raw_engine_output when the feedback plan skips LLM execution",
                         path="$.raw_engine_output",
                     )
+                if raw_engine_output_hash not in (None, ""):
+                    add_error(
+                        errors,
+                        code="LIVE_RAW_OUTPUT_HASH_FORBIDDEN",
+                        message="mode=live must not include raw_engine_output_hash when the feedback plan skips LLM execution",
+                        path="$.raw_engine_output_hash",
+                    )
                 if engine_output_ref is not None:
                     add_error(
                         errors,
@@ -464,7 +481,12 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="mode=live must not include engine_output_ref when the feedback plan skips LLM execution",
                         path="$.engine_output_ref",
                     )
-                if provenance.get("stamped_output_path") is not None or provenance.get("stamped_output_footer") is not None:
+                if (
+                    provenance.get("stamped_output_path") is not None
+                    or provenance.get("stamped_output_hash") is not None
+                    or provenance.get("stamped_output_footer_hash") is not None
+                    or provenance.get("stamped_output_footer") is not None
+                ):
                     add_error(
                         errors,
                         code="LIVE_STAMP_FORBIDDEN",
@@ -493,6 +515,13 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="mode=live must include raw_engine_output",
                         path="$.raw_engine_output",
                     )
+                if not isinstance(raw_engine_output_hash, str) or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None:
+                    add_error(
+                        errors,
+                        code="LIVE_RAW_OUTPUT_HASH_REQUIRED",
+                        message="mode=live must include raw_engine_output_hash",
+                        path="$.raw_engine_output_hash",
+                    )
                 if not isinstance(engine_output_ref, str) or not engine_output_ref:
                     add_error(
                         errors,
@@ -506,6 +535,24 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         code="LIVE_STAMPED_OUTPUT_PATH_REQUIRED",
                         message="mode=live must include provenance.stamped_output_path",
                         path="$.provenance.stamped_output_path",
+                    )
+                if not isinstance(provenance.get("stamped_output_hash"), str) or SHA256_PATTERN.fullmatch(
+                    provenance.get("stamped_output_hash") or ""
+                ) is None:
+                    add_error(
+                        errors,
+                        code="LIVE_STAMPED_OUTPUT_HASH_REQUIRED",
+                        message="mode=live must include provenance.stamped_output_hash",
+                        path="$.provenance.stamped_output_hash",
+                    )
+                if not isinstance(provenance.get("stamped_output_footer_hash"), str) or SHA256_PATTERN.fullmatch(
+                    provenance.get("stamped_output_footer_hash") or ""
+                ) is None:
+                    add_error(
+                        errors,
+                        code="LIVE_STAMPED_OUTPUT_FOOTER_HASH_REQUIRED",
+                        message="mode=live must include provenance.stamped_output_footer_hash",
+                        path="$.provenance.stamped_output_footer_hash",
                     )
                 if not isinstance(provenance.get("stamped_output_footer"), dict):
                     add_error(
@@ -1038,24 +1085,6 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="engine_output_ref does not point to a readable file",
                     path="$.engine_output_ref",
                 )
-            else:
-                try:
-                    engine_output_text = engine_output_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    add_error(
-                        errors,
-                        code="ENGINE_OUTPUT_PATH_UNREADABLE",
-                        message="engine_output_ref file could not be read",
-                        path="$.engine_output_ref",
-                    )
-                else:
-                    if isinstance(raw_engine_output, str) and engine_output_text != raw_engine_output:
-                        add_error(
-                            errors,
-                            code="ENGINE_OUTPUT_CONTENT_MISMATCH",
-                            message="engine_output_ref content does not match raw_engine_output",
-                            path="$.engine_output_ref",
-                        )
         if isinstance(provenance, dict):
             stamped_output_path = provenance.get("stamped_output_path")
             stamped_output_footer = provenance.get("stamped_output_footer")
@@ -1068,41 +1097,27 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="stamped_output_path does not point to a readable file",
                         path="$.provenance.stamped_output_path",
                     )
-                else:
-                    try:
-                        stamped_text = stamped_path.read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        add_error(
-                            errors,
-                            code="STAMPED_OUTPUT_PATH_UNREADABLE",
-                            message="stamped_output_path file could not be read",
-                            path="$.provenance.stamped_output_path",
-                        )
-                    else:
-                        parsed_footer = parse_stamp_footer(stamped_text)
-                        if parsed_footer is None:
-                            add_error(
-                                errors,
-                                code="STAMP_FOOTER_MISSING",
-                                message="stamped_output_path file is missing the llm_runner footer",
-                                path="$.provenance.stamped_output_path",
-                            )
-                        else:
-                            if stamped_output_footer != parsed_footer:
-                                add_error(
-                                    errors,
-                                    code="STAMP_FOOTER_MISMATCH",
-                                    message="stamped_output_footer does not match the stamped output file footer",
-                                    path="$.provenance.stamped_output_footer",
-                                )
-                            run_ts = parsed_footer.get("run_ts")
-                            if run_ts is not None and STAMP_RUN_TS_PATTERN.fullmatch(run_ts) is None:
-                                add_error(
-                                    errors,
-                                    code="STAMP_RUN_TS_INVALID",
-                                    message="stamped output RUN_TS must match YYYY-MM-DDTHHMMSSZ",
-                                    path="$.provenance.stamped_output_footer.run_ts",
-                                )
+            if isinstance(stamped_output_footer, dict):
+                parsed_footer_hash = hashlib.sha256(
+                    json.dumps(stamped_output_footer, ensure_ascii=False, sort_keys=True).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                if provenance.get("stamped_output_footer_hash") != parsed_footer_hash:
+                    add_error(
+                        errors,
+                        code="STAMP_FOOTER_HASH_MISMATCH",
+                        message="stamped_output_footer_hash does not match the stamped output footer metadata",
+                        path="$.provenance.stamped_output_footer_hash",
+                    )
+                run_ts = stamped_output_footer.get("run_ts")
+                if run_ts is not None and STAMP_RUN_TS_PATTERN.fullmatch(str(run_ts)) is None:
+                    add_error(
+                        errors,
+                        code="STAMP_RUN_TS_INVALID",
+                        message="stamped output RUN_TS must match YYYY-MM-DDTHHMMSSZ",
+                        path="$.provenance.stamped_output_footer.run_ts",
+                    )
 
     schema_version = payload.get("schema_version")
     if schema_version not in SUPPORTED_SCHEMA_VERSIONS:

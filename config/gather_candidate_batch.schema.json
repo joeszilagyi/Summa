@@ -109,6 +109,12 @@
         "null"
       ]
     },
+    "raw_engine_output_hash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "engine_output_ref": {
       "type": [
         "string",
@@ -924,6 +930,18 @@
           "minimum": 1
         },
         "stamped_output_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stamped_output_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stamped_output_footer_hash": {
           "type": [
             "string",
             "null"
