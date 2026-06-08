@@ -37,8 +37,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.common.local_search_contract import (  # noqa: E402
-    RESULTS_SCHEMA_VERSION,
     RESULT_CLASS_BY_OBJECT_TYPE,
+    RESULTS_SCHEMA_VERSION,
     SEARCH_SCOPE_TO_OBJECT_TYPES,
     VISIBILITY_PROFILES,
 )
@@ -49,7 +49,6 @@ from tools.common.search_leak_policy import (  # noqa: E402
     is_raw_payload_field,
     is_restricted_public_field,
 )
-
 
 VALIDATOR_NAME = "local_search_results"
 CONTRACT_VERSION = "1"

@@ -115,6 +115,11 @@ def parse_args() -> argparse.Namespace:
         "--output-json", help="Optional JSON path for the emitted local-search-results payload."
     )
     parser.add_argument(
+        "--include-total",
+        action="store_true",
+        help="Compute counts.total_estimate with an additional count query.",
+    )
+    parser.add_argument(
         "--generated-at", help="Optional RFC3339 timestamp override for deterministic tests."
     )
     return parser.parse_args()
@@ -230,25 +235,21 @@ def load_matching_rows(
     scope: str,
     limit: int,
     offset: int,
-) -> tuple[list[sqlite3.Row], int]:
+    include_total: bool = False,
+) -> tuple[list[sqlite3.Row], int | None, bool]:
     scope_clause, scope_params = build_scope_clause(scope)
     fts_scope_clause = scope_clause.replace("sp.", "")
     score_expression = sql_score_expression().replace(
         "bm25(search_projection_fts)",
         "matches.score",
     )
+    row_limit = limit if include_total else limit + 1
     rows: list[sqlite3.Row] = conn.execute(
         f"""
         SELECT
           sp.*,
           matches.score,
-          matches.match_snippet,
-            (
-            SELECT COUNT(*)
-            FROM search_projection_fts
-            JOIN search_projection AS sf_match USING (projection_id)
-            WHERE search_projection_fts MATCH ?{scope_clause}
-          ) AS total_matches
+          matches.match_snippet
         FROM (
           SELECT
             projection_id,
@@ -261,10 +262,37 @@ def load_matching_rows(
         ORDER BY {score_expression} ASC, sp.object_type ASC, sp.object_pk ASC
         LIMIT ? OFFSET ?
         """,
-        [fts_query, *scope_params, fts_query, *scope_params, limit, offset],
+        [fts_query, *scope_params, row_limit, offset],
     ).fetchall()
-    total = 0 if not rows else int(rows[0]["total_matches"])
-    return rows, total
+    if include_total:
+        total = count_matching_rows(conn, fts_query=fts_query, scope=scope)
+        truncated = offset + len(rows) < total
+        return rows, total, truncated
+
+    truncated = len(rows) > limit
+    if truncated:
+        rows = rows[:limit]
+    return rows, None, truncated
+
+
+def count_matching_rows(
+    conn: sqlite3.Connection,
+    *,
+    fts_query: str,
+    scope: str,
+) -> int:
+    scope_clause, scope_params = build_scope_clause(scope)
+    total_row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM search_projection_fts
+        JOIN search_projection AS sf_match USING (projection_id)
+        WHERE search_projection_fts MATCH ?{scope_clause}
+        """,
+        [fts_query, *scope_params],
+    ).fetchone()
+    assert total_row is not None
+    return int(total_row[0])
 
 
 def render_snippet_text(text: str, terms: list[str], *, max_length: int = 120) -> str:
@@ -397,8 +425,13 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
     conn = connect_read_only(index_path)
     try:
         metadata = load_metadata(conn)
-        rows, total = load_matching_rows(
-            conn, fts_query=fts_query, scope=args.scope, limit=args.limit, offset=args.offset
+        rows, total, truncated = load_matching_rows(
+            conn,
+            fts_query=fts_query,
+            scope=args.scope,
+            limit=args.limit,
+            offset=args.offset,
+            include_total=args.include_total,
         )
     finally:
         conn.close()
@@ -428,7 +461,7 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
         "counts": {
             "returned": len(results),
             "total_estimate": total,
-            "truncated": args.offset + len(results) < total,
+            "truncated": truncated,
         },
         "policy": {
             "raw_payload_indexed": False,
@@ -443,13 +476,14 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def render_text(payload: dict[str, Any]) -> str:
+    total_estimate = payload["counts"]["total_estimate"]
     lines = [
         f"schema_version={payload['schema_version']}",
         f"query={payload['query']['normalized_query']}",
         f"scope={payload['query']['scope']}",
         f"visibility_profile={payload['query']['visibility_profile']}",
         f"returned={payload['counts']['returned']}",
-        f"total_estimate={payload['counts']['total_estimate']}",
+        f"total_estimate={total_estimate if total_estimate is not None else 'unknown'}",
         f"truncated={str(payload['counts']['truncated']).lower()}",
         f"writer_surface={SCRIPT_PATH}",
     ]
