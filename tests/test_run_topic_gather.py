@@ -551,6 +551,7 @@ def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:
     batch_payload = json.loads(candidate_batch_path.read_text(encoding="utf-8"))
     assert payload["candidate_batch_sha256"] == candidate_hash
     assert payload["rendered_prompt_sha256"] == prompt_hash
+    assert "rendered_prompt" not in payload
     assert payload["rendered_prompt_sha256"] == batch_payload["prompt"]["rendered_prompt_hash"]
     assert "rendered_prompt" not in batch_payload["prompt"]
 

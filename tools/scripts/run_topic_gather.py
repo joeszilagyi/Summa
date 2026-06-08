@@ -32,6 +32,11 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     parse_wrapped_blocks,
     render_wrapped_block,
 )
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+    timeout_output_excerpt,
+)
 from tools.scripts import resolve_gather_domain_pack, resolve_subject_runtime  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
@@ -996,19 +1001,20 @@ def invoke_llm_runner_bridge(
     command: list[str], *, label: str, timeout_seconds: float | None
 ) -> None:
     try:
-        proc = subprocess.run(
+        proc = run_streaming_command(
             command,
             cwd=REPO_ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         timeout_value = timeout_seconds if timeout_seconds is not None else "unset"
-        raise GatherDriverError(f"{label} exceeded timeout after {timeout_value} seconds") from exc
+        detail = timeout_output_excerpt(exc)
+        message = f"{label} exceeded timeout after {timeout_value} seconds"
+        if detail:
+            message = f"{message}: {detail}"
+        raise GatherDriverError(message) from exc
     if proc.returncode != 0:
-        message = (proc.stdout + proc.stderr).strip()
+        message = command_output_excerpt(proc)
         raise GatherDriverError(
             f"{label} failed via llm_runner bridge: {message or f'exit {proc.returncode}'}"
         )

@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
 import sys
 import time
 from contextlib import nullcontext
@@ -20,6 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
 from tools.common.workspace_lock import (  # noqa: E402
     DEFAULT_LOCK_ROOT,
     WorkspaceLockError,
@@ -534,12 +537,8 @@ def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
     return float(timeout_seconds)
 
 
-def run_command(
-    command: list[str], *, cwd: Path, timeout: float | None = None
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, cwd=cwd, text=True, capture_output=True, check=False, timeout=timeout
-    )
+def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> object:
+    return run_streaming_command(command, cwd=cwd, timeout=timeout)
 
 
 def fail_stage(stage: StageRecord, message: str) -> NoReturn:
@@ -746,7 +745,7 @@ def build_feedback_plan_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, (proc.stderr or proc.stdout).strip() or "feedback planner failed")
+            fail_stage(stage, command_output_excerpt(proc) or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
         report, exit_code = validate_candidate_feedback_plan(output)
         stage.validation = {
@@ -911,7 +910,7 @@ def gather_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, (proc.stderr or proc.stdout).strip() or "gather failed")
+            fail_stage(stage, command_output_excerpt(proc) or "gather failed")
         payload = json.loads(proc.stdout)
         batch_path = resolve_path(payload["candidate_batch_path"], base=REPO_ROOT)
         prompt_path = resolve_path(payload["rendered_prompt_path"], base=REPO_ROOT)
@@ -936,7 +935,9 @@ def gather_stage(
             "validator_version": gather_candidate_batch_validator.CONTRACT_VERSION,
             "result": report,
         }
-        validation_receipt_path = run_dir / "candidate-ingest" / "gather-candidate-batch-validation.json"
+        validation_receipt_path = (
+            run_dir / "candidate-ingest" / "gather-candidate-batch-validation.json"
+        )
         validation_receipt_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(validation_receipt_path, validation_receipt)
         stage.artifacts = {
@@ -1209,9 +1210,7 @@ def acquisition_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(
-                stage, (proc.stderr or proc.stdout).strip() or "source adapter execution failed"
-            )
+            fail_stage(stage, command_output_excerpt(proc) or "source adapter execution failed")
         receipt = load_execution_artifacts(output_dir)
         report, exit_code = validate_execution_artifact_receipt(receipt)
         stage.validation = {
@@ -1764,14 +1763,16 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     run_dir=run_dir,
                     runtime=runtime,
                 )
-                batch_path, candidate_batch, candidate_batch_hash, validation_receipt = gather_stage(
-                    args=args,
-                    manifest=manifest,
-                    workspace=workspace,
-                    db_path=db_path,
-                    run_dir=run_dir,
-                    runtime=runtime,
-                    feedback_plan=feedback_plan,
+                batch_path, candidate_batch, candidate_batch_hash, validation_receipt = (
+                    gather_stage(
+                        args=args,
+                        manifest=manifest,
+                        workspace=workspace,
+                        db_path=db_path,
+                        run_dir=run_dir,
+                        runtime=runtime,
+                        feedback_plan=feedback_plan,
+                    )
                 )
                 candidate_ingest_stage(
                     args=args,
@@ -1780,7 +1781,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     batch_path=batch_path,
                     run_dir=run_dir,
                     candidate_batch=None if args.candidate_batch_fixture else candidate_batch,
-                    candidate_batch_hash=None if args.candidate_batch_fixture else candidate_batch_hash,
+                    candidate_batch_hash=None
+                    if args.candidate_batch_fixture
+                    else candidate_batch_hash,
                     validation_receipt=None if args.candidate_batch_fixture else validation_receipt,
                 )
                 acquisition_result = acquisition_stage(

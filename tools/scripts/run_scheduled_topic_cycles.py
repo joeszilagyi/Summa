@@ -28,6 +28,10 @@ from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     read_runtime_ledger,
     summarize_run_outcomes,
 )
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
 from tools.common.workspace_lock import (  # noqa: E402
     DEFAULT_LOCK_ROOT,
     WorkspaceLockError,
@@ -277,10 +281,10 @@ def resolve_child_manifest(
     child_manifest_path: Path,
     proc: subprocess.CompletedProcess[str] | None,
 ) -> dict[str, Any] | None:
-    child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
-    if isinstance(child_manifest, dict):
-        return child_manifest
     if not child_manifest_path.is_file():
+        child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
+        if isinstance(child_manifest, dict):
+            return child_manifest
         return None
     try:
         raw_manifest = child_manifest_path.read_text(encoding="utf-8")
@@ -436,14 +440,7 @@ def default_cycle_invoker(
     *,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
+    return run_streaming_command(command, cwd=REPO_ROOT, timeout=timeout)
 
 
 def invoke_cycle(
@@ -747,7 +744,7 @@ def run_scheduled_cycles(
                 result=result,
                 reason_code="topic_cycle_partial_output" if is_partial else "topic_cycle_failed",
                 reason=_bounded_failure_message(
-                    (proc.stderr or proc.stdout).strip() or "topic cycle failed"
+                    command_output_excerpt(proc) or "topic cycle failed"
                 ),
                 stage="child_cycle_exec",
                 recoverability="retryable" if is_partial else "non_retryable",

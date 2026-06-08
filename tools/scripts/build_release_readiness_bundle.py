@@ -20,6 +20,11 @@ for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "validators"):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+    timeout_output_excerpt,
+)
 from tools.source_db_tools import canonical_graph_closure  # noqa: E402
 from tools.validators import validate_release_readiness  # noqa: E402
 
@@ -213,44 +218,28 @@ def copy_report(*, key: str, source: Path, output_dir: Path) -> StagedReport:
 
 def run_command(command: list[str], *, report_path: Path, label: str) -> tuple[dict[str, Any], int]:
     try:
-        proc = subprocess.run(
-            command,
-            cwd=REPO_ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=REPORT_TIMEOUT_SECONDS,
-        )
+        proc = run_streaming_command(command, cwd=REPO_ROOT, timeout=REPORT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         if report_path.exists():
             report_path.unlink(missing_ok=True)
-        stderr = (exc.stderr or "").strip()
-        stdout = (exc.stdout or "").strip()
-        details = "; ".join(
-            item
-            for item in (
-                f"stdout={stdout}" if stdout else None,
-                f"stderr={stderr}" if stderr else None,
-            )
-            if item
-        )
+        detail = timeout_output_excerpt(exc)
         message = (
             f"{label} timed out after {REPORT_TIMEOUT_SECONDS:g}s before producing a usable report: "
             f"{report_path}"
         )
-        if details:
-            message = f"{message}; {details}"
+        if detail:
+            message = f"{message}; {detail}"
         raise ReleaseReadinessBundleError(message) from exc
     if not report_path.exists():
         raise ReleaseReadinessBundleError(
             f"{label} did not produce expected report: {report_path}; "
-            f"exit={proc.returncode}; stderr={proc.stderr.strip()}"
+            f"exit={proc.returncode}; {command_output_excerpt(proc)}"
         )
     payload = load_json_object(report_path, label=label)
     if proc.returncode not in {0, 1}:
         raise ReleaseReadinessBundleError(
             f"{label} command failed before producing a usable validation report: "
-            f"exit={proc.returncode}; stderr={proc.stderr.strip()}"
+            f"exit={proc.returncode}; {command_output_excerpt(proc)}"
         )
     return payload, proc.returncode
 

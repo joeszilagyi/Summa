@@ -34,6 +34,10 @@ from tools.common.operator_text import (  # noqa: E402
     format_operator_text_value,
     strip_terminal_escapes,
 )
+from tools.common.subprocess_capture import (  # noqa: E402
+    command_output_excerpt,
+    run_streaming_command,
+)
 from tools.common.topic_workspace_registry import (  # noqa: E402
     TopicWorkspaceRegistryError,
     discover_registry_path,
@@ -90,19 +94,16 @@ def git_status(repo_root: Path) -> tuple[str, str]:
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        proc = subprocess.run(
+        proc = run_streaming_command(
             ["git", "status", "--short"],
             cwd=repo_root,
-            text=True,
-            capture_output=True,
-            check=False,
-            env=env,
             timeout=10,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return "git_status_failed", "git status timed out after 10 seconds"
     if proc.returncode != 0:
-        return "git_status_failed", proc.stderr
+        return "git_status_failed", command_output_excerpt(proc)
     return ("dirty" if proc.stdout.strip() else "clean"), proc.stdout
 
 
@@ -794,7 +795,7 @@ def inspect_scheduler(
             )
         )
         return scheduler, findings
-    proc = subprocess.run(
+    proc = run_streaming_command(
         [
             sys.executable,
             str(repo_root / "tools" / "scripts" / "select_scheduled_workspaces.py"),
@@ -804,9 +805,6 @@ def inspect_scheduler(
             "json",
         ],
         cwd=repo_root,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if proc.returncode != 0:
         scheduler["status"] = "fail"
@@ -815,7 +813,7 @@ def inspect_scheduler(
                 "SCHEDULER_SELECTOR_FAILED",
                 "operator_action_required",
                 "scheduler selector failed",
-                stderr=proc.stderr,
+                stderr=command_output_excerpt(proc),
             )
         )
         return scheduler, findings
