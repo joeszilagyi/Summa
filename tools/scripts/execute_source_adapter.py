@@ -67,6 +67,7 @@ SAFE_TEXT_STATUS = {"completed", "failed", "skipped", "denied"}
 SAFE_RUN_STATUS = {"completed", "denied", "failed", "dry_run"}
 LOCAL_VARIANTS = {"local_source", "structured_data", "local_git_repo"}
 REMOTE_VARIANTS = {"remote_url_manifest"}
+JSON_SKIP_DECODER = json.JSONDecoder()
 
 
 class SourceAcquisitionError(RuntimeError):
@@ -493,18 +494,140 @@ def load_csv_row_map(payload: bytes) -> tuple[dict[str, dict[str, str]], list[di
     return row_map, errors
 
 
+def _skip_json_whitespace(text: str, position: int) -> int:
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
+
+
+def _skip_json_value(text: str, position: int) -> tuple[int | None, str | None]:
+    try:
+        _, end_position = JSON_SKIP_DECODER.raw_decode(text, position)
+    except json.JSONDecodeError as exc:
+        return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+    return end_position, None
+
+
+def _select_json_record_path_slice(
+    text: str, *, record_path: str, position: int = 0, segments: list[str] | None = None
+) -> tuple[str | None, str | None]:
+    if segments is None:
+        segments = [part for part in record_path.split(".") if part]
+    if not segments:
+        try:
+            _, end_position = JSON_SKIP_DECODER.raw_decode(text, position)
+        except json.JSONDecodeError as exc:
+            return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+        return text[position:end_position], None
+
+    position = _skip_json_whitespace(text, position)
+    if position >= len(text):
+        return None, f"record_path could not be resolved: {record_path}"
+
+    current = text[position]
+    segment = segments[0]
+
+    if current == "{":
+        position += 1
+        seen_keys: set[str] = set()
+        while True:
+            position = _skip_json_whitespace(text, position)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == "}":
+                return None, f"record_path could not be resolved: {record_path}"
+            try:
+                key, key_end = JSON_SKIP_DECODER.raw_decode(text, position)
+            except json.JSONDecodeError as exc:
+                return None, f"line:{exc.lineno},column:{exc.colno}: {exc.msg}"
+            if not isinstance(key, str):
+                return None, f"record_path could not be resolved: {record_path}"
+            if key in seen_keys:
+                return None, f"duplicate JSON object key: {key}"
+            seen_keys.add(key)
+            position = _skip_json_whitespace(text, key_end)
+            if position >= len(text) or text[position] != ":":
+                return None, f"record_path could not be resolved: {record_path}"
+            position += 1
+            position = _skip_json_whitespace(text, position)
+            if key == segment:
+                return _select_json_record_path_slice(
+                    text, record_path=record_path, position=position, segments=segments[1:]
+                )
+            skipped_end, skipped_error = _skip_json_value(text, position)
+            if skipped_error is not None:
+                return None, skipped_error
+            position = _skip_json_whitespace(text, skipped_end)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == ",":
+                position += 1
+                continue
+            if text[position] == "}":
+                return None, f"record_path could not be resolved: {record_path}"
+            return None, f"record_path could not be resolved: {record_path}"
+
+    if current == "[":
+        if not segment.isdigit():
+            return None, f"record_path could not be resolved: {record_path}"
+        target_index = int(segment)
+        current_index = 0
+        position += 1
+        while True:
+            position = _skip_json_whitespace(text, position)
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == "]":
+                return None, f"record_path could not be resolved: {record_path}"
+            if current_index == target_index:
+                return _select_json_record_path_slice(
+                    text, record_path=record_path, position=position, segments=segments[1:]
+                )
+            skipped_end, skipped_error = _skip_json_value(text, position)
+            if skipped_error is not None:
+                return None, skipped_error
+            position = _skip_json_whitespace(text, skipped_end)
+            current_index += 1
+            if position >= len(text):
+                return None, f"record_path could not be resolved: {record_path}"
+            if text[position] == ",":
+                position += 1
+                continue
+            if text[position] == "]":
+                return None, f"record_path could not be resolved: {record_path}"
+            return None, f"record_path could not be resolved: {record_path}"
+
+    return None, f"record_path could not be resolved: {record_path}"
+
+
 def load_json_record_map(
     payload: bytes, *, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     try:
         decoded_payload = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    if record_path:
+        selected_text, record_path_error = _select_json_record_path_slice(
+            decoded_payload, record_path=record_path
+        )
+        if record_path_error is not None or selected_text is None:
+            return {}, [
+                {
+                    "context": f"record_path:{record_path}",
+                    "reason": record_path_error or f"record_path could not be resolved: {record_path}",
+                }
+            ]
+        payload_to_parse = selected_text
+    else:
+        payload_to_parse = decoded_payload
+
+    try:
         parsed_payload = json.loads(
-            decoded_payload,
+            payload_to_parse,
             object_pairs_hook=no_duplicate_object_pairs,
             parse_constant=reject_json_constant,
         )
-    except UnicodeDecodeError:
-        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     except DuplicateJsonKeyError as exc:
         return {}, [{"context": "line:1", "reason": str(exc)}]
     except json.JSONDecodeError as exc:
@@ -512,9 +635,12 @@ def load_json_record_map(
     except ValueError as exc:
         return {}, [{"context": "line:1", "reason": str(exc)}]
 
-    selected, record_path_error = resolve_json_record_path(parsed_payload, record_path)
-    if record_path_error is not None:
-        return {}, [{"context": f"record_path:{record_path}", "reason": record_path_error}]
+    if record_path:
+        selected = parsed_payload
+    else:
+        selected, record_path_error = resolve_json_record_path(parsed_payload, record_path)
+        if record_path_error is not None:
+            return {}, [{"context": f"record_path:{record_path}", "reason": record_path_error}]
     if isinstance(selected, list):
         return {f"index:{index}": entry for index, entry in enumerate(selected, start=1)}, []
     return {"object:1": selected}, []

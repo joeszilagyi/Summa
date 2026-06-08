@@ -169,3 +169,28 @@ def test_execute_structured_data_reads_each_source_file_once_per_grouped_capture
     assert extraction_records[-1]["status"] == "skipped"
     assert extraction_records[-1]["failure_reason"] == "oversized_payload"
     assert all(count == 1 for count in read_counts.values())
+
+
+def test_load_structured_json_record_map_parses_only_selected_subtree(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "structured_data" / "nested_records.json"
+    ).read_bytes()
+    original_loads = source_executor.json.loads
+    load_calls: list[str] = []
+
+    def loads_spy(*args: Any, **kwargs: Any) -> Any:
+        load_calls.append(args[0])
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(source_executor.json, "loads", loads_spy)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="json", record_path="records"
+    )
+
+    assert errors == []
+    assert list(record_map) == ["index:1", "index:2"]
+    assert len(load_calls) == 1
+    assert len(load_calls[0]) < len(payload.decode("utf-8"))
