@@ -1675,8 +1675,9 @@ def remote_fetch_one(
     timeout_seconds: float,
     max_response_bytes: int,
     payload_spool_dir: Path,
+    opener: Any | None = None,
 ) -> dict[str, Any]:
-    opener = build_opener(NoAutoRedirectHandler)
+    opener = opener if opener is not None else build_opener(NoAutoRedirectHandler)
     current_url = url
     redirect_count = 0
     attempted_urls: list[str] = []
@@ -1836,6 +1837,7 @@ def _remote_fetch_host_queue(
     payload_spool_dir: Path,
 ) -> dict[int, dict[str, Any]]:
     results: dict[int, dict[str, Any]] = {}
+    opener = build_opener(NoAutoRedirectHandler)
     for index, task in enumerate(tasks):
         if index > 0 and min_interval_seconds > 0:
             time.sleep(min_interval_seconds)
@@ -1848,6 +1850,7 @@ def _remote_fetch_host_queue(
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
             payload_spool_dir=payload_spool_dir,
+            opener=opener,
         )
     return results
 

@@ -176,6 +176,118 @@ def test_remote_fetch_one_spools_captured_payload_to_disk(
     assert fetch_result["payload_byte_count"] == len(body)
 
 
+def test_execute_remote_fetches_reuses_one_opener_per_host_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b"remote fixture text\n"
+    opener_calls = {"count": 0}
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status = 200
+            self.headers = {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": str(len(body)),
+            }
+            self._offset = 0
+
+        def getcode(self) -> int:
+            return 200
+
+        def read(self, size: int) -> bytes:
+            if self._offset >= len(body):
+                return b""
+            chunk = body[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+    class FakeOpener:
+        def open(self, request: Any, timeout: float) -> FakeResponse:
+            del request, timeout
+            return FakeResponse()
+
+    def build_opener_spy(_handler: Any) -> FakeOpener:
+        opener_calls["count"] += 1
+        return FakeOpener()
+
+    monkeypatch.setattr(source_executor, "build_opener", build_opener_spy)
+    records = [
+        {
+            "sequence": 1,
+            "relative_path": "one",
+            "preserved": {
+                "original_locator": {"entry_url": "https://host-a.test/one"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://host-a.test/manifest.json"},
+        },
+        {
+            "sequence": 2,
+            "relative_path": "two",
+            "preserved": {
+                "original_locator": {"entry_url": "https://host-a.test/two"},
+                "rights_posture": "public",
+                "source_metadata": {"hazard_flags": []},
+            },
+            "source_specific": {"manifest_url": "https://host-a.test/manifest.json"},
+        },
+    ]
+    gate_report = {
+        "planned_actions": [
+            {
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "url": "https://host-a.test/two",
+                "status": "planned",
+                "method": "GET",
+            },
+        ],
+        "checks": {
+            "network_policy": {
+                "user_agent": "SummaRemoteTest/1.0",
+                "allow_http": True,
+                "robots_mode": "respect_robots",
+            },
+            "rate_limits": {"min_interval_seconds": 0},
+            "allowlist": {
+                "hosts": [],
+                "url_prefixes": ["https://host-a.test/"],
+            },
+        },
+    }
+
+    capture_events, extraction_records, text_artifacts, binary_artifacts, failed, summary = (
+        source_executor.execute_remote_fetches(
+            records=records,
+            adapter_payload={"adapter_id": "remote_fixture", "workspace_id": "alpha_subject"},
+            run_id="remote-opener-reuse-test",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash="a" * 64,
+            gate_report=gate_report,
+            timeout_seconds=2,
+            max_response_bytes=1024,
+            payload_spool_dir=tmp_path / "payload-spool",
+        )
+    )
+
+    assert opener_calls["count"] == 1
+    assert failed is False
+    assert summary["urls_attempted"] == 2
+    assert summary["urls_succeeded"] == 2
+    assert summary["urls_failed"] == 0
+    assert [record["status"] for record in capture_events] == ["completed", "completed"]
+    assert [record["status"] for record in extraction_records] == ["completed", "completed"]
+    assert text_artifacts == {
+        "extracted-text/extraction-0001.txt": "remote fixture text\n",
+        "extracted-text/extraction-0002.txt": "remote fixture text\n",
+    }
+    assert binary_artifacts == {}
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -768,6 +880,7 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
         timeout_seconds: float,
         max_response_bytes: int,
         payload_spool_dir: Path,
+        opener: Any | None = None,
     ) -> dict[str, Any]:
         del (
             method,
@@ -777,6 +890,7 @@ def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_inde
             timeout_seconds,
             max_response_bytes,
             payload_spool_dir,
+            opener,
         )
         fetch_calls.append(url)
         if "host-a.test" in url and url.endswith("/one"):
