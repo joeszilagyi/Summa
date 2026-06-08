@@ -16,11 +16,11 @@ validated source-adapter handoffs.
 
 Dry-run:
 
-`python3 tools/scripts/execute_source_adapter.py --handoff path/to/handoff.json --output runs/acquisition/example --dry-run`
+`python3 tools/scripts/execute_source_adapter.py --handoff path/to/handoff.json --workspace-root . --output runs/acquisition/example --dry-run`
 
 Gated remote URL fetch:
 
-`python3 tools/scripts/execute_source_adapter.py --handoff path/to/remote-handoff.jsonl --network-safety-request path/to/gate-request.json --allow-network --output runs/acquisition/remote-example`
+`python3 tools/scripts/execute_source_adapter.py --handoff path/to/remote-handoff.jsonl --network-safety-request path/to/gate-request.json --allow-network --workspace-root . --output runs/acquisition/remote-example`
 
 ## Safety
 
@@ -28,6 +28,7 @@ Gated remote URL fetch:
 - Remote-capable handoffs require a network safety gate request.
 - Remote fetch additionally requires a gate `allow` decision and
   `--allow-network`.
+- Output directories are confined to the declared workspace root.
 - Gate denials and missing opt-in perform no fetch and keep
   `network_access_attempted` false.
 - Fetched bytes are transient run-directory artifacts and are treated as

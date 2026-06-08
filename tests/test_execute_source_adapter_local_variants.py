@@ -49,6 +49,8 @@ def run_executor(*, handoff: Path, output: Path) -> subprocess.CompletedProcess[
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",

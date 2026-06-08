@@ -80,6 +80,8 @@ def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProces
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(tmp_path),
             "--mode",
             "local",
             "--run-id",
@@ -132,6 +134,8 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -271,6 +275,8 @@ def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Pa
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -311,6 +317,8 @@ def test_execute_local_source_anchors_root_to_adapter_manifest(tmp_path: Path) -
             str(ADAPTER),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -326,6 +334,40 @@ def test_execute_local_source_anchors_root_to_adapter_manifest(tmp_path: Path) -
 
     assert proc.returncode != 0
     assert "escapes the allowed root" in (proc.stdout + proc.stderr)
+
+
+def test_execute_local_source_rejects_output_outside_workspace_root(tmp_path: Path) -> None:
+    handoff, _ = run_planner(tmp_path)
+    output = tmp_path / "outside" / "local-source-execution"
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--workspace-root",
+            str(workspace_root),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "escapes the allowed workspace root" in (proc.stdout + proc.stderr)
 
 
 def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) -> None:

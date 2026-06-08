@@ -1199,6 +1199,8 @@ def acquisition_stage(
         str(adapter_path),
         "--output",
         str(output_dir),
+        "--workspace-root",
+        str(run_dir),
         "--mode",
         "local",
         "--run-id",

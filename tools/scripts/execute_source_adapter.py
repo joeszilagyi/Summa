@@ -114,6 +114,13 @@ def parse_args() -> argparse.Namespace:
         "--output", required=True, help="Workspace-local run directory for execution artifacts."
     )
     parser.add_argument(
+        "--workspace-root",
+        help=(
+            "Trusted workspace root that the output directory must remain under. "
+            "Defaults to the current working directory."
+        ),
+    )
+    parser.add_argument(
         "--mode",
         choices=("auto", "local", "remote"),
         default="auto",
@@ -163,6 +170,19 @@ def resolve_cli_path(raw_path: str, *, base_dir: Path) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (base_dir / path).resolve()
+
+
+def resolve_workspace_root(raw_path: str | None) -> Path:
+    if raw_path is None:
+        return Path.cwd().resolve()
+    return resolve_cli_path(raw_path, base_dir=Path.cwd())
+
+
+def resolve_output_dir(raw_path: str, *, workspace_root: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (workspace_root / path).resolve()
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -293,7 +313,17 @@ def resolve_run_id(output_dir: Path, *, run_id: str | None) -> str:
     )
 
 
-def prepare_output_dir(output_dir: Path, *, run_id: str) -> None:
+def ensure_output_dir_within_workspace_root(output_dir: Path, *, workspace_root: Path) -> None:
+    try:
+        output_dir.resolve().relative_to(workspace_root.resolve())
+    except ValueError as exc:
+        raise SourceAcquisitionError(
+            f"output path escapes the allowed workspace root: {output_dir}"
+        ) from exc
+
+
+def prepare_output_dir(output_dir: Path, *, run_id: str, workspace_root: Path) -> None:
+    ensure_output_dir_within_workspace_root(output_dir, workspace_root=workspace_root)
     if output_dir.exists() and not output_dir.is_dir():
         raise SourceAcquisitionError(f"output path exists and is not a directory: {output_dir}")
     if output_dir.exists():
@@ -2214,7 +2244,8 @@ def main() -> int:
     args = parse_args()
     handoff_path = resolve_cli_path(args.handoff, base_dir=Path.cwd())
     adapter_path = resolve_cli_path(args.adapter, base_dir=Path.cwd())
-    output_dir = resolve_cli_path(args.output, base_dir=Path.cwd())
+    workspace_root = resolve_workspace_root(args.workspace_root)
+    output_dir = resolve_output_dir(args.output, workspace_root=workspace_root)
     created_at = normalize_created_at(args.created_at)
     run_id = resolve_run_id(output_dir, run_id=args.run_id)
 
@@ -2300,7 +2331,7 @@ def main() -> int:
             )
             return 0
 
-        prepare_output_dir(output_dir, run_id=run_id)
+        prepare_output_dir(output_dir, run_id=run_id, workspace_root=workspace_root)
 
         denial_record = None
         gate_report = None

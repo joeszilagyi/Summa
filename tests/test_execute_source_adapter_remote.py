@@ -214,6 +214,8 @@ def run_executor(
         str(ADAPTER),
         "--output",
         str(output),
+        "--workspace-root",
+        str(output.parent),
         "--mode",
         "remote",
         "--network-safety-request",
