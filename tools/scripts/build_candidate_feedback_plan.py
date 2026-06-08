@@ -961,10 +961,16 @@ def load_open_question_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
     seed_scoped_work_ids(conn, work_ids)
     scope_sql, scope_params = claim_scope_sql(subject_id, work_ids)
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*scope_params, *tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         SELECT source_claim_id, about_object_ref, claim_text, claim_type, review_state,
@@ -974,8 +980,9 @@ def load_open_question_leads(
           AND is_open_question=1
           AND review_state IN ({placeholders})
         ORDER BY created_at DESC, source_claim_id ASC
+        {limit_clause}
         """,
-        scope_params + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -1030,6 +1037,7 @@ def load_entity_leads(
     enabled_facets: list[str],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
@@ -1037,6 +1045,24 @@ def load_entity_leads(
     if not facet_resolution_sql:
         return []
     enabled_facet_filters = ", ".join("?" for _ in sorted({str(facet).strip().casefold().replace(" ", "_") for facet in enabled_facets if str(facet).strip()}))
+    limit_clause = ""
+    query_params: list[Any] = [
+        subject_id,
+        *tuple(sorted(LEAD_REVIEW_STATES)),
+        *facet_resolution_params,
+        *tuple(
+            sorted(
+                {
+                    str(facet).strip().casefold().replace(" ", "_")
+                    for facet in enabled_facets
+                    if str(facet).strip()
+                }
+            )
+        ),
+    ]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         WITH entity_rows AS (
@@ -1055,21 +1081,9 @@ def load_entity_leads(
         FROM entity_rows
         WHERE {facet_resolution_sql.strip()} IN ({enabled_facet_filters})
         ORDER BY detected_entity_id
+        {limit_clause}
         """,
-        (
-            subject_id,
-            *tuple(sorted(LEAD_REVIEW_STATES)),
-            *facet_resolution_params,
-            *tuple(
-                sorted(
-                    {
-                        str(facet).strip().casefold().replace(" ", "_")
-                        for facet in enabled_facets
-                        if str(facet).strip()
-                    }
-                )
-            ),
-        ),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -1128,9 +1142,15 @@ def load_work_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
     seed_scoped_work_ids(conn, work_ids)
     review_placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         SELECT work.work_id, work.title, work.review_state, work.provenance_event_ref
@@ -1138,8 +1158,9 @@ def load_work_leads(
         JOIN scoped_work_ids USING (work_id)
         WHERE work.review_state IN ({review_placeholders})
         ORDER BY work.work_id
+        {limit_clause}
         """,
-        tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -1541,6 +1562,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
     )
     entity_leads = load_entity_leads(
         conn,
@@ -1548,6 +1570,7 @@ def build_plan(
         enabled_facets=list(subject["enabled_facets"]),
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
         warnings=warnings,
     )
     work_leads = load_work_leads(
@@ -1556,6 +1579,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
     all_lead_candidates = [item for item in lead_candidates if item["facet"] in subject["enabled_facets"]]

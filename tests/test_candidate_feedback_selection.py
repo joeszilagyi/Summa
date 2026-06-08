@@ -1295,6 +1295,15 @@ def test_open_question_leads_reward_more_specific_questions(tmp_path: Path) -> N
 def test_open_question_leads_use_persisted_status_without_python_classifier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     subject_id = "feedback_subject"
@@ -1302,7 +1311,8 @@ def test_open_question_leads_use_persisted_status_without_python_classifier(
     write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
-    conn = canonical_store.connect_canonical_store(db_path)
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
     try:
         question_row = conn.execute(
             """
@@ -1324,7 +1334,8 @@ def test_open_question_leads_use_persisted_status_without_python_classifier(
 
     monkeypatch.setattr(planner, "claim_is_open_question", fail_classifier)
 
-    conn = canonical_store.connect_existing_read_only(db_path)
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
     try:
         leads = planner.load_open_question_leads(
             conn,
@@ -1332,11 +1343,20 @@ def test_open_question_leads_use_persisted_status_without_python_classifier(
             work_ids=work_ids,
             history_by_event_key=history_by_event_key,
             weights=planner.DEFAULT_SCORING_WEIGHTS,
+            max_candidates=2,
         )
     finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
         conn.close()
 
     assert any(lead["object_ref"] == question_claim_ref for lead in leads)
+    question_queries = [
+        sql
+        for sql in executed_sql
+        if "FROM source_claim" in sql and "is_open_question=1" in sql
+    ]
+    assert question_queries
+    assert any("LIMIT ?" in sql for sql in question_queries)
 
 
 def test_load_gather_history_batches_yield_summaries_per_event(tmp_path: Path) -> None:
@@ -1732,6 +1752,7 @@ def test_entity_leads_use_direct_workspace_filter_without_coalesce(
             enabled_facets=["people", "works"],
             history_by_event_key=history_by_event_key,
             weights=planner.DEFAULT_SCORING_WEIGHTS,
+            max_candidates=2,
             warnings=[],
         )
     finally:
@@ -1742,6 +1763,7 @@ def test_entity_leads_use_direct_workspace_filter_without_coalesce(
     entity_queries = [sql for sql in executed_sql if "FROM extraction_detected_entity entity" in sql]
     assert entity_queries
     assert any("entity.workspace_id=?" in sql for sql in entity_queries)
+    assert any("LIMIT ?" in sql for sql in entity_queries)
     assert not any("COALESCE(entity.workspace_id, extraction.workspace_id, capture.workspace_id)=?" in sql for sql in entity_queries)
 
 
@@ -1835,6 +1857,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
             work_ids=work_ids,
             history_by_event_key=history_by_event_key,
             weights=planner.DEFAULT_SCORING_WEIGHTS,
+            max_candidates=2,
         )
     finally:
         executed_sql = list(getattr(conn, "executed_sql", []))
@@ -1843,6 +1866,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
     assert leads == []
     work_queries = [sql for sql in executed_sql if "JOIN scoped_work_ids USING (work_id)" in sql]
     assert work_queries
+    assert any("LIMIT ?" in sql for sql in work_queries)
     assert not any("work_id IN (" in sql for sql in work_queries)
 
 
