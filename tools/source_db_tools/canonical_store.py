@@ -34,6 +34,9 @@ MODULE_PATH = "tools/source_db_tools/canonical_store.py"
 CLI_PATH = "tools/source_db_tools/init_canonical_store.py"
 OUTLINE_PATH = REPO_ROOT / "config" / "canonical_graph_model_outline.json"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "schema" / "migrations"
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000
+DEFAULT_SQLITE_WAL_SYNCHRONOUS = "NORMAL"
+DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS = "FULL"
 
 REQUIRED_INDEXES = {
     "ix_authority_identifier_record",
@@ -272,21 +275,66 @@ def resolve_db_path(db_path: Path | str) -> Path:
     return path
 
 
-def connect_canonical_store(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+def _configure_connection_pragmas(
+    conn: sqlite3.Connection,
+    *,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    journal_mode: str | None = None,
+    synchronous: str | None = None,
+) -> None:
+    conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
+    if journal_mode is not None:
+        row = conn.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()
+        if row is None or str(row[0]).strip().lower() != journal_mode.strip().lower():
+            raise CanonicalStoreError(
+                f"could not configure canonical store journal_mode={journal_mode}"
+            )
+    if synchronous is not None:
+        conn.execute(f"PRAGMA synchronous={synchronous}")
+
+
+def connect_canonical_store(
+    db_path: Path,
+    *,
+    journal_mode: str = "WAL",
+    synchronous: str | None = None,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
+    normalized_journal_mode = journal_mode.strip().upper()
+    if not normalized_journal_mode:
+        raise CanonicalStoreError("journal_mode may not be blank")
+    normalized_synchronous = synchronous
+    if normalized_synchronous is None:
+        normalized_synchronous = (
+            DEFAULT_SQLITE_WAL_SYNCHRONOUS
+            if normalized_journal_mode == "WAL"
+            else DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS
+        )
+    conn = sqlite3.connect(db_path, timeout=busy_timeout_ms / 1000.0)
     conn.row_factory = sqlite3.Row
+    _configure_connection_pragmas(
+        conn,
+        busy_timeout_ms=busy_timeout_ms,
+        journal_mode=normalized_journal_mode,
+        synchronous=normalized_synchronous,
+    )
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
-def connect_existing_read_only(db_path: Path) -> sqlite3.Connection:
+def connect_existing_read_only(
+    db_path: Path,
+    *,
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
     if not db_path.exists():
         raise CanonicalStoreError(f"database not found: {db_path}")
     if not db_path.is_file():
         raise CanonicalStoreError(f"database path is not a file: {db_path}")
     uri = db_path.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
     conn.row_factory = sqlite3.Row
+    _configure_connection_pragmas(conn, busy_timeout_ms=busy_timeout_ms)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
