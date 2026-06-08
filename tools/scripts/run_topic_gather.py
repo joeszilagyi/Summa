@@ -65,7 +65,9 @@ DEFAULT_ENGINE = "codex"
 DEFAULT_CYCLE_DEPTH = 1
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 RUNS_ROOT = Path("runs") / "gather"
-GATHER_PROMPT_HEADER_PATH = REPO_ROOT / "tools" / "prompts" / "_shared" / "gather_governance_header.prompt"
+GATHER_PROMPT_HEADER_PATH = (
+    REPO_ROOT / "tools" / "prompts" / "_shared" / "gather_governance_header.prompt"
+)
 LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -1259,11 +1261,17 @@ def load_cached_live_result(
     cached_stamp_footer_hash = sha256_text(
         json.dumps(cached_stamp_footer, ensure_ascii=False, sort_keys=True)
     )
-    if cached_raw_engine_output != raw_engine_output or cached_raw_engine_output_hash != raw_engine_output_hash:
+    if (
+        cached_raw_engine_output != raw_engine_output
+        or cached_raw_engine_output_hash != raw_engine_output_hash
+    ):
         return None
     if cached_stamped_output_hash != stamped_output_hash:
         return None
-    if cached_stamp_footer_hash != stamped_output_footer_hash or cached_stamp_footer != stamp_footer:
+    if (
+        cached_stamp_footer_hash != stamped_output_footer_hash
+        or cached_stamp_footer != stamp_footer
+    ):
         return None
 
     return {
@@ -1303,10 +1311,14 @@ def build_candidate_batch(
     mode = args.mode.replace("-", "_")
     iteration_mode = "prior_state" if args.use_prior_state else "one_shot"
     engine_present = live_result is not None
-    engine_invoked = bool(live_result.get("invoked", False)) if isinstance(live_result, dict) else False
+    engine_invoked = (
+        bool(live_result.get("invoked", False)) if isinstance(live_result, dict) else False
+    )
     candidate_type_hint = candidate_type_hint_for_facet(facet)
     candidates: list[dict[str, Any]] = []
-    engine_cache_hit = bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
+    engine_cache_hit = (
+        bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
+    )
     if live_result is not None:
         candidate_record = compact_candidate_record_payload(
             candidate_type=candidate_type_hint,

@@ -1604,9 +1604,7 @@ def record_cycle_evidence_from_manifest(
                     subject_id=subject_id,
                     expected_schema_version=None,
                 )
-                spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir, record
-                )
+                spool_path = canonical_write_spool.write_spool_record(spool_dir, record)
                 ledger["status"] = "spooled"
                 ledger["spool_record_path"] = str(spool_path)
                 add_spool_record_to_manifest(manifest, spool_path=spool_path, record=record)
@@ -1671,9 +1669,7 @@ def record_cycle_evidence_from_manifest(
                     subject_id=subject_id,
                     expected_schema_version=None,
                 )
-                spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir, record
-                )
+                spool_path = canonical_write_spool.write_spool_record(spool_dir, record)
                 ledger["status"] = "spooled"
                 ledger["error"] = str(exc)
                 ledger["spool_record_path"] = str(spool_path)

@@ -912,9 +912,7 @@ def record_cycle_candidates_considered(
             stage_event_id=stage_event_id,
             candidate_ref_type="selection_explanation",
             candidate_ref_id=str(candidate.get("candidate_id") or ""),
-            candidate_label=None
-            if candidate.get("label") is None
-            else str(candidate.get("label")),
+            candidate_label=None if candidate.get("label") is None else str(candidate.get("label")),
             score=candidate.get("score")
             if isinstance(candidate.get("score"), (int, float))
             else None,
@@ -973,9 +971,7 @@ def record_cycle_candidates_excluded(
             stage_event_id=stage_event_id,
             candidate_ref_type="selection_explanation",
             candidate_ref_id=str(candidate.get("candidate_id") or ""),
-            candidate_label=None
-            if candidate.get("label") is None
-            else str(candidate.get("label")),
+            candidate_label=None if candidate.get("label") is None else str(candidate.get("label")),
             policy_id=policy_id,
             retryable=bool(candidate.get("retryable", True)),
             created_at=created_at,

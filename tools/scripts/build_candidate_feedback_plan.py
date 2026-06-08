@@ -713,16 +713,16 @@ def batch_extraction_outcome_counts(
                 related_event_keys_by_source_access_id[source_access_id].add(
                     str(row["extraction_provenance_event_ref"])
                 )
-            success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
+            success, failed_delta, unknown_status = classify_extraction_status(
+                row["extraction_status"]
+            )
             entry["successful_extractions"] += success
             entry["failed_extractions"] += failed_delta
             if unknown_status is not None:
                 unknown_statuses.add(unknown_status)
 
     provenance_event_keys = {
-        event_key
-        for keys in related_event_keys_by_source_access_id.values()
-        for event_key in keys
+        event_key for keys in related_event_keys_by_source_access_id.values() for event_key in keys
     }
     run_ids_by_event = run_ids_for_events(conn, provenance_event_keys)
     for source_access_id, entry in result.items():
@@ -797,11 +797,15 @@ def load_source_access_leads(
         source_access_requests.append(
             {
                 "source_access_id": int(row["source_access_id"]),
-                "source_locus_id": None if row["source_locus_id"] is None else str(row["source_locus_id"]),
+                "source_locus_id": None
+                if row["source_locus_id"] is None
+                else str(row["source_locus_id"]),
                 "locators": [
                     locator
                     for locator in {
-                        row["original_locator"] if isinstance(row["original_locator"], str) else None,
+                        row["original_locator"]
+                        if isinstance(row["original_locator"], str)
+                        else None,
                         row["canonical_url"] if isinstance(row["canonical_url"], str) else None,
                     }
                     if isinstance(locator, str) and locator
@@ -843,8 +847,7 @@ def load_source_access_leads(
             tuple(work_refs) + accepted_states,
         ).fetchall()
         related_claim_counts = {
-            str(row["about_object_ref"]): int(row["count"])
-            for row in related_claim_rows
+            str(row["about_object_ref"]): int(row["count"]) for row in related_claim_rows
         }
     related_entity_counts: dict[int, int] = {}
     if capture_ids:
@@ -860,8 +863,7 @@ def load_source_access_leads(
             tuple(capture_ids) + accepted_states,
         ).fetchall()
         related_entity_counts = {
-            int(row["capture_event_id"]): int(row["count"])
-            for row in related_entity_rows
+            int(row["capture_event_id"]): int(row["count"]) for row in related_entity_rows
         }
 
     leads: list[dict[str, Any]] = []
@@ -1042,7 +1044,16 @@ def load_entity_leads(
     facet_resolution_sql, facet_resolution_params = _entity_facet_resolution_sql(enabled_facets)
     if not facet_resolution_sql:
         return []
-    enabled_facet_filters = ", ".join("?" for _ in sorted({str(facet).strip().casefold().replace(" ", "_") for facet in enabled_facets if str(facet).strip()}))
+    enabled_facet_filters = ", ".join(
+        "?"
+        for _ in sorted(
+            {
+                str(facet).strip().casefold().replace(" ", "_")
+                for facet in enabled_facets
+                if str(facet).strip()
+            }
+        )
+    )
     limit_clause = ""
     query_params: list[Any] = [
         subject_id,
@@ -1336,6 +1347,7 @@ def aggregate_lead_scores(
 ) -> list[dict[str, Any]]:
     facet_order = {facet: index for index, facet in enumerate(enabled_facets)}
     lead_candidates = [item for item in lead_candidates if item["facet"] in facet_order]
+
     def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
         return (
             -float(item["score"]),
@@ -1580,7 +1592,9 @@ def build_plan(
         max_candidates=args.max_lead_candidates,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
-    all_lead_candidates = [item for item in lead_candidates if item["facet"] in subject["enabled_facets"]]
+    all_lead_candidates = [
+        item for item in lead_candidates if item["facet"] in subject["enabled_facets"]
+    ]
     all_facet_scores = aggregate_facet_scores(
         enabled_facets=list(subject["enabled_facets"]),
         bundles=bundles,
