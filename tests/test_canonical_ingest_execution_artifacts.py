@@ -70,6 +70,8 @@ def build_hostile_execution_run(tmp_path: Path) -> Path:
             str(EXECUTE_SOURCE_ADAPTER),
             "--handoff",
             str(handoff_path),
+            "--workspace-root",
+            str(tmp_path),
             "--adapter",
             str(STRUCTURED_HOSTILE_ADAPTER),
             "--output",
@@ -100,8 +102,8 @@ def build_hostile_execution_run(tmp_path: Path) -> Path:
 def test_execution_artifact_ingest_writes_capture_and_extraction_rows(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -109,10 +111,10 @@ def test_execution_artifact_ingest_writes_capture_and_extraction_rows(tmp_path: 
             report = canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
         counts = canonical_store.canonical_family_counts(conn)
@@ -139,8 +141,8 @@ def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
 ) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
     captured: dict[str, object] = {}
 
@@ -171,10 +173,10 @@ def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
             report = canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
     finally:
@@ -222,8 +224,6 @@ def test_load_validated_execution_artifacts_uses_single_execution_receipt_load(
 ) -> None:
     fake_receipt = SimpleNamespace(
         execution_record={"run_id": "receipt-run"},
-        capture_events=[],
-        extraction_records=[],
         paths={
             "run_dir": tmp_path / "execution_run",
             "execution_record": tmp_path / "execution_run" / "execution-record.json",
@@ -248,7 +248,11 @@ def test_load_validated_execution_artifacts_uses_single_execution_receipt_load(
         validate_calls["count"] += 1
         assert receipt is fake_receipt
         return (
-            {"counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []},
+            {
+                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
+                "errors": [],
+                "warnings": [],
+            },
             canonical_ingest.EXIT_EXECUTION_PASS,
         )
 
@@ -259,15 +263,13 @@ def test_load_validated_execution_artifacts_uses_single_execution_receipt_load(
         fake_validate_execution_artifact_receipt,
     )
 
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(tmp_path / "execution_run")
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        tmp_path / "execution_run"
     )
 
     assert load_calls["count"] == 1
     assert validate_calls["count"] == 1
     assert execution_record == fake_receipt.execution_record
-    assert capture_events == fake_receipt.capture_events
-    assert extraction_records == fake_receipt.extraction_records
     assert paths == fake_receipt.paths
     assert input_hashes == fake_receipt.input_hashes
 
@@ -275,8 +277,8 @@ def test_load_validated_execution_artifacts_uses_single_execution_receipt_load(
 def test_execution_artifact_ingest_is_idempotent(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -284,10 +286,10 @@ def test_execution_artifact_ingest_is_idempotent(tmp_path: Path) -> None:
             first = canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
         counts_after_first = canonical_store.canonical_family_counts(conn)
@@ -295,10 +297,10 @@ def test_execution_artifact_ingest_is_idempotent(tmp_path: Path) -> None:
             second = canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
         counts_after_second = canonical_store.canonical_family_counts(conn)
@@ -311,23 +313,37 @@ def test_execution_artifact_ingest_is_idempotent(tmp_path: Path) -> None:
     assert second["counts"]["updated"]["extraction_record"] == 1
 
 
-def test_execution_artifact_missing_capture_reference_rolls_back_in_strict_mode(tmp_path: Path) -> None:
+def test_execution_artifact_missing_capture_reference_rolls_back_in_strict_mode(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     extraction_records[0]["capture_id"] = "capture-9999"
+    (run_dir / "extraction-records.jsonl").write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in extraction_records
+        ),
+        encoding="utf-8",
+    )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with pytest.raises(canonical_ingest.CanonicalIngestError, match="unknown capture_id"), conn:
             canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
         counts = canonical_store.canonical_family_counts(conn)
@@ -337,21 +353,23 @@ def test_execution_artifact_missing_capture_reference_rolls_back_in_strict_mode(
     assert all(count == 0 for count in counts.values())
 
 
-def test_execution_artifact_dry_run_reports_intended_writes_without_mutation(tmp_path: Path) -> None:
+def test_execution_artifact_dry_run_reports_intended_writes_without_mutation(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         report = canonical_ingest.ingest_execution_artifacts(
             conn,
             execution_record,
-            capture_events,
-            extraction_records,
             paths=paths,
             input_hashes=input_hashes,
+            capture_events=None,
+            extraction_records=None,
             dry_run=True,
             db_path=db_path,
         )
@@ -379,20 +397,31 @@ def test_execution_artifact_dry_run_reuses_capture_ids_for_all_extractions(
 
     db_path = bootstrap_db(tmp_path)
     run_dir = copy_execution_fixture(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
-    capture_events = CountingCaptureEvents(capture_events)
+    capture_events = CountingCaptureEvents(
+        [
+            json.loads(line)
+            for line in (run_dir / "capture-events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    )
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     extraction_records = extraction_records + extraction_records
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         report = canonical_ingest.ingest_execution_artifacts(
             conn,
             execution_record,
-            capture_events,
-            extraction_records,
             paths=paths,
             input_hashes=input_hashes,
+            capture_events=capture_events,
+            extraction_records=extraction_records,
             dry_run=True,
             db_path=db_path,
         )
@@ -403,15 +432,15 @@ def test_execution_artifact_dry_run_reuses_capture_ids_for_all_extractions(
     assert report["status"] == "dry_run"
     assert report["counts"]["intended"]["capture_event"] == 1
     assert report["counts"]["intended"]["extraction_record"] == 2
-    assert capture_events.iteration_count == 2
+    assert capture_events.iteration_count == 1
     assert all(count == 0 for count in counts.values())
 
 
 def test_execution_artifact_hostile_fixture_preserves_status_and_flags(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     run_dir = build_hostile_execution_run(tmp_path)
-    execution_record, capture_events, extraction_records, paths, input_hashes = (
-        canonical_ingest.load_validated_execution_artifacts(run_dir)
+    execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+        run_dir
     )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -419,10 +448,10 @@ def test_execution_artifact_hostile_fixture_preserves_status_and_flags(tmp_path:
             canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                capture_events,
-                extraction_records,
                 paths=paths,
                 input_hashes=input_hashes,
+                capture_events=None,
+                extraction_records=None,
                 db_path=db_path,
             )
         rows = conn.execute(

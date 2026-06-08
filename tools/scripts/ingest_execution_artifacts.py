@@ -141,8 +141,6 @@ def main() -> int:
         run_dir = canonical_store.resolve_db_path(args.run_dir)
         (
             execution_record,
-            capture_events,
-            extraction_records,
             paths,
             input_hashes,
         ) = canonical_ingest.load_validated_execution_artifacts(run_dir)
@@ -159,10 +157,10 @@ def main() -> int:
                 report = canonical_ingest.ingest_execution_artifacts(
                     conn,
                     execution_record,
-                    capture_events,
-                    extraction_records,
                     paths=paths,
                     input_hashes=input_hashes,
+                    capture_events=None,
+                    extraction_records=None,
                     dry_run=True,
                     strict=not args.no_strict,
                     db_path=db_path,
@@ -176,10 +174,10 @@ def main() -> int:
                     report = canonical_ingest.ingest_execution_artifacts(
                         conn,
                         execution_record,
-                        capture_events,
-                        extraction_records,
                         paths=paths,
                         input_hashes=input_hashes,
+                        capture_events=None,
+                        extraction_records=None,
                         dry_run=False,
                         strict=not args.no_strict,
                         db_path=db_path,

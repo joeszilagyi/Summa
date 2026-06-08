@@ -276,10 +276,20 @@ def test_validate_store_stage_reuses_validated_store_connection(
             "recommended_interpretation": "Canonical store is initialized and valid, but contains no canonical records yet.",
         }
 
-    monkeypatch.setattr(module.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only)
-    monkeypatch.setattr(module.canonical_store, "validate_existing_store", fake_validate_existing_store)
-    monkeypatch.setattr(module.canonical_store, "summarize_canonical_store_population", fake_summary)
-    monkeypatch.setattr(module.canonical_store, "check_canonical_store", lambda *_: pytest.fail("unexpected check_canonical_store"))
+    monkeypatch.setattr(
+        module.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only
+    )
+    monkeypatch.setattr(
+        module.canonical_store, "validate_existing_store", fake_validate_existing_store
+    )
+    monkeypatch.setattr(
+        module.canonical_store, "summarize_canonical_store_population", fake_summary
+    )
+    monkeypatch.setattr(
+        module.canonical_store,
+        "check_canonical_store",
+        lambda *_: pytest.fail("unexpected check_canonical_store"),
+    )
 
     module.validate_store_stage(
         args=SimpleNamespace(degraded_spool=False),
@@ -340,7 +350,11 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert Path(stages["ingest_candidate_batch"]["artifacts"]["ingest_report"]).is_file()  # type: ignore[index]
     assert isinstance(stages["ingest_candidate_batch"]["artifacts"]["ingest_report_sha256"], str)  # type: ignore[index]
     gather_run_dir = workspace / "runs" / "gather" / "cycle-dry-run.gather"
-    assert sorted(path.relative_to(gather_run_dir).as_posix() for path in gather_run_dir.rglob("*") if path.is_file()) == [
+    assert sorted(
+        path.relative_to(gather_run_dir).as_posix()
+        for path in gather_run_dir.rglob("*")
+        if path.is_file()
+    ) == [
         "gather-candidate-batch.json",
         "rendered-prompt.txt",
     ]
@@ -506,7 +520,9 @@ def test_topic_cycle_rejects_unknown_existing_manifest_status(tmp_path: Path) ->
     assert "unknown status" in proc.stderr
 
 
-def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> None:
+def test_topic_cycle_degraded_spool_reports_retry_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = load_run_topic_cycle_module()
     calls = {"count": 0}
 
@@ -516,8 +532,10 @@ def test_topic_cycle_degraded_spool_reports_retry_exception(tmp_path: Path) -> N
             raise RuntimeError("outer load failure")
         raise RuntimeError("retry load failure")
 
-    module.canonical_ingest.load_validated_execution_artifacts = (  # type: ignore[attr-defined]
-        fake_load_validated_execution_artifacts
+    monkeypatch.setattr(
+        module.canonical_ingest,
+        "load_validated_execution_artifacts",
+        fake_load_validated_execution_artifacts,
     )
 
     args = SimpleNamespace(mode="live", degraded_spool=True, candidate_batch_fixture=None)
@@ -622,6 +640,7 @@ def test_topic_cycle_final_status_is_final_before_cycle_evidence_recording(
     )
     monkeypatch.setattr(module, "candidate_ingest_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "acquisition_stage", lambda **kwargs: tmp_path / "execution-run")
+
     def fake_execution_ingest_stage(**kwargs):
         module.add_spool_record_to_manifest(
             kwargs["manifest"],
@@ -750,9 +769,18 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert stages["graph_closure_audit"]["status"] in {"passed", "warning", "skipped"}
-    assert stages["ingest_candidate_batch"]["evidence"]["candidate_batch"]["schema_version"] == "gather-candidate-batch.v1"  # type: ignore[index]
-    assert stages["build_feedback_plan_post"]["evidence"]["feedback_plan"]["schema_version"] == "candidate-feedback-plan.v1"  # type: ignore[index]
-    assert stages["ingest_execution_artifacts"]["evidence"]["artifact_schema_ids"]["ingest_report"] == "canonical-ingest-report.v1"  # type: ignore[index]
+    assert (
+        stages["ingest_candidate_batch"]["evidence"]["candidate_batch"]["schema_version"]
+        == "gather-candidate-batch.v1"
+    )  # type: ignore[index]
+    assert (
+        stages["build_feedback_plan_post"]["evidence"]["feedback_plan"]["schema_version"]
+        == "candidate-feedback-plan.v1"
+    )  # type: ignore[index]
+    assert (
+        stages["ingest_execution_artifacts"]["evidence"]["artifact_schema_ids"]["ingest_report"]
+        == "canonical-ingest-report.v1"
+    )  # type: ignore[index]
     assert manifest["next_action"]["selected_facet"]  # type: ignore[index]
     assert manifest["feedback_plan_pre"] is None
     assert manifest["feedback_plan"] is None
@@ -984,7 +1012,10 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
     receipt_path = Path(stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt"])  # type: ignore[index]
     assert receipt_path.is_file()
-    assert stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"] == "receipt-hash"  # type: ignore[index]
+    assert (
+        stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"]
+        == "receipt-hash"
+    )  # type: ignore[index]
 
 
 def test_feedback_plan_stage_hashes_output_once_without_rehashing(
@@ -1014,7 +1045,9 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         path = Path(command[output_index])
         assert path == output_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     def fake_validate_candidate_feedback_plan(path: Path):
@@ -1030,7 +1063,9 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         return "feedback-hash"
 
     monkeypatch.setattr(module, "run_command", fake_run_command)
-    monkeypatch.setattr(module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan)
+    monkeypatch.setattr(
+        module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan
+    )
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
 
     args = SimpleNamespace(degraded_spool=False)
@@ -1133,13 +1168,13 @@ def test_graph_closure_stage_hashes_report_once_without_rehashing(
     assert stages["graph_closure_audit"]["artifacts"]["graph_closure_report_sha256"] == "graph-hash"  # type: ignore[index]
 
 
-def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Path, monkeypatch) -> None:
+def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(
+    tmp_path: Path, monkeypatch
+) -> None:
     module = load_run_topic_cycle_module()
 
     batch_path = tmp_path / "gather-candidate-batch.json"
-    batch_path.write_text(
-        Path(CANDIDATE_BATCH).read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    batch_path.write_text(Path(CANDIDATE_BATCH).read_text(encoding="utf-8"), encoding="utf-8")
 
     db_path = tmp_path / "canonical.sqlite"
     run_dir = tmp_path / "candidate-ingest-run"
@@ -1180,7 +1215,9 @@ def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Pa
             raise AssertionError("candidate batch was rehashed")
         return "0" * 64
 
-    monkeypatch.setattr(module.canonical_ingest, "load_validated_candidate_batch", fake_load_validated)
+    monkeypatch.setattr(
+        module.canonical_ingest, "load_validated_candidate_batch", fake_load_validated
+    )
     monkeypatch.setattr(module.canonical_ingest, "ingest_candidate_batch", fake_ingest)
     monkeypatch.setattr(module.canonical_store, "connect_canonical_store", fake_connect)
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
@@ -1220,7 +1257,9 @@ def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Pa
     assert spool_payload["replay_recipe"]["batch_hash"] == "batch-hash"
 
 
-def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(tmp_path: Path, monkeypatch) -> None:
+def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(
+    tmp_path: Path, monkeypatch
+) -> None:
     module = load_run_topic_cycle_module()
 
     run_dir = tmp_path / "execution-ingest-run"
@@ -1244,8 +1283,6 @@ def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(tmp_path:
         fake_load_execution_artifacts.calls += 1
         return (
             execution_records["execution_record"],
-            execution_records["capture_events"],
-            execution_records["extraction_records"],
             execution_records["paths"],
             {
                 "execution_record": "record-hash",
@@ -1272,7 +1309,9 @@ def test_execution_ingest_spool_reuses_loaded_artifacts_without_reload(tmp_path:
 
         return FakeConn()
 
-    monkeypatch.setattr(module.canonical_ingest, "load_validated_execution_artifacts", fake_load_execution_artifacts)
+    monkeypatch.setattr(
+        module.canonical_ingest, "load_validated_execution_artifacts", fake_load_execution_artifacts
+    )
     monkeypatch.setattr(module.canonical_ingest, "ingest_execution_artifacts", fake_ingest)
     monkeypatch.setattr(module.canonical_store, "connect_canonical_store", fake_connect)
 
@@ -1310,8 +1349,6 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
 
     fake_receipt = module.ExecutionArtifactReceipt(
         execution_record={"run_id": "cycle-832"},
-        capture_events=[],
-        extraction_records=[],
         paths={
             "run_dir": execution_run_dir,
             "execution_record": execution_run_dir / "execution-record.json",
@@ -1354,7 +1391,11 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         validate_calls["count"] += 1
         assert receipt is fake_receipt
         return (
-            {"counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0}, "errors": [], "warnings": []},
+            {
+                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
+                "errors": [],
+                "warnings": [],
+            },
             module.EXIT_EXECUTION_PASS,
         )
 
@@ -1373,10 +1414,10 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     def fake_ingest(*args, **kwargs):
         ingest_calls["count"] += 1
         assert args[1] == fake_receipt.execution_record
-        assert args[2] == fake_receipt.capture_events
-        assert args[3] == fake_receipt.extraction_records
         assert kwargs["paths"] == fake_receipt.paths
         assert kwargs["input_hashes"] == fake_receipt.input_hashes
+        assert kwargs["capture_events"] is None
+        assert kwargs["extraction_records"] is None
         return {"status": "completed", "counts": {}}
 
     class FakeConn:
@@ -1393,8 +1434,14 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     monkeypatch.setattr(module, "load_handoff_adapter_path", fake_load_handoff_adapter_path)
     monkeypatch.setattr(module, "resolve_path", fake_resolve_path)
     monkeypatch.setattr(module, "load_execution_artifacts", fake_load_execution_artifacts)
-    monkeypatch.setattr(module, "validate_execution_artifact_receipt", fake_validate_execution_artifact_receipt)
-    monkeypatch.setattr(module.canonical_ingest, "load_validated_execution_artifacts", lambda *_: pytest.fail("unexpected execution reload"))
+    monkeypatch.setattr(
+        module, "validate_execution_artifact_receipt", fake_validate_execution_artifact_receipt
+    )
+    monkeypatch.setattr(
+        module.canonical_ingest,
+        "load_validated_execution_artifacts",
+        lambda *_: pytest.fail("unexpected execution reload"),
+    )
     monkeypatch.setattr(module.canonical_ingest, "ingest_execution_artifacts", fake_ingest)
     monkeypatch.setattr(module.canonical_store, "connect_canonical_store", lambda _: FakeConn())
 
@@ -1415,7 +1462,9 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         "canonical_db": {"mutated": False},
     }
 
-    acquired_run_dir, receipt = module.acquisition_stage(args=args, manifest=manifest, run_dir=run_dir)
+    acquired_run_dir, receipt = module.acquisition_stage(
+        args=args, manifest=manifest, run_dir=run_dir
+    )
     assert acquired_run_dir == execution_run_dir
     assert receipt is fake_receipt
     assert load_calls["count"] == 1
@@ -1433,7 +1482,6 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     assert ingest_calls["count"] == 1
     assert result["status"] == "completed"
     assert load_calls["count"] == 1
-
 
 
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:

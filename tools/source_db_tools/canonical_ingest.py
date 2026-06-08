@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,31 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
+def _iter_jsonl_records(path: Path, *, label: str) -> Iterable[dict[str, Any]]:
+    try:
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                if not raw_line.strip():
+                    continue
+                try:
+                    payload = json.loads(
+                        raw_line,
+                        object_pairs_hook=_no_duplicate_object_pairs,
+                        parse_constant=_reject_json_constant,
+                    )
+                except UnicodeDecodeError as exc:
+                    raise CanonicalIngestError(f"{label} line {line_number} is not UTF-8") from exc
+                if not isinstance(payload, dict):
+                    raise CanonicalIngestError(
+                        f"{label} line {line_number} must contain a JSON object"
+                    )
+                yield payload
+    except FileNotFoundError as exc:
+        raise CanonicalIngestError(f"{label} path does not exist: {path}") from exc
+    except OSError as exc:
+        raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
+
+
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
     payload = _load_json_object(batch_path, label="candidate batch")
     result, exit_code = (
@@ -108,9 +134,7 @@ def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], st
 
 def load_validated_execution_artifacts(
     target: Path,
-) -> tuple[
-    dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Path], dict[str, str]
-]:
+) -> tuple[dict[str, Any], dict[str, Path], dict[str, str]]:
     try:
         receipt = load_execution_artifacts(target)
     except (
@@ -135,8 +159,6 @@ def load_validated_execution_artifacts(
         )
     return (
         receipt.execution_record,
-        receipt.capture_events,
-        receipt.extraction_records,
         receipt.paths,
         receipt.input_hashes,
     )
@@ -924,11 +946,11 @@ def ingest_candidate_batch(
 def ingest_execution_artifacts(
     conn: sqlite3.Connection,
     execution_record: dict[str, Any],
-    capture_events: list[dict[str, Any]],
-    extraction_records: list[dict[str, Any]],
     *,
     paths: dict[str, Path],
     input_hashes: dict[str, str],
+    capture_events: Iterable[dict[str, Any]] | None = None,
+    extraction_records: Iterable[dict[str, Any]] | None = None,
     dry_run: bool = False,
     strict: bool = True,
     db_path: Path | None = None,
@@ -982,7 +1004,13 @@ def ingest_execution_artifacts(
     entity_candidates: list[dict[str, Any]] = []
     claim_work_items: list[tuple[str | None, str | None, str]] = []
     relationship_work_items: list[tuple[str | None, str, str, str | None]] = []
-    for record in capture_events:
+    capture_ids: set[str] = set()
+    capture_event_iter = (
+        capture_events
+        if capture_events is not None
+        else _iter_jsonl_records(paths["capture_events"], label="capture events")
+    )
+    for record in capture_event_iter:
         original_locator = record.get("original_locator")
         locator_text = (
             _safe_json_text(original_locator)
@@ -993,6 +1021,8 @@ def ingest_execution_artifacts(
                 or record.get("capture_id")
             )
         )
+        capture_key = str(record.get("capture_id") or "")
+        capture_ids.add(capture_key)
         if dry_run:
             _bump(report, "intended", "capture_event")
             continue
@@ -1011,16 +1041,17 @@ def ingest_execution_artifacts(
             workspace_id=record.get("workspace_id"),
             record_last_updated=created_at,
         )
-        capture_id_map[str(record["capture_id"])] = result.row_id
+        capture_id_map[capture_key] = result.row_id
         _bump(report, "inserted" if result.created else "updated", "capture_event")
 
-    capture_ids: set[str] | None = None
-    if dry_run:
-        capture_ids = {str(item.get("capture_id")) for item in capture_events}
-    for record in extraction_records:
+    extraction_record_iter = (
+        extraction_records
+        if extraction_records is not None
+        else _iter_jsonl_records(paths["extraction_records"], label="extraction records")
+    )
+    for record in extraction_record_iter:
         capture_key = str(record.get("capture_id") or "")
         if dry_run:
-            assert capture_ids is not None
             if capture_key not in capture_ids:
                 if strict:
                     raise CanonicalIngestError(

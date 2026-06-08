@@ -421,8 +421,8 @@ def replay_spool_record(
             record_path=record_path,
             default_root=Path.cwd(),
         )
-        execution_record, capture_events, extraction_records, paths, input_hashes = (
-            canonical_ingest.load_validated_execution_artifacts(run_dir)
+        execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
+            run_dir
         )
         expected_hashes = recipe.get("input_hashes")
         if isinstance(expected_hashes, Mapping):
@@ -432,10 +432,10 @@ def replay_spool_record(
         return canonical_ingest.ingest_execution_artifacts(
             conn,
             execution_record,
-            capture_events,
-            extraction_records,
             paths=paths,
             input_hashes=input_hashes,
+            capture_events=None,
+            extraction_records=None,
             dry_run=dry_run,
             strict=strict,
             db_path=db_path,

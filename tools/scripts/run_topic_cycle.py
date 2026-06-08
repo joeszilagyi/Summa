@@ -1266,21 +1266,19 @@ def execution_ingest_stage(
         loaded_hashes: dict[str, str] | None = None
         if execution_artifacts is None:
             try:
-                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                execution_record, paths, input_hashes = (
                     canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
                 )
             except Exception:
                 if not args.degraded_spool:
                     raise
-                execution_record, capture_events, extraction_records, paths, input_hashes = (
+                execution_record, paths, input_hashes = (
                     canonical_ingest.load_validated_execution_artifacts(execution_run_dir)
                 )
             loaded_paths = paths
             loaded_hashes = input_hashes
         else:
             execution_record = execution_artifacts.execution_record
-            capture_events = execution_artifacts.capture_events
-            extraction_records = execution_artifacts.extraction_records
             paths = execution_artifacts.paths
             input_hashes = execution_artifacts.input_hashes
             loaded_paths = paths
@@ -1291,10 +1289,10 @@ def execution_ingest_stage(
                 report = canonical_ingest.ingest_execution_artifacts(
                     conn,
                     execution_record,
-                    capture_events,
-                    extraction_records,
                     paths=paths,
                     input_hashes=input_hashes,
+                    capture_events=None,
+                    extraction_records=None,
                     dry_run=True,
                     db_path=db_path,
                 )
@@ -1303,10 +1301,10 @@ def execution_ingest_stage(
                     report = canonical_ingest.ingest_execution_artifacts(
                         conn,
                         execution_record,
-                        capture_events,
-                        extraction_records,
                         paths=paths,
                         input_hashes=input_hashes,
+                        capture_events=None,
+                        extraction_records=None,
                         dry_run=False,
                         db_path=db_path,
                     )

@@ -23,10 +23,17 @@ def copy_execution_fixture(tmp_path: Path) -> Path:
 
 
 def write_json_lines(path: Path, records: list[dict[str, object]]) -> None:
-    path.write_text("".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+    path.write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+        ),
+        encoding="utf-8",
+    )
 
 
-def run_validator(run_dir: Path, *, tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+def run_validator(
+    run_dir: Path, *, tmp_path: Path
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     proc = subprocess.run(
         [
             sys.executable,
@@ -53,22 +60,67 @@ def test_execution_artifact_loader_streams_jsonl_and_hashes_once(
     capture_events_path = run_dir / "capture-events.jsonl"
     extraction_records_path = run_dir / "extraction-records.jsonl"
     original_read_text = validator.Path.read_text
+    original_read_bytes = validator.Path.read_bytes
 
     def read_text_side_effect(self: Path, *args: object, **kwargs: object) -> str:
         if self in {capture_events_path, extraction_records_path}:
-            raise AssertionError("JSONL inputs should be streamed with Path.open(), not read_text()")
+            raise AssertionError(
+                "JSONL inputs should be streamed with Path.open(), not read_text()"
+            )
         return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
+    def read_bytes_side_effect(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self in {capture_events_path, extraction_records_path}:
+            raise AssertionError(
+                "JSONL inputs should be streamed with Path.open(), not read_bytes()"
+            )
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
     monkeypatch.setattr(validator.Path, "read_text", read_text_side_effect)
+    monkeypatch.setattr(validator.Path, "read_bytes", read_bytes_side_effect)
 
     receipt = validator.load_execution_artifacts(run_dir)
 
-    assert receipt.input_hashes["capture_events"] == hashlib.sha256(
-        capture_events_path.read_bytes()
-    ).hexdigest()
-    assert receipt.input_hashes["extraction_records"] == hashlib.sha256(
-        extraction_records_path.read_bytes()
-    ).hexdigest()
+    assert (
+        receipt.input_hashes["capture_events"]
+        == hashlib.sha256(original_read_bytes(capture_events_path)).hexdigest()
+    )
+    assert (
+        receipt.input_hashes["extraction_records"]
+        == hashlib.sha256(original_read_bytes(extraction_records_path)).hexdigest()
+    )
+
+
+def test_execution_validation_streams_extracted_text_artifacts_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = copy_execution_fixture(tmp_path)
+    extraction_records = [
+        json.loads(line)
+        for line in (run_dir / "extraction-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    completed_record = next(
+        record for record in extraction_records if record.get("status") == "completed"
+    )
+    extracted_text_path = run_dir / str(completed_record["extracted_text_path"])
+    original_read_bytes = validator.Path.read_bytes
+
+    def read_bytes_side_effect(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self == extracted_text_path:
+            raise AssertionError(
+                "extracted text artifacts should be hashed with Path.open(), not read_bytes()"
+            )
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(validator.Path, "read_bytes", read_bytes_side_effect)
+
+    result, exit_code = validator.validate_source_acquisition_execution(
+        run_dir / "execution-record.json"
+    )
+
+    assert exit_code == validator.EXIT_PASS
+    assert result["counts"]["accepted"] == 1
 
 
 def test_execution_validation_rejects_capture_handoff_hash_mismatch(tmp_path: Path) -> None:
@@ -241,7 +293,10 @@ def test_execution_validation_rejects_invalid_capture_status(tmp_path: Path) -> 
     ]
     capture_events[0]["status"] = "banana"
     run_dir.joinpath("capture-events.jsonl").write_text(
-        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in capture_events),
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in capture_events
+        ),
         encoding="utf-8",
     )
 
@@ -261,7 +316,10 @@ def test_execution_validation_rejects_unknown_capture_fields(tmp_path: Path) -> 
     ]
     capture_events[0]["private_note"] = "hidden"
     run_dir.joinpath("capture-events.jsonl").write_text(
-        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in capture_events),
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in capture_events
+        ),
         encoding="utf-8",
     )
 
@@ -281,7 +339,10 @@ def test_execution_validation_rejects_invalid_extraction_status(tmp_path: Path) 
     ]
     extraction_records[0]["status"] = "banana"
     run_dir.joinpath("extraction-records.jsonl").write_text(
-        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in extraction_records),
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in extraction_records
+        ),
         encoding="utf-8",
     )
 
@@ -301,7 +362,10 @@ def test_execution_validation_rejects_unknown_extraction_fields(tmp_path: Path) 
     ]
     extraction_records[0]["hidden"] = "secret"
     run_dir.joinpath("extraction-records.jsonl").write_text(
-        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in extraction_records),
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in extraction_records
+        ),
         encoding="utf-8",
     )
 

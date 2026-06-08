@@ -218,8 +218,8 @@ def validate_candidate_batch(path: Path) -> Artifact:
 def validate_execution_dir(run_dir: Path) -> Artifact:
     payload = read_json(run_dir / "execution-record.json")
     try:
-        _execution_record, _captures, _extractions, _paths, hashes = (
-            canonical_ingest.load_validated_execution_artifacts(run_dir)
+        _execution_record, _paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+            run_dir
         )
         digest = hashlib.sha256(
             "\x1f".join(hashes[key] for key in sorted(hashes)).encode()
@@ -236,8 +236,6 @@ def validate_execution_dir(run_dir: Path) -> Artifact:
             payload=_execution_record,
             replay_inputs={
                 "execution_record": _execution_record,
-                "capture_events": _captures,
-                "extraction_records": _extractions,
                 "paths": _paths,
                 "input_hashes": hashes,
             },
@@ -394,20 +392,16 @@ def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
         if artifact.artifact_type == "source_acquisition_execution":
             if artifact.replay_inputs is not None:
                 execution_record = artifact.replay_inputs.get("execution_record")
-                captures = artifact.replay_inputs.get("capture_events")
-                extractions = artifact.replay_inputs.get("extraction_records")
                 paths = artifact.replay_inputs.get("paths")
                 hashes = artifact.replay_inputs.get("input_hashes")
                 if (
                     isinstance(execution_record, dict)
-                    and isinstance(captures, list)
-                    and isinstance(extractions, list)
                     and isinstance(paths, dict)
                     and isinstance(hashes, dict)
                 ):
                     return ReplayPreparation(artifact=artifact)
-            execution_record, captures, extractions, paths, hashes = (
-                canonical_ingest.load_validated_execution_artifacts(artifact.path)
+            execution_record, paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+                artifact.path
             )
             return ReplayPreparation(
                 artifact=replace(
@@ -415,8 +409,6 @@ def _prepare_replay_artifact(artifact: Artifact) -> ReplayPreparation:
                     payload=execution_record,
                     replay_inputs={
                         "execution_record": execution_record,
-                        "capture_events": captures,
-                        "extraction_records": extractions,
                         "paths": paths,
                         "input_hashes": hashes,
                     },
@@ -865,38 +857,34 @@ def replay_execution_artifacts(
 ) -> dict[str, Any]:
     if artifact.replay_inputs is not None:
         execution_record = artifact.replay_inputs.get("execution_record")
-        captures = artifact.replay_inputs.get("capture_events")
-        extractions = artifact.replay_inputs.get("extraction_records")
         paths = artifact.replay_inputs.get("paths")
         hashes = artifact.replay_inputs.get("input_hashes")
         if (
             isinstance(execution_record, dict)
-            and isinstance(captures, list)
-            and isinstance(extractions, list)
             and isinstance(paths, dict)
             and isinstance(hashes, dict)
         ):
             return canonical_ingest.ingest_execution_artifacts(
                 conn,
                 execution_record,
-                captures,
-                extractions,
                 paths=paths,
                 input_hashes=hashes,
+                capture_events=None,
+                extraction_records=None,
                 dry_run=False,
                 strict=True,
                 db_path=db_path,
             )
-    execution_record, captures, extractions, paths, hashes = (
-        canonical_ingest.load_validated_execution_artifacts(artifact.path)
+    execution_record, paths, hashes = canonical_ingest.load_validated_execution_artifacts(
+        artifact.path
     )
     return canonical_ingest.ingest_execution_artifacts(
         conn,
         execution_record,
-        captures,
-        extractions,
         paths=paths,
         input_hashes=hashes,
+        capture_events=None,
+        extraction_records=None,
         dry_run=False,
         strict=True,
         db_path=db_path,
