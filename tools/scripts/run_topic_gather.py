@@ -276,6 +276,10 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def render_json_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def source_text_fingerprint(source_text: str) -> tuple[int, str]:
     encoded_text = source_text.encode("utf-8")
     return len(encoded_text), hashlib.sha256(encoded_text).hexdigest()
@@ -1294,6 +1298,7 @@ def build_candidate_batch(
     if prior_state is not None:
         batch["prior_state"] = prior_state
     if feedback_plan is not None and next_action is not None:
+        next_action_rendered_text = render_json_payload(next_action)
         batch["feedback_plan"] = {
             "schema_version": feedback_plan["payload"]["schema_version"],
             "plan_path": str(feedback_plan["path"]),
@@ -1311,6 +1316,10 @@ def build_candidate_batch(
             "use_prior_state": next_action["use_prior_state"],
             "cycle_depth": next_action["cycle_depth"],
             "previous_run_ids_considered": list(next_action["previous_run_ids_considered"]),
+            "next_action_rendered_source_ref": "metadata:feedback-plan",
+            "next_action_rendered_provenance": "candidate feedback plan next action",
+            "next_action_rendered_hash": sha256_text(next_action_rendered_text),
+            "next_action_rendered_byte_count": len(next_action_rendered_text.encode("utf-8")),
             "next_action": next_action,
         }
     if debug_rendered_prompt:

@@ -1021,29 +1021,38 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 next_action = feedback_plan.get("next_action")
                 if isinstance(next_action, dict):
                     expected_next_action_text = render_json_payload(next_action)
-                    actual_next_action_block = parsed_metadata_blocks.get("metadata:feedback-plan")
-                    if actual_next_action_block is None:
+                    expected_next_action_hash = hashlib.sha256(
+                        expected_next_action_text.encode("utf-8")
+                    ).hexdigest()
+                    expected_next_action_byte_count = len(expected_next_action_text.encode("utf-8"))
+                    if feedback_plan.get("next_action_rendered_source_ref") != "metadata:feedback-plan":
                         add_error(
                             errors,
-                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_MISSING",
-                            message="rendered prompt must include an untrusted feedback-plan metadata block",
-                            path="$.prompt.rendered_prompt",
+                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_SOURCE_REF_MISMATCH",
+                            message="feedback-plan metadata source_ref must use the wrapped prompt contract",
+                            path="$.feedback_plan.next_action_rendered_source_ref",
                         )
-                    else:
-                        if actual_next_action_block.provenance != "candidate feedback plan next action":
-                            add_error(
-                                errors,
-                                code="UNTRUSTED_FEEDBACK_PLAN_METADATA_PROVENANCE_MISMATCH",
-                                message="feedback-plan metadata provenance must match the wrapped prompt contract",
-                                path="$.prompt.rendered_prompt",
-                            )
-                        if actual_next_action_block.source_text != expected_next_action_text:
-                            add_error(
-                                errors,
-                                code="UNTRUSTED_FEEDBACK_PLAN_METADATA_MISMATCH",
-                                message="feedback-plan metadata block must serialize the next_action payload as inert JSON",
-                                path="$.prompt.rendered_prompt",
-                            )
+                    if feedback_plan.get("next_action_rendered_provenance") != "candidate feedback plan next action":
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_PROVENANCE_MISMATCH",
+                            message="feedback-plan metadata provenance must match the wrapped prompt contract",
+                            path="$.feedback_plan.next_action_rendered_provenance",
+                        )
+                    if feedback_plan.get("next_action_rendered_hash") != expected_next_action_hash:
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_HASH_MISMATCH",
+                            message="feedback-plan metadata hash must match the rendered next_action payload",
+                            path="$.feedback_plan.next_action_rendered_hash",
+                        )
+                    if feedback_plan.get("next_action_rendered_byte_count") != expected_next_action_byte_count:
+                        add_error(
+                            errors,
+                            code="UNTRUSTED_FEEDBACK_PLAN_METADATA_BYTE_COUNT_MISMATCH",
+                            message="feedback-plan metadata byte_count must match the rendered next_action payload",
+                            path="$.feedback_plan.next_action_rendered_byte_count",
+                        )
 
             if isinstance(prior_state, dict):
                 actual_prior_state_block = parsed_metadata_blocks.get("metadata:prior-state")

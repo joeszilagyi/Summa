@@ -681,6 +681,21 @@
             "minLength": 1
           }
         },
+        "next_action_rendered_source_ref": {
+          "type": "string",
+          "const": "metadata:feedback-plan"
+        },
+        "next_action_rendered_provenance": {
+          "type": "string",
+          "const": "candidate feedback plan next action"
+        },
+        "next_action_rendered_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "next_action_rendered_byte_count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "next_action": {
           "type": "object"
         }
