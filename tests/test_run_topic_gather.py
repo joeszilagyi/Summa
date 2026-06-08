@@ -110,13 +110,17 @@ def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "rendered-prompt.txt"
 
 
-def assert_text_only_inside_wrapped_blocks(prompt_text: str, hostile_text: str) -> None:
+def assert_text_only_inside_wrapped_blocks(
+    prompt_text: str, hostile_text: str, *, forbidden_path: Path | None = None
+) -> None:
     template = wrapper_common.load_template()
     parsed_blocks = wrapper_common.parse_wrapped_blocks(prompt_text, template=template)
-    source_blocks = [block for block in parsed_blocks if block.source_ref.startswith("file:")]
+    source_blocks = [block for block in parsed_blocks if block.source_ref.startswith("source:")]
 
     assert source_blocks
     assert hostile_text in source_blocks[0].source_text
+    if forbidden_path is not None:
+        assert str(forbidden_path.resolve()) not in prompt_text
 
     outside_segments: list[str] = []
     cursor = 0
@@ -584,7 +588,11 @@ def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path
     assert proc.returncode == 0, proc.stdout + proc.stderr
     prompt_text = prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8")
     hostile_text = HOSTILE_SOURCE_FIXTURE.read_text(encoding="utf-8")
-    assert_text_only_inside_wrapped_blocks(prompt_text, hostile_text)
+    assert_text_only_inside_wrapped_blocks(
+        prompt_text,
+        hostile_text,
+        forbidden_path=HOSTILE_SOURCE_FIXTURE,
+    )
 
 
 def test_run_topic_gather_hazard_detection_searches_each_flag_once(
@@ -662,6 +670,9 @@ def test_run_topic_gather_source_text_fingerprint_encodes_once(
 
     assert EncodeCountingStr.encode_calls == 1
     assert len(rendered_blocks) == 1
+    assert blocks[0]["source_ref"] == "source:0001"
+    assert blocks[0]["provenance"] == "local_text_file:0001"
+    assert blocks[0]["resolved_source_path"] == str(source_path.resolve())
     assert blocks[0]["byte_count"] == len(expected_bytes)
     assert blocks[0]["sha256"] == expected_hash
 
@@ -704,8 +715,9 @@ def test_run_topic_gather_streams_large_source_text_blocks(
     assert read_calls > 1
     assert len(rendered_blocks) == len(blocks) > 1
     assert sum(block["byte_count"] for block in blocks) == len(source_bytes)
-    assert blocks[0]["source_ref"].endswith("#chunk-0001")
-    assert blocks[-1]["source_ref"].endswith(f"#chunk-{len(blocks):04d}")
+    assert blocks[0]["source_ref"] == "source:0001:chunk:0001"
+    assert blocks[0]["resolved_source_path"] == str(source_path.resolve())
+    assert blocks[-1]["source_ref"] == f"source:0001:chunk:{len(blocks):04d}"
 
 
 def test_run_topic_gather_write_text_can_defer_and_group_fsync(
@@ -781,11 +793,15 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["source_text_wrapping"]["source_block_count"] > 1
     assert len(payload["source_text_wrapping"]["blocks"]) == payload["source_text_wrapping"]["source_block_count"]
-    assert payload["source_text_wrapping"]["blocks"][0]["source_ref"].endswith("#chunk-0001")
+    assert payload["source_text_wrapping"]["blocks"][0]["source_ref"] == "source:0001:chunk:0001"
+    assert payload["source_text_wrapping"]["blocks"][0]["resolved_source_path"] == str(
+        large_source_path.resolve()
+    )
     assert payload["source_text_wrapping"]["blocks"][0]["start_offset"] == 0
     assert payload["source_text_wrapping"]["blocks"][0]["end_offset"] > 0
     assert payload["source_text_wrapping"]["blocks"][1]["start_offset"] > payload["source_text_wrapping"]["blocks"][0]["end_offset"]
     assert prompt_path.stat().st_size > large_source_path.stat().st_size
+    assert str(large_source_path.resolve()) not in prompt_path.read_text(encoding="utf-8")
 
 
 def test_run_topic_gather_batches_facets_and_phases_in_one_process(

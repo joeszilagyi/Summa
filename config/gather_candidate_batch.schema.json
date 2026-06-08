@@ -714,6 +714,7 @@
         "block_id",
         "source_ref",
         "provenance",
+        "resolved_source_path",
         "hazard_flags",
         "start_offset",
         "end_offset",
@@ -730,6 +731,10 @@
           "minLength": 1
         },
         "provenance": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved_source_path": {
           "type": "string",
           "minLength": 1
         },

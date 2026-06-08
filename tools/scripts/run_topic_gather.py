@@ -281,6 +281,14 @@ def source_text_fingerprint(source_text: str) -> tuple[int, str]:
     return len(encoded_text), hashlib.sha256(encoded_text).hexdigest()
 
 
+def build_source_text_block_identity(index: int, *, chunk_index: int | None = None) -> tuple[str, str]:
+    block_suffix = f"{index:04d}" if chunk_index is None else f"{index:04d}:chunk:{chunk_index:04d}"
+    return (
+        f"source:{block_suffix}",
+        f"local_text_file:{block_suffix}",
+    )
+
+
 def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -394,8 +402,7 @@ def resolve_source_text_blocks(
         source_path = Path(raw_path).expanduser()
         if not source_path.is_absolute():
             source_path = (Path.cwd() / source_path).resolve()
-        source_ref = f"file:{source_path}"
-        provenance = f"local_text_file:{source_path}"
+        source_ref, provenance = build_source_text_block_identity(index)
         ensure_file(source_path, label="source text file")
         try:
             source_size = source_path.stat().st_size
@@ -420,6 +427,7 @@ def resolve_source_text_blocks(
                     "block_id": f"source-block-{index:04d}",
                     "source_ref": source_ref,
                     "provenance": provenance,
+                    "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
@@ -437,8 +445,9 @@ def resolve_source_text_blocks(
             chunk_bytes = source_text.encode("utf-8")
             digest = hashlib.sha256()
             digest.update(chunk_bytes)
-            chunk_source_ref = f"{source_ref}#chunk-{chunk_index:04d}"
-            chunk_provenance = f"{provenance}#chunk-{chunk_index:04d}"
+            chunk_source_ref, chunk_provenance = build_source_text_block_identity(
+                index, chunk_index=chunk_index
+            )
             hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
             hazard_scan_tail = (hazard_scan_tail + source_text)[-SOURCE_TEXT_HAZARD_SCAN_OVERLAP:]
             rendered_blocks.append(
@@ -455,6 +464,7 @@ def resolve_source_text_blocks(
                     "block_id": f"source-block-{index:04d}-{chunk_index:04d}",
                     "source_ref": chunk_source_ref,
                     "provenance": chunk_provenance,
+                    "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
@@ -480,6 +490,7 @@ def resolve_source_text_blocks(
                     "block_id": f"source-block-{index:04d}",
                     "source_ref": source_ref,
                     "provenance": provenance,
+                    "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
@@ -764,7 +775,7 @@ def execute_gather_run(
         rendered_prompt, template=gather_inputs["wrapper_template"]
     )
     rendered_source_blocks = [
-        block for block in parsed_blocks if block.source_ref.startswith("file:")
+        block for block in parsed_blocks if block.source_ref.startswith("source:")
     ]
     if len(rendered_source_blocks) != len(source_wrapping_blocks):
         raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
