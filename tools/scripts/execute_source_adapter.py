@@ -21,6 +21,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -50,7 +51,6 @@ from tools.common.network_safety_gate import (  # noqa: E402
 from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
-    build_xml_path_map,
     resolve_json_record_path,
 )
 from tools.validators import validate_source_adapter, validate_source_adapter_handoff  # noqa: E402
@@ -61,6 +61,8 @@ CAPTURE_SCHEMA_VERSION = "source-capture-event.v1"
 EXTRACTION_SCHEMA_VERSION = "source-extraction-record.v1"
 EXECUTOR_NAME = "tools/scripts/execute_source_adapter.py"
 MAX_EXTRACT_TEXT_BYTES = 64 * 1024
+MAX_XML_RECORD_BYTES = 8 * 1024 * 1024
+MAX_XML_RECORD_NODES = 100_000
 DEFAULT_REMOTE_TIMEOUT_SECONDS = 10.0
 DEFAULT_REMOTE_MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_REMOTE_REDIRECTS = 3
@@ -733,30 +735,101 @@ def load_jsonl_record_map(payload: bytes) -> tuple[dict[str, Any], list[dict[str
 def load_xml_record_map(
     payload: bytes, *, record_path: str | None
 ) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+    if len(payload) > MAX_XML_RECORD_BYTES:
+        return {}, [{"context": "file", "reason": "xml payload exceeds maximum byte size"}]
+
+    def _fallback_tree_parse() -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+        try:
+            root = ET.fromstring(payload)
+        except UnicodeDecodeError:
+            return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+        except ET.ParseError as exc:
+            line_number, column = getattr(exc, "position", (1, 1))
+            return {}, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
+
+        path_map = {}
+
+        def visit(element: ET.Element, parent_path: str) -> None:
+            path_map[id(element)] = parent_path
+            sibling_counts: dict[str, int] = {}
+            for child in list(element):
+                sibling_counts[child.tag] = sibling_counts.get(child.tag, 0) + 1
+                child_path = f"{parent_path}/{child.tag}[{sibling_counts[child.tag]}]"
+                visit(child, child_path)
+
+        visit(root, f"/{root.tag}[1]")
+        if record_path:
+            matches = root.findall(record_path)
+            if not matches:
+                return {}, [
+                    {
+                        "context": f"record_path:{record_path}",
+                        "reason": "record_path matched no XML elements",
+                    }
+                ]
+        else:
+            matches = list(root) or [root]
+        return {
+            path_map.get(id(element), f"element:{index}"): element
+            for index, element in enumerate(matches, start=1)
+        }, []
+
+    if record_path and not record_path.startswith("/"):
+        return _fallback_tree_parse()
+
     try:
-        root = ET.fromstring(payload)
+        path_map: dict[str, ET.Element] = {}
+        path_stack: list[str] = []
+        sibling_counts_stack: list[dict[str, int]] = []
+        root_had_children = False
+        node_count = 0
+        for event, elem in ET.iterparse(io.BytesIO(payload), events=("start", "end")):
+            if event == "start":
+                node_count += 1
+                if node_count > MAX_XML_RECORD_NODES:
+                    return {}, [
+                        {
+                            "context": "file",
+                            "reason": "xml tree exceeds maximum element count",
+                        }
+                    ]
+                if not path_stack:
+                    path_stack.append(f"/{elem.tag}[1]")
+                    sibling_counts_stack.append({})
+                else:
+                    root_had_children = True
+                    sibling_counts = sibling_counts_stack[-1]
+                    sibling_index = sibling_counts.get(elem.tag, 0) + 1
+                    sibling_counts[elem.tag] = sibling_index
+                    path_stack.append(f"{path_stack[-1]}/{elem.tag}[{sibling_index}]")
+                    sibling_counts_stack.append({})
+                continue
+            current_path = path_stack[-1]
+            if record_path:
+                if current_path == record_path:
+                    path_map[current_path] = deepcopy(elem)
+            elif len(path_stack) == 2 or (len(path_stack) == 1 and not root_had_children):
+                path_map[current_path] = deepcopy(elem)
+            elem.clear()
+            path_stack.pop()
+            sibling_counts_stack.pop()
+        if record_path:
+            if not path_map:
+                return {}, [
+                    {
+                        "context": f"record_path:{record_path}",
+                        "reason": "record_path matched no XML elements",
+                    }
+                ]
+            return path_map, []
+        if not path_map and not root_had_children:
+            return {}, [{"context": "file", "reason": "file contained no XML elements"}]
+        return path_map, []
     except UnicodeDecodeError:
         return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
     except ET.ParseError as exc:
         line_number, column = getattr(exc, "position", (1, 1))
         return {}, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
-
-    path_map = build_xml_path_map(root)
-    if record_path:
-        matches = root.findall(record_path)
-        if not matches:
-            return {}, [
-                {
-                    "context": f"record_path:{record_path}",
-                    "reason": "record_path matched no XML elements",
-                }
-            ]
-    else:
-        matches = list(root) or [root]
-    return {
-        path_map.get(id(element), f"element:{index}"): element
-        for index, element in enumerate(matches, start=1)
-    }, []
 
 
 def load_structured_record_map(

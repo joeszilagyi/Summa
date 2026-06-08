@@ -11,7 +11,12 @@ from tools.scripts import execute_source_adapter as source_executor
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 STRUCTURED_FIXTURE_ROOT = (
-    REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "structured_data"
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "source_adapter_runtime"
+    / "hostile_replay"
+    / "structured_data"
 )
 ADAPTER = STRUCTURED_FIXTURE_ROOT / "source_adapter.json"
 
@@ -21,13 +26,15 @@ def canonical_json_bytes(value: dict[str, Any]) -> bytes:
 
 
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
-    return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
-        "utf-8"
-    )
+    return "".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+    ).encode("utf-8")
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def materialize_handoff(template_path: Path, output_path: Path) -> Path:
@@ -96,7 +103,9 @@ def test_execute_structured_data_branch_emits_artifacts_for_hostile_replay_fixtu
     ]
 
     assert [capture["capture_method"] for capture in captures] == ["structured_data_load"] * 3
-    assert [extraction["extraction_method"] for extraction in extractions] == ["structured_record_extract"] * 4
+    assert [extraction["extraction_method"] for extraction in extractions] == [
+        "structured_record_extract"
+    ] * 4
     assert extractions[-1]["status"] == "skipped"
     assert extractions[-1]["failure_reason"] == "oversized_payload"
     assert extractions[-1]["extracted_text_path"] is None
@@ -175,7 +184,12 @@ def test_load_structured_json_record_map_parses_only_selected_subtree(
     monkeypatch: Any,
 ) -> None:
     payload = (
-        REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "structured_data" / "nested_records.json"
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "structured_data"
+        / "nested_records.json"
     ).read_bytes()
     original_loads = source_executor.json.loads
     load_calls: list[str] = []
@@ -194,3 +208,55 @@ def test_load_structured_json_record_map_parses_only_selected_subtree(
     assert list(record_map) == ["index:1", "index:2"]
     assert len(load_calls) == 1
     assert len(load_calls[0]) < len(payload.decode("utf-8"))
+
+
+def test_load_structured_xml_record_map_streams_without_tree_parse(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "hostile_replay"
+        / "structured_data"
+        / "corpus"
+        / "markup.xml"
+    ).read_bytes()
+
+    def parse_spy(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("XML structured loading should stream with iterparse, not ET.parse()")
+
+    monkeypatch.setattr(source_executor.ET, "parse", parse_spy)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="xml", record_path=None
+    )
+
+    assert errors == []
+    assert list(record_map) == ["/records[1]/record[1]"]
+    assert record_map["/records[1]/record[1]"].tag == "record"
+
+
+def test_load_structured_xml_record_map_enforces_node_count_limit(
+    monkeypatch: Any,
+) -> None:
+    payload = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "source_adapter_runtime"
+        / "hostile_replay"
+        / "structured_data"
+        / "corpus"
+        / "markup.xml"
+    ).read_bytes()
+    monkeypatch.setattr(source_executor, "MAX_XML_RECORD_NODES", 1)
+
+    record_map, errors = source_executor.load_structured_record_map(
+        payload, structured_format="xml", record_path=None
+    )
+
+    assert record_map == {}
+    assert errors
+    assert errors[0]["reason"] == "xml tree exceeds maximum element count"
