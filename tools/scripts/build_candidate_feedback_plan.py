@@ -461,16 +461,16 @@ def _family_yields_for_events(
 
 
 def load_gather_history(conn: sqlite3.Connection, subject_id: str) -> list[dict[str, Any]]:
-    pattern = f'%"subject_id": "{subject_id}"%'
     rows = conn.execute(
         """
         SELECT provenance_event_id, provenance_event_key_v1, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
-          AND note_text LIKE ?
+          AND source_object_namespace='topic_subject'
+          AND source_object_id=?
         ORDER BY event_timestamp DESC, provenance_event_id DESC
         """,
-        (pattern,),
+        (subject_id,),
     ).fetchall()
     history: list[dict[str, Any]] = []
     event_artifacts: list[tuple[str, str | None]] = []

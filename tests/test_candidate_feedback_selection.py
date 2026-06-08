@@ -190,6 +190,8 @@ def seed_feedback_state(db_path: Path, *, subject_id: str) -> dict[str, str]:
                 tool_name="pytest.candidate_feedback_selection",
                 run_id="cycle-one-sources-high",
                 event_timestamp="2026-06-02T10:00:00Z",
+                source_object_namespace="topic_subject",
+                source_object_id=subject_id,
                 note_text=gather_note(
                     subject_id=subject_id,
                     facet="sources",
@@ -207,6 +209,8 @@ def seed_feedback_state(db_path: Path, *, subject_id: str) -> dict[str, str]:
                 tool_name="pytest.candidate_feedback_selection",
                 run_id="cycle-one-sources-low",
                 event_timestamp="2026-06-02T11:00:00Z",
+                source_object_namespace="topic_subject",
+                source_object_id=subject_id,
                 note_text=gather_note(
                     subject_id=subject_id,
                     facet="sources",
@@ -224,6 +228,8 @@ def seed_feedback_state(db_path: Path, *, subject_id: str) -> dict[str, str]:
                 tool_name="pytest.candidate_feedback_selection",
                 run_id="cycle-one-open-questions",
                 event_timestamp="2026-06-02T12:00:00Z",
+                source_object_namespace="topic_subject",
+                source_object_id=subject_id,
                 note_text=gather_note(
                     subject_id=subject_id,
                     facet="open_questions",
@@ -1068,6 +1074,8 @@ def test_source_access_leads_batch_related_claim_and_entity_counts(
             tool_name="pytest.candidate_feedback_selection",
             run_id="source-access-duplicate",
             event_timestamp=FIXED_CREATED_AT,
+            source_object_namespace="topic_subject",
+            source_object_id=subject_id,
             note_text=gather_note(
                 subject_id=subject_id,
                 facet="sources",
@@ -1308,8 +1316,13 @@ def test_load_gather_history_batches_yield_summaries_per_event(tmp_path: Path) -
         conn.close()
 
     assert [entry["total_yield"] for entry in history] == [1, 0, 3]
+    assert any(
+        "source_object_namespace='topic_subject'" in sql and "source_object_id=?" in sql
+        for sql in executed_sql
+    )
     assert any("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql)
     assert sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql) == 1
+    assert not any("note_text LIKE ?" in sql for sql in executed_sql)
     assert not any("SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql for sql in executed_sql)
     assert not any(
         "SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql
@@ -1640,6 +1653,8 @@ def test_work_leads_preserve_related_run_ids_from_provenance(tmp_path: Path) -> 
             tool_name="tests.test_candidate_feedback_selection",
             run_id="work-run-one",
             event_timestamp=FIXED_CREATED_AT,
+            source_object_namespace="topic_subject",
+            source_object_id=subject_id,
             note_text=work_gather_note,
             provenance_event_key_v1="prov:feedback:work-lead",
         )
