@@ -77,7 +77,7 @@
   "mode": "dry_run",
   "phase": "01a",
   "prompt": {
-    "rendered_prompt_hash": "d9b0a0d1102ad32a7b6b4e32dee98e2d789bd3949fe6a43fd338c09dc02cb857",
+    "rendered_prompt_hash": "fc4197165f463199459574007d34c125469b07ea05b81ed600ccccd78abf904a",
     "rendered_prompt_path": "rendered-prompt.txt"
   },
   "prompt_bundle": {

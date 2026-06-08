@@ -810,6 +810,56 @@ def test_candidate_structured_payload_skips_raw_candidate_text_prose(
     assert canonical_ingest._candidate_structured_payload(candidate) is None
 
 
+def test_raw_candidate_text_json_payload_uses_bounded_claim_text(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    claim_text = "Lead summary from the model"
+    batch = {
+        "schema_version": "gather-candidate-batch.v1",
+        "run_id": "raw-candidate-json",
+        "created_at": FIXED_TIMESTAMP,
+        "candidates": [
+            {
+                "candidate_id": "cand:raw-json.1",
+                "candidate_type": "raw_candidate_text",
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": json.dumps(
+                    {
+                        "candidate_type": "source_lead",
+                        "locator": None,
+                        "claim": claim_text,
+                        "confidence": None,
+                        "reason": "llm_proposed",
+                        "source_span": None,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        ],
+    }
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=tmp_path / "raw-candidate-json.json",
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        claim_row = conn.execute(
+            "SELECT claim_text, claim_type FROM source_claim ORDER BY source_claim_id"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert report["counts"]["inserted"]["source_claim"] == 1
+    assert claim_row["claim_text"] == claim_text
+    assert claim_row["claim_type"] == "candidate_raw_candidate_text"
+
+
 def test_candidate_structured_payload_rejects_non_standard_json_constants() -> None:
     candidate = {
         "text": '{"candidate_id":"w1","candidate_type":"work","value": NaN}'

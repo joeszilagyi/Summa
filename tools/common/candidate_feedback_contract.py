@@ -98,3 +98,30 @@ def compact_next_action_prompt_payload(next_action: Mapping[str, Any]) -> dict[s
         "input_record_refs": list(next_action.get("input_record_refs") or []),
         "suggested_cli_args": list(next_action.get("suggested_cli_args") or []),
     }
+
+
+def compact_candidate_record_payload(
+    *,
+    candidate_type: str,
+    raw_output: str,
+    locator: Any | None = None,
+    confidence: Any | None = None,
+    reason: str = "llm_proposed",
+    source_span: Any | None = None,
+) -> dict[str, Any]:
+    """Return the compact candidate record stored in gather batches.
+
+    The record keeps the machine-facing fields bounded and stable while the
+    raw engine transcript remains available separately in the batch artifact.
+    """
+
+    first_line = str(raw_output or "").splitlines()[0] if raw_output else ""
+    bounded_claim = " ".join(first_line.split())[:240] or "claim-fallback-empty"
+    return {
+        "candidate_type": candidate_type,
+        "locator": locator,
+        "claim": bounded_claim,
+        "confidence": confidence,
+        "reason": reason,
+        "source_span": source_span,
+    }

@@ -1448,7 +1448,16 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
             ).encode("utf-8")
         ).hexdigest()
     )
+    candidate_record = json.loads(payload["candidates"][0]["text"])
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert candidate_record == {
+        "candidate_type": payload["facet"]["candidate_type_hint"],
+        "locator": None,
+        "claim": fake_output,
+        "confidence": None,
+        "reason": "llm_proposed",
+        "source_span": None,
+    }
 
     stamped_text = Path(payload["provenance"]["stamped_output_path"]).read_text(encoding="utf-8")
     assert "GENERATED_BY: codex" in stamped_text
@@ -1669,7 +1678,16 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
         "hostile_markup",
     }
     assert payload["raw_engine_output"] == fake_output
+    candidate_record = json.loads(payload["candidates"][0]["text"])
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert candidate_record == {
+        "candidate_type": payload["facet"]["candidate_type_hint"],
+        "locator": None,
+        "claim": fake_output,
+        "confidence": None,
+        "reason": "llm_proposed",
+        "source_span": None,
+    }
     assert fake_log.read_text(encoding="utf-8")
 
 

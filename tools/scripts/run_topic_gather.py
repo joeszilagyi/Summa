@@ -27,6 +27,7 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
         sys.path.insert(0, candidate_text)
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
+    compact_candidate_record_payload,
     compact_next_action_prompt_payload,
 )
 from tools.common.leak_scanner import scan_text  # noqa: E402
@@ -1292,6 +1293,10 @@ def build_candidate_batch(
     candidates: list[dict[str, Any]] = []
     engine_cache_hit = bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     if live_result is not None:
+        candidate_record = compact_candidate_record_payload(
+            candidate_type=candidate_type_hint,
+            raw_output=live_result["raw_engine_output"],
+        )
         candidates.append(
             {
                 "candidate_id": "cand:0001",
@@ -1299,7 +1304,7 @@ def build_candidate_batch(
                 "review_status": "unverified",
                 "persistence_status": "workspace_run_only",
                 "origin": "llm_proposed",
-                "text": live_result["raw_engine_output"],
+                "text": compact_json_text(candidate_record),
             }
         )
 

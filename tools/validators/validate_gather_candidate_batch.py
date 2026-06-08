@@ -219,6 +219,102 @@ def matches_json_type(value: Any, type_name: str) -> bool:
     return False
 
 
+def validate_candidate_extraction_record(
+    candidate: dict[str, Any],
+    *,
+    expected_candidate_type: str | None,
+    errors: list[dict[str, Any]],
+    path: str,
+) -> None:
+    text = candidate.get("text")
+    if not isinstance(text, str):
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_REQUIRED",
+            message="raw candidate text must be a JSON object encoded as a string",
+            path=f"{path}.text",
+        )
+        return
+    try:
+        parsed = json.loads(
+            text,
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except DuplicateJsonKeyError as exc:
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_DUPLICATE_KEY",
+            message=str(exc),
+            path=f"{path}.text",
+        )
+        return
+    except NonStandardJsonConstantError as exc:
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_NON_STANDARD_CONSTANT",
+            message=str(exc),
+            path=f"{path}.text",
+        )
+        return
+    except json.JSONDecodeError:
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_NOT_JSON",
+            message="raw candidate text must be a JSON object",
+            path=f"{path}.text",
+        )
+        return
+    if not isinstance(parsed, dict):
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_OBJECT_REQUIRED",
+            message="raw candidate text must be a JSON object",
+            path=f"{path}.text",
+        )
+        return
+    required_keys = ("candidate_type", "locator", "claim", "confidence", "reason", "source_span")
+    for key in required_keys:
+        if key not in parsed:
+            add_error(
+                errors,
+                code="RAW_CANDIDATE_TEXT_MISSING_FIELD",
+                message=f"raw candidate text JSON object must include {key}",
+                path=f"{path}.text.{key}",
+            )
+    candidate_type = parsed.get("candidate_type")
+    if not isinstance(candidate_type, str) or not candidate_type.strip():
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_CANDIDATE_TYPE_INVALID",
+            message="raw candidate text JSON object must include a non-blank candidate_type",
+            path=f"{path}.text.candidate_type",
+        )
+    elif expected_candidate_type is not None and candidate_type != expected_candidate_type:
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_CANDIDATE_TYPE_MISMATCH",
+            message="raw candidate text candidate_type must match the facet candidate type hint",
+            path=f"{path}.text.candidate_type",
+        )
+    claim = parsed.get("claim")
+    if not isinstance(claim, str) or not claim.strip():
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_CLAIM_INVALID",
+            message="raw candidate text JSON object must include a non-blank claim",
+            path=f"{path}.text.claim",
+        )
+    reason = parsed.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        add_error(
+            errors,
+            code="RAW_CANDIDATE_TEXT_REASON_INVALID",
+            message="raw candidate text JSON object must include a non-blank reason",
+            path=f"{path}.text.reason",
+        )
+
+
 def resolve_ref(ref: str, root_schema: dict[str, Any]) -> dict[str, Any]:
     if not ref.startswith("#/"):
         raise ValueError(f"unsupported schema ref: {ref}")
@@ -1178,6 +1274,15 @@ def validate_invariants(
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, dict):
                 continue
+            if candidate.get("candidate_type") == "raw_candidate_text" and isinstance(facet, dict):
+                validate_candidate_extraction_record(
+                    candidate,
+                    expected_candidate_type=facet.get("candidate_type_hint")
+                    if isinstance(facet.get("candidate_type_hint"), str)
+                    else None,
+                    errors=errors,
+                    path=f"$.candidates[{index}]",
+                )
             for key in ("review_status", "persistence_status", "origin"):
                 value = candidate.get(key)
                 if isinstance(value, str) and value.lower() in banned_values:

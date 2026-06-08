@@ -268,10 +268,12 @@ RAW_TEXT_CANDIDATE_TYPES = {
 
 def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] | None:
     candidate_type = candidate.get("candidate_type")
-    if candidate_type in RAW_TEXT_CANDIDATE_TYPES:
+    if candidate_type in RAW_TEXT_CANDIDATE_TYPES and candidate_type != "raw_candidate_text":
         return None
     raw_text = candidate.get("text")
     if not isinstance(raw_text, str):
+        return None
+    if candidate_type == "raw_candidate_text" and not raw_text.lstrip().startswith("{"):
         return None
     try:
         parsed = json.loads(
@@ -288,6 +290,9 @@ def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] |
 
 def _structured_claim_text(candidate: dict[str, Any], structured: dict[str, Any] | None) -> str:
     if structured is not None:
+        claim = structured.get("claim")
+        if isinstance(claim, str) and claim.strip():
+            return claim.strip()
         return _safe_json_text(structured)
     text = str(candidate.get("text") or "").strip()
     first_line = text.splitlines()[0] if text else ""
