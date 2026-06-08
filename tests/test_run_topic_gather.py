@@ -387,6 +387,60 @@ def test_run_topic_gather_dry_run_is_deterministic(tmp_path: Path) -> None:
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_run_topic_gather_default_run_id_reuses_prompt_hash(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+
+    first = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ]
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    run_root = workspace_root / "runs" / "gather"
+    run_dirs = [path for path in run_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+    run_dir = run_dirs[0]
+    batch_path = run_dir / "gather-candidate-batch.json"
+    prompt_path = run_dir / "rendered-prompt.txt"
+    first_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    prompt_hash = hashlib.sha256(prompt_path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+    assert first_payload["run_id"].endswith(prompt_hash[:16])
+    assert "20260603" not in first_payload["run_id"]
+
+    second = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--created-at",
+            "2026-06-04T12:34:56Z",
+        ]
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    second_run_dirs = [path for path in run_root.iterdir() if path.is_dir()]
+    assert len(second_run_dirs) == 1
+    second_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert second_payload["run_id"] == first_payload["run_id"]
+
+
 def test_run_topic_gather_is_cwd_independent_for_absolute_paths(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

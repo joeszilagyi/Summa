@@ -158,7 +158,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-id",
-        help="Optional stable run identifier. Required for deterministic fixture output.",
+        help=(
+            "Optional stable run identifier. Defaults to a prompt-hash-derived run id and "
+            "is required for deterministic fixture output."
+        ),
     )
     parser.add_argument(
         "--created-at",
@@ -261,17 +264,15 @@ def slugify_run_component(value: str) -> str:
     return normalized or "gather"
 
 
-def build_run_id(subject_id: str, facet: str, phase: str, created_at: str) -> str:
-    created_compact = (
-        created_at.replace("-", "").replace(":", "").replace("T", "t").replace("Z", "z").lower()
-    )
+def build_run_id(subject_id: str, facet: str, phase: str, prompt_hash: str) -> str:
+    prompt_key = prompt_hash[:16].lower()
     return ".".join(
         (
             "gather",
             slugify_run_component(subject_id),
             slugify_run_component(facet),
             slugify_run_component(phase),
-            created_compact,
+            prompt_key,
         )
     )
 
@@ -741,24 +742,7 @@ def execute_gather_run(
             raise GatherDriverError(
                 "feedback plan selected_prompt_bundle_id does not match the resolved facet bundle"
             )
-    run_id = args.run_id or build_run_id(
-        gather_inputs["subject"]["subject_id"],
-        gather_inputs["facet"],
-        gather_inputs["phase"],
-        created_at,
-    )
-    if args.run_id and batch_run_count > 1:
-        run_id = ".".join(
-            (
-                args.run_id.strip(),
-                slugify_run_component(facet),
-                slugify_run_component(phase),
-            )
-        )
-
     workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
-    run_dir = workspace_root / RUNS_ROOT / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
     prior_state_context = prior_state
@@ -789,6 +773,25 @@ def execute_gather_run(
     ]
     if len(rendered_source_blocks) != len(source_wrapping_blocks):
         raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
+
+    rendered_prompt_hash = sha256_text(rendered_prompt)
+    run_id = args.run_id or build_run_id(
+        gather_inputs["subject"]["subject_id"],
+        gather_inputs["facet"],
+        gather_inputs["phase"],
+        rendered_prompt_hash,
+    )
+    if args.run_id and batch_run_count > 1:
+        run_id = ".".join(
+            (
+                args.run_id.strip(),
+                slugify_run_component(facet),
+                slugify_run_component(phase),
+            )
+        )
+
+    run_dir = workspace_root / RUNS_ROOT / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     rendered_prompt_path = run_dir / "rendered-prompt.txt"
     write_text(rendered_prompt_path, rendered_prompt, sync=False)
@@ -847,7 +850,7 @@ def execute_gather_run(
         batch_path=batch_path,
         rendered_prompt_path=rendered_prompt_path,
         batch=batch,
-        rendered_prompt_sha256=sha256_text(rendered_prompt),
+        rendered_prompt_sha256=rendered_prompt_hash,
         candidate_batch_sha256=hash_file(batch_path),
         live_result=live_result,
     )
