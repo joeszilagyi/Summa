@@ -15,6 +15,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ DEFAULT_ENGINE = "codex"
 DEFAULT_CYCLE_DEPTH = 1
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 RUNS_ROOT = Path("runs") / "gather"
+GATHER_PROMPT_HEADER_PATH = REPO_ROOT / "tools" / "prompts" / "_shared" / "gather_governance_header.prompt"
 LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -331,6 +333,19 @@ def read_text_file(path: Path, *, label: str) -> str:
         raise GatherDriverError(f"could not read {label}: {path}") from exc
     except UnicodeDecodeError as exc:
         raise GatherDriverError(f"{label} must be valid UTF-8 text: {path}") from exc
+
+
+@cache
+def load_gather_prompt_header() -> str:
+    return read_text_file(GATHER_PROMPT_HEADER_PATH, label="gather prompt header").rstrip("\n")
+
+
+def load_prompt_body(path: Path, *, label: str) -> str:
+    prompt_body = read_text_file(path, label=label)
+    if path.name.endswith(".seed.prompt"):
+        header = load_gather_prompt_header()
+        return header.rstrip("\n") + "\n\n" + prompt_body.lstrip("\n")
+    return prompt_body
 
 
 def ensure_file(path: Path, *, label: str) -> Path:
@@ -749,7 +764,7 @@ def execute_gather_run(
             )
     workspace_root = resolve_subject_runtime.resolve_workspace_path(args.workspace)
 
-    prompt_body = read_text_file(gather_inputs["selected_template_path"], label="prompt file")
+    prompt_body = load_prompt_body(gather_inputs["selected_template_path"], label="prompt file")
     prior_state_context = prior_state
     source_wrapping_blocks, rendered_blocks = resolve_source_text_blocks(
         args.source_text_file,

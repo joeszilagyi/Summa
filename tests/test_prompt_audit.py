@@ -5,12 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOMAIN_PACKS = (
     REPO_ROOT / "config" / "domain_packs" / "general.v1.json",
     REPO_ROOT / "config" / "domain_packs" / "organism.v1.json",
 )
+GOVERNANCE_HEADER = REPO_ROOT / "tools" / "prompts" / "_shared" / "gather_governance_header.prompt"
 AUDIT_DOC = REPO_ROOT / "docs" / "project" / "PROMPT_AUDIT.md"
 GATHER_DRIVER = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
 REQUIRED_PHRASES = (
@@ -75,6 +75,10 @@ def test_prompt_audit_doc_lists_all_active_prompt_files() -> None:
 
 
 def test_active_prompt_files_exist_and_use_neutral_candidate_discovery_language() -> None:
+    header = GOVERNANCE_HEADER.read_text(encoding="utf-8")
+    for phrase in REQUIRED_PHRASES:
+        assert phrase in header
+
     prompt_paths: list[Path] = []
     for pack in DOMAIN_PACKS:
         prompt_paths.extend(REPO_ROOT / path for path in prompt_files_from_pack(pack))
@@ -83,12 +87,16 @@ def test_active_prompt_files_exist_and_use_neutral_candidate_discovery_language(
     for path in prompt_paths:
         assert path.is_file(), path
         body = path.read_text(encoding="utf-8")
-        for phrase in REQUIRED_PHRASES:
-            assert phrase in body, f"{path}: missing required phrase {phrase!r}"
         lower_body = body.lower()
         assert "candidate" in lower_body, path
         for phrase in DISALLOWED_PRESENTATION_PHRASES:
             assert phrase not in lower_body, f"{path}: found disallowed phrase {phrase!r}"
+        if path.name.endswith(".seed.prompt"):
+            for phrase in REQUIRED_PHRASES:
+                assert phrase not in body, f"{path}: unexpectedly retains shared header phrase {phrase!r}"
+        else:
+            for phrase in REQUIRED_PHRASES:
+                assert phrase in body, f"{path}: missing required phrase {phrase!r}"
 
 
 def test_domain_packs_reference_checked_in_prompt_files() -> None:
