@@ -2465,12 +2465,16 @@ def main() -> int:
                     max_response_bytes=args.max_response_bytes,
                     payload_spool_dir=remote_payload_spool_dir,
                 )
-                sys.stdout.write(
-                    json.dumps(
-                        remote_execution_record, ensure_ascii=False, indent=2, sort_keys=True
+                if not args.suppress_execution_record_stdout:
+                    sys.stdout.write(
+                        json.dumps(
+                            remote_execution_record,
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n"
                     )
-                    + "\n"
-                )
                 return 0 if remote_execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
 
             dry_run_local_input_paths = sorted(
@@ -2488,9 +2492,11 @@ def main() -> int:
                 gate_report=None,
                 planned_actions=planned_actions,
             )
-            sys.stdout.write(
-                json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            )
+            if not args.suppress_execution_record_stdout:
+                sys.stdout.write(
+                    json.dumps(execution_record, ensure_ascii=False, indent=2, sort_keys=True)
+                    + "\n"
+                )
             return 0
 
         prepare_output_dir(output_dir, run_id=run_id, workspace_root=workspace_root)

@@ -392,6 +392,7 @@ def run_executor(
     gate_request: Path,
     allow_network: bool,
     dry_run: bool = False,
+    suppress_execution_record_stdout: bool = False,
     max_response_bytes: int | None = None,
     timeout_seconds: float = 2,
 ) -> subprocess.CompletedProcess[str]:
@@ -419,6 +420,8 @@ def run_executor(
     ]
     if dry_run:
         args.append("--dry-run")
+    if suppress_execution_record_stdout:
+        args.append("--suppress-execution-record-stdout")
     if max_response_bytes is not None:
         args.extend(["--max-response-bytes", str(max_response_bytes)])
     if allow_network:
@@ -1211,6 +1214,34 @@ def test_remote_dry_run_sets_no_canonical_persistence_and_no_payload_retention(
         assert execution["network_access_attempted"] is False
         assert execution["capture_event_count"] == 0
         assert execution["extraction_record_count"] == 0
+        assert not output.exists()
+    finally:
+        server.shutdown()
+
+
+def test_remote_dry_run_suppresses_execution_record_stdout_when_requested(
+    tmp_path: Path,
+) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/text"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(
+            tmp_path, urls=[url], allowed_prefix=base_url, dry_run=True
+        )
+        output = tmp_path / "remote-dry-run-suppressed"
+
+        proc = run_executor(
+            handoff=handoff,
+            output=output,
+            gate_request=gate_request,
+            allow_network=True,
+            dry_run=True,
+            suppress_execution_record_stdout=True,
+        )
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.stdout == ""
         assert not output.exists()
     finally:
         server.shutdown()

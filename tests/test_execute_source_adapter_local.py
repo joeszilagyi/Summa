@@ -68,10 +68,14 @@ def run_planner(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     return handoff, payload
 
 
-def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProcess[str]:
+def run_executor(
+    tmp_path: Path,
+    *,
+    handoff: Path,
+    suppress_execution_record_stdout: bool = False,
+) -> subprocess.CompletedProcess[str]:
     output = tmp_path / "local-source-execution"
-    return subprocess.run(
-        [
+    args = [
             sys.executable,
             str(EXECUTOR),
             "--handoff",
@@ -88,7 +92,11 @@ def run_executor(tmp_path: Path, *, handoff: Path) -> subprocess.CompletedProces
             "local-source-execution",
             "--created-at",
             "2026-06-03T12:34:56Z",
-        ],
+        ]
+    if suppress_execution_record_stdout:
+        args.append("--suppress-execution-record-stdout")
+    return subprocess.run(
+        args,
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -386,6 +394,43 @@ def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) 
     assert second_proc.returncode == source_executor.EXIT_STATE_UNSAFE, second_proc.stdout + second_proc.stderr
     assert not stale_artifact.exists()
     assert (output / "manifest.json").exists()
+
+
+def test_execute_local_source_dry_run_suppresses_execution_record_stdout_when_requested(
+    tmp_path: Path,
+) -> None:
+    handoff, _ = run_planner(tmp_path)
+    output = tmp_path / "local-source-execution"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(EXECUTOR),
+            "--handoff",
+            str(handoff),
+            "--adapter",
+            str(ADAPTER),
+            "--output",
+            str(output),
+            "--workspace-root",
+            str(tmp_path),
+            "--mode",
+            "local",
+            "--run-id",
+            "local-source-execution",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+            "--dry-run",
+            "--suppress-execution-record-stdout",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == ""
+    assert not output.exists()
 
 
 def test_publish_output_dir_swaps_staged_tree_into_place(tmp_path: Path) -> None:
