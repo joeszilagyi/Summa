@@ -431,7 +431,7 @@ def build_results_payload(args: argparse.Namespace) -> dict[str, Any]:
             scope=args.scope,
             limit=args.limit,
             offset=args.offset,
-            include_total=args.include_total,
+            include_total=getattr(args, "include_total", False),
         )
     finally:
         conn.close()

@@ -177,6 +177,11 @@ def parse_args() -> argparse.Namespace:
         default="json",
         help="Stdout format for the emitted projection artifact.",
     )
+    parser.add_argument(
+        "--validate-index-file",
+        action="store_true",
+        help="Run a full post-write index validation pass before replacing the temp DB.",
+    )
     return parser.parse_args()
 
 
@@ -405,6 +410,65 @@ def validate_projection_index_file(index_path: Path, payload: dict[str, Any]) ->
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: search_projection row count mismatch"
                 )
+            if projection_count is None or int(projection_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection row count mismatch"
+                )
+            if fts_count is None or int(fts_count[0]) != expected_count:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: search_projection_fts row count mismatch"
+                )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise SearchProjectionError(f"projection index validation failed for {index_path}") from exc
+
+
+def validate_projection_index_post_write(index_path: Path, payload: dict[str, Any]) -> None:
+    try:
+        conn = connect_read_only(index_path)
+        try:
+            if not has_projection_index_marker(conn):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing marker"
+                )
+            metadata = conn.execute(
+                """
+                SELECT projection_schema_version, profile, source_database_fingerprint, projection_records_digest
+                FROM projection_metadata
+                LIMIT 1
+                """
+            ).fetchone()
+            if metadata is None:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: missing metadata"
+                )
+            if str(metadata["projection_schema_version"]) != str(payload["schema_version"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: schema version mismatch"
+                )
+            if str(metadata["profile"]) != str(payload["profile"]):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: profile mismatch"
+                )
+            if str(metadata["source_database_fingerprint"]) != str(
+                payload["source"]["database_fingerprint"]
+            ):
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: source fingerprint mismatch"
+                )
+            expected_records_digest = payload.get("_projection_records_digest")
+            if isinstance(expected_records_digest, str):
+                expected_records_digest = str(expected_records_digest)
+            else:
+                expected_records_digest = projection_records_digest(payload["records"])
+            if str(metadata["projection_records_digest"]) != expected_records_digest:
+                raise SearchProjectionError(
+                    f"projection index validation failed for {index_path}: projection records digest mismatch"
+                )
+            expected_count = int(payload["counts"]["indexed_rows"])
+            projection_count = conn.execute("SELECT COUNT(*) FROM search_projection").fetchone()
+            fts_count = conn.execute("SELECT COUNT(*) FROM search_projection_fts").fetchone()
             if projection_count is None or int(projection_count[0]) != expected_count:
                 raise SearchProjectionError(
                     f"projection index validation failed for {index_path}: search_projection row count mismatch"
@@ -787,7 +851,7 @@ def render_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_index(index_path: Path, payload: dict[str, Any]) -> None:
+def write_index(index_path: Path, payload: dict[str, Any], *, validate_index_file: bool = False) -> None:
     index_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     conn: sqlite3.Connection | None = None
@@ -935,7 +999,10 @@ def write_index(index_path: Path, payload: dict[str, Any]) -> None:
         conn.commit()
         conn.close()
         conn = None
-        validate_projection_index_file(temp_path, payload)
+        if validate_index_file:
+            validate_projection_index_file(temp_path, payload)
+        else:
+            validate_projection_index_post_write(temp_path, payload)
         temp_path.replace(index_path)
         temp_path = None
     finally:
@@ -960,7 +1027,7 @@ def main() -> int:
                     for error in validation_errors[:5]
                 )
                 raise SearchProjectionError(f"public search leak validation failed: {summary}")
-        write_index(index_path, payload)
+        write_index(index_path, payload, validate_index_file=args.validate_index_file)
         if args.output_json:
             atomic_write_json(resolve_path(args.output_json), payload)
     except (SearchProjectionError, sqlite3.DatabaseError, OSError, ValueError) as exc:

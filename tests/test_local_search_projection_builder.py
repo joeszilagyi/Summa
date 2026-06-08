@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 import hashlib
+import importlib.util
 import json
 import sqlite3
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "tools" / "scripts" / "build_local_search_projection.py"
@@ -753,8 +752,48 @@ def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: P
         generated_at="2026-06-02T00:00:00Z",
     )
     with pytest.raises(builder.SearchProjectionError):
-        builder.write_index(index_db, builder.build_projection_payload(args))
+        builder.write_index(index_db, builder.build_projection_payload(args), validate_index_file=True)
 
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT title
+            FROM search_projection
+            WHERE object_ref='work:1'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row[0] == "Public Work"
+
+
+def test_builder_skips_full_validation_by_default(tmp_path: Path, monkeypatch) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    payload = builder.build_projection_payload(
+        SimpleNamespace(
+            db=str(db),
+            profile="local",
+            correction_ledger=None,
+            generated_at="2026-06-02T00:00:00Z",
+        )
+    )
+
+    called = 0
+
+    def fail_validation(index_path: Path, payload: dict[str, object]) -> None:
+        nonlocal called
+        called += 1
+        raise builder.SearchProjectionError("full validation should not run by default")
+
+    monkeypatch.setattr(builder, "validate_projection_index_file", fail_validation)
+
+    builder.write_index(index_db, payload)
+
+    assert called == 0
     conn = sqlite3.connect(index_db)
     try:
         row = conn.execute(
