@@ -63,19 +63,18 @@ def _no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return payload
 
 
-def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
+def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     try:
-        raw_text = path.read_text(encoding="utf-8")
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(
+                handle,
+                object_pairs_hook=_no_duplicate_object_pairs,
+                parse_constant=_reject_json_constant,
+            )
     except FileNotFoundError as exc:
         raise CanonicalIngestError(f"{label} path does not exist: {path}") from exc
     except OSError as exc:
         raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
-    try:
-        payload = json.loads(
-            raw_text,
-            object_pairs_hook=_no_duplicate_object_pairs,
-            parse_constant=_reject_json_constant,
-        )
     except DuplicateJsonKeyError as exc:
         raise CanonicalIngestError(f"{label} is not valid JSON: {exc}") from exc
     except NonStandardJsonConstantError as exc:
@@ -86,11 +85,11 @@ def _load_json_object(path: Path, *, label: str) -> tuple[dict[str, Any], str]:
         ) from exc
     if not isinstance(payload, dict):
         raise CanonicalIngestError(f"{label} must be a JSON object: {path}")
-    return payload, raw_text
+    return payload
 
 
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
-    payload, batch_text = _load_json_object(batch_path, label="candidate batch")
+    payload = _load_json_object(batch_path, label="candidate batch")
     result, exit_code = (
         validate_gather_candidate_batch_validator.validate_gather_candidate_batch_payload(
             payload,
@@ -104,7 +103,7 @@ def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], st
         raise CanonicalIngestError(
             f"gather candidate batch validation failed: {message or batch_path}"
         )
-    return payload, hashlib.sha256(batch_text.encode("utf-8")).hexdigest()
+    return payload, hash_file(batch_path)
 
 
 def load_validated_execution_artifacts(

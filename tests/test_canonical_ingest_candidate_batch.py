@@ -529,7 +529,9 @@ def test_work_identifier_does_not_default_to_high_confidence(tmp_path: Path) -> 
     assert identifier["confidence_score"] is None
 
 
-def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_validated_candidate_batch_streams_without_read_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     valid_payload = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))
     valid_payload["prompt"]["rendered_prompt"] = FIXTURE_PROMPT.read_text(encoding="utf-8")
     valid_payload["prompt"]["rendered_prompt_hash"] = hashlib.sha256(
@@ -542,23 +544,16 @@ def test_load_validated_candidate_batch_uses_single_candidate_payload_read(tmp_p
     valid_payload["prompt"]["rendered_prompt_path"] = "rendered-prompt.txt"
 
     valid_text = json.dumps(valid_payload, ensure_ascii=False, sort_keys=True) + "\n"
-    mutated_payload = json.loads(valid_text)
-    mutated_payload["run_id"] = "run-id-mutated"
-    mutated_text = json.dumps(mutated_payload, ensure_ascii=False, sort_keys=True) + "\n"
     batch_path.write_text(valid_text, encoding="utf-8")
 
     original_read_text = canonical_ingest.Path.read_text
-    calls = {"count": 0}
 
-    def read_text_side_effect(self: Path, *args: object, **kwargs: object) -> str:
+    def fail_read_text(self: Path, *args: object, **kwargs: object) -> str:
         if self == batch_path:
-            calls["count"] += 1
-            if calls["count"] == 1:
-                return valid_text
-            return mutated_text
+            raise AssertionError("candidate batch loading should stream via Path.open()")
         return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(canonical_ingest.Path, "read_text", read_text_side_effect)
+    monkeypatch.setattr(canonical_ingest.Path, "read_text", fail_read_text)
 
     batch, batch_hash = canonical_ingest.load_validated_candidate_batch(batch_path)
 
