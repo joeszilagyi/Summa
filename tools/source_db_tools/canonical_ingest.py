@@ -225,7 +225,10 @@ def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] |
 def _structured_claim_text(candidate: dict[str, Any], structured: dict[str, Any] | None) -> str:
     if structured is not None:
         return _safe_json_text(structured)
-    return str(candidate["text"])
+    text = str(candidate.get("text") or "").strip()
+    first_line = text.splitlines()[0] if text else ""
+    collapsed = " ".join(first_line.split())
+    return collapsed[:240] or "claim-fallback-empty"
 
 
 def _structured_claim_type(candidate_type: str, structured: dict[str, Any] | None) -> str:

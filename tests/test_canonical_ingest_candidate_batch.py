@@ -353,6 +353,55 @@ def test_candidate_batch_unknown_candidate_is_preserved_with_warning(tmp_path: P
     assert "unknown candidate type preserved as a source claim" in warning_messages
 
 
+@pytest.mark.parametrize(
+    "candidate_type",
+    ["raw_candidate_text", "open_question", "timeline_item"],
+)
+def test_prose_only_candidate_claim_text_is_bounded(
+    tmp_path: Path, candidate_type: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    prose = (
+        "Line one should be retained as the bounded claim text. "
+        "This remainder should not be stored verbatim in source_claim.claim_text.\n"
+        + ("additional prose " * 40)
+    )
+    batch = build_batch(
+        [
+            {
+                "candidate_id": f"cand:{candidate_type}.1",
+                "candidate_type": candidate_type,
+                "origin": "llm_proposed",
+                "persistence_status": "workspace_run_only",
+                "review_status": "unverified",
+                "text": prose,
+            }
+        ],
+        run_id=f"bounded-{candidate_type}",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                batch,
+                batch_path=tmp_path / f"{candidate_type}.json",
+                batch_hash=batch_hash(batch),
+                db_path=db_path,
+            )
+        claim_row = conn.execute(
+            "SELECT claim_text, claim_type FROM source_claim ORDER BY source_claim_id"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    expected_claim_text = " ".join(prose.splitlines()[0].split())[:240] or "claim-fallback-empty"
+    assert report["counts"]["inserted"]["source_claim"] == 1
+    assert claim_row["claim_type"] == f"candidate_{candidate_type}"
+    assert claim_row["claim_text"] == expected_claim_text
+    assert claim_row["claim_text"] != prose
+
+
 def test_candidate_ingested_high_confidence_entity_is_visible_to_prior_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
