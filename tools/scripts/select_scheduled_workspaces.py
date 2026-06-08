@@ -260,6 +260,20 @@ def workspace_output_entry(workspace: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def workspace_selection_summary(
+    entry: dict[str, Any], *, reasons: list[str] | None = None
+) -> dict[str, Any]:
+    summary = {
+        "workspace_id": entry["workspace_id"],
+        "topic_label": entry.get("topic_label"),
+        "lifecycle_state": entry.get("lifecycle_state"),
+        "schedule_posture": entry.get("schedule_posture"),
+    }
+    if reasons:
+        summary["reasons"] = list(reasons)
+    return summary
+
+
 def effective_scheduler_policy(
     workspace: dict[str, Any], args: argparse.Namespace
 ) -> dict[str, Any]:
@@ -810,8 +824,11 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
         "planned_run_record_count": len(planned_records),
         "selected_count": len(selected),
         "skipped_count": len(skipped),
-        "selected_workspaces": selected,
-        "skipped_workspaces": skipped,
+        "selected_workspaces": [workspace_selection_summary(entry) for entry in selected],
+        "skipped_workspaces": [
+            workspace_selection_summary(entry, reasons=entry.get("reasons", []))
+            for entry in skipped
+        ],
         "planned_run_records": planned_records,
         "selection_explanation": selection_explanation,
     }
@@ -824,10 +841,16 @@ def render_text(payload: dict[str, Any]) -> str:
         f"skipped_count={payload['skipped_count']}",
     ]
 
+    planned_by_workspace_id = {
+        str(record.get("workspace_id") or ""): record
+        for record in payload["planned_run_records"]
+        if isinstance(record, dict)
+    }
     for index, workspace in enumerate(payload["selected_workspaces"]):
         lines.append(f"selected[{index}].workspace_id={workspace['workspace_id']}")
-        lines.append(f"selected[{index}].workspace_root={workspace['resolved_workspace_root']}")
-        manifest = workspace.get("resolved_default_subject_manifest", "-")
+        record = planned_by_workspace_id.get(workspace["workspace_id"], {})
+        lines.append(f"selected[{index}].workspace_root={record.get('resolved_workspace_root', '-')}")
+        manifest = record.get("resolved_default_subject_manifest", "-")
         lines.append(f"selected[{index}].subject_manifest={manifest}")
 
     for index, workspace in enumerate(payload["skipped_workspaces"]):

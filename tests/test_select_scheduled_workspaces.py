@@ -203,6 +203,12 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
         "skipped_reasons": [],
         "run_budget": {"max_attempts": 2, "max_runtime_seconds": 900},
     }
+    assert payload["selected_workspaces"][0] == {
+        "workspace_id": "selected_workspace",
+        "topic_label": "Selected Workspace",
+        "lifecycle_state": "active",
+        "schedule_posture": "scheduled",
+    }
 
     manual = records_by_workspace["manual_workspace"]
     assert manual["decision"] == "skipped"
@@ -210,11 +216,28 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert manual["skipped_reason"] == "schedule_posture is manual; pass --include-manual to include it"
     assert manual["skipped_reasons"] == [manual["skipped_reason"]]
     assert manual["cadence_reason"] == "schedule_posture:manual"
+    assert payload["skipped_workspaces"][0] == {
+        "workspace_id": "manual_workspace",
+        "topic_label": "Manual Workspace",
+        "lifecycle_state": "active",
+        "schedule_posture": "manual",
+        "reasons": ["schedule_posture is manual; pass --include-manual to include it"],
+    }
 
     missing_manifest = records_by_workspace["missing_manifest_workspace"]
     assert missing_manifest["decision"] == "skipped"
     assert missing_manifest["skipped_reason"] == (
         "default_subject_manifest is missing or unresolved; scheduled runs need an explicit manifest"
+    )
+    assert "default_subject_manifest" not in payload["selected_workspaces"][0]
+    assert "resolved_workspace_root" not in payload["selected_workspaces"][0]
+    assert "default_subject_manifest" not in payload["skipped_workspaces"][0]
+    assert "resolved_workspace_root" not in payload["skipped_workspaces"][0]
+    assert explanation["selected_candidate"]["metadata"]["workspace_root"] == str(
+        selected_root
+    )
+    assert records_by_workspace["selected_workspace"]["resolved_workspace_root"] == str(
+        selected_root
     )
 
     inactive = records_by_workspace["inactive_workspace"]
@@ -912,6 +935,40 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
             "run_budget": {"max_attempts": 1},
         }
     ]
+
+
+def test_selector_text_output_uses_planned_run_records_for_workspace_details(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspaces" / "selected"
+    workspace_root.mkdir(parents=True)
+    manifest_path = write_manifest(workspace_root, subject_id="subject.selected")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="selected_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    proc = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-text",
+            "--planned-at",
+            "2026-01-01T00:00:00Z",
+            "--format",
+            "text",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "selected[0].workspace_id=selected_workspace" in proc.stdout
+    assert f"selected[0].workspace_root={workspace_root}" in proc.stdout
+    assert f"selected[0].subject_manifest={manifest_path}" in proc.stdout
 
 
 def test_selector_canonicalizes_planned_at_across_payloads(tmp_path: Path) -> None:
