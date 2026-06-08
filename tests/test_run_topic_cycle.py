@@ -171,21 +171,29 @@ def test_topic_cycle_python_and_wrapper_help() -> None:
 def test_stage_plan_matches_feedback_plan_mode() -> None:
     module = load_run_topic_cycle_module()
 
-    assert module.build_stage_plan(feedback_plan_mode=None, build_next_feedback_plan=False) == [
+    assert module.build_stage_plan(
+        feedback_plan_mode=None,
+        build_next_feedback_plan=False,
+        include_source_adapter=False,
+        include_execution_ingest=False,
+        include_graph_closure=False,
+    ) == [
         "resolve_subject_runtime",
         "resolve_domain_pack",
         "validate_canonical_store",
         "feedback_plan_pre",
         "run_gather",
         "ingest_candidate_batch",
-        "execute_source_adapter",
-        "ingest_execution_artifacts",
         "feedback_plan_post",
-        "build_publication",
         "final_canonical_store_summary",
-        "graph_closure_audit",
     ]
-    assert module.build_stage_plan(feedback_plan_mode="auto", build_next_feedback_plan=True) == [
+    assert module.build_stage_plan(
+        feedback_plan_mode="auto",
+        build_next_feedback_plan=True,
+        include_source_adapter=True,
+        include_execution_ingest=True,
+        include_graph_closure=True,
+    ) == [
         "resolve_subject_runtime",
         "resolve_domain_pack",
         "validate_canonical_store",
@@ -195,13 +203,15 @@ def test_stage_plan_matches_feedback_plan_mode() -> None:
         "execute_source_adapter",
         "ingest_execution_artifacts",
         "build_feedback_plan_post",
-        "build_publication",
         "final_canonical_store_summary",
         "graph_closure_audit",
     ]
     assert module.build_stage_plan(
         feedback_plan_mode="fixtures/feedback-plan.json",
         build_next_feedback_plan=False,
+        include_source_adapter=False,
+        include_execution_ingest=True,
+        include_graph_closure=False,
     ) == [
         "resolve_subject_runtime",
         "resolve_domain_pack",
@@ -209,12 +219,9 @@ def test_stage_plan_matches_feedback_plan_mode() -> None:
         "load_feedback_plan",
         "run_gather",
         "ingest_candidate_batch",
-        "execute_source_adapter",
         "ingest_execution_artifacts",
         "feedback_plan_post",
-        "build_publication",
         "final_canonical_store_summary",
-        "graph_closure_audit",
     ]
 
 
@@ -346,7 +353,10 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     stages = stages_by_name(manifest)
     assert stages["run_gather"]["status"] == "passed"
     assert stages["ingest_candidate_batch"]["status"] == "dry_run"
-    assert stages["execute_source_adapter"]["status"] == "skipped"
+    assert "execute_source_adapter" not in stages
+    assert "ingest_execution_artifacts" not in stages
+    assert "graph_closure_audit" not in stages
+    assert "build_publication" not in stages
     assert stages["ingest_candidate_batch"]["artifacts"]["mutated"] is False  # type: ignore[index]
     assert Path(stages["ingest_candidate_batch"]["artifacts"]["ingest_report"]).is_file()  # type: ignore[index]
     assert isinstance(stages["ingest_candidate_batch"]["artifacts"]["ingest_report_sha256"], str)  # type: ignore[index]
@@ -458,6 +468,7 @@ def test_topic_cycle_graph_closure_is_disabled_by_default(
     assert exit_code == 0
     assert manifest["graph_closure"]["status"] == "disabled"  # type: ignore[index]
     assert manifest["graph_closure"]["disabled_reason"] == "disabled_by_operator_flag"  # type: ignore[index]
+    assert "graph_closure_audit" not in stages_by_name(manifest)
     persisted = load_manifest(run_dir)
     assert persisted["graph_closure"]["status"] == "disabled"  # type: ignore[index]
     assert persisted["graph_closure"]["disabled_reason"] == "disabled_by_operator_flag"  # type: ignore[index]
@@ -656,7 +667,6 @@ def test_topic_cycle_final_status_is_final_before_cycle_evidence_recording(
         )
 
     monkeypatch.setattr(module, "execution_ingest_stage", fake_execution_ingest_stage)
-    monkeypatch.setattr(module, "publication_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "final_store_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "graph_closure_stage", lambda **kwargs: None)
 
@@ -770,7 +780,7 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert stages["ingest_candidate_batch"]["status"] == "passed"
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
-    assert stages["graph_closure_audit"]["status"] in {"passed", "warning", "skipped"}
+    assert "graph_closure_audit" not in stages
     assert (
         stages["ingest_candidate_batch"]["evidence"]["candidate_batch"]["schema_version"]
         == "gather-candidate-batch.v1"
@@ -793,6 +803,7 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
     assert manifest["selection_explanations"][0]["when"] == "post"
     assert manifest["selection_explanations"][0]["path"] == manifest["feedback_plan_post"]["path"]  # type: ignore[index]
+    assert "graph_closure_audit" not in stages
 
 
 def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
@@ -917,8 +928,9 @@ def test_topic_cycle_dry_run_records_execution_ingest_report_by_reference(tmp_pa
     assert proc.returncode == 0, proc.stdout + proc.stderr
     manifest = load_manifest(run_dir)
     stages = stages_by_name(manifest)
-    assert stages["execute_source_adapter"]["status"] == "skipped"
+    assert "execute_source_adapter" not in stages
     artifacts = stages["ingest_execution_artifacts"]["artifacts"]
+    assert stages["ingest_execution_artifacts"]["status"] == "dry_run"
     assert artifacts["mutated"] is False  # type: ignore[index]
     assert Path(artifacts["ingest_report"]).is_file()  # type: ignore[index]
     assert isinstance(artifacts["ingest_report_sha256"], str)  # type: ignore[index]

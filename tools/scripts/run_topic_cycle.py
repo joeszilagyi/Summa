@@ -399,7 +399,12 @@ def build_manifest(
 
 
 def build_stage_plan(
-    *, feedback_plan_mode: str | None, build_next_feedback_plan: bool
+    *,
+    feedback_plan_mode: str | None,
+    build_next_feedback_plan: bool,
+    include_source_adapter: bool = False,
+    include_execution_ingest: bool = False,
+    include_graph_closure: bool = False,
 ) -> list[str]:
     if feedback_plan_mode == "auto":
         feedback_plan_pre = "build_feedback_plan_pre"
@@ -411,20 +416,23 @@ def build_stage_plan(
     feedback_plan_post = (
         "build_feedback_plan_post" if build_next_feedback_plan else "feedback_plan_post"
     )
-    return [
+    stages = [
         "resolve_subject_runtime",
         "resolve_domain_pack",
         "validate_canonical_store",
         feedback_plan_pre,
         "run_gather",
         "ingest_candidate_batch",
-        "execute_source_adapter",
-        "ingest_execution_artifacts",
-        feedback_plan_post,
-        "build_publication",
-        "final_canonical_store_summary",
-        "graph_closure_audit",
     ]
+    if include_source_adapter:
+        stages.append("execute_source_adapter")
+    if include_execution_ingest:
+        stages.append("ingest_execution_artifacts")
+    stages.append(feedback_plan_post)
+    stages.append("final_canonical_store_summary")
+    if include_graph_closure:
+        stages.append("graph_closure_audit")
+    return stages
 
 
 def attach_feedback_selection_explanation(
@@ -1174,14 +1182,8 @@ def acquisition_stage(
             "remote acquisition remains disabled in F26; --allow-network was ignored"
         )
     if args.execution_run_fixture:
-        stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
-        stage.skipped_reason = "execution fixture supplied"
-        add_stage(manifest, stage)
         return resolve_path(args.execution_run_fixture), None
     if not args.source_handoff:
-        stage = StageRecord(name="execute_source_adapter", required=False, status="skipped")
-        stage.skipped_reason = "no source handoff supplied"
-        add_stage(manifest, stage)
         return None, None
     stage = StageRecord(name="execute_source_adapter")
     stage.started_at = utc_now()
@@ -1251,9 +1253,6 @@ def execution_ingest_stage(
     run_dir: Path,
 ) -> dict[str, Any] | None:
     if execution_run_dir is None:
-        stage = StageRecord(name="ingest_execution_artifacts", required=False, status="skipped")
-        stage.skipped_reason = "no execution artifacts available"
-        add_stage(manifest, stage)
         return None
     stage = StageRecord(name="ingest_execution_artifacts", required=args.mode != "dry-run")
     stage.started_at = utc_now()
@@ -1396,12 +1395,6 @@ def execution_ingest_stage(
         fail_stage(stage, str(exc))
 
 
-def publication_stage(*, manifest: dict[str, Any]) -> None:
-    stage = StageRecord(name="build_publication", required=False, status="skipped")
-    stage.skipped_reason = "publication rebuild not requested in this F26 runner"
-    add_stage(manifest, stage)
-
-
 def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path) -> None:
     stage = StageRecord(name="final_canonical_store_summary")
     stage.started_at = utc_now()
@@ -1458,7 +1451,6 @@ def graph_closure_stage(
             }
         )
         finish_stage(stage, status="skipped")
-        add_stage(manifest, stage)
         return
 
     report_path = graph_closure_report_path(args, run_dir)
@@ -1734,6 +1726,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     manifest["stage_plan"] = build_stage_plan(
         feedback_plan_mode=args.feedback_plan,
         build_next_feedback_plan=args.build_next_feedback_plan,
+        include_source_adapter=bool(args.source_handoff),
+        include_execution_ingest=bool(args.source_handoff or args.execution_run_fixture),
+        include_graph_closure=bool(args.graph_closure),
     )
     manifest_path = run_dir / "topic-cycle-run.json"
     started = time.monotonic()
@@ -1818,7 +1813,6 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
                     stage.skipped_reason = "not requested"
                     add_stage(manifest, stage)
-                publication_stage(manifest=manifest)
                 final_store_stage(args=args, manifest=manifest, db_path=db_path)
                 graph_closure_stage(
                     args=args,
