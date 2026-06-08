@@ -507,7 +507,7 @@ def _claim_key_for_candidate(
         _key_scope(workspace_id),
         normalized_type,
         about_object_ref or "about:unknown",
-        _normalize_key_text(candidate.get("text")) or "claim-fallback-empty",
+        "claim-fallback-empty",
     )
 
 

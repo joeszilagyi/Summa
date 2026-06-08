@@ -959,7 +959,7 @@ def test_work_fallback_without_explicit_identity_is_stable_across_batches(tmp_pa
     assert len(set(row["work_key_v1"] for row in rows)) == 1
 
 
-def test_claim_key_fallback_does_not_use_candidate_id() -> None:
+def test_claim_key_fallback_does_not_use_candidate_text() -> None:
     candidate_alpha = {
         "candidate_id": "cand:claim-empty-text-1",
         "candidate_type": "open_question",
@@ -974,7 +974,7 @@ def test_claim_key_fallback_does_not_use_candidate_id() -> None:
         "origin": "llm_proposed",
         "persistence_status": "workspace_run_only",
         "review_status": "unverified",
-        "text": "alpha",
+        "text": "beta beta beta",
     }
     first_key = canonical_ingest._claim_key_for_candidate(
         candidate_alpha,
