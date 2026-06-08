@@ -1131,7 +1131,7 @@ def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
 
     def parse_wrapped_blocks_guard(prompt_text: str, *, template: object | None = None):
         parse_calls.append(prompt_text)
-        assert "Wrapped source text blocks:" not in prompt_text
+        assert "Wrapped source text blocks:" in prompt_text
         return real_parse_wrapped_blocks(prompt_text, template=template)
 
     monkeypatch.setattr(validator.Path, "read_text", read_text_guard)
@@ -1139,7 +1139,7 @@ def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
 
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
-    assert parse_calls
+    assert len(parse_calls) == 1
 
 
 

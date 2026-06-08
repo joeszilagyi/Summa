@@ -869,6 +869,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 )
             source_section_marker = "\nWrapped source text blocks:\n"
             source_section_start = prompt_text.find(source_section_marker)
+            source_section_text_start = source_section_start + len(source_section_marker) if source_section_start != -1 else 0
+            source_section_text = prompt_text[source_section_text_start:]
+            if source_section_text.endswith("\n"):
+                source_section_text = source_section_text[:-1]
             if source_section_start == -1:
                 add_error(
                     errors,
@@ -876,15 +880,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="rendered prompt must include wrapped source text blocks",
                     path="$.prompt.rendered_prompt",
                 )
-                metadata_prompt_text = prompt_text
-                source_section_text = ""
-            else:
-                metadata_prompt_text = prompt_text[:source_section_start]
-                source_section_text = prompt_text[source_section_start + len(source_section_marker) :]
-                if source_section_text.endswith("\n"):
-                    source_section_text = source_section_text[:-1]
-
-            parsed_blocks = parse_wrapped_blocks(metadata_prompt_text, template=template)
+            parsed_blocks = parse_wrapped_blocks(prompt_text, template=template)
             recorded_blocks = wrapping.get("blocks")
             if not isinstance(recorded_blocks, list):
                 return
@@ -893,6 +889,15 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     errors,
                     code="WRAPPER_BLOCK_COUNT_MISMATCH",
                     message="source_block_count must equal the number of recorded blocks",
+                    path="$.source_text_wrapping.source_block_count",
+                )
+
+            parsed_source_blocks = [block for block in parsed_blocks if block.source_ref.startswith("source:")]
+            if len(parsed_source_blocks) != len(recorded_blocks):
+                add_error(
+                    errors,
+                    code="WRAPPED_SOURCE_BLOCK_COUNT_MISMATCH",
+                    message="recorded source block count does not match parsed source blocks",
                     path="$.source_text_wrapping.source_block_count",
                 )
 
@@ -913,14 +918,13 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     add_error(
                         errors,
                         code="WRAPPED_BLOCK_OFFSET_MISMATCH",
-                        message="recorded block offsets do not match the rendered prompt source section",
+                        message="recorded block offsets do not match the rendered prompt",
                         path=f"$.source_text_wrapping.blocks[{index}]",
                     )
                     continue
-                actual_blocks = parse_wrapped_blocks(
-                    source_section_text[start_offset:end_offset], template=template
-                )
-                if len(actual_blocks) != 1:
+                expected_start = source_section_text_start + start_offset
+                expected_end = source_section_text_start + end_offset
+                if index >= len(parsed_source_blocks):
                     add_error(
                         errors,
                         code="WRAPPED_BLOCK_PARSE_FAILED",
@@ -928,7 +932,14 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path=f"$.source_text_wrapping.blocks[{index}]",
                     )
                     continue
-                actual = actual_blocks[0]
+                actual = parsed_source_blocks[index]
+                if actual.start_offset != expected_start or actual.end_offset != expected_end:
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_OFFSET_MISMATCH",
+                        message="recorded block offsets do not match the rendered prompt source block",
+                        path=f"$.source_text_wrapping.blocks[{index}]",
+                    )
                 if expected.get("source_ref") != actual.source_ref:
                     add_error(
                         errors,
@@ -950,7 +961,8 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="recorded hazard_flags do not match the rendered prompt block",
                         path=f"$.source_text_wrapping.blocks[{index}].hazard_flags",
                     )
-                actual_hash = hashlib.sha256(actual.source_text.encode("utf-8")).hexdigest()
+                actual_source_bytes = actual.source_text.encode("utf-8")
+                actual_hash = hashlib.sha256(actual_source_bytes).hexdigest()
                 if expected.get("sha256") != actual_hash:
                     add_error(
                         errors,
@@ -958,7 +970,7 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="recorded sha256 does not match the wrapped source text",
                         path=f"$.source_text_wrapping.blocks[{index}].sha256",
                     )
-                actual_bytes = len(actual.source_text.encode("utf-8"))
+                actual_bytes = len(actual_source_bytes)
                 if expected.get("byte_count") != actual_bytes:
                     add_error(
                         errors,
