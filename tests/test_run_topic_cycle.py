@@ -604,7 +604,22 @@ def test_topic_cycle_final_status_is_final_before_cycle_evidence_recording(
         "resolve_feedback_plan",
         lambda **kwargs: {"path": str(tmp_path / "feedback-plan.json")},
     )
-    monkeypatch.setattr(module, "gather_stage", lambda **kwargs: tmp_path / "candidate-batch.json")
+    monkeypatch.setattr(
+        module,
+        "gather_stage",
+        lambda **kwargs: (
+            tmp_path / "candidate-batch.json",
+            {},
+            "candidate-hash",
+            {
+                "artifact_path": str(tmp_path / "candidate-batch.json"),
+                "artifact_hash": "candidate-hash",
+                "validator_name": "gather_candidate_batch",
+                "validator_version": "1",
+                "result": {"counts": {}, "errors": [], "warnings": []},
+            },
+        ),
+    )
     monkeypatch.setattr(module, "candidate_ingest_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "acquisition_stage", lambda **kwargs: tmp_path / "execution-run")
     def fake_execution_ingest_stage(**kwargs):
@@ -912,7 +927,11 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
             stderr="",
         )
 
-    def deny_rehash(path: Path) -> str:
+    def fake_hash_file(path: Path) -> str:
+        if path == batch_path:
+            raise AssertionError("candidate batch was rehashed")
+        if path.name == "gather-candidate-batch-validation.json":
+            return "receipt-hash"
         raise AssertionError(f"unexpected hash_file call: {path}")
 
     monkeypatch.setattr(module, "run_command", fake_run_command)
@@ -921,7 +940,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "validate_gather_candidate_batch",
         lambda path: ({"valid": True}, module.EXIT_GATHER_PASS),
     )
-    monkeypatch.setattr(module, "hash_file", deny_rehash)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
 
     args = SimpleNamespace(
         mode="dry-run",
@@ -942,7 +961,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     }
     runtime = {"subject_manifest_path": str(prompt_path)}
 
-    result = module.gather_stage(
+    batch_path_result, batch_payload, batch_hash, validation_receipt = module.gather_stage(
         args=args,
         manifest=manifest,
         workspace=tmp_path,
@@ -952,10 +971,20 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         feedback_plan=None,
     )
 
-    assert result == batch_path
+    assert batch_path_result == batch_path
+    assert batch_payload == {}
+    assert batch_hash == "candidate-hash"
+    assert validation_receipt["artifact_path"] == str(batch_path)
+    assert validation_receipt["artifact_hash"] == "candidate-hash"
+    assert validation_receipt["validator_name"] == "gather_candidate_batch"
+    assert validation_receipt["validator_version"] == "1"
+    assert validation_receipt["result"] == {"valid": True}
     stages = stages_by_name(manifest)
     assert stages["run_gather"]["artifacts"]["candidate_batch_sha256"] == "candidate-hash"  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
+    receipt_path = Path(stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt"])  # type: ignore[index]
+    assert receipt_path.is_file()
+    assert stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"] == "receipt-hash"  # type: ignore[index]
 
 
 def test_feedback_plan_stage_hashes_output_once_without_rehashing(
@@ -1115,9 +1144,17 @@ def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Pa
     db_path = tmp_path / "canonical.sqlite"
     run_dir = tmp_path / "candidate-ingest-run"
 
+    batch_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    validation_receipt = {
+        "artifact_path": str(batch_path),
+        "artifact_hash": "batch-hash",
+        "validator_name": "gather_candidate_batch",
+        "validator_version": "1",
+        "result": {"counts": {}, "errors": [], "warnings": []},
+    }
+
     def fake_load_validated(path: Path):
-        assert path == batch_path
-        return ({}, "batch-hash")
+        raise AssertionError(f"unexpected candidate batch reload: {path}")
 
     def fake_ingest(*args, **kwargs):
         raise RuntimeError("forced ingest failure")
@@ -1169,6 +1206,9 @@ def test_candidate_ingest_spool_reuses_batch_hash_without_rehashing(tmp_path: Pa
         db_path=db_path,
         batch_path=batch_path,
         run_dir=run_dir,
+        candidate_batch=batch_payload,
+        candidate_batch_hash="batch-hash",
+        validation_receipt=validation_receipt,
     )
 
     assert hashed_batch_path == []

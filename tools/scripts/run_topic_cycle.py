@@ -34,6 +34,9 @@ from tools.source_db_tools import (  # noqa: E402
     cycle_evidence_ledger,
 )
 from tools.validators import (  # noqa: E402
+    validate_gather_candidate_batch as gather_candidate_batch_validator,  # noqa: E402
+)
+from tools.validators import (  # noqa: E402
     validate_source_acquisition_execution as execution_validator,  # noqa: E402
 )
 from tools.validators import validate_source_adapter_handoff  # noqa: E402
@@ -862,7 +865,7 @@ def gather_stage(
     run_dir: Path,
     runtime: dict[str, Any],
     feedback_plan: Path | None,
-) -> Path:
+) -> tuple[Path, dict[str, Any], str, dict[str, Any]]:
     stage = StageRecord(name="run_gather")
     stage.started_at = utc_now()
     gather_run_id = f"{manifest['run_id']}.gather"
@@ -925,9 +928,22 @@ def gather_stage(
         }
         if exit_code != EXIT_GATHER_PASS:
             fail_stage(stage, "gather candidate batch failed validation")
+        batch = read_json(batch_path, label="candidate batch")
+        validation_receipt = {
+            "artifact_path": str(batch_path),
+            "artifact_hash": candidate_batch_sha256,
+            "validator_name": gather_candidate_batch_validator.VALIDATOR_NAME,
+            "validator_version": gather_candidate_batch_validator.CONTRACT_VERSION,
+            "result": report,
+        }
+        validation_receipt_path = run_dir / "candidate-ingest" / "gather-candidate-batch-validation.json"
+        validation_receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(validation_receipt_path, validation_receipt)
         stage.artifacts = {
             "candidate_batch": str(batch_path),
             "candidate_batch_sha256": candidate_batch_sha256,
+            "candidate_batch_validation_receipt": str(validation_receipt_path),
+            "candidate_batch_validation_receipt_sha256": hash_file(validation_receipt_path),
             "rendered_prompt": str(prompt_path),
             "rendered_prompt_sha256": rendered_prompt_sha256,
         }
@@ -938,7 +954,7 @@ def gather_stage(
             }
         finish_stage(stage)
         add_stage(manifest, stage)
-        return batch_path
+        return batch_path, batch, candidate_batch_sha256, validation_receipt
     except TopicCycleError:
         raise
     except Exception as exc:
@@ -952,6 +968,9 @@ def candidate_ingest_stage(
     db_path: Path,
     batch_path: Path,
     run_dir: Path,
+    candidate_batch: dict[str, Any] | None = None,
+    candidate_batch_hash: str | None = None,
+    validation_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     stage = StageRecord(name="ingest_candidate_batch", required=args.mode != "dry-run")
     stage.started_at = utc_now()
@@ -993,8 +1012,26 @@ def candidate_ingest_stage(
                     shutil.copy2(source_prompt_path, target_prompt_path)
         ingest_batch_path = fixture_target
     stage.inputs = {"candidate_batch": str(ingest_batch_path)}
-    if args.mode == "dry-run":
+    batch = candidate_batch
+    batch_hash = candidate_batch_hash
+    if batch is None or batch_hash is None:
         batch, batch_hash = canonical_ingest.load_validated_candidate_batch(ingest_batch_path)
+    elif validation_receipt is not None:
+        receipt_artifact_path = validation_receipt.get("artifact_path")
+        receipt_artifact_hash = validation_receipt.get("artifact_hash")
+        receipt_validator_name = validation_receipt.get("validator_name")
+        receipt_validator_version = validation_receipt.get("validator_version")
+        receipt_result = validation_receipt.get("result")
+        if (
+            not isinstance(receipt_artifact_path, str)
+            or Path(receipt_artifact_path).resolve() != ingest_batch_path.resolve()
+            or receipt_artifact_hash != batch_hash
+            or receipt_validator_name != gather_candidate_batch_validator.VALIDATOR_NAME
+            or receipt_validator_version != gather_candidate_batch_validator.CONTRACT_VERSION
+            or not isinstance(receipt_result, dict)
+        ):
+            fail_stage(stage, "candidate batch validation receipt does not match the ingest batch")
+    if args.mode == "dry-run":
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             report = canonical_ingest.ingest_candidate_batch(
@@ -1031,7 +1068,6 @@ def candidate_ingest_stage(
         add_stage(manifest, stage)
         return report
     try:
-        batch, batch_hash = canonical_ingest.load_validated_candidate_batch(ingest_batch_path)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             with conn:
@@ -1728,7 +1764,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     run_dir=run_dir,
                     runtime=runtime,
                 )
-                batch_path = gather_stage(
+                batch_path, candidate_batch, candidate_batch_hash, validation_receipt = gather_stage(
                     args=args,
                     manifest=manifest,
                     workspace=workspace,
@@ -1743,6 +1779,9 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     db_path=db_path,
                     batch_path=batch_path,
                     run_dir=run_dir,
+                    candidate_batch=None if args.candidate_batch_fixture else candidate_batch,
+                    candidate_batch_hash=None if args.candidate_batch_fixture else candidate_batch_hash,
+                    validation_receipt=None if args.candidate_batch_fixture else validation_receipt,
                 )
                 acquisition_result = acquisition_stage(
                     args=args, manifest=manifest, run_dir=run_dir
