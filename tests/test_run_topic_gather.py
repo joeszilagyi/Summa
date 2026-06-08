@@ -41,7 +41,9 @@ wrapper_common = load_module(COMMON_PATH, "llm_source_text_wrapper_for_gather_te
 
 
 def load_domain_pack(pack_id: str) -> dict[str, object]:
-    return json.loads((REPO_ROOT / "config" / "domain_packs" / f"{pack_id}.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (REPO_ROOT / "config" / "domain_packs" / f"{pack_id}.json").read_text(encoding="utf-8")
+    )
 
 
 def write_manifest(
@@ -80,7 +82,9 @@ def write_manifest(
     return manifest_path
 
 
-def run_driver(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_driver(
+    args: list[str], *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(DRIVER_PATH), *args],
         cwd=REPO_ROOT,
@@ -91,7 +95,9 @@ def run_driver(args: list[str], *, env: dict[str, str] | None = None) -> subproc
     )
 
 
-def run_wrapper(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_wrapper(
+    args: list[str], *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(WRAPPER_PATH), *args],
         cwd=REPO_ROOT,
@@ -125,7 +131,7 @@ def assert_text_only_inside_wrapped_blocks(
     outside_segments: list[str] = []
     cursor = 0
     for block in parsed_blocks:
-        outside_segments.append(prompt_text[cursor:block.start_offset])
+        outside_segments.append(prompt_text[cursor : block.start_offset])
         cursor = block.end_offset
     outside_segments.append(prompt_text[cursor:])
     outside_text = "".join(outside_segments)
@@ -144,7 +150,9 @@ def assert_text_only_inside_wrapped_blocks(
         spans = [match.span() for match in re.finditer(re.escape(phrase), lower_prompt)]
         assert spans
         for start, end in spans:
-            assert any(start >= block.start_offset and end <= block.end_offset for block in parsed_blocks)
+            assert any(
+                start >= block.start_offset and end <= block.end_offset for block in parsed_blocks
+            )
 
 
 def test_run_topic_gather_quotes_untrusted_metadata_in_wrapped_json_blocks() -> None:
@@ -234,7 +242,11 @@ def test_run_topic_gather_quotes_untrusted_metadata_in_wrapped_json_blocks() -> 
     )
 
     parsed_blocks = wrapper_common.parse_wrapped_blocks(rendered, template=template)
-    metadata_blocks = {block.source_ref: block for block in parsed_blocks if block.source_ref.startswith("metadata:")}
+    metadata_blocks = {
+        block.source_ref: block
+        for block in parsed_blocks
+        if block.source_ref.startswith("metadata:")
+    }
 
     assert metadata_blocks["metadata:subject"].source_text == json.dumps(
         {
@@ -473,11 +485,23 @@ def test_resolve_prior_state_context_reuses_validated_store_connection(
             "context_hash": "hash",
         }
 
-    monkeypatch.setattr(driver.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only)
-    monkeypatch.setattr(driver.canonical_store, "validate_existing_store", fake_validate_existing_store)
-    monkeypatch.setattr(driver.canonical_store, "load_gather_prior_state", fake_load_gather_prior_state)
-    monkeypatch.setattr(driver.canonical_store, "build_prior_state_context", fake_build_prior_state_context)
-    monkeypatch.setattr(driver.canonical_store, "check_canonical_store", lambda *_: pytest.fail("unexpected check_canonical_store"))
+    monkeypatch.setattr(
+        driver.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only
+    )
+    monkeypatch.setattr(
+        driver.canonical_store, "validate_existing_store", fake_validate_existing_store
+    )
+    monkeypatch.setattr(
+        driver.canonical_store, "load_gather_prior_state", fake_load_gather_prior_state
+    )
+    monkeypatch.setattr(
+        driver.canonical_store, "build_prior_state_context", fake_build_prior_state_context
+    )
+    monkeypatch.setattr(
+        driver.canonical_store,
+        "check_canonical_store",
+        lambda *_: pytest.fail("unexpected check_canonical_store"),
+    )
 
     result = driver.resolve_prior_state_context(
         SimpleNamespace(
@@ -666,7 +690,9 @@ def test_run_topic_gather_source_text_fingerprint_encodes_once(
     monkeypatch.setattr(driver, "read_text_file", fake_read_text_file)
     template = wrapper_common.load_template()
 
-    blocks, rendered_blocks = driver.resolve_source_text_blocks([str(source_path)], template=template)
+    blocks, rendered_blocks = driver.resolve_source_text_blocks(
+        [str(source_path)], template=template
+    )
 
     assert EncodeCountingStr.encode_calls == 1
     assert len(rendered_blocks) == 1
@@ -690,6 +716,7 @@ def test_run_topic_gather_streams_large_source_text_blocks(
     template = wrapper_common.load_template()
 
     monkeypatch.setattr(driver, "SOURCE_TEXT_BLOCK_BYTE_CAP", 128)
+
     def fake_read_text_file(*args, **kwargs) -> str:
         raise AssertionError("large source text files should stream")
 
@@ -710,7 +737,9 @@ def test_run_topic_gather_streams_large_source_text_blocks(
 
     monkeypatch.setattr(Path, "open", fake_open)
 
-    blocks, rendered_blocks = driver.resolve_source_text_blocks([str(source_path)], template=template)
+    blocks, rendered_blocks = driver.resolve_source_text_blocks(
+        [str(source_path)], template=template
+    )
 
     assert read_calls > 1
     assert len(rendered_blocks) == len(blocks) > 1
@@ -792,14 +821,20 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
 
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["source_text_wrapping"]["source_block_count"] > 1
-    assert len(payload["source_text_wrapping"]["blocks"]) == payload["source_text_wrapping"]["source_block_count"]
+    assert (
+        len(payload["source_text_wrapping"]["blocks"])
+        == payload["source_text_wrapping"]["source_block_count"]
+    )
     assert payload["source_text_wrapping"]["blocks"][0]["source_ref"] == "source:0001:chunk:0001"
     assert payload["source_text_wrapping"]["blocks"][0]["resolved_source_path"] == str(
         large_source_path.resolve()
     )
     assert payload["source_text_wrapping"]["blocks"][0]["start_offset"] == 0
     assert payload["source_text_wrapping"]["blocks"][0]["end_offset"] > 0
-    assert payload["source_text_wrapping"]["blocks"][1]["start_offset"] > payload["source_text_wrapping"]["blocks"][0]["end_offset"]
+    assert (
+        payload["source_text_wrapping"]["blocks"][1]["start_offset"]
+        > payload["source_text_wrapping"]["blocks"][0]["end_offset"]
+    )
     assert prompt_path.stat().st_size > large_source_path.stat().st_size
     assert str(large_source_path.resolve()) not in prompt_path.read_text(encoding="utf-8")
 
@@ -860,9 +895,7 @@ def test_run_topic_gather_batches_facets_and_phases_in_one_process(
     assert payload["run_count"] == 4
     assert runtime_calls == 1
     assert prior_state_calls == 1
-    assert {
-        (run["facet"], run["phase"]) for run in payload["runs"]
-    } == {
+    assert {(run["facet"], run["phase"]) for run in payload["runs"]} == {
         ("sources", "01a"),
         ("sources", "01r"),
         ("timeline", "01a"),
@@ -899,7 +932,10 @@ def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> Non
         )
         assert proc.returncode == 0, facet + proc.stdout + proc.stderr
         payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
-        assert payload["prompt_bundle"]["bundle_id"] == pack["prompt_bundles"][f"gather.{facet}"]["bundle_id"]
+        assert (
+            payload["prompt_bundle"]["bundle_id"]
+            == pack["prompt_bundles"][f"gather.{facet}"]["bundle_id"]
+        )
 
 
 def test_missing_prompt_file_fails_clearly(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -944,7 +980,9 @@ def test_missing_prompt_file_fails_clearly(tmp_path: Path, monkeypatch, capsys) 
     assert "prompt file not found" in captured.err
 
 
-def test_gather_candidate_batch_validator_accepts_driver_output_and_rejects_mutation(tmp_path: Path) -> None:
+def test_gather_candidate_batch_validator_accepts_driver_output_and_rejects_mutation(
+    tmp_path: Path,
+) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
@@ -994,7 +1032,9 @@ def test_gather_candidate_batch_validator_accepts_driver_output_and_rejects_muta
     assert "LIVE_ENGINE_INVOCATION_REQUIRED" in validate_fail.stdout
 
 
-def test_gather_candidate_batch_validator_resolves_prompt_path_from_batch_directory(tmp_path: Path) -> None:
+def test_gather_candidate_batch_validator_resolves_prompt_path_from_batch_directory(
+    tmp_path: Path,
+) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
@@ -1075,12 +1115,10 @@ def test_gather_candidate_batch_validator_rejects_prompt_path_outside_batch(tmp_
 
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_VALIDATION_FAILED
-    assert any(
-        error["code"] == "PROMPT_PATH_OUTSIDE_BATCH" for error in report["errors"]
-    )
+    assert any(error["code"] == "PROMPT_PATH_OUTSIDE_BATCH" for error in report["errors"])
 
 
-def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
+def test_gather_candidate_batch_validator_ignores_inline_rendered_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace_root = tmp_path / "workspace"
@@ -1107,39 +1145,80 @@ def test_gather_candidate_batch_validator_uses_prompt_hash_and_byte_count(
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
     batch_path = batch_path_for(workspace_root, run_id)
-    prompt_path = prompt_path_for(workspace_root, run_id)
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     payload["prompt"]["rendered_prompt_path"] = "rendered-prompt.txt"
+    payload["prompt"]["rendered_prompt"] = "inline prompt text that should be ignored"
     batch_path.write_text(
         json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
-    class GuardedPromptText(str):
-        def __eq__(self, other: object) -> bool:  # pragma: no cover - exercised on regression
-            raise AssertionError("validator must not compare full prompt strings")
-
-    original_read_text = validator.Path.read_text
     real_parse_wrapped_blocks = validator.parse_wrapped_blocks
     parse_calls: list[str] = []
-
-    def read_text_guard(self: Path, *args: object, **kwargs: object) -> str:
-        text = original_read_text(self, *args, **kwargs)
-        if self == prompt_path:
-            return GuardedPromptText(text)
-        return text
 
     def parse_wrapped_blocks_guard(prompt_text: str, *, template: object | None = None):
         parse_calls.append(prompt_text)
         assert "Wrapped source text blocks:" in prompt_text
         return real_parse_wrapped_blocks(prompt_text, template=template)
 
-    monkeypatch.setattr(validator.Path, "read_text", read_text_guard)
     monkeypatch.setattr(validator, "parse_wrapped_blocks", parse_wrapped_blocks_guard)
 
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
     assert len(parse_calls) == 1
+
+
+def test_run_topic_gather_debug_rendered_prompt_does_not_store_inline_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "debug-rendered-prompt"
+    prompt_path = prompt_path_for(workspace_root, run_id)
+    scan_calls: list[tuple[str, str, str]] = []
+
+    def scan_text_guard(
+        prompt_text: str, *, rel_path: str, profile: str
+    ) -> list[dict[str, object]]:
+        scan_calls.append((prompt_text, rel_path, profile))
+        assert rel_path == str(prompt_path)
+        assert profile == "public_bundle"
+        return []
+
+    monkeypatch.setattr(driver, "scan_text", scan_text_guard)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(DRIVER_PATH),
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--debug-rendered-prompt",
+        ],
+    )
+
+    exit_code = driver.main()
+    assert exit_code == 0
+    assert len(scan_calls) == 1
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert "rendered_prompt" not in payload["prompt"]
+    assert (
+        payload["prompt"]["rendered_prompt_hash"]
+        == hashlib.sha256(prompt_path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+    )
 
 
 def test_gather_candidate_batch_validator_uses_recorded_prior_state_metadata(
@@ -1224,12 +1303,17 @@ def test_gather_candidate_batch_validator_uses_recorded_prior_state_metadata(
     batch_path = batch_path_for(workspace_root, run_id)
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["prior_state"]["prior_state_rendered_source_ref"] == "metadata:prior-state"
-    assert payload["prior_state"]["prior_state_rendered_provenance"] == "prior canonical state context"
+    assert (
+        payload["prior_state"]["prior_state_rendered_provenance"] == "prior canonical state context"
+    )
 
-    expected_prior_state_text = json.dumps(prior_state_payload, ensure_ascii=False, indent=2, sort_keys=True)
-    assert payload["prior_state"]["prior_state_rendered_hash"] == hashlib.sha256(
-        expected_prior_state_text.encode("utf-8")
-    ).hexdigest()
+    expected_prior_state_text = json.dumps(
+        prior_state_payload, ensure_ascii=False, indent=2, sort_keys=True
+    )
+    assert (
+        payload["prior_state"]["prior_state_rendered_hash"]
+        == hashlib.sha256(expected_prior_state_text.encode("utf-8")).hexdigest()
+    )
     assert payload["prior_state"]["prior_state_rendered_byte_count"] == len(
         expected_prior_state_text.encode("utf-8")
     )
@@ -1249,9 +1333,9 @@ def test_gather_candidate_batch_validator_uses_recorded_prior_state_metadata(
     assert len(parse_calls) == 1
 
 
-
-
-def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp_path: Path) -> None:
+def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
+    tmp_path: Path,
+) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
@@ -1290,16 +1374,26 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "live"
     assert payload["raw_engine_output"] == fake_output
-    assert payload["raw_engine_output_hash"] == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
+    assert (
+        payload["raw_engine_output_hash"] == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
+    )
     assert payload["engine_output_ref"]
-    assert payload["provenance"]["stamped_output_hash"] == hashlib.sha256(
-        Path(payload["provenance"]["stamped_output_path"]).read_text(encoding="utf-8").encode("utf-8")
-    ).hexdigest()
-    assert payload["provenance"]["stamped_output_footer_hash"] == hashlib.sha256(
-        json.dumps(payload["provenance"]["stamped_output_footer"], ensure_ascii=False, sort_keys=True).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    assert (
+        payload["provenance"]["stamped_output_hash"]
+        == hashlib.sha256(
+            Path(payload["provenance"]["stamped_output_path"])
+            .read_text(encoding="utf-8")
+            .encode("utf-8")
+        ).hexdigest()
+    )
+    assert (
+        payload["provenance"]["stamped_output_footer_hash"]
+        == hashlib.sha256(
+            json.dumps(
+                payload["provenance"]["stamped_output_footer"], ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
 
     stamped_text = Path(payload["provenance"]["stamped_output_path"]).read_text(encoding="utf-8")
@@ -1322,7 +1416,9 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(tmp
 
     validator.Path.read_text = guarded_read_text  # type: ignore[assignment]
     try:
-        report, exit_code = validator.validate_gather_candidate_batch_payload(payload, target=batch_path)
+        report, exit_code = validator.validate_gather_candidate_batch_payload(
+            payload, target=batch_path
+        )
     finally:
         validator.Path.read_text = original_read_text  # type: ignore[assignment]
     assert exit_code == validator.EXIT_PASS, report

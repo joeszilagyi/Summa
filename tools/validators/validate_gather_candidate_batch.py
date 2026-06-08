@@ -119,7 +119,9 @@ def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
     return candidate_path
 
 
-def load_json_object(target: Path, *, label: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
+def load_json_object(
+    target: Path, *, label: str
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
     errors: list[dict[str, Any]] = []
     if not target.exists():
         add_error(errors, code="INPUT_NOT_FOUND", message=f"{label} path does not exist")
@@ -145,10 +147,16 @@ def load_json_object(target: Path, *, label: str) -> tuple[dict[str, Any] | None
         add_error(errors, code="NON_STANDARD_JSON_CONSTANT", line=1, message=str(exc))
         return None, errors, EXIT_VALIDATION_FAILED
     except json.JSONDecodeError as exc:
-        add_error(errors, code="JSON_PARSE_ERROR", line=exc.lineno, message=f"{label} is not valid JSON")
+        add_error(
+            errors, code="JSON_PARSE_ERROR", line=exc.lineno, message=f"{label} is not valid JSON"
+        )
         return None, errors, EXIT_VALIDATION_FAILED
     if not isinstance(payload, dict):
-        add_error(errors, code="OBJECT_REQUIRED", message=f"{label} top-level JSON value must be an object")
+        add_error(
+            errors,
+            code="OBJECT_REQUIRED",
+            message=f"{label} top-level JSON value must be an object",
+        )
         return None, errors, EXIT_VALIDATION_FAILED
     return payload, errors, EXIT_PASS
 
@@ -262,7 +270,12 @@ def validate_against_schema(
             )
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
-            add_error(errors, code="PATTERN_MISMATCH", message=f"value does not match pattern {pattern}", path=path)
+            add_error(
+                errors,
+                code="PATTERN_MISMATCH",
+                message=f"value does not match pattern {pattern}",
+                path=path,
+            )
 
     if isinstance(value, list):
         min_items = schema.get("minItems")
@@ -295,10 +308,14 @@ def validate_against_schema(
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         minimum = schema.get("minimum")
         if isinstance(minimum, (int, float)) and value < minimum:
-            add_error(errors, code="NUMBER_TOO_SMALL", message=f"value must be >= {minimum}", path=path)
+            add_error(
+                errors, code="NUMBER_TOO_SMALL", message=f"value must be >= {minimum}", path=path
+            )
         maximum = schema.get("maximum")
         if isinstance(maximum, (int, float)) and value > maximum:
-            add_error(errors, code="NUMBER_TOO_LARGE", message=f"value must be <= {maximum}", path=path)
+            add_error(
+                errors, code="NUMBER_TOO_LARGE", message=f"value must be <= {maximum}", path=path
+            )
 
     if isinstance(value, dict):
         required = schema.get("required")
@@ -378,10 +395,17 @@ def parse_stamp_footer(text: str) -> dict[str, str] | None:
     }
 
 
-def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict[str, Any]]) -> None:
+def validate_invariants(
+    payload: dict[str, Any], target: Path, errors: list[dict[str, Any]]
+) -> None:
     created_at = payload.get("created_at")
     if isinstance(created_at, str) and not is_rfc3339_datetime(created_at):
-        add_error(errors, code="INVALID_CREATED_AT", message="created_at must be an RFC3339 date-time", path="$.created_at")
+        add_error(
+            errors,
+            code="INVALID_CREATED_AT",
+            message="created_at must be an RFC3339 date-time",
+            path="$.created_at",
+        )
 
     provenance = payload.get("provenance")
     if isinstance(provenance, dict):
@@ -402,7 +426,8 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
     feedback_plan = payload.get("feedback_plan")
     if isinstance(mode, str) and isinstance(engine, dict) and isinstance(provenance, dict):
         if raw_engine_output_hash is not None and (
-            not isinstance(raw_engine_output_hash, str) or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None
+            not isinstance(raw_engine_output_hash, str)
+            or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None
         ):
             add_error(
                 errors,
@@ -432,7 +457,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     message="mode=dry_run must not include engine_output_ref",
                     path="$.engine_output_ref",
                 )
-            if provenance.get("stamped_output_path") is not None or provenance.get("stamped_output_footer") is not None:
+            if (
+                provenance.get("stamped_output_path") is not None
+                or provenance.get("stamped_output_footer") is not None
+            ):
                 add_error(
                     errors,
                     code="DRY_RUN_STAMP_FORBIDDEN",
@@ -494,14 +522,20 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path="$.provenance",
                     )
             else:
-                if engine.get("invoked") is not True or provenance.get("engine_invoked") is not True:
+                if (
+                    engine.get("invoked") is not True
+                    or provenance.get("engine_invoked") is not True
+                ):
                     add_error(
                         errors,
                         code="LIVE_ENGINE_INVOCATION_REQUIRED",
                         message="mode=live must include engine invocation provenance",
                         path="$.mode",
                     )
-                if engine.get("engine_present") is not True or provenance.get("engine_present") is not True:
+                if (
+                    engine.get("engine_present") is not True
+                    or provenance.get("engine_present") is not True
+                ):
                     add_error(
                         errors,
                         code="LIVE_ENGINE_PRESENCE_REQUIRED",
@@ -515,7 +549,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="mode=live must include raw_engine_output",
                         path="$.raw_engine_output",
                     )
-                if not isinstance(raw_engine_output_hash, str) or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None:
+                if (
+                    not isinstance(raw_engine_output_hash, str)
+                    or SHA256_PATTERN.fullmatch(raw_engine_output_hash) is None
+                ):
                     add_error(
                         errors,
                         code="LIVE_RAW_OUTPUT_HASH_REQUIRED",
@@ -529,25 +566,30 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="mode=live must include engine_output_ref",
                         path="$.engine_output_ref",
                     )
-                if not isinstance(provenance.get("stamped_output_path"), str) or not provenance.get("stamped_output_path"):
+                if not isinstance(provenance.get("stamped_output_path"), str) or not provenance.get(
+                    "stamped_output_path"
+                ):
                     add_error(
                         errors,
                         code="LIVE_STAMPED_OUTPUT_PATH_REQUIRED",
                         message="mode=live must include provenance.stamped_output_path",
                         path="$.provenance.stamped_output_path",
                     )
-                if not isinstance(provenance.get("stamped_output_hash"), str) or SHA256_PATTERN.fullmatch(
-                    provenance.get("stamped_output_hash") or ""
-                ) is None:
+                if (
+                    not isinstance(provenance.get("stamped_output_hash"), str)
+                    or SHA256_PATTERN.fullmatch(provenance.get("stamped_output_hash") or "") is None
+                ):
                     add_error(
                         errors,
                         code="LIVE_STAMPED_OUTPUT_HASH_REQUIRED",
                         message="mode=live must include provenance.stamped_output_hash",
                         path="$.provenance.stamped_output_hash",
                     )
-                if not isinstance(provenance.get("stamped_output_footer_hash"), str) or SHA256_PATTERN.fullmatch(
-                    provenance.get("stamped_output_footer_hash") or ""
-                ) is None:
+                if (
+                    not isinstance(provenance.get("stamped_output_footer_hash"), str)
+                    or SHA256_PATTERN.fullmatch(provenance.get("stamped_output_footer_hash") or "")
+                    is None
+                ):
                     add_error(
                         errors,
                         code="LIVE_STAMPED_OUTPUT_FOOTER_HASH_REQUIRED",
@@ -565,22 +607,8 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
     prompt = payload.get("prompt")
     prompt_text: str | None = None
     if isinstance(prompt, dict):
-        rendered_prompt = prompt.get("rendered_prompt")
         rendered_prompt_hash = prompt.get("rendered_prompt_hash")
         rendered_prompt_path = prompt.get("rendered_prompt_path")
-        rendered_prompt_byte_count: int | None = None
-        if isinstance(rendered_prompt, str):
-            prompt_text = rendered_prompt
-            rendered_prompt_bytes = rendered_prompt.encode("utf-8")
-            rendered_prompt_byte_count = len(rendered_prompt_bytes)
-            actual_hash = hashlib.sha256(rendered_prompt_bytes).hexdigest()
-            if rendered_prompt_hash != actual_hash:
-                add_error(
-                    errors,
-                    code="PROMPT_HASH_MISMATCH",
-                    message="rendered_prompt_hash does not match rendered_prompt",
-                    path="$.prompt.rendered_prompt_hash",
-                )
         path: Path | None = None
         if isinstance(rendered_prompt_path, str):
             try:
@@ -611,30 +639,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path="$.prompt.rendered_prompt_path",
                     )
                 else:
-                    if prompt_text is None:
-                        prompt_text = file_text
+                    prompt_text = file_text
                     file_bytes = file_text.encode("utf-8")
                     actual_hash = hashlib.sha256(file_bytes).hexdigest()
-                    actual_byte_count = len(file_bytes)
-                    if isinstance(rendered_prompt, str):
-                        if rendered_prompt_hash != actual_hash:
-                            add_error(
-                                errors,
-                                code="PROMPT_HASH_MISMATCH",
-                                message="rendered_prompt_hash does not match rendered_prompt_path content",
-                                path="$.prompt.rendered_prompt_hash",
-                            )
-                        if (
-                            rendered_prompt_byte_count is not None
-                            and actual_byte_count != rendered_prompt_byte_count
-                        ):
-                            add_error(
-                                errors,
-                                code="PROMPT_BYTE_COUNT_MISMATCH",
-                                message="rendered_prompt_path byte count does not match inline rendered_prompt",
-                                path="$.prompt.rendered_prompt_path",
-                            )
-                    elif rendered_prompt_hash != actual_hash:
+                    if rendered_prompt_hash != actual_hash:
                         add_error(
                             errors,
                             code="PROMPT_PATH_CONTENT_MISMATCH",
@@ -786,7 +794,9 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 message="feedback_plan.applied_facet must match facet.name",
                 path="$.feedback_plan.applied_facet",
             )
-        if isinstance(prompt_bundle, dict) and feedback_plan.get("applied_prompt_bundle_id") != prompt_bundle.get("bundle_id"):
+        if isinstance(prompt_bundle, dict) and feedback_plan.get(
+            "applied_prompt_bundle_id"
+        ) != prompt_bundle.get("bundle_id"):
             add_error(
                 errors,
                 code="FEEDBACK_PLAN_BUNDLE_MISMATCH",
@@ -844,7 +854,12 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
         try:
             template = load_template()
         except RuntimeError as exc:
-            add_error(errors, code="WRAPPER_TEMPLATE_LOAD_FAILED", message=str(exc), path="$.source_text_wrapping")
+            add_error(
+                errors,
+                code="WRAPPER_TEMPLATE_LOAD_FAILED",
+                message=str(exc),
+                path="$.source_text_wrapping",
+            )
         else:
             if wrapping.get("wrapper_template_id") != template.template_id:
                 add_error(
@@ -869,7 +884,11 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                 )
             source_section_marker = "\nWrapped source text blocks:\n"
             source_section_start = prompt_text.find(source_section_marker)
-            source_section_text_start = source_section_start + len(source_section_marker) if source_section_start != -1 else 0
+            source_section_text_start = (
+                source_section_start + len(source_section_marker)
+                if source_section_start != -1
+                else 0
+            )
             source_section_text = prompt_text[source_section_text_start:]
             if source_section_text.endswith("\n"):
                 source_section_text = source_section_text[:-1]
@@ -892,7 +911,9 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     path="$.source_text_wrapping.source_block_count",
                 )
 
-            parsed_source_blocks = [block for block in parsed_blocks if block.source_ref.startswith("source:")]
+            parsed_source_blocks = [
+                block for block in parsed_blocks if block.source_ref.startswith("source:")
+            ]
             if len(parsed_source_blocks) != len(recorded_blocks):
                 add_error(
                     errors,
@@ -914,7 +935,11 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         path=f"$.source_text_wrapping.blocks[{index}]",
                     )
                     continue
-                if start_offset < 0 or end_offset < start_offset or end_offset > len(source_section_text):
+                if (
+                    start_offset < 0
+                    or end_offset < start_offset
+                    or end_offset > len(source_section_text)
+                ):
                     add_error(
                         errors,
                         code="WRAPPED_BLOCK_OFFSET_MISMATCH",
@@ -1025,14 +1050,20 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         expected_next_action_text.encode("utf-8")
                     ).hexdigest()
                     expected_next_action_byte_count = len(expected_next_action_text.encode("utf-8"))
-                    if feedback_plan.get("next_action_rendered_source_ref") != "metadata:feedback-plan":
+                    if (
+                        feedback_plan.get("next_action_rendered_source_ref")
+                        != "metadata:feedback-plan"
+                    ):
                         add_error(
                             errors,
                             code="UNTRUSTED_FEEDBACK_PLAN_METADATA_SOURCE_REF_MISMATCH",
                             message="feedback-plan metadata source_ref must use the wrapped prompt contract",
                             path="$.feedback_plan.next_action_rendered_source_ref",
                         )
-                    if feedback_plan.get("next_action_rendered_provenance") != "candidate feedback plan next action":
+                    if (
+                        feedback_plan.get("next_action_rendered_provenance")
+                        != "candidate feedback plan next action"
+                    ):
                         add_error(
                             errors,
                             code="UNTRUSTED_FEEDBACK_PLAN_METADATA_PROVENANCE_MISMATCH",
@@ -1046,7 +1077,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                             message="feedback-plan metadata hash must match the rendered next_action payload",
                             path="$.feedback_plan.next_action_rendered_hash",
                         )
-                    if feedback_plan.get("next_action_rendered_byte_count") != expected_next_action_byte_count:
+                    if (
+                        feedback_plan.get("next_action_rendered_byte_count")
+                        != expected_next_action_byte_count
+                    ):
                         add_error(
                             errors,
                             code="UNTRUSTED_FEEDBACK_PLAN_METADATA_BYTE_COUNT_MISMATCH",
@@ -1061,7 +1095,9 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                     if not key.startswith("prior_state_rendered_")
                 }
                 expected_prior_state_text = render_json_payload(prior_state_payload)
-                expected_prior_state_hash = hashlib.sha256(expected_prior_state_text.encode("utf-8")).hexdigest()
+                expected_prior_state_hash = hashlib.sha256(
+                    expected_prior_state_text.encode("utf-8")
+                ).hexdigest()
                 expected_prior_state_byte_count = len(expected_prior_state_text.encode("utf-8"))
                 if prior_state.get("prior_state_rendered_source_ref") != "metadata:prior-state":
                     add_error(
@@ -1070,7 +1106,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="prior-state metadata source_ref must use the wrapped prompt contract",
                         path="$.prior_state.prior_state_rendered_source_ref",
                     )
-                if prior_state.get("prior_state_rendered_provenance") != "prior canonical state context":
+                if (
+                    prior_state.get("prior_state_rendered_provenance")
+                    != "prior canonical state context"
+                ):
                     add_error(
                         errors,
                         code="UNTRUSTED_PRIOR_STATE_METADATA_PROVENANCE_MISMATCH",
@@ -1084,7 +1123,10 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
                         message="prior-state metadata hash must match the rendered prior_state payload",
                         path="$.prior_state.prior_state_rendered_hash",
                     )
-                if prior_state.get("prior_state_rendered_byte_count") != expected_prior_state_byte_count:
+                if (
+                    prior_state.get("prior_state_rendered_byte_count")
+                    != expected_prior_state_byte_count
+                ):
                     add_error(
                         errors,
                         code="UNTRUSTED_PRIOR_STATE_METADATA_BYTE_COUNT_MISMATCH",
@@ -1161,7 +1203,11 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
             path="$.schema_version",
         )
 
-    runner_path = payload.get("engine", {}).get("runner_path") if isinstance(payload.get("engine"), dict) else None
+    runner_path = (
+        payload.get("engine", {}).get("runner_path")
+        if isinstance(payload.get("engine"), dict)
+        else None
+    )
     if isinstance(runner_path, str) and not Path(runner_path).is_file():
         add_error(
             errors,
@@ -1169,7 +1215,11 @@ def validate_invariants(payload: dict[str, Any], target: Path, errors: list[dict
             message="engine.runner_path does not point to a readable file",
             path="$.engine.runner_path",
         )
-    bridge_path = payload.get("engine", {}).get("bridge_path") if isinstance(payload.get("engine"), dict) else None
+    bridge_path = (
+        payload.get("engine", {}).get("bridge_path")
+        if isinstance(payload.get("engine"), dict)
+        else None
+    )
     if isinstance(bridge_path, str) and not Path(bridge_path).is_file():
         add_error(
             errors,
@@ -1188,7 +1238,9 @@ def validate_gather_candidate_batch_payload(
     warnings: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
-    schema, schema_errors, schema_exit = load_json_object(SCHEMA_PATH, label="gather candidate batch schema")
+    schema, schema_errors, schema_exit = load_json_object(
+        SCHEMA_PATH, label="gather candidate batch schema"
+    )
     errors.extend(schema_errors)
     if schema is None:
         counts["rejected"] = 1
@@ -1197,7 +1249,10 @@ def validate_gather_candidate_batch_payload(
     if payload.get("schema_version") != SCHEMA_VERSION:
         schema = json.loads(json.dumps(schema))
         schema_version_schema = schema.get("properties", {}).get("schema_version", {})
-        if isinstance(schema_version_schema, dict) and schema_version_schema.get("const") == SCHEMA_VERSION:
+        if (
+            isinstance(schema_version_schema, dict)
+            and schema_version_schema.get("const") == SCHEMA_VERSION
+        ):
             schema_version_schema["const"] = payload.get("schema_version")
     validate_against_schema(payload, schema, root_schema=schema, path="$", errors=errors)
     if not errors:
@@ -1214,7 +1269,11 @@ def validate_gather_candidate_batch_payload(
 def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
     payload, errors, exit_code = load_json_object(target, label="gather candidate batch")
     if payload is None:
-        return {"counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}, "errors": errors, "warnings": []}, exit_code
+        return {
+            "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
+            "errors": errors,
+            "warnings": [],
+        }, exit_code
 
     report, report_exit_code = validate_gather_candidate_batch_payload(payload, target=target)
     return report, report_exit_code

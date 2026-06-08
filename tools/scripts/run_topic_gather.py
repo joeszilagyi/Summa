@@ -285,7 +285,9 @@ def source_text_fingerprint(source_text: str) -> tuple[int, str]:
     return len(encoded_text), hashlib.sha256(encoded_text).hexdigest()
 
 
-def build_source_text_block_identity(index: int, *, chunk_index: int | None = None) -> tuple[str, str]:
+def build_source_text_block_identity(
+    index: int, *, chunk_index: int | None = None
+) -> tuple[str, str]:
     block_suffix = f"{index:04d}" if chunk_index is None else f"{index:04d}:chunk:{chunk_index:04d}"
     return (
         f"source:{block_suffix}",
@@ -816,7 +818,6 @@ def execute_gather_run(
         prior_state=prior_state_context,
         feedback_plan=feedback_plan,
         next_action=next_action,
-        debug_rendered_prompt=args.debug_rendered_prompt,
     )
     batch_path = run_dir / "gather-candidate-batch.json"
     if args.debug_rendered_prompt:
@@ -1158,7 +1159,6 @@ def build_candidate_batch(
     prior_state: dict[str, Any] | None,
     feedback_plan: dict[str, Any] | None,
     next_action: dict[str, Any] | None,
-    debug_rendered_prompt: bool,
 ) -> dict[str, Any]:
     subject = gather_inputs["subject"]
     pack = gather_inputs["domain_pack"]
@@ -1329,8 +1329,6 @@ def build_candidate_batch(
             "next_action_rendered_byte_count": len(next_action_rendered_text.encode("utf-8")),
             "next_action": next_action,
         }
-    if debug_rendered_prompt:
-        batch["prompt"]["rendered_prompt"] = rendered_prompt
     return batch
 
 
