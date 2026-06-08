@@ -660,16 +660,33 @@ def validate_store_stage(
     stage.started_at = utc_now()
     stage.inputs = {"db": str(db_path)}
     try:
-        check = canonical_store.check_canonical_store(db_path)
-        summary = canonical_store.summarize_canonical_store_population(
-            db_path,
-            include_counts=False,
-        )
+        conn = canonical_store.connect_existing_read_only(db_path)
+        try:
+            outline = canonical_store.load_canonical_outline()
+            version_row, table_set, extra_tables = canonical_store.validate_existing_store(
+                conn,
+                outline=outline,
+            )
+            validation = canonical_store.CheckResult(
+                db_path=canonical_store.resolve_db_path(db_path),
+                schema_version=version_row.schema_version,
+                current_migration_id=version_row.current_migration_id,
+                tables=tuple(sorted(table_set)),
+                extra_tables=tuple(sorted(extra_tables)),
+            )
+            summary = canonical_store.summarize_canonical_store_population(
+                db_path,
+                include_counts=False,
+                conn=conn,
+                validation=validation,
+            )
+        finally:
+            conn.close()
         manifest["canonical_db"]["initial_summary"] = summary
         stage.validation = {
             "status": "pass",
-            "schema_version": check.schema_version,
-            "current_migration_id": check.current_migration_id,
+            "schema_version": summary["schema_version"],
+            "current_migration_id": summary["current_migration_id"],
         }
         finish_stage(stage)
         add_stage(manifest, stage)

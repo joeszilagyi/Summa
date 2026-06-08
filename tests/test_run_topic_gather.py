@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -406,6 +407,111 @@ def test_run_topic_gather_is_cwd_independent_for_absolute_paths(tmp_path: Path) 
     assert prompt_path.is_file()
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
+
+
+def test_resolve_prior_state_context_reuses_validated_store_connection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dummy_conn = SimpleNamespace(close=lambda: None)
+    connect_calls: list[Path] = []
+    validate_calls: list[tuple[object, dict[str, object]]] = []
+    load_calls: list[tuple[object, str]] = []
+    prior_context_calls: list[dict[str, object]] = []
+
+    def fake_connect_existing_read_only(db_path: Path) -> object:
+        connect_calls.append(db_path)
+        return dummy_conn
+
+    def fake_validate_existing_store(
+        conn: object, *, outline: dict[str, object]
+    ) -> tuple[SimpleNamespace, set[str], set[str]]:
+        validate_calls.append((conn, outline))
+        return (
+            SimpleNamespace(schema_version=8, current_migration_id="m8"),
+            {"schema_version", "schema_migration_history"},
+            set(),
+        )
+
+    def fake_load_gather_prior_state(
+        conn: object,
+        *,
+        subject_id: str,
+        per_family_limit: int,
+        high_confidence_threshold: float,
+        policy: str,
+    ) -> dict[str, object]:
+        load_calls.append((conn, subject_id))
+        return {
+            "subject_id": subject_id,
+            "per_family_limit": per_family_limit,
+            "high_confidence_threshold": high_confidence_threshold,
+            "policy": policy,
+        }
+
+    def fake_build_prior_state_context(
+        prior_state: dict[str, object],
+        *,
+        cycle_depth: int,
+        previous_run_ids: list[str] | None,
+        max_chars: int,
+    ) -> dict[str, object]:
+        prior_context_calls.append(
+            {
+                "prior_state": prior_state,
+                "cycle_depth": cycle_depth,
+                "previous_run_ids": previous_run_ids,
+                "max_chars": max_chars,
+            }
+        )
+        return {
+            "schema_version": "prior-state-context.v1",
+            "context_text": "prior context",
+            "context_hash": "hash",
+        }
+
+    monkeypatch.setattr(driver.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only)
+    monkeypatch.setattr(driver.canonical_store, "validate_existing_store", fake_validate_existing_store)
+    monkeypatch.setattr(driver.canonical_store, "load_gather_prior_state", fake_load_gather_prior_state)
+    monkeypatch.setattr(driver.canonical_store, "build_prior_state_context", fake_build_prior_state_context)
+    monkeypatch.setattr(driver.canonical_store, "check_canonical_store", lambda *_: pytest.fail("unexpected check_canonical_store"))
+
+    result = driver.resolve_prior_state_context(
+        SimpleNamespace(
+            facet="sources",
+            use_prior_state=True,
+            db=tmp_path / "canonical.sqlite",
+            prior_state_limit=4,
+            prior_state_policy=driver.PRIOR_STATE_POLICY,
+            prior_state_max_chars=1024,
+            previous_run_id=["run-1"],
+            cycle_depth=2,
+        ),
+        subject_id="alpha.fixture",
+    )
+
+    assert result == {
+        "schema_version": "prior-state-context.v1",
+        "context_text": "prior context",
+        "context_hash": "hash",
+    }
+    assert connect_calls == [tmp_path / "canonical.sqlite"]
+    assert len(validate_calls) == 1
+    assert validate_calls[0][0] is dummy_conn
+    assert len(load_calls) == 1
+    assert load_calls[0][0] is dummy_conn
+    assert prior_context_calls == [
+        {
+            "prior_state": {
+                "subject_id": "alpha.fixture",
+                "per_family_limit": 4,
+                "high_confidence_threshold": driver.canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
+                "policy": driver.PRIOR_STATE_POLICY,
+            },
+            "cycle_depth": 2,
+            "previous_run_ids": ["run-1"],
+            "max_chars": 1024,
+        }
+    ]
 
 
 def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:

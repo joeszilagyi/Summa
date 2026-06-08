@@ -813,11 +813,15 @@ def resolve_prior_state_context(
 
     db_path = canonical_store.resolve_db_path(args.db)
     try:
-        canonical_store.check_canonical_store(db_path)
         conn = canonical_store.connect_existing_read_only(db_path)
     except canonical_store.CanonicalStoreError as exc:
         raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     try:
+        outline = canonical_store.load_canonical_outline()
+        try:
+            canonical_store.validate_existing_store(conn, outline=outline)
+        except canonical_store.CanonicalStoreError as exc:
+            raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
         prior_state = canonical_store.load_gather_prior_state(
             conn,
             subject_id=subject_id,

@@ -218,15 +218,42 @@ def test_stage_plan_matches_feedback_plan_mode() -> None:
     ]
 
 
-def test_validate_store_stage_uses_fast_population_summary(
+def test_validate_store_stage_reuses_validated_store_connection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = load_run_topic_cycle_module()
     manifest: dict[str, object] = {"canonical_db": {}, "stages": []}
-    include_counts_calls: list[bool] = []
+    connect_calls: list[Path] = []
+    validate_calls: list[tuple[object, dict[str, object]]] = []
+    summary_calls: list[tuple[Path, object | None, object | None, bool]] = []
+    dummy_conn = SimpleNamespace(close=lambda: None)
 
-    def fake_summary(db_path: Path, *, include_counts: bool = True) -> dict[str, object]:
-        include_counts_calls.append(include_counts)
+    def fake_connect_existing_read_only(db_path: Path) -> object:
+        connect_calls.append(db_path)
+        return dummy_conn
+
+    def fake_validate_existing_store(
+        conn: object, *, outline: dict[str, object]
+    ) -> tuple[SimpleNamespace, set[str], set[str]]:
+        validate_calls.append((conn, outline))
+        return (
+            SimpleNamespace(schema_version=8, current_migration_id="m8"),
+            {"schema_version", "schema_migration_history"},
+            set(),
+        )
+
+    def fake_summary(
+        db_path: Path,
+        *,
+        include_counts: bool = True,
+        conn: object | None = None,
+        validation: object | None = None,
+    ) -> dict[str, object]:
+        summary_calls.append((db_path, conn, validation, include_counts))
+        assert conn is dummy_conn
+        assert validation is not None
+        assert validation.schema_version == 8
+        assert validation.current_migration_id == "m8"
         return {
             "path": str(db_path),
             "exists": True,
@@ -249,12 +276,10 @@ def test_validate_store_stage_uses_fast_population_summary(
             "recommended_interpretation": "Canonical store is initialized and valid, but contains no canonical records yet.",
         }
 
+    monkeypatch.setattr(module.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only)
+    monkeypatch.setattr(module.canonical_store, "validate_existing_store", fake_validate_existing_store)
     monkeypatch.setattr(module.canonical_store, "summarize_canonical_store_population", fake_summary)
-    monkeypatch.setattr(
-        module.canonical_store,
-        "check_canonical_store",
-        lambda db_path: SimpleNamespace(schema_version=8, current_migration_id="m8"),
-    )
+    monkeypatch.setattr(module.canonical_store, "check_canonical_store", lambda *_: pytest.fail("unexpected check_canonical_store"))
 
     module.validate_store_stage(
         args=SimpleNamespace(degraded_spool=False),
@@ -262,7 +287,10 @@ def test_validate_store_stage_uses_fast_population_summary(
         db_path=tmp_path / "canonical.sqlite",
     )
 
-    assert include_counts_calls == [False]
+    assert connect_calls == [tmp_path / "canonical.sqlite"]
+    assert len(validate_calls) == 1
+    assert len(summary_calls) == 1
+    assert summary_calls[0][3] is False
     assert manifest["canonical_db"]["initial_summary"]["status"] == "initialized_empty"
     assert manifest["canonical_db"]["initial_summary"]["table_counts"] == {}
 
