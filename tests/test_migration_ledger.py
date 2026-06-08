@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_COMMON = REPO_ROOT / "tools" / "common"
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
@@ -197,6 +196,8 @@ def test_validator_cli_writes_reports(tmp_path: Path) -> None:
             "valid_append_only",
             "--target-id",
             "inputs/migration_ledger.jsonl",
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(report_json),
             "--report-text",

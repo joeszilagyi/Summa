@@ -22,6 +22,7 @@ from common import (
     display_path,
     emit_report,
     render_text_report,
+    resolve_report_root,
 )
 
 VALIDATOR_NAME = "jsonl_syntax"
@@ -171,6 +172,7 @@ def main() -> int:
     target = Path(args.target)
     result, exit_code = validate_jsonl(target)
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
 
     output_artifacts = {
         "report_json": display_path(args.report_json),
@@ -188,6 +190,7 @@ def main() -> int:
         target=args.target_id or display_path(args.target) or str(target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     text_report = render_text_report(report)
     sys.stdout.write(text_report)

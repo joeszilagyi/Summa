@@ -17,6 +17,7 @@ try:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -47,7 +49,6 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
     REQUIRED_SUPPORTING_SQLITE_TABLES,
     SCHEMA_VERSION,
 )
-
 
 VALIDATOR_NAME = "canonical_graph_model_outline"
 CONTRACT_VERSION = "1"
@@ -383,7 +384,9 @@ def validate_canonical_graph_model_outline(target: Path) -> tuple[dict[str, Any]
 
 def main() -> int:
     args = parse_args()
-    report, exit_code = validate_canonical_graph_model_outline(Path(args.target))
+    target = Path(args.target)
+    report, exit_code = validate_canonical_graph_model_outline(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report["scenario"] = args.scenario
     if args.target_id:
         report["target"] = args.target_id
@@ -392,8 +395,8 @@ def main() -> int:
         "report_text": display_path(args.report_text) if args.report_text else None,
     }
     text_report = render_text_report(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
     sys.stdout.write(text_report)
     return exit_code
 

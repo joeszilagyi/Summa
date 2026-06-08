@@ -19,6 +19,7 @@ try:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (  # type: ignore
@@ -29,6 +30,7 @@ except ModuleNotFoundError:
         display_path,
         emit_report,
         render_text_report,
+        resolve_report_root,
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,8 +45,10 @@ from tools.common.evidence_locator_contract import (  # noqa: E402
     SPAN_KINDS,
 )
 from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS  # noqa: E402
-from tools.source_db_tools.rights_retention import QUOTE_ELIGIBILITY_VALUES, rights_postures  # noqa: E402
-
+from tools.source_db_tools.rights_retention import (  # noqa: E402
+    QUOTE_ELIGIBILITY_VALUES,
+    rights_postures,
+)
 
 VALIDATOR_NAME = "evidence_locator"
 CONTRACT_VERSION = "1"
@@ -266,9 +270,8 @@ def validate_span(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None
     elif span_kind == "structured_field":
         if field_path is None:
             add_error(errors, code="FIELD_PATH_REQUIRED", message="structured_field requires field_path")
-    elif span_kind == "metadata_only":
-        if not metadata_fields:
-            add_error(errors, code="METADATA_FIELDS_REQUIRED", message="metadata_only requires at least one metadata_fields entry")
+    elif span_kind == "metadata_only" and not metadata_fields:
+        add_error(errors, code="METADATA_FIELDS_REQUIRED", message="metadata_only requires at least one metadata_fields entry")
 
 
 def validate_highlight(payload: dict[str, Any], errors: list[dict[str, Any]]) -> None:
@@ -403,6 +406,7 @@ def main() -> int:
     report["scenario"] = args.scenario
     if args.target_id:
         report["target"] = args.target_id
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report = emit_report(
         contract_version=CONTRACT_VERSION,
         counts=report["counts"],
@@ -415,6 +419,7 @@ def main() -> int:
         target=report["target"],
         validator=VALIDATOR_NAME,
         warnings=report["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

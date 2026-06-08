@@ -21,6 +21,7 @@ try:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (  # type: ignore
@@ -32,6 +33,7 @@ except ModuleNotFoundError:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -754,6 +756,7 @@ def main() -> int:
     report["scenario"] = args.scenario
     if args.target_id:
         report["target"] = args.target_id
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report = emit_report(
         contract_version=CONTRACT_VERSION,
         counts=report["counts"],
@@ -766,6 +769,7 @@ def main() -> int:
         target=report["target"],
         validator=VALIDATOR_NAME,
         warnings=report["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

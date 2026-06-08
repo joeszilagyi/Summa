@@ -20,6 +20,7 @@ from common import (
     emit_report,
     is_rfc3339_datetime,
     render_text_report,
+    resolve_report_root,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,6 @@ from tools.common.field_review_state_contract import (  # noqa: E402
     SCHEMA_VERSION,
 )
 from tools.common.source_adapter_contract import STRUCTURED_DATA_FORMATS  # noqa: E402
-
 
 VALIDATOR_NAME = "field_review_state"
 CONTRACT_VERSION = "1"
@@ -427,6 +427,7 @@ def main() -> int:
     result, exit_code = validate_field_review_state(target)
 
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report = emit_report(
         contract_version=CONTRACT_VERSION,
         counts=result["counts"],
@@ -442,6 +443,7 @@ def main() -> int:
         target=args.target_id or (display_path(args.target) or args.target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     print(render_text_report(report), end="")
     return exit_code

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-import importlib.util
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "source_adapter"
@@ -55,6 +54,8 @@ def run_fixture(tmp_path: Path, scenario: str) -> tuple[subprocess.CompletedProc
             scenario,
             "--target-id",
             str(target),
+            "--report-root",
+            ".",
             "--report-json",
             "actual/report.json",
             "--report-text",
@@ -133,6 +134,8 @@ def test_source_adapter_validator_rejects_unknown_nested_fields(tmp_path: Path) 
             sys.executable,
             str(VALIDATOR),
             str(target_path),
+            "--report-root",
+            ".",
             "--report-json",
             "actual/report.json",
             "--report-text",
@@ -166,6 +169,8 @@ def test_source_adapter_validator_rejects_unknown_top_level_nested_fields_with_c
             sys.executable,
             str(VALIDATOR),
             str(target_path),
+            "--report-root",
+            ".",
             "--report-json",
             "actual/report.json",
             "--report-text",
@@ -205,6 +210,8 @@ def test_source_adapter_validator_does_not_recreate_missing_expected_reports(tmp
             "valid_local_directory",
             "--target-id",
             "inputs/source_adapter.json",
+            "--report-root",
+            ".",
             "--report-json",
             "actual/report.json",
             "--report-text",

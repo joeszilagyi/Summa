@@ -173,6 +173,8 @@ def test_leak_scanner_cli_writes_reports(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT_PATH),
             str(root),
+            "--report-root",
+            str(tmp_path),
             "--profile",
             "public_bundle",
             "--report-json",

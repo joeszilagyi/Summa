@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "tools" / "scripts" / "build_static_knowledge_tree.py"
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_static_knowledge_tree_output.py"
@@ -127,6 +126,8 @@ def test_validator_cli_writes_machine_readable_reports(tmp_path: Path) -> None:
             "valid_static_output",
             "--target-id",
             "public-site/build-manifest.json",
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(report_json),
             "--report-text",

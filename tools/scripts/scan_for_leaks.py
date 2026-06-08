@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT,
@@ -19,9 +18,21 @@ for candidate in (
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
-from tools.common.leak_scanner import PROFILES, LeakScannerError, load_allowlist, scan_directory  # noqa: E402
-from tools.validators.common import EXIT_INPUT_UNAVAILABLE, EXIT_PASS, EXIT_VALIDATION_FAILED, add_report_args, write_json, write_text  # noqa: E402
-
+from tools.common.leak_scanner import (  # noqa: E402
+    PROFILES,
+    LeakScannerError,
+    load_allowlist,
+    scan_directory,
+)
+from tools.validators.common import (  # noqa: E402
+    EXIT_INPUT_UNAVAILABLE,
+    EXIT_PASS,
+    EXIT_VALIDATION_FAILED,
+    add_report_args,
+    resolve_report_root,
+    write_json,
+    write_text,
+)
 
 SCRIPT_PATH = "tools/scripts/scan_for_leaks.py"
 
@@ -67,6 +78,7 @@ def render_text(report: dict[str, object]) -> str:
 def main() -> int:
     args = parse_args()
     target = Path(args.target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     try:
         allowlist_payload = load_allowlist(Path(args.allowlist_json)) if args.allowlist_json else None
         report = scan_directory(target, profile=args.profile, allowlist_payload=allowlist_payload)
@@ -75,8 +87,8 @@ def main() -> int:
         return EXIT_INPUT_UNAVAILABLE
 
     text_report = render_text(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
 
     if args.format == "json":
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")

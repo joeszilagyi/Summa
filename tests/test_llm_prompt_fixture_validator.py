@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_llm_prompt_fixture.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "validators" / "llm_prompt_fixture"
@@ -165,6 +164,8 @@ def test_validator_cli_writes_reports(tmp_path: Path) -> None:
             "valid_wrapped_hostile_prompt",
             "--target-id",
             "inputs/prompt_fixture.json",
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(report_json),
             "--report-text",

@@ -131,6 +131,8 @@ def test_validator_cli_writes_reports(tmp_path: Path) -> None:
             "valid_minimal",
             "--target-id",
             "inputs/knowledge_tree_export.json",
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(report_json),
             "--report-text",

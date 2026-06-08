@@ -20,6 +20,7 @@ try:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -32,6 +33,7 @@ except ModuleNotFoundError:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -846,10 +848,11 @@ def main() -> int:
     args = parse_args()
     target = Path(args.target).expanduser()
     report, exit_code = validate_candidate_feedback_plan(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     if getattr(args, "report_json", None):
-        write_json(Path(args.report_json), report)
+        write_json(Path(args.report_json), report, root=report_root)
     if getattr(args, "report_text", None):
-        write_text(Path(args.report_text), render_text_report(report))
+        write_text(Path(args.report_text), render_text_report(report), root=report_root)
     if getattr(args, "format", "json") == "text":
         sys.stdout.write(render_text_report(report))
     else:

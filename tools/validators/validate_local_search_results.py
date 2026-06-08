@@ -17,6 +17,7 @@ try:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
         add_report_args,
         display_path,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -432,12 +434,14 @@ def validate_local_search_results(target: Path) -> tuple[dict[str, Any], int]:
 
 def main() -> int:
     args = parse_args()
-    report, exit_code = validate_local_search_results(Path(args.target))
+    target = Path(args.target)
+    report, exit_code = validate_local_search_results(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     rendered = render_text_report(report)
     if args.report_json:
-        write_json(Path(args.report_json), report)
+        write_json(Path(args.report_json), report, root=report_root)
     if args.report_text:
-        write_text(Path(args.report_text), rendered)
+        write_text(Path(args.report_text), rendered, root=report_root)
     sys.stdout.write(rendered)
     return exit_code
 

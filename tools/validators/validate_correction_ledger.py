@@ -20,6 +20,7 @@ try:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -32,6 +33,7 @@ except ModuleNotFoundError:
         display_path,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
         write_json,
         write_text,
     )
@@ -49,7 +51,6 @@ from tools.common.correction_ledger_contract import (  # noqa: E402
     REVIEW_QUEUE_REF_PREFIXES,
     SCHEMA_VERSION,
 )
-
 
 VALIDATOR_NAME = "correction_ledger"
 CONTRACT_VERSION = "1"
@@ -365,7 +366,7 @@ def resolve_lineage(events: list[dict[str, Any]], errors: list[dict[str, Any]]) 
     last_timestamp: datetime | None = None
     seen_event_ids: set[str] = set()
 
-    for index, event in enumerate(events):
+    for _index, event in enumerate(events):
         event_id = event["event_id"]
         if event_id in seen_event_ids:
             add_error(errors, code="DUPLICATE_EVENT_ID", message=f"duplicate event_id: {event_id}")
@@ -470,6 +471,7 @@ def main() -> int:
     args = parse_args()
     target = Path(args.target)
     report, exit_code = validate_correction_ledger(target)
+    report_root = resolve_report_root(target, report_root=args.report_root)
     report["scenario"] = args.scenario
     if args.target_id:
         report["target"] = args.target_id
@@ -478,8 +480,8 @@ def main() -> int:
         "report_text": display_path(args.report_text) if args.report_text else None,
     }
     text_report = render_text_report(report)
-    write_json(args.report_json, report)
-    write_text(args.report_text, text_report)
+    write_json(args.report_json, report, root=report_root)
+    write_text(args.report_text, text_report, root=report_root)
     sys.stdout.write(text_report)
     return exit_code
 

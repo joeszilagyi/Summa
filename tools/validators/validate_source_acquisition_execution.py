@@ -22,6 +22,7 @@ try:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 except ModuleNotFoundError:
     from tools.validators.common import (
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
         emit_report,
         is_rfc3339_datetime,
         render_text_report,
+        resolve_report_root,
     )
 
 
@@ -1367,6 +1369,7 @@ def main() -> int:
     target = Path(args.target)
     result, exit_code = validate_source_acquisition_execution(target)
     status = "pass" if exit_code == EXIT_PASS else "fail"
+    report_root = resolve_report_root(target, report_root=args.report_root)
     output_artifacts = {
         "report_json": display_path(args.report_json),
         "report_text": display_path(args.report_text),
@@ -1383,6 +1386,7 @@ def main() -> int:
         target=args.target_id or display_path(args.target) or str(target),
         validator=VALIDATOR_NAME,
         warnings=result["warnings"],
+        report_root=report_root,
     )
     sys.stdout.write(render_text_report(report))
     return exit_code

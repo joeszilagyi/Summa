@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 VALIDATOR_PATH = VALIDATORS_DIR / "validate_evidence_locator.py"
@@ -105,6 +104,8 @@ def test_validator_cli_writes_reports(tmp_path: Path) -> None:
             "valid_page_span",
             "--target-id",
             "inputs/evidence_locator.json",
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(report_json),
             "--report-text",

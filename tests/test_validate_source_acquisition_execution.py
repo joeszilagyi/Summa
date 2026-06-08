@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
-import shutil
 from pathlib import Path
 
 import pytest
 
 from tools.validators import validate_source_acquisition_execution as validator
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTION_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "execution_run"
@@ -33,6 +32,8 @@ def run_validator(run_dir: Path, *, tmp_path: Path) -> tuple[subprocess.Complete
             sys.executable,
             str(VALIDATOR),
             str(run_dir / "execution-record.json"),
+            "--report-root",
+            str(tmp_path),
             "--report-json",
             str(tmp_path / "actual" / "report.json"),
         ],
