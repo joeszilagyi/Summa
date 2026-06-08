@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +112,48 @@ def _iter_jsonl_records(path: Path, *, label: str) -> Iterable[dict[str, Any]]:
         raise CanonicalIngestError(f"{label} path does not exist: {path}") from exc
     except OSError as exc:
         raise CanonicalIngestError(f"{label} could not be read: {path}") from exc
+
+
+def _batch_insert_rows_if_fresh(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    provenance_event_ref: str,
+    rows: list[dict[str, Any]],
+    insert_sql: str,
+    insert_params: Callable[[dict[str, Any]], tuple[Any, ...]],
+    lookup_sql: str,
+    lookup_params: Callable[[dict[str, Any]], tuple[Any, ...]],
+    label: str,
+) -> list[sqlite3.Row] | None:
+    if not rows:
+        return []
+    existing = conn.execute(
+        f"SELECT 1 FROM {table_name} WHERE provenance_event_ref=? LIMIT 1",
+        (provenance_event_ref,),
+    ).fetchone()
+    if existing is not None:
+        return None
+    lookup_param_rows = [lookup_params(row) for row in rows]
+    if len(set(lookup_param_rows)) != len(lookup_param_rows):
+        return None
+    savepoint_name = f"batch_insert_{table_name}"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        conn.executemany(insert_sql, [insert_params(row) for row in rows])
+    except sqlite3.IntegrityError:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        return None
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+    fetched_rows: list[sqlite3.Row] = []
+    for lookup_params_row in lookup_param_rows:
+        row = conn.execute(lookup_sql, lookup_params_row).fetchone()
+        if row is None:
+            raise CanonicalIngestError(f"{label} batch lookup failed after insert")
+        fetched_rows.append(row)
+    return fetched_rows
 
 
 def load_validated_candidate_batch(batch_path: Path) -> tuple[dict[str, Any], str]:
@@ -579,6 +621,19 @@ def ingest_candidate_batch(
     entity_candidates: list[dict[str, Any]] = []
     claim_work_items: set[tuple[str | None, str | None, str]] = set()
     relationship_work_items: set[tuple[str | None, str, str, str | None]] = set()
+    use_batch_writes = (
+        not dry_run
+        and conn.execute(
+            "SELECT 1 FROM work WHERE provenance_event_ref=? LIMIT 1",
+            (provenance_event_key,),
+        ).fetchone()
+        is None
+    )
+    pending_source_access_work_records: list[dict[str, Any]] = []
+    pending_source_access_lead_records: list[dict[str, Any]] = []
+    pending_source_claim_records: list[dict[str, Any]] = []
+    pending_source_relationship_records: list[dict[str, Any]] = []
+    pending_entity_records: list[dict[str, Any]] = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise CanonicalIngestError("candidate rows must be JSON objects")
@@ -596,30 +651,26 @@ def ingest_candidate_batch(
             if dry_run:
                 _bump(report, "intended", "source_relationship")
             else:
-                result = canonical_store.record_source_relationship(
-                    conn,
-                    provenance_event_ref=provenance_event_key,
-                    provenance_event_id=provenance_event_id,
-                    from_object_ref=str(structured["from_object_ref"]),
-                    predicate=str(structured["predicate"]),
-                    to_object_ref=structured.get("to_object_ref"),
-                    target_label=structured.get("target_label"),
-                    evidence_note=structured.get("evidence_note"),
-                    review_state=structured.get("review_state"),
-                    confidence_score=structured.get("confidence_score"),
-                    workspace_id=workspace_id,
+                pending_source_relationship_records.append(
+                    {
+                        "from_object_ref": str(structured["from_object_ref"]),
+                        "predicate": str(structured["predicate"]),
+                        "to_object_ref": structured.get("to_object_ref"),
+                        "target_label": structured.get("target_label"),
+                        "evidence_note": structured.get("evidence_note"),
+                        "review_state": structured.get("review_state"),
+                        "confidence_score": structured.get("confidence_score"),
+                        "workspace_id": workspace_id,
+                    }
                 )
-                _bump(report, "inserted" if result.created else "updated", "source_relationship")
-                relationship_work_items.add(
-                    (
-                        workspace_id,
-                        str(structured["from_object_ref"]),
-                        str(structured["predicate"]).strip(),
-                        None
-                        if structured.get("to_object_ref") is None
-                        else str(structured.get("to_object_ref")),
-                    )
+            relationship_work_items.add(
+                (
+                    workspace_id,
+                    str(structured["from_object_ref"]),
+                    str(structured["predicate"]).strip(),
+                    None if structured.get("to_object_ref") is None else str(structured.get("to_object_ref")),
                 )
+            )
             relationship_written = True
 
         if candidate_type == "work":
@@ -725,35 +776,29 @@ def ingest_candidate_batch(
                     isinstance(structured.get("canonical_url"), str)
                     or isinstance(structured.get("original_locator"), str)
                 ):
-                    access_result = canonical_store.record_source_access(
-                        conn,
-                        provenance_event_ref=provenance_event_key,
-                        provenance_event_id=provenance_event_id,
-                        work_id=work_result.row_id,
-                        source_lead_id=_source_lead_key_for_candidate(
-                            candidate,
-                            workspace_id=workspace_id,
-                            structured=structured,
-                        ),
-                        original_locator=str(
-                            structured.get("original_locator")
-                            or structured.get("canonical_url")
-                            or title
-                        ),
-                        canonical_url=structured.get("canonical_url"),
-                        access_class=structured.get("access_class"),
-                        refetchability_status=structured.get("refetchability_status"),
-                        rights_posture=structured.get("rights_posture"),
-                        citation_hint=structured.get("citation_hint") or title,
-                        workspace_id=workspace_id,
-                        first_seen_at=created_at,
-                        last_seen_at=created_at,
-                        record_last_updated=created_at,
-                    )
-                    _bump(
-                        report,
-                        "inserted" if access_result.created else "updated",
-                        "source_access",
+                    pending_source_access_work_records.append(
+                        {
+                            "work_id": work_result.row_id,
+                            "source_lead_id": _source_lead_key_for_candidate(
+                                candidate,
+                                workspace_id=workspace_id,
+                                structured=structured,
+                            ),
+                            "original_locator": str(
+                                structured.get("original_locator")
+                                or structured.get("canonical_url")
+                                or title
+                            ),
+                            "canonical_url": structured.get("canonical_url"),
+                            "access_class": structured.get("access_class"),
+                            "refetchability_status": structured.get("refetchability_status"),
+                            "rights_posture": structured.get("rights_posture"),
+                            "citation_hint": structured.get("citation_hint") or title,
+                            "workspace_id": workspace_id,
+                            "first_seen_at": created_at,
+                            "last_seen_at": created_at,
+                            "record_last_updated": created_at,
+                        }
                     )
                 claim_text = structured.get("claim_text") if structured else None
                 if isinstance(claim_text, str) and claim_text.strip():
@@ -763,28 +808,28 @@ def ingest_candidate_batch(
                     )
                     if work_claim_type == "candidate_work":
                         work_claim_type = "candidate_work_claim"
-                    claim_result = canonical_store.record_source_claim(
-                        conn,
-                        provenance_event_ref=provenance_event_key,
-                        provenance_event_id=provenance_event_id,
-                        source_claim_key_v1=_claim_key_for_candidate(
-                            candidate,
-                            workspace_id=workspace_id,
-                            claim_text=claim_text,
-                            claim_type=work_claim_type,
-                            about_object_ref=work_refs[candidate_id],
-                        ),
-                        about_object_ref=work_refs[candidate_id],
-                        claim_text=claim_text,
-                        claim_type=work_claim_type,
-                        workspace_id=workspace_id,
-                        created_at=created_at,
-                        record_last_updated=created_at,
-                    )
-                    _bump(
-                        report,
-                        "inserted" if claim_result.created else "updated",
-                        "source_claim",
+                    pending_source_claim_records.append(
+                        {
+                            "source_claim_key_v1": _claim_key_for_candidate(
+                                candidate,
+                                workspace_id=workspace_id,
+                                claim_text=claim_text,
+                                claim_type=work_claim_type,
+                                about_object_ref=work_refs[candidate_id],
+                            ),
+                            "about_object_ref": work_refs[candidate_id],
+                            "claim_text": claim_text,
+                            "public_summary": structured.get("public_summary")
+                            if structured is not None
+                            else None,
+                            "claim_type": work_claim_type,
+                            "workspace_id": workspace_id,
+                            "confidence_score": (
+                                structured.get("confidence_score") if structured is not None else None
+                            ),
+                            "created_at": created_at,
+                            "record_last_updated": created_at,
+                        }
                     )
                     claim_work_items.add((workspace_id, work_refs[candidate_id], work_claim_type))
             handled = True
@@ -802,29 +847,27 @@ def ingest_candidate_batch(
                         structured=structured,
                     )
                 )
-                result = canonical_store.record_source_access(
-                    conn,
-                    provenance_event_ref=provenance_event_key,
-                    provenance_event_id=provenance_event_id,
-                    source_lead_id=source_lead_id,
-                    original_locator=str(
-                        structured.get("original_locator")
-                        if structured is not None and structured.get("original_locator")
-                        else candidate["text"]
-                    ),
-                    canonical_url=structured.get("canonical_url") if structured else None,
-                    access_class=structured.get("access_class") if structured else None,
-                    refetchability_status=structured.get("refetchability_status")
-                    if structured
-                    else None,
-                    rights_posture=structured.get("rights_posture") if structured else None,
-                    citation_hint=structured.get("citation_hint") if structured else None,
-                    workspace_id=workspace_id,
-                    first_seen_at=created_at,
-                    last_seen_at=created_at,
-                    record_last_updated=created_at,
+                pending_source_access_lead_records.append(
+                    {
+                        "source_lead_id": source_lead_id,
+                        "original_locator": str(
+                            structured.get("original_locator")
+                            if structured is not None and structured.get("original_locator")
+                            else candidate["text"]
+                        ),
+                        "canonical_url": structured.get("canonical_url") if structured else None,
+                        "access_class": structured.get("access_class") if structured else None,
+                        "refetchability_status": structured.get("refetchability_status")
+                        if structured
+                        else None,
+                        "rights_posture": structured.get("rights_posture") if structured else None,
+                        "citation_hint": structured.get("citation_hint") if structured else None,
+                        "workspace_id": workspace_id,
+                        "first_seen_at": created_at,
+                        "last_seen_at": created_at,
+                        "record_last_updated": created_at,
+                    }
                 )
-                _bump(report, "inserted" if result.created else "updated", "source_access")
             handled = True
 
         elif candidate_type in {"person", "place"}:
@@ -838,34 +881,14 @@ def ingest_candidate_batch(
                     if structured is not None and structured.get("label")
                     else candidate["text"]
                 )
-                result = canonical_store.record_extraction_detected_entity(
-                    conn,
-                    provenance_event_ref=provenance_event_key,
-                    provenance_event_id=provenance_event_id,
-                    entity_label=entity_label,
-                    normalized_label=structured.get("normalized_label") if structured else None,
-                    entity_type=structured.get("entity_type") if structured else candidate_type,
-                    confidence_score=structured.get("confidence_score") if structured else None,
-                    workspace_id=workspace_id,
-                    record_last_updated=created_at,
-                )
-                _bump(
-                    report,
-                    "inserted" if result.created else "updated",
-                    "extraction_detected_entity",
-                )
-                entity_candidates.append(
+                pending_entity_records.append(
                     {
-                        "detected_entity_id": result.row_id,
                         "entity_label": entity_label,
-                        "entity_type": (
-                            structured.get("entity_type")
-                            if structured is not None and structured.get("entity_type")
-                            else candidate_type
-                        ),
-                        "confidence_score": (
-                            structured.get("confidence_score") if structured is not None else None
-                        ),
+                        "normalized_label": structured.get("normalized_label") if structured else None,
+                        "entity_type": structured.get("entity_type") if structured else candidate_type,
+                        "confidence_score": structured.get("confidence_score") if structured else None,
+                        "workspace_id": workspace_id,
+                        "record_last_updated": created_at,
                         "structured": structured,
                     }
                 )
@@ -875,36 +898,36 @@ def ingest_candidate_batch(
             if dry_run:
                 _bump(report, "intended", "source_claim")
             else:
-                result = canonical_store.record_source_claim(
-                    conn,
-                    provenance_event_ref=provenance_event_key,
-                    provenance_event_id=provenance_event_id,
-                    source_claim_key_v1=_claim_key_for_candidate(
-                        candidate,
-                        workspace_id=workspace_id,
-                        claim_text=_structured_claim_text(candidate, structured),
-                        claim_type=_structured_claim_type(candidate_type, structured),
-                        about_object_ref=_structured_about_object_ref(structured),
-                    ),
-                    about_object_ref=_structured_about_object_ref(structured),
-                    claim_text=_structured_claim_text(candidate, structured),
-                    public_summary=(
-                        structured.get("public_summary") if structured is not None else None
-                    ),
-                    claim_type=_structured_claim_type(candidate_type, structured),
-                    workspace_id=workspace_id,
-                    confidence_score=(
-                        structured.get("confidence_score") if structured is not None else None
-                    ),
-                    created_at=created_at,
-                    record_last_updated=created_at,
+                claim_text = _structured_claim_text(candidate, structured)
+                claim_type = _structured_claim_type(candidate_type, structured)
+                pending_source_claim_records.append(
+                    {
+                        "source_claim_key_v1": _claim_key_for_candidate(
+                            candidate,
+                            workspace_id=workspace_id,
+                            claim_text=claim_text,
+                            claim_type=claim_type,
+                            about_object_ref=_structured_about_object_ref(structured),
+                        ),
+                        "about_object_ref": _structured_about_object_ref(structured),
+                        "claim_text": claim_text,
+                        "public_summary": (
+                            structured.get("public_summary") if structured is not None else None
+                        ),
+                        "claim_type": claim_type,
+                        "workspace_id": workspace_id,
+                        "confidence_score": (
+                            structured.get("confidence_score") if structured is not None else None
+                        ),
+                        "created_at": created_at,
+                        "record_last_updated": created_at,
+                    }
                 )
-                _bump(report, "inserted" if result.created else "updated", "source_claim")
                 claim_work_items.add(
                     (
                         workspace_id,
                         _structured_about_object_ref(structured),
-                        _structured_claim_type(candidate_type, structured),
+                        claim_type,
                     )
                 )
             handled = True
@@ -928,6 +951,493 @@ def ingest_candidate_batch(
             )
 
     if not dry_run:
+        if use_batch_writes and pending_source_relationship_records:
+            relationship_rows = _batch_insert_rows_if_fresh(
+                conn,
+                table_name="source_relationship",
+                provenance_event_ref=provenance_event_key,
+                rows=pending_source_relationship_records,
+                insert_sql=(
+                    """
+                    INSERT INTO source_relationship (
+                      from_object_ref,
+                      to_object_ref,
+                      predicate,
+                      target_label,
+                      evidence_note,
+                      review_state,
+                      publication_state,
+                      authority_level,
+                      public_blocker,
+                      workspace_id,
+                      confidence_score,
+                      provenance_event_ref,
+                      evidence_locator_ref,
+                      created_at,
+                      record_last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                insert_params=lambda row: (
+                    row["from_object_ref"],
+                    row["to_object_ref"],
+                    row["predicate"],
+                    row["target_label"],
+                    row["evidence_note"],
+                    canonical_store._normalize_review_state(
+                        row.get("review_state"),
+                        default=canonical_store.DEFAULT_SOURCE_RELATIONSHIP_REVIEW_STATE,
+                    ),
+                    None,
+                    None,
+                    None,
+                    row["workspace_id"],
+                    canonical_store._normalize_confidence_score(row.get("confidence_score")),
+                    provenance_event_key,
+                    None,
+                    created_at,
+                    created_at,
+                ),
+                lookup_sql=(
+                    """
+                    SELECT source_relationship_id
+                    FROM source_relationship
+                    WHERE from_object_ref=? AND to_object_ref IS ? AND predicate=? AND target_label IS ?
+                      AND evidence_note IS ? AND workspace_id IS ?
+                    """
+                ),
+                lookup_params=lambda row: (
+                    row["from_object_ref"],
+                    row["to_object_ref"],
+                    row["predicate"],
+                    row["target_label"],
+                    row["evidence_note"],
+                    row["workspace_id"],
+                ),
+                label="source_relationship",
+            )
+            if relationship_rows is not None:
+                for _record in pending_source_relationship_records:
+                    _bump(report, "inserted", "source_relationship")
+            else:
+                for record in pending_source_relationship_records:
+                    result = canonical_store.record_source_relationship(
+                        conn,
+                        provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
+                        from_object_ref=record["from_object_ref"],
+                        predicate=record["predicate"],
+                        to_object_ref=record["to_object_ref"],
+                        target_label=record["target_label"],
+                        evidence_note=record["evidence_note"],
+                        review_state=record["review_state"],
+                        confidence_score=record["confidence_score"],
+                        workspace_id=record["workspace_id"],
+                    )
+                    _bump(report, "inserted" if result.created else "updated", "source_relationship")
+        elif pending_source_relationship_records:
+            for record in pending_source_relationship_records:
+                result = canonical_store.record_source_relationship(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
+                    from_object_ref=record["from_object_ref"],
+                    predicate=record["predicate"],
+                    to_object_ref=record["to_object_ref"],
+                    target_label=record["target_label"],
+                    evidence_note=record["evidence_note"],
+                    review_state=record["review_state"],
+                    confidence_score=record["confidence_score"],
+                    workspace_id=record["workspace_id"],
+                )
+                _bump(report, "inserted" if result.created else "updated", "source_relationship")
+
+        if pending_source_access_work_records or pending_source_access_lead_records:
+            source_access_records = [
+                *pending_source_access_work_records,
+                *pending_source_access_lead_records,
+            ]
+            if use_batch_writes:
+                source_access_rows = _batch_insert_rows_if_fresh(
+                    conn,
+                    table_name="source_access",
+                    provenance_event_ref=provenance_event_key,
+                    rows=source_access_records,
+                    insert_sql=(
+                        """
+                        INSERT INTO source_access (
+                          work_id,
+                          source_locus_id,
+                          source_lead_id,
+                          original_locator,
+                          canonical_url,
+                          access_class,
+                          refetchability_status,
+                          rights_posture,
+                          citation_hint,
+                          review_state,
+                          publication_state,
+                          authority_level,
+                          public_blocker,
+                          workspace_id,
+                          provenance_event_ref,
+                          first_seen_at,
+                          last_seen_at,
+                          record_last_updated
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """
+                    ),
+                    insert_params=lambda record: (
+                        record.get("work_id"),
+                        None,
+                        record.get("source_lead_id"),
+                        record["original_locator"],
+                        record["canonical_url"],
+                        record["access_class"],
+                        record["refetchability_status"],
+                        record["rights_posture"],
+                        record["citation_hint"],
+                        canonical_store.DEFAULT_SOURCE_ACCESS_REVIEW_STATE,
+                        None,
+                        None,
+                        None,
+                        record["workspace_id"],
+                        provenance_event_key,
+                        record["first_seen_at"],
+                        record["last_seen_at"],
+                        record["record_last_updated"],
+                    ),
+                    lookup_sql=(
+                        """
+                        SELECT source_access_id
+                        FROM source_access
+                        WHERE provenance_event_ref=? AND original_locator=? AND (
+                          (? IS NOT NULL AND work_id IS ?)
+                          OR (
+                            ? IS NULL AND source_lead_id IS ? AND workspace_id IS ?
+                          )
+                        )
+                        """
+                    ),
+                    lookup_params=lambda record: (
+                        provenance_event_key,
+                        record["original_locator"],
+                        record.get("work_id"),
+                        record.get("work_id"),
+                        record.get("work_id"),
+                        record.get("source_lead_id"),
+                        record.get("workspace_id"),
+                    ),
+                    label="source_access",
+                )
+                if source_access_rows is not None:
+                    for _record in source_access_records:
+                        _bump(report, "inserted", "source_access")
+                else:
+                    for record in source_access_records:
+                        if record.get("work_id") is not None:
+                            result = canonical_store.record_source_access(
+                                conn,
+                                provenance_event_ref=provenance_event_key,
+                                provenance_event_id=provenance_event_id,
+                                work_id=record["work_id"],
+                                source_lead_id=record["source_lead_id"],
+                                original_locator=record["original_locator"],
+                                canonical_url=record["canonical_url"],
+                                access_class=record["access_class"],
+                                refetchability_status=record["refetchability_status"],
+                                rights_posture=record["rights_posture"],
+                                citation_hint=record["citation_hint"],
+                                workspace_id=record["workspace_id"],
+                                first_seen_at=record["first_seen_at"],
+                                last_seen_at=record["last_seen_at"],
+                                record_last_updated=record["record_last_updated"],
+                            )
+                        else:
+                            result = canonical_store.record_source_access(
+                                conn,
+                                provenance_event_ref=provenance_event_key,
+                                provenance_event_id=provenance_event_id,
+                                source_lead_id=record["source_lead_id"],
+                                original_locator=record["original_locator"],
+                                canonical_url=record["canonical_url"],
+                                access_class=record["access_class"],
+                                refetchability_status=record["refetchability_status"],
+                                rights_posture=record["rights_posture"],
+                                citation_hint=record["citation_hint"],
+                                workspace_id=record["workspace_id"],
+                                first_seen_at=record["first_seen_at"],
+                                last_seen_at=record["last_seen_at"],
+                                record_last_updated=record["record_last_updated"],
+                            )
+                        _bump(report, "inserted" if result.created else "updated", "source_access")
+            else:
+                for record in source_access_records:
+                    if record.get("work_id") is not None:
+                        result = canonical_store.record_source_access(
+                            conn,
+                            provenance_event_ref=provenance_event_key,
+                            provenance_event_id=provenance_event_id,
+                            work_id=record["work_id"],
+                            source_lead_id=record["source_lead_id"],
+                            original_locator=record["original_locator"],
+                            canonical_url=record["canonical_url"],
+                            access_class=record["access_class"],
+                            refetchability_status=record["refetchability_status"],
+                            rights_posture=record["rights_posture"],
+                            citation_hint=record["citation_hint"],
+                            workspace_id=record["workspace_id"],
+                            first_seen_at=record["first_seen_at"],
+                            last_seen_at=record["last_seen_at"],
+                            record_last_updated=record["record_last_updated"],
+                        )
+                    else:
+                        result = canonical_store.record_source_access(
+                            conn,
+                            provenance_event_ref=provenance_event_key,
+                            provenance_event_id=provenance_event_id,
+                            source_lead_id=record["source_lead_id"],
+                            original_locator=record["original_locator"],
+                            canonical_url=record["canonical_url"],
+                            access_class=record["access_class"],
+                            refetchability_status=record["refetchability_status"],
+                            rights_posture=record["rights_posture"],
+                            citation_hint=record["citation_hint"],
+                            workspace_id=record["workspace_id"],
+                            first_seen_at=record["first_seen_at"],
+                            last_seen_at=record["last_seen_at"],
+                            record_last_updated=record["record_last_updated"],
+                        )
+                    _bump(report, "inserted" if result.created else "updated", "source_access")
+
+        if use_batch_writes and pending_source_claim_records:
+            source_claim_rows = _batch_insert_rows_if_fresh(
+                conn,
+                table_name="source_claim",
+                provenance_event_ref=provenance_event_key,
+                rows=pending_source_claim_records,
+                insert_sql=(
+                    """
+                    INSERT INTO source_claim (
+                      source_claim_key_v1,
+                      about_object_ref,
+                      claim_text,
+                      public_summary,
+                      claim_type,
+                      review_state,
+                      publication_state,
+                      authority_level,
+                      public_blocker,
+                      workspace_id,
+                      is_open_question,
+                      confidence_score,
+                      provenance_event_ref,
+                      evidence_locator_ref,
+                      capture_event_id,
+                      extraction_id,
+                      created_at,
+                      record_last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                insert_params=lambda record: (
+                    record["source_claim_key_v1"],
+                    record["about_object_ref"],
+                    record["claim_text"],
+                    record["public_summary"],
+                    record["claim_type"],
+                    canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE,
+                    None,
+                    None,
+                    None,
+                    record["workspace_id"],
+                    1
+                    if canonical_store._is_open_question_claim(
+                        record["claim_text"], record["claim_type"]
+                    )
+                    else 0,
+                    canonical_store._normalize_confidence_score(record.get("confidence_score")),
+                    provenance_event_key,
+                    None,
+                    None,
+                    None,
+                    record["created_at"],
+                    record["record_last_updated"],
+                ),
+                lookup_sql=(
+                    """
+                    SELECT source_claim_id
+                    FROM source_claim
+                    WHERE source_claim_key_v1=?
+                    """
+                ),
+                lookup_params=lambda record: (record["source_claim_key_v1"],),
+                label="source_claim",
+            )
+            if source_claim_rows is not None:
+                for _record in pending_source_claim_records:
+                    _bump(report, "inserted", "source_claim")
+            else:
+                for record in pending_source_claim_records:
+                    result = canonical_store.record_source_claim(
+                        conn,
+                        provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
+                        source_claim_key_v1=record["source_claim_key_v1"],
+                        about_object_ref=record["about_object_ref"],
+                        claim_text=record["claim_text"],
+                        public_summary=record["public_summary"],
+                        claim_type=record["claim_type"],
+                        workspace_id=record["workspace_id"],
+                        confidence_score=record["confidence_score"],
+                        created_at=record["created_at"],
+                        record_last_updated=record["record_last_updated"],
+                    )
+                    _bump(report, "inserted" if result.created else "updated", "source_claim")
+        elif pending_source_claim_records:
+            for record in pending_source_claim_records:
+                result = canonical_store.record_source_claim(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
+                    source_claim_key_v1=record["source_claim_key_v1"],
+                    about_object_ref=record["about_object_ref"],
+                    claim_text=record["claim_text"],
+                    public_summary=record["public_summary"],
+                    claim_type=record["claim_type"],
+                    workspace_id=record["workspace_id"],
+                    confidence_score=record["confidence_score"],
+                    created_at=record["created_at"],
+                    record_last_updated=record["record_last_updated"],
+                )
+                _bump(report, "inserted" if result.created else "updated", "source_claim")
+
+        if use_batch_writes and pending_entity_records:
+            entity_rows = _batch_insert_rows_if_fresh(
+                conn,
+                table_name="extraction_detected_entity",
+                provenance_event_ref=provenance_event_key,
+                rows=pending_entity_records,
+                insert_sql=(
+                    """
+                    INSERT INTO extraction_detected_entity (
+                      extraction_id,
+                      capture_event_id,
+                      entity_label,
+                      normalized_label,
+                      entity_type,
+                      source_span_start,
+                      source_span_end,
+                      authority_record_id,
+                      review_state,
+                      confidence_score,
+                      workspace_id,
+                      provenance_event_ref,
+                      record_last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                insert_params=lambda record: (
+                    None,
+                    None,
+                    record["entity_label"],
+                    record["normalized_label"],
+                    record["entity_type"],
+                    None,
+                    None,
+                    None,
+                    canonical_store.DEFAULT_DETECTED_ENTITY_REVIEW_STATE,
+                    canonical_store._normalize_confidence_score(record.get("confidence_score")),
+                    record["workspace_id"],
+                    provenance_event_key,
+                    record["record_last_updated"],
+                ),
+                lookup_sql=(
+                    """
+                    SELECT detected_entity_id
+                    FROM extraction_detected_entity
+                    WHERE provenance_event_ref=? AND extraction_id IS ? AND capture_event_id IS ?
+                      AND entity_label=? AND entity_type IS ? AND normalized_label IS ?
+                      AND source_span_start IS NULL AND source_span_end IS NULL
+                    """
+                ),
+                lookup_params=lambda record: (
+                    provenance_event_key,
+                    None,
+                    None,
+                    record["entity_label"],
+                    record["entity_type"],
+                    record["normalized_label"],
+                ),
+                label="extraction_detected_entity",
+            )
+            if entity_rows is not None:
+                for record, entity_row in zip(pending_entity_records, entity_rows, strict=True):
+                    _bump(report, "inserted", "extraction_detected_entity")
+                    entity_candidates.append(
+                        {
+                            "detected_entity_id": int(entity_row["detected_entity_id"]),
+                            "entity_label": record["entity_label"],
+                            "entity_type": record["entity_type"],
+                            "confidence_score": record["confidence_score"],
+                            "structured": record["structured"],
+                        }
+                    )
+            else:
+                for record in pending_entity_records:
+                    result = canonical_store.record_extraction_detected_entity(
+                        conn,
+                        provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
+                        entity_label=record["entity_label"],
+                        normalized_label=record["normalized_label"],
+                        entity_type=record["entity_type"],
+                        confidence_score=record["confidence_score"],
+                        workspace_id=record["workspace_id"],
+                        record_last_updated=record["record_last_updated"],
+                    )
+                    _bump(
+                        report,
+                        "inserted" if result.created else "updated",
+                        "extraction_detected_entity",
+                    )
+                    entity_candidates.append(
+                        {
+                            "detected_entity_id": result.row_id,
+                            "entity_label": record["entity_label"],
+                            "entity_type": record["entity_type"],
+                            "confidence_score": record["confidence_score"],
+                            "structured": record["structured"],
+                        }
+                    )
+        elif pending_entity_records:
+            for record in pending_entity_records:
+                result = canonical_store.record_extraction_detected_entity(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
+                    entity_label=record["entity_label"],
+                    normalized_label=record["normalized_label"],
+                    entity_type=record["entity_type"],
+                    confidence_score=record["confidence_score"],
+                    workspace_id=record["workspace_id"],
+                    record_last_updated=record["record_last_updated"],
+                )
+                _bump(
+                    report,
+                    "inserted" if result.created else "updated",
+                    "extraction_detected_entity",
+                )
+                entity_candidates.append(
+                    {
+                        "detected_entity_id": result.row_id,
+                        "entity_label": record["entity_label"],
+                        "entity_type": record["entity_type"],
+                        "confidence_score": record["confidence_score"],
+                        "structured": record["structured"],
+                    }
+                )
+
         if entity_candidates or claim_work_items or relationship_work_items:
             try:
                 curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
@@ -1015,6 +1525,15 @@ def ingest_execution_artifacts(
     claim_work_items: list[tuple[str | None, str | None, str]] = []
     relationship_work_items: list[tuple[str | None, str, str, str | None]] = []
     capture_ids: set[str] = set()
+    use_batch_writes = (
+        not dry_run
+        and conn.execute(
+            "SELECT 1 FROM capture_event WHERE provenance_event_ref=? LIMIT 1",
+            (provenance_event_key,),
+        ).fetchone()
+        is None
+    )
+    pending_capture_records: list[dict[str, Any]] = []
     capture_event_iter = (
         capture_events
         if capture_events is not None
@@ -1036,29 +1555,140 @@ def ingest_execution_artifacts(
         if dry_run:
             _bump(report, "intended", "capture_event")
             continue
-        result = canonical_store.record_capture_event(
+        if use_batch_writes:
+            pending_capture_records.append(
+                {
+                    "capture_id": capture_key,
+                    "original_locator": locator_text,
+                    "captured_at": str(record.get("captured_at") or created_at),
+                    "capture_method": str(record.get("capture_method") or "captured"),
+                    "content_hash": record.get("content_hash"),
+                    "byte_count": record.get("byte_count"),
+                    "mime_type": record.get("content_type"),
+                    "refetchability_status": record.get("refetchability_status"),
+                    "workspace_id": record.get("workspace_id"),
+                }
+            )
+        else:
+            result = canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance_event_key,
+                provenance_event_id=provenance_event_id,
+                original_locator=locator_text,
+                captured_at=str(record.get("captured_at") or created_at),
+                capture_method=str(record.get("capture_method") or "captured"),
+                content_hash=record.get("content_hash"),
+                byte_count=record.get("byte_count"),
+                mime_type=record.get("content_type"),
+                refetchability_status=record.get("refetchability_status"),
+                review_state=canonical_store.DEFAULT_CAPTURE_EVENT_REVIEW_STATE,
+                workspace_id=record.get("workspace_id"),
+                record_last_updated=created_at,
+            )
+            capture_id_map[capture_key] = result.row_id
+            _bump(report, "inserted" if result.created else "updated", "capture_event")
+
+    if use_batch_writes:
+        capture_rows = _batch_insert_rows_if_fresh(
             conn,
+            table_name="capture_event",
             provenance_event_ref=provenance_event_key,
-            provenance_event_id=provenance_event_id,
-            original_locator=locator_text,
-            captured_at=str(record.get("captured_at") or created_at),
-            capture_method=str(record.get("capture_method") or "captured"),
-            content_hash=record.get("content_hash"),
-            byte_count=record.get("byte_count"),
-            mime_type=record.get("content_type"),
-            refetchability_status=record.get("refetchability_status"),
-            review_state=canonical_store.DEFAULT_CAPTURE_EVENT_REVIEW_STATE,
-            workspace_id=record.get("workspace_id"),
-            record_last_updated=created_at,
+            rows=pending_capture_records,
+            insert_sql=(
+                """
+                INSERT INTO capture_event (
+                  work_id,
+                  source_locus_ref,
+                  original_locator,
+                  captured_at,
+                  capture_method,
+                  content_hash,
+                  byte_count,
+                  mime_type,
+                  byte_retention_status,
+                  full_text_retention_status,
+                  refetchability_status,
+                  payload_storage_policy_class,
+                  quality_warnings_json,
+                  transient_payload_note,
+                  review_state,
+                  workspace_id,
+                  public_blocker,
+                  provenance_event_ref,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            ),
+            insert_params=lambda row: (
+                None,
+                None,
+                row["original_locator"],
+                row["captured_at"],
+                row["capture_method"],
+                row.get("content_hash"),
+                row.get("byte_count"),
+                row.get("mime_type"),
+                None,
+                None,
+                row.get("refetchability_status"),
+                None,
+                None,
+                None,
+                canonical_store.DEFAULT_CAPTURE_EVENT_REVIEW_STATE,
+                row.get("workspace_id"),
+                None,
+                provenance_event_key,
+                created_at,
+            ),
+            lookup_sql=(
+                """
+                SELECT capture_event_id
+                FROM capture_event
+                WHERE provenance_event_ref=? AND original_locator=? AND captured_at=? AND capture_method=?
+                  AND content_hash IS ? AND workspace_id IS ?
+                """
+            ),
+            lookup_params=lambda row: (
+                provenance_event_key,
+                row["original_locator"],
+                row["captured_at"],
+                row["capture_method"],
+                row.get("content_hash"),
+                row.get("workspace_id"),
+            ),
+            label="capture_event",
         )
-        capture_id_map[capture_key] = result.row_id
-        _bump(report, "inserted" if result.created else "updated", "capture_event")
+        if capture_rows is not None:
+            for record, row in zip(pending_capture_records, capture_rows, strict=True):
+                capture_id_map[str(record["capture_id"])] = int(row["capture_event_id"])
+                _bump(report, "inserted", "capture_event")
+        else:
+            for record in pending_capture_records:
+                capture_key = str(record["capture_id"])
+                result = canonical_store.record_capture_event(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    provenance_event_id=provenance_event_id,
+                    original_locator=record["original_locator"],
+                    captured_at=record["captured_at"],
+                    capture_method=record["capture_method"],
+                    content_hash=record.get("content_hash"),
+                    byte_count=record.get("byte_count"),
+                    mime_type=record.get("mime_type"),
+                    refetchability_status=record.get("refetchability_status"),
+                    review_state=canonical_store.DEFAULT_CAPTURE_EVENT_REVIEW_STATE,
+                    workspace_id=record.get("workspace_id"),
+                    record_last_updated=created_at,
+                )
+                capture_id_map[capture_key] = result.row_id
+                _bump(report, "inserted" if result.created else "updated", "capture_event")
 
     extraction_record_iter = (
         extraction_records
         if extraction_records is not None
         else _iter_jsonl_records(paths["extraction_records"], label="extraction records")
     )
+    pending_extraction_records: list[dict[str, Any]] = []
     for record in extraction_record_iter:
         capture_key = str(record.get("capture_id") or "")
         if dry_run:
@@ -1080,67 +1710,262 @@ def ingest_execution_artifacts(
                 )
             _bump(report, "skipped", "missing_capture_reference")
             continue
-        result = canonical_store.record_extraction_record(
-            conn,
-            provenance_event_ref=provenance_event_key,
-            provenance_event_id=provenance_event_id,
-            capture_event_id=canonical_capture_id,
-            extractor_name=str(
-                execution_record.get("executor_name") or "execute_source_adapter.py"
-            ),
-            extractor_version=INGEST_TOOL_VERSION,
-            extraction_method=str(record.get("extraction_method") or "extract"),
-            summary_short=str(record.get("relative_path") or record.get("extraction_id") or ""),
-            input_hash=record.get("input_hash"),
-            output_hash=record.get("content_hash"),
-            byte_count_in=record.get("byte_count_in"),
-            byte_count_out=record.get("byte_count_out"),
-            encoding_handling=record.get("encoding_result"),
-            extraction_status=str(record.get("status") or "completed"),
-            bad_utf8_handling=record.get("failure_reason")
-            if record.get("encoding_result") == "invalid_utf8"
-            else None,
-            truncation_status=record.get("truncation_status"),
-            hostile_replay_flags_json=record.get("hostile_replay_flags"),
-            review_state=canonical_store.DEFAULT_EXTRACTION_RECORD_REVIEW_STATE,
-            workspace_id=record.get("workspace_id"),
-            created_at=created_at,
-            record_last_updated=created_at,
-        )
-        _bump(report, "inserted" if result.created else "updated", "extraction_record")
+        if use_batch_writes:
+            pending_extraction_records.append(
+                {
+                    "capture_event_id": canonical_capture_id,
+                    "record": record,
+                }
+            )
+        else:
+            result = canonical_store.record_extraction_record(
+                conn,
+                provenance_event_ref=provenance_event_key,
+                provenance_event_id=provenance_event_id,
+                capture_event_id=canonical_capture_id,
+                extractor_name=str(
+                    execution_record.get("executor_name") or "execute_source_adapter.py"
+                ),
+                extractor_version=INGEST_TOOL_VERSION,
+                extraction_method=str(record.get("extraction_method") or "extract"),
+                summary_short=str(record.get("relative_path") or record.get("extraction_id") or ""),
+                input_hash=record.get("input_hash"),
+                output_hash=record.get("content_hash"),
+                byte_count_in=record.get("byte_count_in"),
+                byte_count_out=record.get("byte_count_out"),
+                encoding_handling=record.get("encoding_result"),
+                extraction_status=str(record.get("status") or "completed"),
+                bad_utf8_handling=record.get("failure_reason")
+                if record.get("encoding_result") == "invalid_utf8"
+                else None,
+                truncation_status=record.get("truncation_status"),
+                hostile_replay_flags_json=canonical_store._normalize_json_text(
+                    record.get("hostile_replay_flags"),
+                    "hostile_replay_flags_json",
+                ),
+                review_state=canonical_store.DEFAULT_EXTRACTION_RECORD_REVIEW_STATE,
+                workspace_id=record.get("workspace_id"),
+                created_at=created_at,
+                record_last_updated=created_at,
+            )
+            _bump(report, "inserted" if result.created else "updated", "extraction_record")
 
-        detected_entities = record.get("detected_entities")
-        if isinstance(detected_entities, list):
-            for entity in detected_entities:
-                if not isinstance(entity, dict):
-                    raise CanonicalIngestError("detected_entities entries must be objects")
-                entity_result = canonical_store.record_extraction_detected_entity(
-                    conn,
-                    provenance_event_ref=provenance_event_key,
-                    provenance_event_id=provenance_event_id,
-                    extraction_id=result.row_id,
-                    capture_event_id=canonical_capture_id,
-                    entity_label=str(entity.get("entity_label") or entity.get("label") or ""),
-                    normalized_label=entity.get("normalized_label"),
-                    entity_type=entity.get("entity_type"),
-                    confidence_score=entity.get("confidence_score"),
-                    workspace_id=record.get("workspace_id"),
-                    record_last_updated=created_at,
-                )
-                _bump(
-                    report,
-                    "inserted" if entity_result.created else "updated",
-                    "extraction_detected_entity",
-                )
-                entity_candidates.append(
-                    {
-                        "detected_entity_id": entity_result.row_id,
-                        "entity_label": str(
+            detected_entities = record.get("detected_entities")
+            if isinstance(detected_entities, list):
+                for entity in detected_entities:
+                    if not isinstance(entity, dict):
+                        raise CanonicalIngestError("detected_entities entries must be objects")
+                    entity_result = canonical_store.record_extraction_detected_entity(
+                        conn,
+                        provenance_event_ref=provenance_event_key,
+                        provenance_event_id=provenance_event_id,
+                        extraction_id=result.row_id,
+                        capture_event_id=canonical_capture_id,
+                        entity_label=str(
                             entity.get("entity_label") or entity.get("label") or ""
                         ),
-                        "entity_type": entity.get("entity_type"),
-                        "confidence_score": entity.get("confidence_score"),
-                        "structured": entity,
+                        normalized_label=entity.get("normalized_label"),
+                        entity_type=entity.get("entity_type"),
+                        confidence_score=entity.get("confidence_score"),
+                        workspace_id=record.get("workspace_id"),
+                        record_last_updated=created_at,
+                    )
+                    _bump(
+                        report,
+                        "inserted" if entity_result.created else "updated",
+                        "extraction_detected_entity",
+                    )
+                    entity_candidates.append(
+                        {
+                            "detected_entity_id": entity_result.row_id,
+                            "entity_label": str(
+                                entity.get("entity_label") or entity.get("label") or ""
+                            ),
+                            "entity_type": entity.get("entity_type"),
+                            "confidence_score": entity.get("confidence_score"),
+                            "structured": entity,
+                        }
+                    )
+
+    if use_batch_writes:
+        extraction_rows = _batch_insert_rows_if_fresh(
+            conn,
+            table_name="extraction_record",
+            provenance_event_ref=provenance_event_key,
+            rows=pending_extraction_records,
+            insert_sql=(
+                """
+                INSERT INTO extraction_record (
+                  capture_event_id,
+                  extractor_name,
+                  extractor_version,
+                  extraction_method,
+                  summary_short,
+                  input_hash,
+                  output_hash,
+                  byte_count_in,
+                  byte_count_out,
+                  encoding_handling,
+                  extraction_status,
+                  bad_utf8_handling,
+                  truncation_status,
+                  hostile_replay_flags_json,
+                  review_state,
+                  workspace_id,
+                  public_blocker,
+                  provenance_event_ref,
+                  created_at,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            ),
+            insert_params=lambda pending: (
+                pending["capture_event_id"],
+                str(execution_record.get("executor_name") or "execute_source_adapter.py"),
+                INGEST_TOOL_VERSION,
+                str(pending["record"].get("extraction_method") or "extract"),
+                str(
+                    pending["record"].get("relative_path")
+                    or pending["record"].get("extraction_id")
+                    or ""
+                ),
+                pending["record"].get("input_hash"),
+                pending["record"].get("content_hash"),
+                pending["record"].get("byte_count_in"),
+                pending["record"].get("byte_count_out"),
+                pending["record"].get("encoding_result"),
+                str(pending["record"].get("status") or "completed"),
+                pending["record"].get("failure_reason")
+                if pending["record"].get("encoding_result") == "invalid_utf8"
+                else None,
+                pending["record"].get("truncation_status"),
+                canonical_store._normalize_json_text(
+                    pending["record"].get("hostile_replay_flags"),
+                    "hostile_replay_flags_json",
+                ),
+                canonical_store.DEFAULT_EXTRACTION_RECORD_REVIEW_STATE,
+                pending["record"].get("workspace_id"),
+                None,
+                provenance_event_key,
+                created_at,
+                created_at,
+            ),
+            lookup_sql=(
+                """
+                SELECT extraction_id
+                FROM extraction_record
+                WHERE provenance_event_ref=? AND capture_event_id=? AND extraction_method=? AND input_hash IS ?
+                  AND output_hash IS ? AND created_at=?
+                """
+            ),
+            lookup_params=lambda pending: (
+                provenance_event_key,
+                pending["capture_event_id"],
+                str(pending["record"].get("extraction_method") or "extract"),
+                pending["record"].get("input_hash"),
+                pending["record"].get("content_hash"),
+                created_at,
+            ),
+            label="extraction_record",
+        )
+        if extraction_rows is None:
+            raise CanonicalIngestError("execution-artifact batch write failed for extraction records")
+        pending_entity_records: list[dict[str, Any]] = []
+        for pending, row in zip(pending_extraction_records, extraction_rows, strict=True):
+            record = pending["record"]
+            canonical_capture_id = pending["capture_event_id"]
+            detected_entities = record.get("detected_entities")
+            if isinstance(detected_entities, list):
+                for entity in detected_entities:
+                    if not isinstance(entity, dict):
+                        raise CanonicalIngestError("detected_entities entries must be objects")
+                    pending_entity_records.append(
+                        {
+                            "extraction_id": int(row["extraction_id"]),
+                            "capture_event_id": canonical_capture_id,
+                            "entity_label": str(
+                                entity.get("entity_label") or entity.get("label") or ""
+                            ),
+                            "normalized_label": entity.get("normalized_label"),
+                            "entity_type": entity.get("entity_type"),
+                            "confidence_score": entity.get("confidence_score"),
+                            "workspace_id": record.get("workspace_id"),
+                            "structured": entity,
+                        }
+                    )
+
+        if pending_entity_records:
+            entity_rows = _batch_insert_rows_if_fresh(
+                conn,
+                table_name="extraction_detected_entity",
+                provenance_event_ref=provenance_event_key,
+                rows=pending_entity_records,
+                insert_sql=(
+                    """
+                    INSERT INTO extraction_detected_entity (
+                      extraction_id,
+                      capture_event_id,
+                      entity_label,
+                      normalized_label,
+                      entity_type,
+                      source_span_start,
+                      source_span_end,
+                      authority_record_id,
+                      review_state,
+                      confidence_score,
+                      workspace_id,
+                      provenance_event_ref,
+                      record_last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                insert_params=lambda row: (
+                    row["extraction_id"],
+                    row["capture_event_id"],
+                    row["entity_label"],
+                    row["normalized_label"],
+                    row["entity_type"],
+                    None,
+                    None,
+                    None,
+                    canonical_store.DEFAULT_DETECTED_ENTITY_REVIEW_STATE,
+                    row["confidence_score"],
+                    row["workspace_id"],
+                    provenance_event_key,
+                    created_at,
+                ),
+                lookup_sql=(
+                    """
+                    SELECT detected_entity_id
+                    FROM extraction_detected_entity
+                    WHERE provenance_event_ref=? AND extraction_id=? AND capture_event_id=? AND entity_label=?
+                      AND entity_type IS ? AND normalized_label IS ? AND source_span_start IS NULL
+                      AND source_span_end IS NULL
+                    """
+                ),
+                lookup_params=lambda row: (
+                    provenance_event_key,
+                    row["extraction_id"],
+                    row["capture_event_id"],
+                    row["entity_label"],
+                    row["entity_type"],
+                    row["normalized_label"],
+                ),
+                label="extraction_detected_entity",
+            )
+            if entity_rows is None:
+                raise CanonicalIngestError(
+                    "execution-artifact batch write failed for detected entities"
+                )
+            for row, entity_row in zip(pending_entity_records, entity_rows, strict=True):
+                _bump(report, "inserted", "extraction_detected_entity")
+                entity_candidates.append(
+                    {
+                        "detected_entity_id": int(entity_row["detected_entity_id"]),
+                        "entity_label": row["entity_label"],
+                        "entity_type": row["entity_type"],
+                        "confidence_score": row["confidence_score"],
+                        "structured": row["structured"],
                     }
                 )
 

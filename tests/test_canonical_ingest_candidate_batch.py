@@ -11,9 +11,12 @@ import pytest
 
 from tests.test_canonical_dedup_and_contradiction import (
     build_batch,
+    entity_candidate,
+    prose_claim_candidate,
     relationship_candidate,
     source_lead_candidate,
     structured_claim_candidate,
+    work_candidate,
 )
 from tools.source_db_tools import canonical_ingest, canonical_reconciliation, canonical_store
 
@@ -274,6 +277,113 @@ def test_candidate_batch_ingest_passes_incremental_reconciliation_work_items(
     assert captured["relationship_work_items"] == [
         ("fixture_subject", "authority:person-a", "taught_by", "authority:person-b")
     ]
+
+
+def test_candidate_batch_ingest_batches_fresh_family_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    payload = build_batch(
+        [
+            work_candidate(
+                "cand:work.batch",
+                work_key="work.fixture.batch",
+                title="Batch Work",
+                identifier_scheme="doi",
+                identifier_value="10.1000/batch",
+                canonical_url="https://example.test/work/batch",
+            ),
+            source_lead_candidate(
+                "cand:lead.batch",
+                original_locator="https://example.test/lead.pdf",
+                canonical_url="https://example.test/lead.pdf",
+                source_lead_id="lead:batch",
+            ),
+            prose_claim_candidate("cand:claim.batch", "Batch claim text"),
+            entity_candidate("cand:entity.batch", label="Batch Person"),
+            relationship_candidate(
+                "cand:relationship.batch",
+                from_object_ref="authority:person-a",
+                predicate="mentions",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="batch-family-writes",
+    )
+    captured: dict[str, object] = {}
+
+    def fail_record_source_access(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_access should be batched")
+
+    def fail_record_source_claim(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_claim should be batched")
+
+    def fail_record_source_relationship(
+        *args: object, **kwargs: object
+    ) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("source_relationship should be batched")
+
+    def fail_record_extraction_detected_entity(
+        *args: object, **kwargs: object
+    ) -> canonical_store.CanonicalWriteResult:
+        raise AssertionError("extraction_detected_entity should be batched")
+
+    def fake_run_reconciliation_pass_for_ingest(
+        conn: sqlite3.Connection, **kwargs: object
+    ) -> dict[str, int]:
+        assert conn is not None
+        captured.update(kwargs)
+        return {
+            "work_deduped": 0,
+            "authority_reconciled": 0,
+            "authority_merged": 0,
+            "claims_contradicted": 0,
+            "relationships_contradicted": 0,
+            "relational_constraints_checked": 0,
+            "relational_constraints_skipped": 0,
+        }
+
+    monkeypatch.setattr(canonical_store, "record_source_access", fail_record_source_access)
+    monkeypatch.setattr(canonical_store, "record_source_claim", fail_record_source_claim)
+    monkeypatch.setattr(
+        canonical_store,
+        "record_source_relationship",
+        fail_record_source_relationship,
+    )
+    monkeypatch.setattr(
+        canonical_store,
+        "record_extraction_detected_entity",
+        fail_record_extraction_detected_entity,
+    )
+    monkeypatch.setattr(
+        canonical_reconciliation,
+        "run_reconciliation_pass_for_ingest",
+        fake_run_reconciliation_pass_for_ingest,
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            report = canonical_ingest.ingest_candidate_batch(
+                conn,
+                payload,
+                batch_path=tmp_path / "batch-family-writes.json",
+                batch_hash=batch_hash(payload),
+                db_path=db_path,
+            )
+    finally:
+        conn.close()
+
+    assert report["status"] == "completed"
+    assert report["counts"]["inserted"]["work"] >= 1
+    assert report["counts"]["inserted"]["source_access"] >= 2
+    assert report["counts"]["inserted"]["source_claim"] >= 1
+    assert report["counts"]["inserted"]["source_relationship"] >= 1
+    assert report["counts"]["inserted"]["extraction_detected_entity"] >= 1
+    assert captured["source_run_id"] == "batch-family-writes"
+    assert captured["claim_work_items"]
+    assert captured["relationship_work_items"]
+    assert captured["entity_candidates"]
 
 
 def test_candidate_batch_ingest_skips_reconciliation_when_no_work_items(
@@ -537,12 +647,14 @@ def test_candidate_batch_ingest_rolls_back_on_write_failure(tmp_path: Path, monk
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = load_fixture_batch()
     conn = canonical_store.connect_canonical_store(db_path)
-    original_record_source_access = canonical_store.record_source_access
+    original_batch_insert_rows_if_fresh = canonical_ingest._batch_insert_rows_if_fresh
 
-    def fail_after_first_access(*args: object, **kwargs: object) -> canonical_store.CanonicalWriteResult:
-        raise canonical_ingest.CanonicalIngestError("synthetic source access failure")
+    def fail_source_access_batch(*args: object, **kwargs: object) -> object:
+        if kwargs.get("table_name") == "source_access":
+            raise canonical_ingest.CanonicalIngestError("synthetic source access failure")
+        return original_batch_insert_rows_if_fresh(*args, **kwargs)
 
-    monkeypatch.setattr(canonical_store, "record_source_access", fail_after_first_access)
+    monkeypatch.setattr(canonical_ingest, "_batch_insert_rows_if_fresh", fail_source_access_batch)
     try:
         with pytest.raises(
             canonical_ingest.CanonicalIngestError, match="synthetic source access failure"
@@ -556,7 +668,6 @@ def test_candidate_batch_ingest_rolls_back_on_write_failure(tmp_path: Path, monk
             )
         counts = canonical_store.canonical_family_counts(conn)
     finally:
-        monkeypatch.setattr(canonical_store, "record_source_access", original_record_source_access)
         conn.close()
 
     assert all(count == 0 for count in counts.values())
