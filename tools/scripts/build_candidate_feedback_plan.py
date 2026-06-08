@@ -1547,50 +1547,31 @@ def record_selection_explanation_ledger(db_path: Path, payload: dict[str, Any]) 
                 ended_at=str(payload["generated_at"]),
             )
             policy_id = str(payload["scoring_policy"]["policy_id"])
-            for candidate in explanation.get("considered_candidates", []):
-                if not isinstance(candidate, dict):
-                    continue
-                cycle_evidence_ledger.record_cycle_candidate_considered(
-                    conn,
-                    cycle_event_id=event_id,
-                    stage_event_id=stage_id,
-                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
-                    candidate_ref_type="selection_explanation",
-                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
-                    candidate_label=None
-                    if candidate.get("label") is None
-                    else str(candidate.get("label")),
-                    score=candidate.get("score")
-                    if isinstance(candidate.get("score"), (int, float))
-                    else None,
-                    score_policy_id=policy_id,
-                    rationale=None
-                    if candidate.get("rationale") is None
-                    else str(candidate.get("rationale")),
-                    reason={
-                        "selection_explanation_id": explanation["explanation_id"],
-                        "reason_codes": candidate.get("reason_codes", []),
-                        "eligibility_status": candidate.get("eligibility_status"),
-                    },
-                    selected=bool(candidate.get("selected")),
-                )
-            for candidate in explanation.get("excluded_candidates", []):
-                if not isinstance(candidate, dict):
-                    continue
-                cycle_evidence_ledger.record_cycle_candidate_excluded(
-                    conn,
-                    cycle_event_id=event_id,
-                    stage_event_id=stage_id,
-                    candidate_kind=str(candidate.get("candidate_type") or "feedback_candidate"),
-                    candidate_ref_type="selection_explanation",
-                    candidate_ref_id=str(candidate.get("candidate_id") or ""),
-                    candidate_label=None
-                    if candidate.get("label") is None
-                    else str(candidate.get("label")),
-                    exclusion_reason=str(candidate.get("reason") or "deferred_by_feedback_plan"),
-                    policy_id=policy_id,
-                    retryable=bool(candidate.get("retryable", True)),
-                )
+            cycle_evidence_ledger.record_cycle_candidates_considered(
+                conn,
+                cycle_event_id=event_id,
+                selection_explanation_id=explanation["explanation_id"],
+                stage_event_id=stage_id,
+                score_policy_id=policy_id,
+                candidates=[
+                    candidate
+                    for candidate in explanation.get("considered_candidates", [])
+                    if isinstance(candidate, dict)
+                ],
+                created_at=str(payload["generated_at"]),
+            )
+            cycle_evidence_ledger.record_cycle_candidates_excluded(
+                conn,
+                cycle_event_id=event_id,
+                stage_event_id=stage_id,
+                policy_id=policy_id,
+                candidates=[
+                    candidate
+                    for candidate in explanation.get("excluded_candidates", [])
+                    if isinstance(candidate, dict)
+                ],
+                created_at=str(payload["generated_at"]),
+            )
             cycle_evidence_ledger.record_cycle_event_finish(
                 conn,
                 cycle_event_id=event_id,

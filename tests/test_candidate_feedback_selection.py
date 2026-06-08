@@ -1575,7 +1575,24 @@ def test_feedback_plan_ledger_records_warning_and_error_counts(tmp_path: Path) -
 
 def test_candidate_feedback_planner_can_record_selection_explanation_to_ledger(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class CountingConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.executed_sql: list[str] = []
+            self.executemany_sql: list[str] = []
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executed_sql.append(sql)
+            return super().execute(sql, parameters)
+
+        def executemany(
+            self, sql: str, seq_of_parameters: object
+        ) -> sqlite3.Cursor:  # type: ignore[override]
+            self.executemany_sql.append(sql)
+            return super().executemany(sql, seq_of_parameters)
+
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     subject_id = "feedback_subject"
@@ -1583,14 +1600,23 @@ def test_candidate_feedback_planner_can_record_selection_explanation_to_ledger(
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
-    result, _output_path, payload = build_plan(
-        tmp_path,
-        db_path,
-        manifest_path,
-        extra_args=["--record-selection-ledger"],
-    )
+    result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
+    conn = sqlite3.connect(db_path, factory=CountingConnection)
+    conn.row_factory = sqlite3.Row
+    monkeypatch.setattr(
+        planner.canonical_store,
+        "connect_canonical_store",
+        lambda _db_path: conn,
+    )
+    try:
+        planner.record_selection_explanation_ledger(db_path, payload)
+    finally:
+        executed_sql = list(getattr(conn, "executed_sql", []))
+        executemany_sql = list(getattr(conn, "executemany_sql", []))
+        conn.close()
+
     conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
@@ -1610,6 +1636,16 @@ def test_candidate_feedback_planner_can_record_selection_explanation_to_ledger(
         ).fetchall()
     finally:
         conn.close()
+    considered_write_calls = [
+        sql for sql in executemany_sql if "INSERT INTO cycle_candidate_considered" in sql
+    ]
+    excluded_write_calls = [
+        sql for sql in executemany_sql if "INSERT INTO cycle_candidate_excluded" in sql
+    ]
+    assert len(considered_write_calls) == 1
+    assert len(excluded_write_calls) == 1
+    assert not any("INSERT INTO cycle_candidate_considered" in sql for sql in executed_sql)
+    assert not any("INSERT INTO cycle_candidate_excluded" in sql for sql in executed_sql)
     assert considered_count >= len(payload["selection_explanation"]["considered_candidates"])
     assert excluded_count >= len(payload["selection_explanation"]["excluded_candidates"])
     assert [row["candidate_ref_id"] for row in selected_rows] == [
