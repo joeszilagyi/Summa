@@ -1841,11 +1841,14 @@ def _build_remote_fetch_artifacts(
     failure_reason = fetch_result["failure_reason"]
     extracted_text_path = None
     decode_failed = False
+    unsupported_content_type = False
     if fetch_result["status"] == "captured":
         if method == "HEAD":
             failure_reason = "head_request_no_body"
+            unsupported_content_type = True
         elif not is_extractable_content_type(content_type):
             failure_reason = "unsupported_content_type"
+            unsupported_content_type = True
         else:
             extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
             if extracted_text is not None:
@@ -1880,7 +1883,7 @@ def _build_remote_fetch_artifacts(
         capture_event,
         extraction_record,
         extracted_text,
-        fetch_result["status"] != "captured" or decode_failed,
+        fetch_result["status"] != "captured" or decode_failed or unsupported_content_type,
     )
 
 

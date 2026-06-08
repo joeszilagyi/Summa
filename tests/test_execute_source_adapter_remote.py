@@ -53,6 +53,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/binary":
+            body = b"\x00\x01\x02\x03"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/oversize":
             body = b"0123456789"
             self.send_response(200)
@@ -770,6 +777,32 @@ def test_gate_pass_with_explicit_opt_in_fetches_text_and_extracts(tmp_path: Path
         assert extractions[0]["status"] == "completed"
         assert (output / extractions[0]["extracted_text_path"]).read_text(encoding="utf-8") == "remote fixture text\n"
         assert FixtureHandler.request_paths == ["/text"]
+    finally:
+        server.shutdown()
+
+
+def test_gate_pass_marks_unsupported_content_type_as_failed(tmp_path: Path) -> None:
+    server, base_url = fixture_server()
+    try:
+        url = f"{base_url}/binary"
+        handoff = make_handoff(tmp_path, [url])
+        gate_request = make_gate_request(tmp_path, urls=[url], allowed_prefix=base_url)
+        output = tmp_path / "remote-html-run"
+
+        proc = run_executor(handoff=handoff, output=output, gate_request=gate_request, allow_network=True)
+
+        assert proc.returncode == source_executor.EXIT_STATE_UNSAFE, proc.stdout + proc.stderr
+        execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
+        captures = load_jsonl(output / "capture-events.jsonl")
+        extractions = load_jsonl(output / "extraction-records.jsonl")
+        assert execution["status"] == "failed"
+        assert execution["urls_attempted"] == 1
+        assert execution["urls_succeeded"] == 1
+        assert captures[0]["status"] == "completed"
+        assert extractions[0]["status"] == "failed"
+        assert extractions[0]["failure_reason"] == "unsupported_content_type"
+        assert extractions[0]["extracted_text_path"] is None
+        assert FixtureHandler.request_paths == ["/binary"]
     finally:
         server.shutdown()
 
