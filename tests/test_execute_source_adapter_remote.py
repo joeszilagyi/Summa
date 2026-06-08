@@ -258,8 +258,18 @@ def open_targets_under(root: Path) -> list[Path]:
     return targets
 
 
-def test_execute_remote_fetches_emits_denied_evidence_rows(tmp_path: Path) -> None:
+def test_execute_remote_fetches_emits_denied_evidence_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     server, base_url = fixture_server()
+    original_helper = source_executor.build_remote_denied_extraction_record
+    helper_calls = {"count": 0}
+
+    def helper_spy(*args: object, **kwargs: object) -> dict[str, Any]:
+        helper_calls["count"] += 1
+        return original_helper(*args, **kwargs)
+
+    monkeypatch.setattr(source_executor, "build_remote_denied_extraction_record", helper_spy)
     try:
         records = [
             {
@@ -339,6 +349,7 @@ def test_execute_remote_fetches_emits_denied_evidence_rows(tmp_path: Path) -> No
         assert capture_events[2]["failure_reason"] == "unsupported_request_method"
         assert extraction_records[1]["failure_reason"] == "network_gate_action_missing"
         assert extraction_records[2]["failure_reason"] == "unsupported_request_method"
+        assert helper_calls["count"] == 2
         assert text_artifacts["extracted-text/extraction-0001.txt"] == "remote fixture text\n"
         assert binary_artifacts == {}
     finally:

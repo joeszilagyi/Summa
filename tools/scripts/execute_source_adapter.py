@@ -711,6 +711,44 @@ def build_remote_denied_capture_event(
     }
 
 
+def build_remote_denied_extraction_record(
+    *,
+    record: dict[str, Any],
+    adapter_payload: dict[str, Any],
+    extraction_id: str,
+    run_id: str,
+    capture_id: str,
+    url: str,
+    method: str,
+    failure_reason: str,
+) -> dict[str, Any]:
+    return build_extraction_record(
+        extraction_id=extraction_id,
+        run_id=run_id,
+        capture_id=capture_id,
+        adapter_payload=adapter_payload,
+        adapter_type="remote_url_manifest",
+        handoff_sequence=record["sequence"],
+        relative_path=record["relative_path"],
+        input_hash=None,
+        byte_count_in=0,
+        extraction_method="remote_text_extract",
+        hazard_flags=list(record["preserved"].get("source_metadata", {}).get("hazard_flags", [])),
+        content_text=None,
+        encoding_result="not_attempted",
+        failure_reason=failure_reason,
+        extracted_text_path=None,
+        status_override="denied",
+        extra_fields={
+            "content_type": "application/octet-stream",
+            "remote_url": url,
+            "final_url": url,
+            "network_access_attempted": True,
+            "request_method": method,
+        },
+    )
+
+
 def dry_run_execution_record(
     *,
     run_id: str,
@@ -1927,31 +1965,15 @@ def execute_remote_fetches(
                 failure_reason=denied_reason,
                 user_agent=user_agent,
             )
-            record_plan["extraction_record"] = build_extraction_record(
+            record_plan["extraction_record"] = build_remote_denied_extraction_record(
+                record=record,
+                adapter_payload=adapter_payload,
                 extraction_id=extraction_id,
                 run_id=run_id,
                 capture_id=capture_id,
-                adapter_payload=adapter_payload,
-                adapter_type="remote_url_manifest",
-                handoff_sequence=record["sequence"],
-                relative_path=record["relative_path"],
-                input_hash=None,
-                byte_count_in=0,
-                extraction_method="remote_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=None,
-                encoding_result="not_attempted",
+                url=url,
+                method=request_method,
                 failure_reason=denied_reason,
-                extracted_text_path=None,
-                status_override="denied",
-                extra_fields={
-                    "content_type": "application/octet-stream",
-                    "remote_url": url,
-                    "final_url": url,
-                    "network_access_attempted": True,
-                },
             )
             record_plans.append(record_plan)
             continue
@@ -1972,31 +1994,15 @@ def execute_remote_fetches(
                 failure_reason="unsupported_request_method",
                 user_agent=user_agent,
             )
-            record_plan["extraction_record"] = build_extraction_record(
+            record_plan["extraction_record"] = build_remote_denied_extraction_record(
+                record=record,
+                adapter_payload=adapter_payload,
                 extraction_id=extraction_id,
                 run_id=run_id,
                 capture_id=capture_id,
-                adapter_payload=adapter_payload,
-                adapter_type="remote_url_manifest",
-                handoff_sequence=record["sequence"],
-                relative_path=record["relative_path"],
-                input_hash=None,
-                byte_count_in=0,
-                extraction_method="remote_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=None,
-                encoding_result="not_attempted",
+                url=url,
+                method=method,
                 failure_reason="unsupported_request_method",
-                extracted_text_path=None,
-                status_override="denied",
-                extra_fields={
-                    "content_type": "application/octet-stream",
-                    "remote_url": url,
-                    "final_url": url,
-                    "network_access_attempted": True,
-                },
             )
             record_plans.append(record_plan)
             continue
