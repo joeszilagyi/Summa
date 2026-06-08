@@ -209,3 +209,47 @@ def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None
     assert args[0] == "-p"
     assert stdin == prompt_text
     assert output == "engine-output\n"
+
+
+def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) -> None:
+    output_file = tmp_path / "stamped.txt"
+    output_file.write_text(
+        "body line\n"
+        "GENERATED_BY: not-a-footer\n"
+        "more body text\n",
+        encoding="utf-8",
+    )
+
+    script = textwrap.dedent(
+        f"""\
+        set -euo pipefail
+        runtime_log_event() {{
+          :
+        }}
+        source "{RUNNER_PATH}"
+        llm_runner_stamp_output "{output_file}" "place" "facet" "phase"
+        llm_runner_stamp_output "{output_file}" "place" "facet" "phase"
+        """
+    )
+    proc = subprocess.run(
+        ["bash", "-lc", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "LLM_ENGINE": "codex",
+            "CODEX_MODEL": "test-model",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    stamped = output_file.read_text(encoding="utf-8")
+    assert stamped.count("RUN_META_VERSION: run-body-footer.v1") == 1
+    assert stamped.count("GENERATED_BY: codex") == 1
+    assert "GENERATED_BY: not-a-footer" in stamped
+    assert "MODEL: test-model" in stamped
+    assert "PLACE: place" in stamped
+    assert "FACET: facet" in stamped
+    assert "PHASE: phase" in stamped

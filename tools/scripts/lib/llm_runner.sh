@@ -264,13 +264,44 @@ llm_runner_run_to_file() {
 #   Footer is separated by --- so forward-scanning parsers are unaffected.
 #   Idempotent: skips files that already contain GENERATED_BY.
 # ---------------------------------------------------------------------------
+_llm_runner_has_stamp_footer() {
+  local file="$1"
+
+  python3 - "$file" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    text = path.read_text(encoding="utf-8")
+except OSError:
+    raise SystemExit(1)
+
+pattern = re.compile(
+    r"\n---\n"
+    r"RUN_META_VERSION: run-body-footer\.v1\n"
+    r"GENERATED_BY: [^\n]+\n"
+    r"MODEL: [^\n]+\n"
+    r"PLACE: [^\n]+\n"
+    r"FACET: [^\n]+\n"
+    r"PHASE: [^\n]+\n"
+    r"RUN_TS: [^\n]+\n"
+    r"\Z"
+)
+raise SystemExit(0 if pattern.search(text) else 1)
+PY
+}
+
 llm_runner_stamp_output() {
   local file="$1" place="$2" facet="$3" phase="$4"
   local model_str tmp_file output_dir
   local footer_schema_version="run-body-footer.v1"
 
   _llm_runner_require_output_dir "$file" || return 1
-  grep -q '^GENERATED_BY:' "$file" 2>/dev/null && return 0
+  _llm_runner_has_stamp_footer "$file" && return 0
 
   if [[ -e "$file" && ! -w "$file" ]]; then
     printf 'llm_runner: output file "%s" is not writable\n' "$file" >&2
