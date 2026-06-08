@@ -328,6 +328,7 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
             "2026-06-03T12:00:00Z",
             "--command-timeout-seconds",
             "45",
+            "--skip-workspace-lock",
             "--dry-run",
         ]
     )
@@ -447,6 +448,7 @@ def test_topic_cycle_graph_closure_is_disabled_by_default(
             "cycle-graph-closure-default-off",
             "--timestamp",
             "2026-06-03T12:00:00Z",
+            "--skip-workspace-lock",
             "--dry-run",
         ]
     )
