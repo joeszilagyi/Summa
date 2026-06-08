@@ -334,7 +334,16 @@ def _batch_provenance_note(batch: dict[str, Any], *, batch_hash: str, batch_path
         if isinstance(batch.get("candidates"), list)
         else 0,
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    lines = ["gather_candidate_batch_ingest"]
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            rendered = ", ".join(str(item) for item in value if str(item).strip())
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {rendered}")
+    return "\n".join(lines)
 
 
 def _execution_provenance_note(

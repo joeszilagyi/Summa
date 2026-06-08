@@ -98,7 +98,7 @@ def _normalize_now(value: str | None) -> tuple[str, dt.datetime]:
 
 
 def _load_note(raw_text: Any) -> dict[str, Any]:
-    return _load_json_mapping(raw_text)
+    return canonical_store.parse_gather_candidate_batch_ingest_note(raw_text)
 
 
 def _load_json_mapping(raw_text: Any) -> dict[str, Any]:

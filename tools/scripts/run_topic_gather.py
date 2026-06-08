@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -879,18 +880,18 @@ def resolve_prior_state_context(
     except canonical_store.CanonicalStoreError as exc:
         raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     try:
-        outline = canonical_store.load_canonical_outline()
         try:
+            outline = canonical_store.load_canonical_outline()
             canonical_store.validate_existing_store(conn, outline=outline)
-        except canonical_store.CanonicalStoreError as exc:
+            prior_state = canonical_store.load_gather_prior_state(
+                conn,
+                subject_id=subject_id,
+                per_family_limit=args.prior_state_limit,
+                high_confidence_threshold=canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
+                policy=args.prior_state_policy,
+            )
+        except (canonical_store.CanonicalStoreError, sqlite3.DatabaseError) as exc:
             raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
-        prior_state = canonical_store.load_gather_prior_state(
-            conn,
-            subject_id=subject_id,
-            per_family_limit=args.prior_state_limit,
-            high_confidence_threshold=canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
-            policy=args.prior_state_policy,
-        )
     finally:
         conn.close()
 

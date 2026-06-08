@@ -528,7 +528,8 @@ def test_gather_iteration_ingest_preserves_cycle_metadata_in_provenance(tmp_path
     finally:
         conn.close()
 
-    note_payload = json.loads(row["note_text"])
+    note_payload = canonical_store.parse_gather_candidate_batch_ingest_note(row["note_text"])
+    assert row["note_text"].startswith("gather_candidate_batch_ingest")
     assert note_payload["cycle_depth"] == 2
     assert note_payload["prior_state_hash"] == payload["prior_state"]["context_hash"]
     assert "cycle-one" in note_payload["previous_run_ids"]

@@ -206,24 +206,23 @@ def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
 
 
 def gather_note(*, subject_id: str, facet: str, run_id: str, cycle_depth: int, prompt_bundle_id: str) -> str:
-    return json.dumps(
-        {
-            "artifact_hash": f"artifact:{run_id}",
-            "artifact_path": f"runs/gather/{run_id}/gather-candidate-batch.json",
-            "candidate_count": 0,
-            "cycle_depth": cycle_depth,
-            "domain_pack": "general.v1",
-            "facet": facet,
-            "iteration_mode": "prior_state" if cycle_depth > 1 else "one_shot",
-            "mode": "dry_run",
-            "previous_run_ids": [],
-            "prompt_bundle_id": prompt_bundle_id,
-            "run_id": run_id,
-            "schema_version": "gather-candidate-batch.v1",
-            "subject_id": subject_id,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
+    return "\n".join(
+        [
+            "gather_candidate_batch_ingest",
+            f"artifact_path: runs/gather/{run_id}/gather-candidate-batch.json",
+            f"artifact_hash: artifact:{run_id}",
+            "candidate_count: 0",
+            f"cycle_depth: {cycle_depth}",
+            "domain_pack: general.v1",
+            f"facet: {facet}",
+            f"iteration_mode: {'prior_state' if cycle_depth > 1 else 'one_shot'}",
+            "mode: dry_run",
+            "previous_run_ids: ",
+            f"prompt_bundle_id: {prompt_bundle_id}",
+            f"run_id: {run_id}",
+            "schema_version: gather-candidate-batch.v1",
+            f"subject_id: {subject_id}",
+        ]
     )
 
 
@@ -2287,7 +2286,8 @@ def test_feedback_plan_metadata_survives_candidate_batch_ingest_provenance(tmp_p
     finally:
         conn.close()
 
-    note_payload = json.loads(note_text)
+    note_payload = canonical_store.parse_gather_candidate_batch_ingest_note(note_text)
+    assert note_text.startswith("gather_candidate_batch_ingest")
     assert note_payload["feedback_plan_hash"] == batch["feedback_plan"]["plan_hash"]
     assert note_payload["next_action_id"] == payload["next_action"]["action_id"]
     assert note_payload["selected_object_ref"] == payload["next_action"]["selected_object_ref"]

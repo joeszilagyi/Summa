@@ -247,13 +247,7 @@ def load_checked_connection(
 
 
 def parse_note_text(note_text: Any) -> dict[str, Any]:
-    if not isinstance(note_text, str) or not note_text.strip():
-        return {}
-    try:
-        payload = json.loads(note_text)
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return canonical_store.parse_gather_candidate_batch_ingest_note(note_text)
 
 
 def scope_work_ids(conn: sqlite3.Connection, subject_id: str) -> list[int]:

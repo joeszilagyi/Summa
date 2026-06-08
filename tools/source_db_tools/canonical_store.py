@@ -339,6 +339,41 @@ def connect_existing_read_only(
     return conn
 
 
+def parse_gather_candidate_batch_ingest_note(note_text: Any) -> dict[str, Any]:
+    if not isinstance(note_text, str) or not note_text.strip():
+        return {}
+    raw_text = note_text.strip()
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines or lines[0] != "gather_candidate_batch_ingest":
+        return {}
+    parsed: dict[str, Any] = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if key == "previous_run_ids":
+            parsed[key] = [item.strip() for item in value.split(",") if item.strip()]
+            continue
+        if key in {"candidate_count", "cycle_depth"}:
+            try:
+                parsed[key] = int(value)
+            except ValueError:
+                parsed[key] = value
+            continue
+        parsed[key] = value
+    return parsed
+
+
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -3061,8 +3096,7 @@ def load_gather_prior_state(
         conn,
         """
         SELECT COUNT(*) OVER () AS total_count,
-               provenance_event_id, run_id, event_timestamp,
-               CASE WHEN json_valid(note_text) THEN json_extract(note_text, '$.cycle_depth') END AS cycle_depth
+               provenance_event_id, run_id, event_timestamp, note_text
         FROM provenance_event
         WHERE event_type='gather_candidate_batch_ingest'
           AND source_object_namespace=?
@@ -3075,11 +3109,13 @@ def load_gather_prior_state(
 
     previous_runs: list[dict[str, Any]] = []
     for row in previous_rows:
+        note = parse_gather_candidate_batch_ingest_note(row["note_text"])
+        note_cycle_depth = note.get("cycle_depth")
         previous_runs.append(
             {
                 "run_id": None if row["run_id"] is None else str(row["run_id"]),
                 "event_timestamp": str(row["event_timestamp"]),
-                "cycle_depth": None if row["cycle_depth"] is None else int(row["cycle_depth"]),
+                "cycle_depth": None if note_cycle_depth is None else int(note_cycle_depth),
             }
         )
 
