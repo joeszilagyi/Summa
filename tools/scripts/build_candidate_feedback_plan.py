@@ -246,6 +246,22 @@ def scope_work_ids(conn: sqlite3.Connection, subject_id: str) -> list[int]:
     return [int(row["work_id"]) for row in rows]
 
 
+def seed_scoped_work_ids(conn: sqlite3.Connection, work_ids: list[int]) -> None:
+    conn.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS scoped_work_ids (
+            work_id INTEGER PRIMARY KEY
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute("DELETE FROM scoped_work_ids")
+    if work_ids:
+        conn.executemany(
+            "INSERT OR IGNORE INTO scoped_work_ids (work_id) VALUES (?)",
+            ((int(work_id),) for work_id in work_ids),
+        )
+
+
 def work_ref(work_id: int) -> str:
     return f"work:{work_id}"
 
@@ -510,24 +526,19 @@ def lead_scope_sql(
 ) -> tuple[str, tuple[Any, ...]]:
     workspace_column = "workspace_id" if table_alias is None else f"{table_alias}.workspace_id"
     work_id_column = "work_id" if table_alias is None else f"{table_alias}.work_id"
-    if work_ids:
-        placeholders = ", ".join("?" for _ in work_ids)
-        return (
-            f"({workspace_column}=? OR {work_id_column} IN ({placeholders}))",
-            (subject_id, *work_ids),
-        )
-    return f"{workspace_column}=?", (subject_id,)
+    del work_ids
+    return (
+        f"({workspace_column}=? OR EXISTS (SELECT 1 FROM scoped_work_ids WHERE scoped_work_ids.work_id = {work_id_column}))",
+        (subject_id,),
+    )
 
 
 def claim_scope_sql(subject_id: str, work_ids: list[int]) -> tuple[str, tuple[Any, ...]]:
-    work_refs = [work_ref(work_id) for work_id in work_ids]
-    if work_refs:
-        placeholders = ", ".join("?" for _ in work_refs)
-        return (
-            f"(workspace_id=? OR about_object_ref IN ({placeholders}))",
-            (subject_id, *work_refs),
-        )
-    return "workspace_id=?", (subject_id,)
+    del work_ids
+    return (
+        "(workspace_id=? OR about_object_ref IN (SELECT 'work:' || work_id FROM scoped_work_ids))",
+        (subject_id,),
+    )
 
 
 def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
@@ -717,6 +728,7 @@ def load_source_access_leads(
     max_candidates: int | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     scope_sql, scope_params = lead_scope_sql(subject_id, work_ids, table_alias="access")
     accepted_placeholders, accepted_states = accepted_review_placeholder_sql()
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
@@ -922,6 +934,7 @@ def load_open_question_leads(
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     scope_sql, scope_params = claim_scope_sql(subject_id, work_ids)
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
@@ -1061,28 +1074,21 @@ def load_work_leads(
     conn: sqlite3.Connection,
     *,
     subject_id: str,
+    work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
 ) -> list[dict[str, Any]]:
+    seed_scoped_work_ids(conn, work_ids)
     review_placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
     rows = conn.execute(
         f"""
-        WITH scoped_work_ids(work_id) AS (
-            SELECT work_id
-            FROM work
-            WHERE workspace_id=?
-            UNION
-            SELECT work_id
-            FROM work_subject
-            WHERE subject_object_ref=?
-        )
         SELECT work.work_id, work.title, work.review_state, work.provenance_event_ref
         FROM work
         JOIN scoped_work_ids USING (work_id)
         WHERE work.review_state IN ({review_placeholders})
         ORDER BY work.work_id
         """,
-        (subject_id, subject_id) + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(sorted(LEAD_REVIEW_STATES)),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:
@@ -1496,6 +1502,7 @@ def build_plan(
     work_leads = load_work_leads(
         conn,
         subject_id=subject["subject_id"],
+        work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
     )

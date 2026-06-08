@@ -544,8 +544,10 @@ def test_extraction_outcome_counts_returns_empty_related_runs_when_no_captures_m
 def test_lead_scope_sql_supports_explicit_table_aliases() -> None:
     scope_sql, params = planner.lead_scope_sql("alpha_subject", [1, 2], table_alias="access")
 
-    assert scope_sql == "(access.workspace_id=? OR access.work_id IN (?, ?))"
-    assert params == ("alpha_subject", 1, 2)
+    assert scope_sql == (
+        "(access.workspace_id=? OR EXISTS (SELECT 1 FROM scoped_work_ids WHERE scoped_work_ids.work_id = access.work_id))"
+    )
+    assert params == ("alpha_subject",)
 
 
 def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None:
@@ -1684,6 +1686,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
     conn.row_factory = sqlite3.Row
     try:
         history_by_event_key = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+        work_ids = planner.scope_work_ids(conn, subject_id)
     finally:
         conn.close()
 
@@ -1698,6 +1701,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
         leads = planner.load_work_leads(
             conn,
             subject_id=subject_id,
+            work_ids=work_ids,
             history_by_event_key=history_by_event_key,
             weights=planner.DEFAULT_SCORING_WEIGHTS,
         )
@@ -1706,7 +1710,7 @@ def test_work_leads_use_scoped_join_without_python_scope_expansion(
         conn.close()
 
     assert leads == []
-    work_queries = [sql for sql in executed_sql if "WITH scoped_work_ids(work_id) AS" in sql]
+    work_queries = [sql for sql in executed_sql if "JOIN scoped_work_ids USING (work_id)" in sql]
     assert work_queries
     assert not any("work_id IN (" in sql for sql in work_queries)
 
