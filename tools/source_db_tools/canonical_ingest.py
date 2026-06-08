@@ -1144,20 +1144,23 @@ def ingest_execution_artifacts(
                 )
 
     if not dry_run:
-        try:
-            curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
-                conn,
-                provenance_event_ref=provenance_event_key,
-                workspace_id=str(execution_record.get("workspace_id") or "") or None,
-                changed_at=created_at,
-                entity_candidates=entity_candidates,
-                source_run_id=str(execution_record.get("run_id") or ""),
-                claim_work_items=claim_work_items,
-                relationship_work_items=relationship_work_items,
-            )
-        except canonical_reconciliation.CanonicalReconciliationError as exc:
-            raise CanonicalIngestError(f"execution-artifact reconciliation failed: {exc}") from exc
-        _apply_curation_counts(report, curation_counts)
+        if entity_candidates or claim_work_items or relationship_work_items:
+            try:
+                curation_counts = canonical_reconciliation.run_reconciliation_pass_for_ingest(
+                    conn,
+                    provenance_event_ref=provenance_event_key,
+                    workspace_id=str(execution_record.get("workspace_id") or "") or None,
+                    changed_at=created_at,
+                    entity_candidates=entity_candidates,
+                    source_run_id=str(execution_record.get("run_id") or ""),
+                    claim_work_items=claim_work_items,
+                    relationship_work_items=relationship_work_items,
+                )
+            except canonical_reconciliation.CanonicalReconciliationError as exc:
+                raise CanonicalIngestError(
+                    f"execution-artifact reconciliation failed: {exc}"
+                ) from exc
+            _apply_curation_counts(report, curation_counts)
         report["transaction_status"] = "committed"
     return report
 

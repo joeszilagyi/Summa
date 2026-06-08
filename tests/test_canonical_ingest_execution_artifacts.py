@@ -136,7 +136,7 @@ def test_execution_artifact_ingest_writes_capture_and_extraction_rows(tmp_path: 
     assert extraction_row["provenance_event_ref"] == report["provenance_event"]["event_key"]
 
 
-def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
+def test_execution_artifact_ingest_skips_reconciliation_when_no_work_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = bootstrap_db(tmp_path)
@@ -144,13 +144,14 @@ def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
     execution_record, paths, input_hashes = canonical_ingest.load_validated_execution_artifacts(
         run_dir
     )
-    captured: dict[str, object] = {}
+    called = False
 
     def fake_run_reconciliation_pass_for_ingest(
         conn: sqlite3.Connection, **kwargs: object
     ) -> dict[str, int]:
         assert conn is not None
-        captured.update(kwargs)
+        nonlocal called
+        called = True
         return {
             "work_deduped": 0,
             "authority_reconciled": 0,
@@ -183,10 +184,11 @@ def test_execution_artifact_ingest_passes_empty_reconciliation_work_items(
         conn.close()
 
     assert report["status"] == "completed"
-    assert captured["provenance_event_ref"] == report["provenance_event"]["event_key"]
-    assert captured["source_run_id"] == str(execution_record.get("run_id") or "")
-    assert captured["claim_work_items"] == []
-    assert captured["relationship_work_items"] == []
+    assert called is False
+    assert report["transaction_status"] == "committed"
+    assert report["counts"]["reconciled"] == {}
+    assert report["counts"]["contradicted"] == {}
+    assert report["counts"]["deduped"] == {}
 
 
 def test_execution_artifact_validation_happens_before_write(tmp_path: Path) -> None:
