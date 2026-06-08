@@ -98,6 +98,33 @@ def _pick_facet_for_entity_type(entity_type: str, enabled_facets: list[str]) -> 
     return enabled_facets[0] if enabled_facets else candidate
 
 
+def _entity_facet_resolution_sql(enabled_facets: list[str]) -> tuple[str, tuple[str, ...]]:
+    normalized_facets = [
+        str(facet).strip().casefold().replace(" ", "_")
+        for facet in enabled_facets
+        if str(facet).strip()
+    ]
+    if not normalized_facets:
+        return "", ()
+    fallback_facet = normalized_facets[0]
+    resolution_sql = """
+        CASE LOWER(REPLACE(entity_type, ' ', '_'))
+            WHEN 'person' THEN 'people'
+            WHEN 'person_or_group' THEN 'people'
+            WHEN 'place' THEN 'places'
+            WHEN 'organization' THEN 'organizations'
+            WHEN 'org' THEN 'organizations'
+            WHEN 'work' THEN 'works'
+            WHEN 'event' THEN 'events'
+            WHEN 'concept' THEN 'concepts'
+            WHEN 'topic' THEN 'topics'
+            WHEN 'product' THEN 'products'
+            ELSE ?
+        END
+    """
+    return resolution_sql, (fallback_facet,)
+
+
 class CandidateFeedbackError(RuntimeError):
     """Raised when planner inputs are missing or malformed."""
 
@@ -1006,20 +1033,43 @@ def load_entity_leads(
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    facet_resolution_sql, facet_resolution_params = _entity_facet_resolution_sql(enabled_facets)
+    if not facet_resolution_sql:
+        return []
+    enabled_facet_filters = ", ".join("?" for _ in sorted({str(facet).strip().casefold().replace(" ", "_") for facet in enabled_facets if str(facet).strip()}))
     rows = conn.execute(
         f"""
-        SELECT entity.detected_entity_id, entity.entity_label, entity.entity_type, entity.review_state,
-               entity.provenance_event_ref, extraction.extraction_status
-        FROM extraction_detected_entity entity
-        LEFT JOIN extraction_record extraction
-          ON extraction.extraction_id = entity.extraction_id
-        LEFT JOIN capture_event capture
-          ON capture.capture_event_id = entity.capture_event_id
-        WHERE entity.workspace_id=?
-          AND entity.review_state IN ({placeholders})
-        ORDER BY entity.detected_entity_id
+        WITH entity_rows AS (
+            SELECT entity.detected_entity_id, entity.entity_label, entity.entity_type, entity.review_state,
+                   entity.provenance_event_ref, extraction.extraction_status
+            FROM extraction_detected_entity entity
+            LEFT JOIN extraction_record extraction
+              ON extraction.extraction_id = entity.extraction_id
+            LEFT JOIN capture_event capture
+              ON capture.capture_event_id = entity.capture_event_id
+            WHERE entity.workspace_id=?
+              AND entity.review_state IN ({placeholders})
+        )
+        SELECT detected_entity_id, entity_label, entity_type, review_state,
+               provenance_event_ref, extraction_status
+        FROM entity_rows
+        WHERE {facet_resolution_sql.strip()} IN ({enabled_facet_filters})
+        ORDER BY detected_entity_id
         """,
-        (subject_id,) + tuple(sorted(LEAD_REVIEW_STATES)),
+        (
+            subject_id,
+            *tuple(sorted(LEAD_REVIEW_STATES)),
+            *facet_resolution_params,
+            *tuple(
+                sorted(
+                    {
+                        str(facet).strip().casefold().replace(" ", "_")
+                        for facet in enabled_facets
+                        if str(facet).strip()
+                    }
+                )
+            ),
+        ),
     ).fetchall()
     leads: list[dict[str, Any]] = []
     for row in rows:

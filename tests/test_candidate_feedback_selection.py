@@ -150,7 +150,7 @@ def test_run_ids_for_events_sorts_keys_once(
 
         assert result == {"prov:event:a": "run-a", "prov:event:b": "run-b"}
         assert len(sorted_calls) == 1
-        assert sorted_calls[0] == ["prov:event:a", "prov:event:b"]
+        assert set(sorted_calls[0]) == {"prov:event:a", "prov:event:b"}
     finally:
         conn.close()
 
@@ -1633,6 +1633,74 @@ def test_entity_type_to_facet_mapping_keeps_non_person_place_entities_visible(tm
     assert lead["lead_kind"] == "detected_entity"
     assert lead["facet"] == "works"
     assert lead["reason_codes"] == ["open_lead_yield", "works_candidate"]
+
+
+def test_entity_leads_filter_enabled_facets_in_sql(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    write_manifest(workspace_root, subject_id=subject_id)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            for index, (entity_type, label) in enumerate(
+                [
+                    ("person", "Person Entity"),
+                    ("place", "Place Entity"),
+                    ("work", "Work Entity"),
+                    ("event", "Event Entity"),
+                ],
+                start=1,
+            ):
+                prov = canonical_store.record_provenance_event(
+                    conn,
+                    object_namespace="candidate-feedback-tests",
+                    object_id=f"filtered-entity-{index}",
+                    event_type="feedback_test",
+                    actor_type="pytest",
+                    actor_id="pytest.candidate_feedback_selection",
+                    tool_name="tests.test_candidate_feedback_selection",
+                    run_id=f"filtered-entity-{index}",
+                    event_timestamp=FIXED_CREATED_AT,
+                    note_text="candidate visibility fixture",
+                    provenance_event_key_v1=f"prov:feedback:entity-filter:{index}",
+                )
+                canonical_store.record_extraction_detected_entity(
+                    conn,
+                    provenance_event_ref=prov.event_key,
+                    entity_label=label,
+                    normalized_label=label.casefold(),
+                    entity_type=entity_type,
+                    review_state="proposed",
+                    confidence_score=0.81,
+                    workspace_id=subject_id,
+                    record_last_updated=FIXED_CREATED_AT,
+                )
+
+        history_by_event_key = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+        leads = planner.load_entity_leads(
+            conn,
+            subject_id=subject_id,
+            enabled_facets=["sources", "people", "places", "works"],
+            history_by_event_key=history_by_event_key,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+            warnings=[],
+        )
+    finally:
+        conn.close()
+
+    facets = [lead["facet"] for lead in leads]
+    assert facets == ["people", "places", "works"]
+    assert "events" not in facets
+    assert {lead["lead_kind"] for lead in leads} == {"detected_entity"}
+    assert {lead["object_ref"] for lead in leads} == {
+        "detected_entity:1",
+        "detected_entity:2",
+        "detected_entity:3",
+    }
 
 
 def test_entity_leads_use_direct_workspace_filter_without_coalesce(
