@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate taxonomy leads with evidence note, classification relevance, and next check.
+- Return bounded machine records for candidate taxonomy leads with evidence_note, classification_relevance, and next_check.

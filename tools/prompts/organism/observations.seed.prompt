@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate observation leads with evidence note, record relevance, and next check.
+- Return bounded machine records for candidate observation leads with evidence_note, record_relevance, and next_check.

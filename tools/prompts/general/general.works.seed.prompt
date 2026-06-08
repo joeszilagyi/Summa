@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate work leads with work summary, evidence note, relevance, and next check.
+- Return bounded machine records for candidate work leads with work_summary, evidence_note, relevance, and next_check.

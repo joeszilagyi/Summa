@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate place leads with place summary, spatial relevance, evidence note, and next check.
+- Return bounded machine records for candidate place leads with place_summary, spatial_relevance, evidence_note, and next_check.

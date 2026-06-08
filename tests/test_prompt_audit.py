@@ -89,6 +89,8 @@ def test_active_prompt_files_exist_and_use_neutral_candidate_discovery_language(
         body = path.read_text(encoding="utf-8")
         lower_body = body.lower()
         assert "candidate" in lower_body, path
+        if path.name.endswith(".seed.prompt"):
+            assert "bounded machine records" in lower_body, path
         for phrase in DISALLOWED_PRESENTATION_PHRASES:
             assert phrase not in lower_body, f"{path}: found disallowed phrase {phrase!r}"
         if path.name.endswith(".seed.prompt"):

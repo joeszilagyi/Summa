@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate habitat leads with evidence note, ecological relevance, and next check.
+- Return bounded machine records for candidate habitat leads with evidence_note, ecological_relevance, and next_check.

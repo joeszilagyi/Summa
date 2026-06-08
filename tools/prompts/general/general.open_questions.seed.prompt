@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate open questions with blocker summary, evidence note, and next check.
+- Return bounded machine records for candidate open questions with blocker_summary, evidence_note, and next_check.

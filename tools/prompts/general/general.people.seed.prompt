@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate people or group leads with role, evidence note, relevance, and next check.
+- Return bounded machine records for candidate people or group leads with role, evidence_note, relevance, and next_check.

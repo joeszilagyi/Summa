@@ -42,6 +42,8 @@ Audit posture:
 - seed prompts share a common governance header at
   `tools/prompts/_shared/gather_governance_header.prompt`, which the gather
   renderer prepends at runtime
+- seed prompts ask for bounded machine records rather than prose-style
+  candidate summaries
 - the wording is oriented to candidate discovery and review rather than legacy
   presentation framing
 - domain-pack runtime metadata points to these files through `template_files`

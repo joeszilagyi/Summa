@@ -6,4 +6,4 @@ Focus:
 
 
 Output:
-- Return candidate timeline leads with event summary, date signal, provenance note, and next check.
+- Return bounded machine records for candidate timeline leads with event_summary, date_signal, provenance_note, and next_check.
