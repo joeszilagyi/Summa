@@ -632,6 +632,61 @@ def test_scheduled_runner_enforces_max_runtime_seconds_with_injected_clock(tmp_p
     assert [line["event_type"] for line in lines] == ["command_start", "command_failure"]
 
 
+def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "timed_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="timed_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_runtime_seconds=11,
+            )
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+        ]
+    )
+
+    observed_timeouts: list[float | None] = []
+
+    def invoker(command: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        observed_timeouts.append(timeout)
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = command[command.index("--run-id") + 1]
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": "completed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    assert exit_code == scheduled_runner.EXIT_SUCCESS
+    assert observed_timeouts == [11.0]
+    assert payload["workspace_results"][0]["outcome"] == "completed"
+
+
 def test_scheduled_runner_has_no_direct_canonical_family_inserts() -> None:
     body = SCRIPT.read_text(encoding="utf-8")
     for needle in (
