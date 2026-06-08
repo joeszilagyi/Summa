@@ -15,7 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_local_source_adapter.py"
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
-FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "local_source"
+FIXTURE_ROOT = (
+    REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "hostile_replay" / "local_source"
+)
 ADAPTER = FIXTURE_ROOT / "source_adapter.json"
 LOCAL_FILE_FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "local_file"
 LOCAL_FILE_PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_local_source_adapter.py"
@@ -32,13 +34,15 @@ def compact_json_text(value: dict[str, Any]) -> str:
 
 
 def canonical_jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
-    return "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records).encode(
-        "utf-8"
-    )
+    return "".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
+    ).encode("utf-8")
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def run_planner(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
@@ -80,23 +84,23 @@ def run_executor(
 ) -> subprocess.CompletedProcess[str]:
     output = tmp_path / "local-source-execution"
     args = [
-            sys.executable,
-            str(EXECUTOR),
-            "--handoff",
-            str(handoff),
-            "--adapter",
-            str(ADAPTER),
-            "--output",
-            str(output),
-            "--workspace-root",
-            str(tmp_path),
-            "--mode",
-            "local",
-            "--run-id",
-            "local-source-execution",
-            "--created-at",
-            "2026-06-03T12:34:56Z",
-        ]
+        sys.executable,
+        str(EXECUTOR),
+        "--handoff",
+        str(handoff),
+        "--adapter",
+        str(ADAPTER),
+        "--output",
+        str(output),
+        "--workspace-root",
+        str(tmp_path),
+        "--mode",
+        "local",
+        "--run-id",
+        "local-source-execution",
+        "--created-at",
+        "2026-06-03T12:34:56Z",
+    ]
     if suppress_execution_record_stdout:
         args.append("--suppress-execution-record-stdout")
     return subprocess.run(
@@ -135,6 +139,11 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
 ) -> None:
     handoff, plan = run_planner(tmp_path)
     output = tmp_path / "local-source-execution"
+    oversize_source = FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf"
+    prompt_notes_source = FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"
+    expected_chunk_count = (
+        oversize_source.stat().st_size + source_executor.MAX_EXTRACT_TEXT_BYTES - 1
+    ) // source_executor.MAX_EXTRACT_TEXT_BYTES
 
     proc = subprocess.run(
         [
@@ -161,7 +170,7 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
         check=False,
     )
 
-    assert proc.returncode == source_executor.EXIT_STATE_UNSAFE, proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
     execution = json.loads((output / "execution-record.json").read_text(encoding="utf-8"))
     captures = load_jsonl(output / "capture-events.jsonl")
@@ -170,15 +179,15 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     assert execution["schema_version"] == "source-acquisition-execution.v1"
     assert proc.stdout == compact_json_text(execution) + "\n"
     assert execution["adapter_type"] == "local_source"
-    assert execution["status"] == "failed"
+    assert execution["status"] == "completed"
     assert execution["dry_run"] is False
     assert execution["network_access_attempted"] is False
     assert execution["local_input_paths_processed"] == [
-        str(FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf"),
-        str(FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"),
+        str(oversize_source),
+        str(prompt_notes_source),
     ]
     assert execution["capture_event_count"] == 2
-    assert execution["extraction_record_count"] == 2
+    assert execution["extraction_record_count"] == expected_chunk_count + 1
     assert [action["action_kind"] for action in execution["planned_actions"]] == [
         "read_local_source",
         "read_local_source",
@@ -197,25 +206,38 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
     ]
     assert [capture["status"] for capture in captures] == ["completed", "completed"]
     assert captures[0]["capture_method"] == "local_directory_walk"
-    assert captures[0]["byte_count"] == (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").stat().st_size
-    assert captures[0]["content_hash"] == hashlib.sha256(
-        (FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf").read_bytes()
-    ).hexdigest()
-    assert captures[1]["content_hash"] == hashlib.sha256(
-        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_bytes()
-    ).hexdigest()
+    assert captures[0]["byte_count"] == oversize_source.stat().st_size
+    assert captures[0]["content_hash"] == hashlib.sha256(oversize_source.read_bytes()).hexdigest()
+    assert (
+        captures[1]["content_hash"] == hashlib.sha256(prompt_notes_source.read_bytes()).hexdigest()
+    )
 
-    assert extractions[0]["status"] == "skipped"
-    assert extractions[0]["failure_reason"] == "oversized_payload"
-    assert extractions[0]["extracted_text_path"] is None
-    assert extractions[1]["status"] == "completed"
-    assert extractions[1]["failure_reason"] is None
-    assert extractions[1]["extracted_text_path"] == "extracted-text/extraction-0002.txt"
-    assert (output / extractions[1]["extracted_text_path"]).read_text(encoding="utf-8") == (
-        FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"
-    ).read_text(encoding="utf-8")
-    assert extractions[1]["byte_count_out"] == len(
-        (FIXTURE_ROOT / "corpus" / "prompt_notes.pdf").read_text(encoding="utf-8").encode("utf-8")
+    assert [record["relative_path"] for record in extractions] == [
+        "oversize/big.pdf",
+        "oversize/big.pdf",
+        "oversize/big.pdf",
+        "prompt_notes.pdf",
+    ]
+    assert [record["status"] for record in extractions] == ["completed"] * 4
+    assert [record["failure_reason"] for record in extractions] == [None] * 4
+    assert [record["truncation_status"] for record in extractions] == [
+        "truncated",
+        "truncated",
+        "truncated",
+        "not_truncated",
+    ]
+    assert [record.get("chunk_index") for record in extractions[:expected_chunk_count]] == list(
+        range(1, expected_chunk_count + 1)
+    )
+    assert [record.get("chunk_count") for record in extractions[:expected_chunk_count]] == [
+        expected_chunk_count
+    ] * expected_chunk_count
+    assert extractions[3]["extracted_text_path"] == "extracted-text/extraction-0004.txt"
+    assert (output / extractions[3]["extracted_text_path"]).read_text(encoding="utf-8") == (
+        prompt_notes_source.read_text(encoding="utf-8")
+    )
+    assert extractions[3]["byte_count_out"] == len(
+        prompt_notes_source.read_text(encoding="utf-8").encode("utf-8")
     )
 
     validator_proc = subprocess.run(
@@ -226,6 +248,61 @@ def test_execute_local_source_emits_valid_artifacts_for_text_and_oversize_inputs
         check=False,
     )
     assert validator_proc.returncode == 0, validator_proc.stdout + validator_proc.stderr
+
+
+def test_execute_local_source_chunks_oversize_text_without_materializing_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff, _ = run_planner(tmp_path)
+    adapter_payload = source_executor.load_validated_adapter(ADAPTER)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff, adapter_path=ADAPTER
+    )
+    oversize_source = FIXTURE_ROOT / "corpus" / "oversize" / "big.pdf"
+    expected_chunk_count = (
+        oversize_source.stat().st_size + source_executor.MAX_EXTRACT_TEXT_BYTES - 1
+    ) // source_executor.MAX_EXTRACT_TEXT_BYTES
+    original_read_bytes = source_executor.Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        if self.expanduser().resolve() == oversize_source.resolve():
+            raise AssertionError("oversize local source should stream payload bytes")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = (
+        source_executor.execute_local_source(
+            records=records,
+            adapter_payload=adapter_payload,
+            adapter_path=ADAPTER,
+            run_id="local-source-chunking-test",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash=handoff_hash,
+        )
+    )
+
+    assert failed is False
+    assert local_paths == [
+        str(oversize_source),
+        str(FIXTURE_ROOT / "corpus" / "prompt_notes.pdf"),
+    ]
+    assert len(capture_events) == 2
+    assert len(extraction_records) == expected_chunk_count + 1
+    assert [record["status"] for record in extraction_records] == ["completed"] * 4
+    assert [record["truncation_status"] for record in extraction_records] == [
+        "truncated",
+        "truncated",
+        "truncated",
+        "not_truncated",
+    ]
+    assert [
+        record.get("chunk_index") for record in extraction_records[:expected_chunk_count]
+    ] == list(range(1, expected_chunk_count + 1))
+    assert [record.get("chunk_count") for record in extraction_records[:expected_chunk_count]] == [
+        expected_chunk_count
+    ] * expected_chunk_count
+    assert all(path.startswith("extracted-text/") for path in text_artifacts)
 
 
 def test_execute_local_file_streams_payload_without_materializing_bytes(
@@ -247,13 +324,15 @@ def test_execute_local_file_streams_payload_without_materializing_bytes(
 
     monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
 
-    capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_source(
-        records=records,
-        adapter_payload=adapter_payload,
-        adapter_path=LOCAL_FILE_ADAPTER,
-        run_id="local-file-streaming-test",
-        created_at="2026-06-03T12:34:56Z",
-        handoff_hash=handoff_hash,
+    capture_events, extraction_records, text_artifacts, local_paths, failed = (
+        source_executor.execute_local_source(
+            records=records,
+            adapter_payload=adapter_payload,
+            adapter_path=LOCAL_FILE_ADAPTER,
+            run_id="local-file-streaming-test",
+            created_at="2026-06-03T12:34:56Z",
+            handoff_hash=handoff_hash,
+        )
     )
 
     assert len(capture_events) == 1
@@ -290,7 +369,11 @@ def test_load_validated_handoff_records_streams_handoff_hash(
 
 def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
     handoff, _ = run_planner(tmp_path)
-    records = [json.loads(line) for line in handoff.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [
+        json.loads(line)
+        for line in handoff.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     records[0]["adapter_path"] = str(FIXTURE_ROOT / "corpus" / "prompt_notes.pdf")
     mismatched_handoff = tmp_path / "local-source-handoff-mismatched.jsonl"
     mismatched_handoff.write_text(
@@ -325,7 +408,9 @@ def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Pa
     )
 
     assert proc.returncode != 0
-    assert "handoff adapter_path does not match trusted adapter manifest" in (proc.stdout + proc.stderr)
+    assert "handoff adapter_path does not match trusted adapter manifest" in (
+        proc.stdout + proc.stderr
+    )
 
 
 def test_execute_local_source_anchors_root_to_adapter_manifest(tmp_path: Path) -> None:
@@ -409,15 +494,17 @@ def test_execute_local_source_replaces_stale_artifacts_on_reuse(tmp_path: Path) 
     output = tmp_path / "local-source-execution"
 
     first_proc = run_executor(tmp_path, handoff=handoff)
-    assert first_proc.returncode == source_executor.EXIT_STATE_UNSAFE, first_proc.stdout + first_proc.stderr
-    stale_artifact = output / "extracted-text" / "extraction-0002.txt"
+    assert first_proc.returncode == 0, first_proc.stdout + first_proc.stderr
+    stale_artifact = output / "extracted-text" / "extraction-0004.txt"
     assert stale_artifact.exists()
 
     single_handoff = tmp_path / "local-source-handoff-one.jsonl"
-    single_handoff.write_text(handoff.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+    single_handoff.write_text(
+        handoff.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8"
+    )
 
     second_proc = run_executor(tmp_path, handoff=single_handoff)
-    assert second_proc.returncode == source_executor.EXIT_STATE_UNSAFE, second_proc.stdout + second_proc.stderr
+    assert second_proc.returncode == 0, second_proc.stdout + second_proc.stderr
     assert not stale_artifact.exists()
     assert (output / "manifest.json").exists()
 
@@ -473,7 +560,9 @@ def test_publish_output_dir_swaps_staged_tree_into_place(tmp_path: Path) -> None
     source_executor.publish_output_dir(staging, output)
 
     assert (output / "manifest.json").read_text(encoding="utf-8") == "fresh\n"
-    assert (output / "extracted-text" / "extraction-0001.txt").read_text(encoding="utf-8") == "fresh\n"
+    assert (output / "extracted-text" / "extraction-0001.txt").read_text(
+        encoding="utf-8"
+    ) == "fresh\n"
     assert not (output / "stale.txt").exists()
     assert not staging.exists()
 
@@ -554,5 +643,7 @@ def test_compute_git_snapshot_hash_is_stable_for_candidate_path_order() -> None:
 
 
 def test_normalize_created_at_rejects_invalid_timestamp() -> None:
-    with pytest.raises(source_executor.SourceAcquisitionError, match="created_at must be an RFC3339 date-time"):
+    with pytest.raises(
+        source_executor.SourceAcquisitionError, match="created_at must be an RFC3339 date-time"
+    ):
         source_executor.normalize_created_at("not-a-timestamp")

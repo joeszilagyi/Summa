@@ -157,6 +157,8 @@ EXTRACTION_RECORD_ALLOWED_KEYS = {
     "byte_count_out",
     "encoding_result",
     "truncation_status",
+    "chunk_index",
+    "chunk_count",
     "hostile_replay_flags",
     "failure_reason",
     "extracted_text_path",

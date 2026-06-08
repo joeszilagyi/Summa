@@ -7,6 +7,7 @@ Documentation: `docs/scripts/index_execute_source_adapter.md`.
 from __future__ import annotations
 
 import argparse
+import codecs
 import csv
 import hashlib
 import io
@@ -211,7 +212,7 @@ def sha256_text(payload: str) -> str:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(MAX_EXTRACT_TEXT_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -404,34 +405,75 @@ def safe_decode_text(payload: bytes) -> tuple[str | None, str, str | None]:
     return decoded_text, "utf8", None
 
 
-def stream_local_file_payload(
+def stream_local_text_payload(
     path: Path,
-) -> tuple[str, int, str | None, str, str | None]:
+) -> tuple[str, int, list[str], str, str | None, str]:
     digest = hashlib.sha256()
     byte_count = 0
-    preview = bytearray()
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    text_chunks: list[str] = []
+    sample_text = ""
     saw_binary_byte = False
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(MAX_EXTRACT_TEXT_BYTES), b""):
             digest.update(chunk)
             byte_count += len(chunk)
             if not saw_binary_byte and b"\x00" in chunk:
                 saw_binary_byte = True
-            if len(preview) < MAX_EXTRACT_TEXT_BYTES:
-                preview.extend(chunk[: MAX_EXTRACT_TEXT_BYTES - len(preview)])
+            try:
+                text_chunk = decoder.decode(chunk, final=False)
+            except UnicodeDecodeError:
+                return (
+                    digest.hexdigest(),
+                    byte_count,
+                    [],
+                    "invalid_utf8",
+                    "invalid_utf8",
+                    "not_truncated",
+                )
+            if text_chunk:
+                text_chunks.append(text_chunk)
+                if len(sample_text) < 4096:
+                    sample_text += text_chunk[: 4096 - len(sample_text)]
+        try:
+            tail = decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return (
+                digest.hexdigest(),
+                byte_count,
+                [],
+                "invalid_utf8",
+                "invalid_utf8",
+                "not_truncated",
+            )
+        if tail:
+            text_chunks.append(tail)
+            if len(sample_text) < 4096:
+                sample_text += tail[: 4096 - len(sample_text)]
 
     content_hash = digest.hexdigest()
-    if byte_count > MAX_EXTRACT_TEXT_BYTES:
-        return content_hash, byte_count, None, "not_attempted", "oversized_payload"
     if saw_binary_byte:
-        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
-    try:
-        decoded_text = preview.decode("utf-8")
-    except UnicodeDecodeError:
-        return content_hash, byte_count, None, "invalid_utf8", "invalid_utf8"
-    if not is_probably_text(decoded_text):
-        return content_hash, byte_count, None, "binary_unsupported", "binaryish_payload"
-    return content_hash, byte_count, decoded_text, "utf8", None
+        return (
+            content_hash,
+            byte_count,
+            [],
+            "binary_unsupported",
+            "binaryish_payload",
+            "not_truncated",
+        )
+    if not is_probably_text(sample_text):
+        return (
+            content_hash,
+            byte_count,
+            [],
+            "binary_unsupported",
+            "binaryish_payload",
+            "not_truncated",
+        )
+    if not text_chunks and byte_count == 0:
+        text_chunks = [""]
+    truncation_status = "truncated" if byte_count > MAX_EXTRACT_TEXT_BYTES else "not_truncated"
+    return content_hash, byte_count, text_chunks, "utf8", None, truncation_status
 
 
 def guess_content_type(path: Path, *, fallback: str = "application/octet-stream") -> str:
@@ -627,7 +669,8 @@ def load_json_record_map(
             return {}, [
                 {
                     "context": f"record_path:{record_path}",
-                    "reason": record_path_error or f"record_path could not be resolved: {record_path}",
+                    "reason": record_path_error
+                    or f"record_path could not be resolved: {record_path}",
                 }
             ]
         payload_to_parse = selected_text
@@ -769,6 +812,7 @@ def build_extraction_record(
     encoding_result: str,
     failure_reason: str | None,
     extracted_text_path: str | None,
+    truncation_status: str | None = None,
     status_override: str | None = None,
     extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -783,6 +827,13 @@ def build_extraction_record(
     )
     if status not in SAFE_TEXT_STATUS:
         raise SourceAcquisitionError(f"unsupported extraction status: {status}")
+    resolved_truncation_status = (
+        truncation_status
+        if truncation_status is not None
+        else "refused_oversize"
+        if failure_reason == "oversized_payload"
+        else "not_truncated"
+    )
     payload = {
         "schema_version": EXTRACTION_SCHEMA_VERSION,
         "extraction_id": extraction_id,
@@ -799,9 +850,7 @@ def build_extraction_record(
         "byte_count_in": byte_count_in,
         "byte_count_out": byte_count_out,
         "encoding_result": encoding_result,
-        "truncation_status": "refused_oversize"
-        if failure_reason == "oversized_payload"
-        else "not_truncated",
+        "truncation_status": resolved_truncation_status,
         "hostile_replay_flags": hazard_flags,
         "failure_reason": failure_reason,
         "extracted_text_path": extracted_text_path,
@@ -1206,15 +1255,14 @@ def execute_local_source(
         original_locator = record["preserved"]["original_locator"]
         try:
             ensure_path_is_local_file(source_path)
-            if adapter_payload["input_family"] == "local_file":
-                content_hash, byte_count, extracted_text, encoding_result, failure_reason = (
-                    stream_local_file_payload(source_path)
-                )
-            else:
-                payload = source_path.read_bytes()
-                content_hash = sha256_bytes(payload)
-                byte_count = len(payload)
-                extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+            (
+                content_hash,
+                byte_count,
+                extracted_text_chunks,
+                encoding_result,
+                failure_reason,
+                truncation_status,
+            ) = stream_local_text_payload(source_path)
 
             capture_event = {
                 "schema_version": CAPTURE_SCHEMA_VERSION,
@@ -1243,34 +1291,66 @@ def execute_local_source(
                 "verification_status": "unverified",
             }
             capture_events.append(capture_event)
-            extraction_id = make_extraction_id(len(extraction_records) + 1)
-            extracted_text_path = None
-            if extracted_text is not None:
-                extracted_text_path = f"extracted-text/{extraction_id}.txt"
-                text_artifacts[extracted_text_path] = extracted_text
-            else:
+            if failure_reason is not None:
                 failed = True
-            extraction_records.append(
-                build_extraction_record(
-                    extraction_id=extraction_id,
-                    run_id=run_id,
-                    capture_id=capture_id,
-                    adapter_payload=adapter_payload,
-                    adapter_type="local_source",
-                    handoff_sequence=record["sequence"],
-                    relative_path=record["relative_path"],
-                    input_hash=capture_event["content_hash"],
-                    byte_count_in=capture_event["byte_count"],
-                    extraction_method="utf8_text_extract",
-                    hazard_flags=list(
-                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                    ),
-                    content_text=extracted_text,
-                    encoding_result=encoding_result,
-                    failure_reason=failure_reason,
-                    extracted_text_path=extracted_text_path,
+                extraction_id = make_extraction_id(len(extraction_records) + 1)
+                extraction_records.append(
+                    build_extraction_record(
+                        extraction_id=extraction_id,
+                        run_id=run_id,
+                        capture_id=capture_id,
+                        adapter_payload=adapter_payload,
+                        adapter_type="local_source",
+                        handoff_sequence=record["sequence"],
+                        relative_path=record["relative_path"],
+                        input_hash=capture_event["content_hash"],
+                        byte_count_in=capture_event["byte_count"],
+                        extraction_method="utf8_text_extract",
+                        hazard_flags=list(
+                            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                        ),
+                        content_text=None,
+                        encoding_result=encoding_result,
+                        failure_reason=failure_reason,
+                        extracted_text_path=None,
+                    )
                 )
-            )
+            else:
+                chunk_count = len(extracted_text_chunks)
+                for chunk_index, extracted_text in enumerate(extracted_text_chunks, start=1):
+                    extraction_id = make_extraction_id(len(extraction_records) + 1)
+                    extracted_text_path = f"extracted-text/{extraction_id}.txt"
+                    text_artifacts[extracted_text_path] = extracted_text
+                    extraction_records.append(
+                        build_extraction_record(
+                            extraction_id=extraction_id,
+                            run_id=run_id,
+                            capture_id=capture_id,
+                            adapter_payload=adapter_payload,
+                            adapter_type="local_source",
+                            handoff_sequence=record["sequence"],
+                            relative_path=record["relative_path"],
+                            input_hash=capture_event["content_hash"],
+                            byte_count_in=capture_event["byte_count"],
+                            extraction_method="utf8_text_extract",
+                            hazard_flags=list(
+                                record["preserved"]
+                                .get("source_metadata", {})
+                                .get("hazard_flags", [])
+                            ),
+                            content_text=extracted_text,
+                            encoding_result=encoding_result,
+                            failure_reason=None,
+                            extracted_text_path=extracted_text_path,
+                            truncation_status=truncation_status,
+                            extra_fields={
+                                "chunk_index": chunk_index,
+                                "chunk_count": chunk_count,
+                            }
+                            if chunk_count > 1
+                            else None,
+                        )
+                    )
         except SourceAcquisitionError as exc:
             failed = True
             capture_events.append(
@@ -1509,7 +1589,7 @@ def execute_local_git_repo(
         record["preserved"].get("source_metadata", {}).get("candidate_paths", [])
     )
     file_entries: list[dict[str, Any]] = []
-    file_payloads_by_path: dict[str, tuple[str, int, str | None, str, str | None]] = {}
+    file_payloads_by_path: dict[str, tuple[str, int, list[str], str, str | None, str]] = {}
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
     local_paths: list[str] = []
@@ -1522,10 +1602,14 @@ def execute_local_git_repo(
         file_path = (repo_path / relative_path).resolve()
         ensure_path_within_root(file_path, root=repo_path)
         ensure_path_is_local_file(file_path)
-        payload = file_path.read_bytes()
-        content_hash = sha256_bytes(payload)
-        byte_count = len(payload)
-        extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+        (
+            content_hash,
+            byte_count,
+            extracted_text_chunks,
+            encoding_result,
+            failure_reason,
+            truncation_status,
+        ) = stream_local_text_payload(file_path)
         file_entries.append(
             {
                 "relative_path": relative_path,
@@ -1536,9 +1620,10 @@ def execute_local_git_repo(
         file_payloads_by_path[relative_path] = (
             content_hash,
             byte_count,
-            extracted_text,
+            extracted_text_chunks,
             encoding_result,
             failure_reason,
+            truncation_status,
         )
         local_paths.append(str(file_path))
     snapshot_hash = compute_git_snapshot_hash(
@@ -1579,42 +1664,78 @@ def execute_local_git_repo(
         (
             _content_hash,
             _byte_count,
-            extracted_text,
+            extracted_text_chunks,
             encoding_result,
             failure_reason,
+            truncation_status,
         ) = file_payloads_by_path[file_entry["relative_path"]]
-        extraction_id = make_extraction_id(len(extraction_records) + 1)
-        extracted_text_path = None
-        if extracted_text is not None:
-            extracted_text_path = f"extracted-text/{extraction_id}.txt"
-            text_artifacts[extracted_text_path] = extracted_text
-        else:
+        if failure_reason is not None:
             failed = True
-        extraction_records.append(
-            build_extraction_record(
-                extraction_id=extraction_id,
-                run_id=run_id,
-                capture_id=capture_event["capture_id"],
-                adapter_payload=adapter_payload,
-                adapter_type="local_git_repo",
-                handoff_sequence=record["sequence"],
-                relative_path=file_entry["relative_path"],
-                input_hash=capture_event["content_hash"],
-                byte_count_in=snapshot_byte_count,
-                extraction_method="git_file_text_extract",
-                hazard_flags=list(
-                    record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
-                ),
-                content_text=extracted_text,
-                encoding_result=encoding_result,
-                failure_reason=failure_reason,
-                extracted_text_path=extracted_text_path,
-                extra_fields={
-                    "git_ref": git_ref,
-                    "git_commit": resolved_commit,
-                },
+            extraction_id = make_extraction_id(len(extraction_records) + 1)
+            extraction_records.append(
+                build_extraction_record(
+                    extraction_id=extraction_id,
+                    run_id=run_id,
+                    capture_id=capture_event["capture_id"],
+                    adapter_payload=adapter_payload,
+                    adapter_type="local_git_repo",
+                    handoff_sequence=record["sequence"],
+                    relative_path=file_entry["relative_path"],
+                    input_hash=capture_event["content_hash"],
+                    byte_count_in=snapshot_byte_count,
+                    extraction_method="git_file_text_extract",
+                    hazard_flags=list(
+                        record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                    ),
+                    content_text=None,
+                    encoding_result=encoding_result,
+                    failure_reason=failure_reason,
+                    extracted_text_path=None,
+                    extra_fields={
+                        "git_ref": git_ref,
+                        "git_commit": resolved_commit,
+                    },
+                )
             )
-        )
+        else:
+            chunk_count = len(extracted_text_chunks)
+            for chunk_index, extracted_text in enumerate(extracted_text_chunks, start=1):
+                extraction_id = make_extraction_id(len(extraction_records) + 1)
+                extracted_text_path = f"extracted-text/{extraction_id}.txt"
+                text_artifacts[extracted_text_path] = extracted_text
+                extraction_records.append(
+                    build_extraction_record(
+                        extraction_id=extraction_id,
+                        run_id=run_id,
+                        capture_id=capture_event["capture_id"],
+                        adapter_payload=adapter_payload,
+                        adapter_type="local_git_repo",
+                        handoff_sequence=record["sequence"],
+                        relative_path=file_entry["relative_path"],
+                        input_hash=capture_event["content_hash"],
+                        byte_count_in=snapshot_byte_count,
+                        extraction_method="git_file_text_extract",
+                        hazard_flags=list(
+                            record["preserved"].get("source_metadata", {}).get("hazard_flags", [])
+                        ),
+                        content_text=extracted_text,
+                        encoding_result=encoding_result,
+                        failure_reason=None,
+                        extracted_text_path=extracted_text_path,
+                        truncation_status=truncation_status,
+                        extra_fields={
+                            "git_ref": git_ref,
+                            "git_commit": resolved_commit,
+                            "chunk_index": chunk_index,
+                            "chunk_count": chunk_count,
+                        }
+                        if chunk_count > 1
+                        else {
+                            "git_ref": git_ref,
+                            "git_commit": resolved_commit,
+                        },
+                    )
+                )
     return [capture_event], extraction_records, text_artifacts, sorted(local_paths), failed
 
 
