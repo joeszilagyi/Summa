@@ -1706,7 +1706,7 @@ def test_topic_cycle_manifest_write_is_atomic_and_hashes_written_file(
         "cycle_evidence_ledger": {"status": "recorded"},
         "run_dir": str(tmp_path),
     }
-    args = SimpleNamespace(mode="local", degraded_spool=False)
+    args = SimpleNamespace(mode="local", degraded_spool=False, spool_dir=None)
 
     module.write_json(manifest_path, manifest)
     assert len(atomic_calls) == 1
@@ -1727,6 +1727,100 @@ def test_topic_cycle_manifest_write_is_atomic_and_hashes_written_file(
     persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert persisted["cycle_evidence_ledger"]["status"] == "recorded"
     assert "cycle_event_id" not in persisted["cycle_evidence_ledger"]  # type: ignore[operator]
+
+
+def test_topic_cycle_missing_db_spool_hashes_manifest_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    manifest_path = tmp_path / "topic-cycle-run.json"
+    db_path = tmp_path / "missing.sqlite"
+    manifest_path.write_text(
+        json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": "cycle-spool",
+                    "status": "completed",
+                    "mode": "local",
+                    "cycle_event_id": "cycle:spool",
+                    "workspace": {"workspace_id": "workspace:spool"},
+                    "canonical_db": {"path": str(db_path), "mutated": False},
+                    "stages": [],
+                    "cycle_evidence_ledger": {"status": "recorded"},
+                    "run_dir": str(tmp_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    hash_calls: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        hash_calls.append(path)
+        return "manifest-hash"
+
+    class FakeConn:
+        def __enter__(self) -> FakeConn:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    monkeypatch.setattr(module.canonical_store, "connect_canonical_store", lambda _: FakeConn())
+
+    written_records: list[dict[str, object]] = []
+
+    def fake_build_spool_record(**kwargs: object) -> dict[str, object]:
+        written_records.append(dict(kwargs))
+        return {"spool_record_id": "spool:manifest", "operation_kind": kwargs["operation_kind"]}
+
+    monkeypatch.setattr(
+        module.canonical_write_spool,
+        "build_spool_record",
+        fake_build_spool_record,
+    )
+    monkeypatch.setattr(
+        module.canonical_write_spool,
+        "write_spool_record",
+        lambda spool_dir, record: spool_dir / "cycle-evidence-write.json",
+    )
+
+    manifest = {
+        "schema_version": "topic-cycle-run.v1",
+        "run_id": "cycle-spool",
+        "status": "completed",
+        "mode": "local",
+        "cycle_event_id": "cycle:spool",
+        "workspace": {"workspace_id": "workspace:spool"},
+        "canonical_db": {"path": str(db_path), "mutated": False},
+        "stages": [],
+        "cycle_evidence_ledger": {"status": "recorded"},
+        "run_dir": str(tmp_path),
+    }
+    args = SimpleNamespace(mode="local", degraded_spool=True, spool_dir=None)
+
+    module.record_cycle_evidence_from_manifest(
+        args=args,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        db_path=db_path,
+    )
+
+    assert hash_calls == [manifest_path]
+    assert len(written_records) == 1
+    record = written_records[0]
+    assert record["operation_kind"] == "cycle_evidence_write"
+    assert record["operation_input"]["artifact_refs"][0]["artifact_hash"] == "manifest-hash"  # type: ignore[index]
+    assert record["replay_recipe"]["manifest_hash"] == "manifest-hash"  # type: ignore[index]
 
 
 def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path: Path) -> None:

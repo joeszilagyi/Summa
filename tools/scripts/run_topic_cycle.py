@@ -1573,9 +1573,17 @@ def record_cycle_evidence_from_manifest(
     if manifest.get("dry_run") is True:
         ledger["status"] = "skipped"
         return
+    spool_dir = spool_dir_for(args, Path(str(manifest["run_dir"])))
+    workspace_id = manifest["workspace"].get("workspace_id")
+    subject_id = (
+        manifest.get("subject", {}).get("subject_id")
+        if isinstance(manifest.get("subject"), dict)
+        else None
+    )
     if not db_path.is_file():
         if args.degraded_spool:
             try:
+                manifest_hash_value = hash_file(manifest_path)
                 record = canonical_write_spool.build_spool_record(
                     operation_kind="cycle_evidence_write",
                     operation_input={
@@ -1583,31 +1591,29 @@ def record_cycle_evidence_from_manifest(
                             {
                                 "artifact_type": "topic_cycle_manifest",
                                 "artifact_path": str(manifest_path),
-                                "artifact_hash": hash_file(manifest_path),
+                                "artifact_hash": manifest_hash_value,
                             }
                         ]
                     },
                     replay_recipe={
                         "artifact_root": str(manifest_path.parent),
                         "manifest_path": manifest_path.name,
-                        "manifest_hash": hash_file(manifest_path),
+                        "manifest_hash": manifest_hash_value,
                     },
                     failure=f"canonical DB path is not a file: {db_path}",
                     canonical_db_path=db_path,
-                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    spool_dir=spool_dir,
                     originating_tool="tools/scripts/run_topic_cycle.py",
                     originating_command="run_topic_cycle.py",
                     originating_run_id=str(manifest["run_id"]),
                     topic_cycle_id=str(manifest["cycle_event_id"]),
                     stage_name="cycle_evidence_write",
-                    workspace_id=manifest["workspace"].get("workspace_id"),
-                    subject_id=manifest.get("subject", {}).get("subject_id")
-                    if isinstance(manifest.get("subject"), dict)
-                    else None,
+                    workspace_id=workspace_id,
+                    subject_id=subject_id,
                     expected_schema_version=None,
                 )
                 spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                    spool_dir, record
                 )
                 ledger["status"] = "spooled"
                 ledger["spool_record_path"] = str(spool_path)
@@ -1663,20 +1669,18 @@ def record_cycle_evidence_from_manifest(
                     },
                     failure=exc,
                     canonical_db_path=db_path,
-                    spool_dir=spool_dir_for(args, Path(str(manifest["run_dir"]))),
+                    spool_dir=spool_dir,
                     originating_tool="tools/scripts/run_topic_cycle.py",
                     originating_command="run_topic_cycle.py",
                     originating_run_id=str(manifest["run_id"]),
                     topic_cycle_id=str(manifest["cycle_event_id"]),
                     stage_name="cycle_evidence_write",
-                    workspace_id=manifest["workspace"].get("workspace_id"),
-                    subject_id=manifest.get("subject", {}).get("subject_id")
-                    if isinstance(manifest.get("subject"), dict)
-                    else None,
+                    workspace_id=workspace_id,
+                    subject_id=subject_id,
                     expected_schema_version=None,
                 )
                 spool_path = canonical_write_spool.write_spool_record(
-                    spool_dir_for(args, Path(str(manifest["run_dir"]))), record
+                    spool_dir, record
                 )
                 ledger["status"] = "spooled"
                 ledger["error"] = str(exc)
