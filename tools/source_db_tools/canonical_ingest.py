@@ -196,7 +196,17 @@ def _safe_json_text(value: dict[str, Any] | list[Any] | str) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+RAW_TEXT_CANDIDATE_TYPES = {
+    "open_question",
+    "raw_candidate_text",
+    "timeline_item",
+}
+
+
 def _candidate_structured_payload(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    candidate_type = candidate.get("candidate_type")
+    if candidate_type in RAW_TEXT_CANDIDATE_TYPES:
+        return None
     raw_text = candidate.get("text")
     if not isinstance(raw_text, str):
         return None

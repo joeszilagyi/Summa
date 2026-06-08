@@ -574,6 +574,26 @@ def test_candidate_structured_payload_rejects_duplicate_json_keys() -> None:
     assert canonical_ingest._candidate_structured_payload(candidate) is None
 
 
+@pytest.mark.parametrize(
+    "candidate_type",
+    ["raw_candidate_text", "open_question", "timeline_item"],
+)
+def test_candidate_structured_payload_skips_raw_candidate_text_prose(
+    candidate_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = {
+        "candidate_type": candidate_type,
+        "text": "This is plain prose, not JSON.",
+    }
+
+    def fail_json_loads(*args: object, **kwargs: object) -> object:
+        raise AssertionError("raw candidate prose should not be parsed as JSON")
+
+    monkeypatch.setattr(canonical_ingest.json, "loads", fail_json_loads)
+
+    assert canonical_ingest._candidate_structured_payload(candidate) is None
+
+
 def test_candidate_structured_payload_rejects_non_standard_json_constants() -> None:
     candidate = {
         "text": '{"candidate_id":"w1","candidate_type":"work","value": NaN}'
