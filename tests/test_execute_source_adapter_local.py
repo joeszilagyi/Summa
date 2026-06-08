@@ -262,6 +262,27 @@ def test_execute_local_file_streams_payload_without_materializing_bytes(
     assert extraction_records[0]["capture_id"] == capture_events[0]["capture_id"]
 
 
+def test_load_validated_handoff_records_streams_handoff_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff, _ = run_planner(tmp_path)
+    original_read_bytes = source_executor.Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        if self.expanduser().resolve() == handoff.resolve():
+            raise AssertionError("handoff hash should stream the file")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
+
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff, adapter_path=ADAPTER
+    )
+
+    assert records
+    assert len(handoff_hash) == 64
+
+
 def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
     handoff, _ = run_planner(tmp_path)
     records = [json.loads(line) for line in handoff.read_text(encoding="utf-8").splitlines() if line.strip()]

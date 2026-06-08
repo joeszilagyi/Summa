@@ -204,6 +204,14 @@ def sha256_text(payload: str) -> str:
     return sha256_bytes(payload.encode("utf-8"))
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for key, value in pairs:
@@ -241,7 +249,7 @@ def load_validated_handoff_records(
     records = [record for _, record in loaded_records]
     if not records:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
-    return records, sha256_bytes(handoff_path.read_bytes())
+    return records, sha256_file(handoff_path)
 
 
 def ensure_single_adapter_context(
