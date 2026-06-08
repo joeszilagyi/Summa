@@ -43,6 +43,8 @@ def run_executor(*, handoff: Path, output: Path, adapter_path: Path) -> subproce
             str(adapter_path),
             "--output",
             str(output),
+            "--workspace-root",
+            str(output.parent),
             "--mode",
             "local",
             "--run-id",
@@ -432,18 +434,18 @@ def test_local_git_repo_execution_reads_each_candidate_file_once(
     tracked_file = (repo_dir / "tracked.md").resolve()
     nested_file = (repo_dir / "nested" / "data.json").resolve()
     target_paths = {tracked_file, nested_file}
-    read_counts = {path: 0 for path in target_paths}
-    original_read_bytes = source_executor.Path.read_bytes
+    open_counts = {path: 0 for path in target_paths}
+    original_open = source_executor.Path.open
 
-    def guarded_read_bytes(self: Path) -> bytes:
+    def guarded_open(self: Path, *args: object, **kwargs: object) -> object:
         resolved = self.expanduser().resolve()
         if resolved in target_paths:
-            read_counts[resolved] += 1
-            if read_counts[resolved] > 1:
-                raise AssertionError(f"local git repo file reread unexpectedly: {resolved}")
-        return original_read_bytes(self)
+            open_counts[resolved] += 1
+            if open_counts[resolved] > 1:
+                raise AssertionError(f"local git repo file reopened unexpectedly: {resolved}")
+        return original_open(self, *args, **kwargs)
 
-    monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
+    monkeypatch.setattr(source_executor.Path, "open", guarded_open)
 
     capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_git_repo(
         records=records,
@@ -453,7 +455,7 @@ def test_local_git_repo_execution_reads_each_candidate_file_once(
         handoff_hash=handoff_hash,
     )
 
-    assert read_counts == {tracked_file: 1, nested_file: 1}
+    assert open_counts == {tracked_file: 1, nested_file: 1}
     assert failed is False
     assert len(capture_events) == 1
     assert len(extraction_records) == 2

@@ -269,6 +269,9 @@ def workspace_selection_summary(
         "lifecycle_state": entry.get("lifecycle_state"),
         "schedule_posture": entry.get("schedule_posture"),
     }
+    saturation = entry.get("saturation")
+    if isinstance(saturation, dict):
+        summary["saturation"] = copy.deepcopy(saturation)
     if reasons:
         summary["reasons"] = list(reasons)
     return summary

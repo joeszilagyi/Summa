@@ -86,7 +86,7 @@ def test_local_search_projection_rejects_unsafe_projection_target(monkeypatch: p
         pk_column="work_id",
         field_specs=(),
     )
-    monkeypatch.setattr(build_local_search_projection, "TARGETS", (unsafe_target,))
+    monkeypatch.setattr(build_local_search_projection, "INDEX_TARGETS", (unsafe_target,))
     monkeypatch.setattr(
         build_local_search_projection,
         "load_correction_resolution",

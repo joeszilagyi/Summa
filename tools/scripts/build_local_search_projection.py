@@ -883,7 +883,7 @@ def build_projection_payload_streaming(
                             superseded_records_included = True
         payload_base = {
             "schema_version": PROJECTION_SCHEMA_VERSION,
-            "generated_at": args.generated_at or now_rfc3339(),
+            "generated_at": getattr(args, "generated_at", None) or now_rfc3339(),
             "source": {
                 "database_name": db_path.name,
                 "schema_version": source_schema_version,
@@ -1021,7 +1021,7 @@ def build_projection_payload(
         "source_ledger_applied": ledger_applied,
     }
 
-    generated_at = args.generated_at or now_rfc3339()
+    generated_at = getattr(args, "generated_at", None) or now_rfc3339()
     return {
         "schema_version": PROJECTION_SCHEMA_VERSION,
         "generated_at": generated_at,

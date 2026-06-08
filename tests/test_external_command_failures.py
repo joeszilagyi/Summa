@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER_SCRIPT = REPO_ROOT / "tools" / "scripts" / "Index_Build_Knowledge_Tree.sh"
@@ -40,8 +39,8 @@ def test_local_doctor_git_status_reports_git_failure(monkeypatch: pytest.MonkeyP
         return SimpleNamespace(returncode=1, stdout="", stderr="fatal: fixture")
 
     monkeypatch.setattr(
-        local_doctor.subprocess,
-        "run",
+        local_doctor,
+        "run_streaming_command",
         fake_run,
     )
 

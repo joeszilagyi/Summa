@@ -513,7 +513,11 @@ def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) 
     return resolve_cli_path(adapter_local_path, base_dir=adapter_path.parent)
 
 
-def load_csv_row_map(payload: bytes) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+def load_csv_row_map(
+    payload: bytes | Path,
+) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     row_map: dict[str, dict[str, str]] = {}
     errors: list[dict[str, str]] = []
     try:
@@ -657,8 +661,10 @@ def _select_json_record_path_slice(
 
 
 def load_json_record_map(
-    payload: bytes, *, record_path: str | None
+    payload: bytes | Path, *, record_path: str | None
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     try:
         decoded_payload = payload.decode("utf-8")
     except UnicodeDecodeError:
@@ -703,7 +709,9 @@ def load_json_record_map(
     return {"object:1": selected}, []
 
 
-def load_jsonl_record_map(payload: bytes) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     record_map: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     try:
@@ -733,8 +741,10 @@ def load_jsonl_record_map(payload: bytes) -> tuple[dict[str, Any], list[dict[str
 
 
 def load_xml_record_map(
-    payload: bytes, *, record_path: str | None
+    payload: bytes | Path, *, record_path: str | None
 ) -> tuple[dict[str, ET.Element], list[dict[str, str]]]:
+    if isinstance(payload, Path):
+        payload = payload.read_bytes()
     if len(payload) > MAX_XML_RECORD_BYTES:
         return {}, [{"context": "file", "reason": "xml payload exceeds maximum byte size"}]
 
