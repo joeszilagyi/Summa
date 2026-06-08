@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import sqlite3
 import sys
@@ -1156,17 +1157,21 @@ def aggregate_lead_scores(
     *,
     enabled_facets: list[str],
     lead_candidates: list[dict[str, Any]],
+    max_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
     facet_order = {facet: index for index, facet in enumerate(enabled_facets)}
     lead_candidates = [item for item in lead_candidates if item["facet"] in facet_order]
-    scored = sorted(
-        lead_candidates,
-        key=lambda item: (
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+        return (
             -float(item["score"]),
             facet_order.get(item["facet"], len(enabled_facets)),
             item["candidate_id"],
-        ),
-    )
+        )
+
+    if max_candidates is not None and max_candidates < len(lead_candidates):
+        scored = heapq.nsmallest(max_candidates, lead_candidates, key=sort_key)
+    else:
+        scored = sorted(lead_candidates, key=sort_key)
     for rank, item in enumerate(scored, start=1):
         item["rank"] = rank
     return scored
@@ -1279,7 +1284,7 @@ def build_deferred_candidates(
     facet_scores: list[dict[str, Any]],
     lead_scores: list[dict[str, Any]],
     all_facet_scores: list[dict[str, Any]],
-    all_lead_scores: list[dict[str, Any]],
+    all_lead_candidates: list[dict[str, Any]],
     max_deferred: int,
 ) -> list[dict[str, Any]]:
     deferred: list[dict[str, Any]] = []
@@ -1314,6 +1319,11 @@ def build_deferred_candidates(
             }
         )
     selected_object_ref = selected_next_action.get("selected_object_ref")
+    retained_lead_ids = {
+        item["candidate_id"]
+        for item in lead_scores
+        if isinstance(item.get("candidate_id"), str) and item.get("candidate_id")
+    }
     for item in lead_scores:
         if item["object_ref"] == selected_object_ref:
             continue
@@ -1332,7 +1342,9 @@ def build_deferred_candidates(
         )
         if reason != "not_retained_due_to_limit":
             deferred_from_retained += 1
-    for item in all_lead_scores[len(lead_scores) :]:
+    for item in all_lead_candidates:
+        if item["candidate_id"] in retained_lead_ids or item["object_ref"] == selected_object_ref:
+            continue
         deferred.append(
             {
                 "candidate_id": item["candidate_id"],
@@ -1388,6 +1400,7 @@ def build_plan(
         weights=DEFAULT_SCORING_WEIGHTS,
     )
     lead_candidates = source_access_leads + open_question_leads + entity_leads + work_leads
+    all_lead_candidates = [item for item in lead_candidates if item["facet"] in subject["enabled_facets"]]
     all_facet_scores = aggregate_facet_scores(
         enabled_facets=list(subject["enabled_facets"]),
         bundles=bundles,
@@ -1396,11 +1409,11 @@ def build_plan(
         weights=DEFAULT_SCORING_WEIGHTS,
     )
     facet_scores = all_facet_scores[: args.max_facet_candidates]
-    all_lead_scores = aggregate_lead_scores(
+    lead_scores = aggregate_lead_scores(
         enabled_facets=list(subject["enabled_facets"]),
         lead_candidates=lead_candidates,
+        max_candidates=args.max_lead_candidates,
     )
-    lead_scores = all_lead_scores[: args.max_lead_candidates]
     previous_run_ids = sorted_previous_run_ids(history)
     cycle_depth = next_cycle_depth(history)
     next_action = select_next_action(
@@ -1423,7 +1436,7 @@ def build_plan(
         facet_scores=facet_scores,
         lead_scores=lead_scores,
         all_facet_scores=all_facet_scores,
-        all_lead_scores=all_lead_scores,
+        all_lead_candidates=all_lead_candidates,
         max_deferred=args.max_deferred_candidates,
     )
 
@@ -1473,10 +1486,10 @@ def build_plan(
             "facet_candidates": len(facet_scores),
             "facet_candidates_total": len(all_facet_scores),
             "lead_candidates": len(lead_scores),
-            "lead_candidates_total": len(all_lead_scores),
+            "lead_candidates_total": len(all_lead_candidates),
             "productive_leads": sum(1 for item in lead_scores if float(item["score"]) > 0.0),
             "productive_leads_total": sum(
-                1 for item in all_lead_scores if float(item["score"]) > 0.0
+                1 for item in all_lead_candidates if float(item["score"]) > 0.0
             ),
             "deferred_candidates": len(deferred),
         },

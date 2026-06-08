@@ -586,6 +586,38 @@ def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None
     assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:z", "lead:b"]
 
 
+def test_aggregate_lead_scores_uses_bounded_top_n_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+    real_nsmallest = planner.heapq.nsmallest
+
+    def tracking_nsmallest(
+        n: int,
+        iterable: object,
+        *,
+        key: object | None = None,
+    ) -> list[dict[str, object]]:
+        items = list(iterable)  # type: ignore[arg-type]
+        calls.append((n, len(items)))
+        return real_nsmallest(n, items, key=key)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(planner.heapq, "nsmallest", tracking_nsmallest)
+
+    lead_scores = planner.aggregate_lead_scores(
+        enabled_facets=["sources", "open_questions"],
+        lead_candidates=[
+            {"candidate_id": "lead:z", "facet": "sources", "score": 0.5},
+            {"candidate_id": "lead:a", "facet": "sources", "score": 0.8},
+            {"candidate_id": "lead:b", "facet": "open_questions", "score": 0.7},
+        ],
+        max_candidates=2,
+    )
+
+    assert calls == [(2, 3)]
+    assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:b"]
+
+
 def test_unscored_productive_lead_is_filtered_before_next_action() -> None:
     zero_weights = {name: 0.0 for name in planner.DEFAULT_SCORING_WEIGHTS}
     facet_scores = planner.aggregate_facet_scores(
