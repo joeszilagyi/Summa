@@ -568,17 +568,39 @@ def extraction_outcome_counts(
     subject_id: str,
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
-    requested_locators: list[str] = []
-    seen_locators: set[str] = set()
-    if source_locus_id:
-        requested_locators.append(source_locus_id)
-        seen_locators.add(source_locus_id)
-    for locator in locators:
-        if locator not in seen_locators:
-            requested_locators.append(locator)
-            seen_locators.add(locator)
-    if not requested_locators:
-        return {
+    batch = batch_extraction_outcome_counts(
+        conn,
+        source_access_requests=[
+            {
+                "source_access_id": 0,
+                "source_locus_id": source_locus_id,
+                "locators": locators,
+            }
+        ],
+        subject_id=subject_id,
+        warnings=warnings,
+    )
+    return batch[0]
+
+
+def batch_extraction_outcome_counts(
+    conn: sqlite3.Connection,
+    *,
+    source_access_requests: list[dict[str, Any]],
+    subject_id: str,
+    warnings: list[str] | None = None,
+) -> dict[int, dict[str, Any]]:
+    if not source_access_requests:
+        return {}
+
+    requested_locators: list[tuple[int, str]] = []
+    query_params: list[Any] = []
+    result: dict[int, dict[str, Any]] = {}
+    related_event_keys_by_source_access_id: dict[int, set[str]] = {}
+    unknown_statuses: set[str] = set()
+    for request in source_access_requests:
+        source_access_id = int(request["source_access_id"])
+        result[source_access_id] = {
             "successful_extractions": 0,
             "failed_extractions": 0,
             "capture_count": 0,
@@ -586,81 +608,103 @@ def extraction_outcome_counts(
             "extraction_ids": [],
             "related_run_ids": [],
         }
-    lookup_values = ", ".join("(?)" for _ in requested_locators)
-    query = f"""
-    WITH requested_locators(locator) AS (
-        VALUES {lookup_values}
-    ),
-    matching_captures AS (
-        SELECT capture.capture_event_id, capture.provenance_event_ref
-        FROM capture_event AS capture
-        JOIN requested_locators
-          ON requested_locators.locator = capture.source_locus_ref
-        WHERE capture.workspace_id=?
-        UNION
-        SELECT capture.capture_event_id, capture.provenance_event_ref
-        FROM capture_event AS capture
-        JOIN requested_locators
-          ON requested_locators.locator = capture.original_locator
-        WHERE capture.workspace_id=?
-    )
-    SELECT capture_event_id, provenance_event_ref
-    FROM matching_captures
-    ORDER BY capture_event_id
-    """
-    run_ids: set[str] = set()
-    capture_rows = conn.execute(
-        query, tuple(requested_locators) + (subject_id, subject_id)
-    ).fetchall()
-    capture_ids = [int(row["capture_event_id"]) for row in capture_rows]
-    if not capture_ids:
-        return {
-            "successful_extractions": 0,
-            "failed_extractions": 0,
-            "capture_count": 0,
-            "capture_ids": [],
-            "extraction_ids": [],
-            "related_run_ids": sorted(run_ids),
-        }
-    placeholders = ", ".join("?" for _ in capture_ids)
-    extraction_rows = conn.execute(
-        f"""
-        SELECT extraction_id, extraction_status, provenance_event_ref
-        FROM extraction_record
-        WHERE capture_event_id IN ({placeholders})
-        ORDER BY extraction_id
-        """,
-        tuple(capture_ids),
-    ).fetchall()
-    extraction_ids = [int(row["extraction_id"]) for row in extraction_rows]
+        related_event_keys_by_source_access_id[source_access_id] = set()
+        seen_locators: set[str] = set()
+        for locator in [request.get("source_locus_id"), *(request.get("locators") or [])]:
+            if not isinstance(locator, str) or not locator or locator in seen_locators:
+                continue
+            seen_locators.add(locator)
+            requested_locators.append((source_access_id, locator))
+            query_params.extend([source_access_id, locator])
+
+    if requested_locators:
+        lookup_values = ", ".join("(?, ?)" for _ in requested_locators)
+        query = f"""
+        WITH requested_source_accesses(source_access_id, locator) AS (
+            VALUES {lookup_values}
+        ),
+        matching_captures AS (
+            SELECT DISTINCT
+                requested_source_accesses.source_access_id AS source_access_id,
+                capture.capture_event_id AS capture_event_id,
+                capture.provenance_event_ref AS capture_provenance_event_ref
+            FROM requested_source_accesses
+            JOIN capture_event AS capture
+              ON capture.workspace_id=?
+             AND (
+                capture.source_locus_ref = requested_source_accesses.locator
+                OR capture.original_locator = requested_source_accesses.locator
+             )
+        ),
+        matching_extractions AS (
+            SELECT DISTINCT
+                matching_captures.source_access_id AS source_access_id,
+                matching_captures.capture_event_id AS capture_event_id,
+                matching_captures.capture_provenance_event_ref AS capture_provenance_event_ref,
+                extraction.extraction_id AS extraction_id,
+                extraction.extraction_status AS extraction_status,
+                extraction.provenance_event_ref AS extraction_provenance_event_ref
+            FROM matching_captures
+            LEFT JOIN extraction_record AS extraction
+              ON extraction.capture_event_id = matching_captures.capture_event_id
+        )
+        SELECT source_access_id, capture_event_id, capture_provenance_event_ref,
+               extraction_id, extraction_status, extraction_provenance_event_ref
+        FROM matching_extractions
+        ORDER BY source_access_id, capture_event_id, extraction_id
+        """
+        rows = conn.execute(query, tuple(query_params) + (subject_id,)).fetchall()
+        for row in rows:
+            source_access_id = int(row["source_access_id"])
+            entry = result[source_access_id]
+            capture_id = int(row["capture_event_id"])
+            if capture_id not in entry.setdefault("_capture_id_set", set()):
+                entry["_capture_id_set"].add(capture_id)  # type: ignore[union-attr]
+                entry["capture_ids"].append(capture_id)
+            if row["capture_provenance_event_ref"] is not None:
+                related_event_keys_by_source_access_id[source_access_id].add(
+                    str(row["capture_provenance_event_ref"])
+                )
+            extraction_id = row["extraction_id"]
+            if extraction_id is None:
+                continue
+            extraction_id_int = int(extraction_id)
+            if extraction_id_int not in entry.setdefault("_extraction_id_set", set()):
+                entry["_extraction_id_set"].add(extraction_id_int)  # type: ignore[union-attr]
+                entry["extraction_ids"].append(extraction_id_int)
+            if row["extraction_provenance_event_ref"] is not None:
+                related_event_keys_by_source_access_id[source_access_id].add(
+                    str(row["extraction_provenance_event_ref"])
+                )
+            success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
+            entry["successful_extractions"] += success
+            entry["failed_extractions"] += failed_delta
+            if unknown_status is not None:
+                unknown_statuses.add(unknown_status)
+
     provenance_event_keys = {
-        str(row["provenance_event_ref"])
-        for row in capture_rows + extraction_rows
-        if row["provenance_event_ref"] is not None
+        event_key
+        for keys in related_event_keys_by_source_access_id.values()
+        for event_key in keys
     }
-    run_ids = set(run_ids_for_events(conn, provenance_event_keys).values())
-    successful = 0
-    failed = 0
-    unknown_statuses: set[str] = set()
-    for row in extraction_rows:
-        success, failed_delta, unknown_status = classify_extraction_status(row["extraction_status"])
-        successful += success
-        failed += failed_delta
-        if unknown_status is not None:
-            unknown_statuses.add(unknown_status)
+    run_ids_by_event = run_ids_for_events(conn, provenance_event_keys)
+    for source_access_id, entry in result.items():
+        entry.pop("_capture_id_set", None)
+        entry.pop("_extraction_id_set", None)
+        entry["capture_count"] = len(entry["capture_ids"])
+        entry["related_run_ids"] = sorted(
+            {
+                run_id
+                for event_key in related_event_keys_by_source_access_id[source_access_id]
+                if (run_id := run_ids_by_event.get(event_key)) is not None
+            }
+        )
     if warnings is not None and unknown_statuses:
         warnings.extend(
             f"unknown extraction_status treated as failure for source-access lead scoring: {status!r}"
             for status in sorted(unknown_statuses)
         )
-    return {
-        "successful_extractions": successful,
-        "failed_extractions": failed,
-        "capture_count": len(capture_ids),
-        "capture_ids": capture_ids,
-        "extraction_ids": extraction_ids,
-        "related_run_ids": sorted(run_ids),
-    }
+    return result
 
 
 def load_source_access_leads(
@@ -695,44 +739,51 @@ def load_source_access_leads(
     lead_rows: list[dict[str, Any]] = []
     work_refs: list[str] = []
     seen_work_refs: set[str] = set()
-    capture_ids: list[int] = []
-    seen_capture_ids: set[int] = set()
+    source_access_requests: list[dict[str, Any]] = []
     for row in rows:
         provenance = history_by_event_key.get(str(row["work_provenance_event_ref"] or ""))
         facet = provenance["facet"] if provenance is not None else "sources"
-        metrics = extraction_outcome_counts(
-            conn,
-            source_locus_id=None if row["source_locus_id"] is None else str(row["source_locus_id"]),
-            locators=[
-                locator
-                for locator in {
-                    row["original_locator"] if isinstance(row["original_locator"], str) else None,
-                    row["canonical_url"] if isinstance(row["canonical_url"], str) else None,
-                }
-                if isinstance(locator, str) and locator
-            ],
-            subject_id=subject_id,
-            warnings=warnings,
-        )
         work_ref_value: str | None = None
         if row["work_id"] is not None:
             work_ref_value = work_ref(int(row["work_id"]))
             if work_ref_value not in seen_work_refs:
                 seen_work_refs.add(work_ref_value)
                 work_refs.append(work_ref_value)
-        for capture_id in metrics["capture_ids"]:
-            if capture_id not in seen_capture_ids:
-                seen_capture_ids.add(capture_id)
-                capture_ids.append(capture_id)
+        source_access_requests.append(
+            {
+                "source_access_id": int(row["source_access_id"]),
+                "source_locus_id": None if row["source_locus_id"] is None else str(row["source_locus_id"]),
+                "locators": [
+                    locator
+                    for locator in {
+                        row["original_locator"] if isinstance(row["original_locator"], str) else None,
+                        row["canonical_url"] if isinstance(row["canonical_url"], str) else None,
+                    }
+                    if isinstance(locator, str) and locator
+                ],
+            }
+        )
         lead_rows.append(
             {
                 "row": row,
                 "provenance": provenance,
                 "facet": facet,
-                "metrics": metrics,
                 "work_ref": work_ref_value,
             }
         )
+    metrics_by_source_access_id = batch_extraction_outcome_counts(
+        conn,
+        source_access_requests=source_access_requests,
+        subject_id=subject_id,
+        warnings=warnings,
+    )
+    capture_ids = sorted(
+        {
+            capture_id
+            for metrics in metrics_by_source_access_id.values()
+            for capture_id in metrics["capture_ids"]
+        }
+    )
     related_claim_counts: dict[str, int] = {}
     if work_refs:
         work_placeholders = ", ".join("?" for _ in work_refs)
@@ -773,7 +824,7 @@ def load_source_access_leads(
         row = item["row"]
         provenance = item["provenance"]
         facet = item["facet"]
-        metrics = item["metrics"]
+        metrics = metrics_by_source_access_id[int(row["source_access_id"])]
         work_ref_value = item["work_ref"]
         related_works = 1 if row["work_id"] is not None else 0
         related_claims = related_claim_counts.get(work_ref_value or "", 0)

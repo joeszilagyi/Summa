@@ -496,8 +496,8 @@ def test_extraction_outcome_counts_batches_provenance_lookups(tmp_path: Path) ->
         if "FROM provenance_event" in sql and "provenance_event_key_v1 IN" in sql
     ]
     assert len(provenance_lookups) == 1
-    assert any("WITH requested_locators" in sql for sql in executed_sql)
-    assert not any("source_locus_ref=? OR original_locator=?" in sql for sql in executed_sql)
+    assert any("WITH requested_source_accesses(source_access_id, locator) AS" in sql for sql in executed_sql)
+    assert not any("WITH requested_locators(locator) AS" in sql for sql in executed_sql)
     assert metrics["capture_count"] == 1
     assert metrics["successful_extractions"] == 1
 
@@ -1134,8 +1134,15 @@ def test_source_access_leads_batch_related_claim_and_entity_counts(
         and "GROUP BY capture_event_id" in sql
         and "COUNT(*) AS count" in sql
     ]
+    batch_extraction_queries = [
+        sql
+        for sql in executed_sql
+        if "WITH requested_source_accesses(source_access_id, locator) AS" in sql
+    ]
     assert len(source_claim_count_queries) == 1
     assert len(entity_count_queries) == 1
+    assert len(batch_extraction_queries) == 1
+    assert not any("WITH requested_locators(locator) AS" in sql for sql in executed_sql)
 
     high_lead = next(
         item for item in leads if item["object_ref"] == source_access_ref(db_path, citation_hint="High yield source lead")
