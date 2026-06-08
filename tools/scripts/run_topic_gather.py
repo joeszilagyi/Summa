@@ -26,6 +26,9 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
 
+from tools.common.candidate_feedback_contract import (  # noqa: E402
+    compact_next_action_prompt_payload,
+)
 from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
@@ -951,7 +954,7 @@ def render_prompt_text(
         render_untrusted_json_block(
             source_ref="metadata:feedback-plan",
             provenance="candidate feedback plan next action",
-            payload=next_action,
+            payload=compact_next_action_prompt_payload(next_action),
             template=template,
         )
         if isinstance(next_action, dict)
@@ -1306,7 +1309,8 @@ def build_candidate_batch(
             "prior_state_rendered_byte_count": len(prior_state_rendered_text.encode("utf-8")),
         }
     if feedback_plan is not None and next_action is not None:
-        next_action_rendered_text = render_json_payload(next_action)
+        next_action_prompt_payload = compact_next_action_prompt_payload(next_action)
+        next_action_rendered_text = render_json_payload(next_action_prompt_payload)
         batch["feedback_plan"] = {
             "schema_version": feedback_plan["payload"]["schema_version"],
             "plan_path": str(feedback_plan["path"]),

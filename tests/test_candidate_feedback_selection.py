@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.common.candidate_feedback_contract import compact_next_action_prompt_payload
 from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2044,7 +2045,10 @@ def test_gather_consumes_feedback_plan_and_records_metadata(tmp_path: Path) -> N
     assert batch_payload["provenance"]["feedback_plan_hash"] == batch_payload["feedback_plan"]["plan_hash"]
     assert batch_payload["provenance"]["next_action_id"] == payload["next_action"]["action_id"]
     expected_next_action_text = json.dumps(
-        payload["next_action"], ensure_ascii=False, indent=2, sort_keys=True
+        compact_next_action_prompt_payload(payload["next_action"]),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
     )
     assert batch_payload["feedback_plan"]["next_action_rendered_source_ref"] == "metadata:feedback-plan"
     assert batch_payload["feedback_plan"]["next_action_rendered_provenance"] == "candidate feedback plan next action"

@@ -38,6 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.candidate_feedback_contract import (  # noqa: E402
+    compact_next_action_prompt_payload,
+)
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
 
 VALIDATOR_NAME = "gather_candidate_batch"
@@ -1064,7 +1067,9 @@ def validate_invariants(
             if isinstance(feedback_plan, dict):
                 next_action = feedback_plan.get("next_action")
                 if isinstance(next_action, dict):
-                    expected_next_action_text = render_json_payload(next_action)
+                    expected_next_action_text = render_json_payload(
+                        compact_next_action_prompt_payload(next_action)
+                    )
                     expected_next_action_hash = hashlib.sha256(
                         expected_next_action_text.encode("utf-8")
                     ).hexdigest()
