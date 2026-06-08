@@ -444,7 +444,9 @@ def planned_run_record(
         "run_budget": run_budget,
         "retry_policy": retry_policy,
         "failure_state": failure_state,
-        "saturation": entry.get("saturation") if isinstance(entry.get("saturation"), dict) else None,
+        "saturation": entry.get("saturation")
+        if isinstance(entry.get("saturation"), dict)
+        else None,
         "saturation_override": bool(entry.get("saturation_override", False)),
         "workspace_root": entry.get("workspace_root"),
         "resolved_workspace_root": entry.get("resolved_workspace_root"),
@@ -852,7 +854,9 @@ def render_text(payload: dict[str, Any]) -> str:
     for index, workspace in enumerate(payload["selected_workspaces"]):
         lines.append(f"selected[{index}].workspace_id={workspace['workspace_id']}")
         record = planned_by_workspace_id.get(workspace["workspace_id"], {})
-        lines.append(f"selected[{index}].workspace_root={record.get('resolved_workspace_root', '-')}")
+        lines.append(
+            f"selected[{index}].workspace_root={record.get('resolved_workspace_root', '-')}"
+        )
         manifest = record.get("resolved_default_subject_manifest", "-")
         lines.append(f"selected[{index}].subject_manifest={manifest}")
 

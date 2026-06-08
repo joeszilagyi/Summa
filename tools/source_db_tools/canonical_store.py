@@ -2737,7 +2737,9 @@ def summarize_canonical_store_population(
                     )
                 if has_substantive_rows and summary["last_ingest_at"] is None:
                     summary["warnings"].append("no recognized ingest provenance events were found")
-            summary["recommended_interpretation"] = _recommended_store_interpretation(summary["status"])
+            summary["recommended_interpretation"] = _recommended_store_interpretation(
+                summary["status"]
+            )
             return summary
 
         table_set = set(validation.tables)

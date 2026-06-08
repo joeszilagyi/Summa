@@ -529,8 +529,7 @@ def _source_lead_key_for_candidate(
             locator = canonical_reconciliation.normalize_locator(structured.get("original_locator"))
     if locator is None:
         locator = (
-            _normalize_key_text(candidate.get("candidate_id"))
-            or "source-lead-candidate-fallback"
+            _normalize_key_text(candidate.get("candidate_id")) or "source-lead-candidate-fallback"
         )
     return canonical_store.stable_write_key(
         "source-lead",
@@ -676,7 +675,9 @@ def ingest_candidate_batch(
                     workspace_id,
                     str(structured["from_object_ref"]),
                     str(structured["predicate"]).strip(),
-                    None if structured.get("to_object_ref") is None else str(structured.get("to_object_ref")),
+                    None
+                    if structured.get("to_object_ref") is None
+                    else str(structured.get("to_object_ref")),
                 )
             )
             relationship_written = True
@@ -833,7 +834,9 @@ def ingest_candidate_batch(
                             "claim_type": work_claim_type,
                             "workspace_id": workspace_id,
                             "confidence_score": (
-                                structured.get("confidence_score") if structured is not None else None
+                                structured.get("confidence_score")
+                                if structured is not None
+                                else None
                             ),
                             "created_at": created_at,
                             "record_last_updated": created_at,
@@ -892,9 +895,15 @@ def ingest_candidate_batch(
                 pending_entity_records.append(
                     {
                         "entity_label": entity_label,
-                        "normalized_label": structured.get("normalized_label") if structured else None,
-                        "entity_type": structured.get("entity_type") if structured else candidate_type,
-                        "confidence_score": structured.get("confidence_score") if structured else None,
+                        "normalized_label": structured.get("normalized_label")
+                        if structured
+                        else None,
+                        "entity_type": structured.get("entity_type")
+                        if structured
+                        else candidate_type,
+                        "confidence_score": structured.get("confidence_score")
+                        if structured
+                        else None,
                         "workspace_id": workspace_id,
                         "record_last_updated": created_at,
                         "structured": structured,
@@ -1042,7 +1051,9 @@ def ingest_candidate_batch(
                         confidence_score=record["confidence_score"],
                         workspace_id=record["workspace_id"],
                     )
-                    _bump(report, "inserted" if result.created else "updated", "source_relationship")
+                    _bump(
+                        report, "inserted" if result.created else "updated", "source_relationship"
+                    )
         elif pending_source_relationship_records:
             for record in pending_source_relationship_records:
                 result = canonical_store.record_source_relationship(
@@ -1769,9 +1780,7 @@ def ingest_execution_artifacts(
                         provenance_event_id=provenance_event_id,
                         extraction_id=result.row_id,
                         capture_event_id=canonical_capture_id,
-                        entity_label=str(
-                            entity.get("entity_label") or entity.get("label") or ""
-                        ),
+                        entity_label=str(entity.get("entity_label") or entity.get("label") or ""),
                         normalized_label=entity.get("normalized_label"),
                         entity_type=entity.get("entity_type"),
                         confidence_score=entity.get("confidence_score"),
@@ -1877,7 +1886,9 @@ def ingest_execution_artifacts(
             label="extraction_record",
         )
         if extraction_rows is None:
-            raise CanonicalIngestError("execution-artifact batch write failed for extraction records")
+            raise CanonicalIngestError(
+                "execution-artifact batch write failed for extraction records"
+            )
         pending_entity_records: list[dict[str, Any]] = []
         for pending, row in zip(pending_extraction_records, extraction_rows, strict=True):
             record = pending["record"]

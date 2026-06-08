@@ -239,9 +239,7 @@ def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None
 def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) -> None:
     output_file = tmp_path / "stamped.txt"
     output_file.write_text(
-        "body line\n"
-        "GENERATED_BY: not-a-footer\n"
-        "more body text\n",
+        "body line\nGENERATED_BY: not-a-footer\nmore body text\n",
         encoding="utf-8",
     )
 

@@ -137,7 +137,9 @@ TARGETS: tuple[SearchTarget, ...] = (
         ),
     ),
 )
-INDEX_TARGETS: tuple[SearchTarget, ...] = tuple(sorted(TARGETS, key=lambda target: target.object_type))
+INDEX_TARGETS: tuple[SearchTarget, ...] = tuple(
+    sorted(TARGETS, key=lambda target: target.object_type)
+)
 
 
 class SearchProjectionError(RuntimeError):
@@ -870,7 +872,8 @@ def build_projection_payload_streaming(
                         write_jsonl_record(projected_handle, record)
                         projected_count += 1
                         if not private_paths_exposed and any(
-                            looks_like_private_path(field["text"]) for field in record["indexed_fields"]
+                            looks_like_private_path(field["text"])
+                            for field in record["indexed_fields"]
                         ):
                             private_paths_exposed = True
                         if not blocked_records_included and (
@@ -879,7 +882,10 @@ def build_projection_payload_streaming(
                             in {"blocked", "local_only", "private_working"}
                         ):
                             blocked_records_included = True
-                        if not superseded_records_included and record["lineage_state"] == "superseded":
+                        if (
+                            not superseded_records_included
+                            and record["lineage_state"] == "superseded"
+                        ):
                             superseded_records_included = True
         payload_base = {
             "schema_version": PROJECTION_SCHEMA_VERSION,
