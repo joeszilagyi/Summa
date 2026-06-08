@@ -1570,6 +1570,130 @@ def test_topic_cycle_failure_stops_before_ingestion_and_records_manifest(tmp_pat
     assert table_count(db_path, "cycle_tool_failure") >= 1
 
 
+def test_topic_cycle_manifest_write_is_atomic_and_hashes_written_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    manifest_path = tmp_path / "topic-cycle-run.json"
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("placeholder", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-atomic",
+                "status": "completed",
+                "mode": "local",
+                "workspace": {"workspace_id": "workspace:atomic"},
+                "canonical_db": {"path": str(tmp_path / "canonical.sqlite"), "mutated": False},
+                "stages": [],
+                "cycle_evidence_ledger": {"status": "pending"},
+                "run_dir": str(tmp_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    atomic_calls: list[tuple[Path, dict[str, object]]] = []
+
+    def fake_atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+        atomic_calls.append(
+            (
+                path,
+                json.loads(
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+                ),
+            )
+        )
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    hash_calls: list[Path] = []
+
+    def fake_hash_file(path: Path) -> str:
+        hash_calls.append(path)
+        return "manifest-hash"
+
+    class FakeConn:
+        def __enter__(self) -> FakeConn:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def close(self) -> None:
+            return None
+
+    def fake_connect_canonical_store(db_path: Path) -> FakeConn:
+        return FakeConn()
+
+    def fake_record_topic_cycle_manifest(
+        conn: object,
+        *,
+        manifest: dict[str, object],
+        manifest_path: Path,
+        manifest_hash: str,
+        canonical_db_ref: str,
+    ) -> str:
+        assert conn is not None
+        assert manifest_path == tmp_path / "topic-cycle-run.json"
+        assert manifest_hash == "manifest-hash"
+        assert canonical_db_ref == str(tmp_path / "canonical.sqlite")
+        assert manifest["run_id"] == "cycle-atomic"
+        return "cycle:recorded"
+
+    monkeypatch.setattr(module, "atomic_write_json", fake_atomic_write_json)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    monkeypatch.setattr(
+        module.canonical_store, "connect_canonical_store", fake_connect_canonical_store
+    )
+    monkeypatch.setattr(
+        module.cycle_evidence_ledger,
+        "record_topic_cycle_manifest",
+        fake_record_topic_cycle_manifest,
+    )
+
+    manifest = {
+        "schema_version": "topic-cycle-run.v1",
+        "run_id": "cycle-atomic",
+        "status": "completed",
+        "mode": "local",
+        "workspace": {"workspace_id": "workspace:atomic"},
+        "canonical_db": {"path": str(tmp_path / "canonical.sqlite"), "mutated": False},
+        "stages": [],
+        "cycle_evidence_ledger": {"status": "recorded"},
+        "run_dir": str(tmp_path),
+    }
+    args = SimpleNamespace(mode="local", degraded_spool=False)
+
+    module.write_json(manifest_path, manifest)
+    assert len(atomic_calls) == 1
+    assert atomic_calls[0][0] == manifest_path
+    assert atomic_calls[0][1]["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
+
+    module.record_cycle_evidence_from_manifest(
+        args=args,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        db_path=db_path,
+    )
+
+    assert hash_calls == [manifest_path]
+    assert len(atomic_calls) == 1
+    assert manifest["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
+    assert manifest["cycle_evidence_ledger"]["cycle_event_id"] == "cycle:recorded"  # type: ignore[index]
+    persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert persisted["cycle_evidence_ledger"]["status"] == "recorded"
+    assert "cycle_event_id" not in persisted["cycle_evidence_ledger"]  # type: ignore[operator]
+
+
 def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

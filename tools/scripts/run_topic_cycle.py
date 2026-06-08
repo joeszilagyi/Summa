@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import sys
@@ -19,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.subprocess_capture import (  # noqa: E402
     command_output_excerpt,
     run_streaming_command,
@@ -188,17 +188,8 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def manifest_hash(manifest: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    ).hexdigest()
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(path, payload)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1633,7 +1624,7 @@ def record_cycle_evidence_from_manifest(
         write_json(manifest_path, manifest)
         return
     try:
-        current_manifest_hash = manifest_hash(manifest)
+        current_manifest_hash = hash_file(manifest_path)
         conn = canonical_store.connect_canonical_store(db_path)
         try:
             with conn:
@@ -1878,7 +1869,6 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             manifest_path=manifest_path,
             db_path=db_path,
         )
-        write_json(manifest_path, manifest)
     return manifest, return_code
 
 
