@@ -1105,6 +1105,15 @@ def test_source_access_leads_batch_related_claim_and_entity_counts(
                 WHERE entity_label='High Yield Person'
                 """
             )
+            conn.execute(
+                """
+                UPDATE source_access
+                SET first_seen_at='2026-06-02T16:00:00Z',
+                    last_seen_at='2026-06-02T16:00:00Z',
+                    record_last_updated='2026-06-02T16:00:00Z'
+                WHERE citation_hint='High yield source lead'
+                """
+            )
 
         work_ids = planner.scope_work_ids(conn, subject_id)
         history = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
@@ -1114,6 +1123,7 @@ def test_source_access_leads_batch_related_claim_and_entity_counts(
             work_ids=work_ids,
             history_by_event_key=history,
             weights=planner.DEFAULT_SCORING_WEIGHTS,
+            max_candidates=2,
             warnings=[],
         )
     finally:
@@ -1139,9 +1149,16 @@ def test_source_access_leads_batch_related_claim_and_entity_counts(
         for sql in executed_sql
         if "WITH requested_source_accesses(source_access_id, locator) AS" in sql
     ]
+    source_access_queries = [
+        sql
+        for sql in executed_sql
+        if "FROM source_access AS access" in sql and "ORDER BY COALESCE(access.last_seen_at" in sql
+    ]
     assert len(source_claim_count_queries) == 1
     assert len(entity_count_queries) == 1
     assert len(batch_extraction_queries) == 1
+    assert len(source_access_queries) == 1
+    assert "LIMIT ?" in source_access_queries[0]
     assert not any("WITH requested_locators(locator) AS" in sql for sql in executed_sql)
 
     high_lead = next(

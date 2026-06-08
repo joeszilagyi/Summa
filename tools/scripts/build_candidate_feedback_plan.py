@@ -714,11 +714,17 @@ def load_source_access_leads(
     work_ids: list[int],
     history_by_event_key: dict[str, dict[str, Any]],
     weights: dict[str, float],
+    max_candidates: int | None = None,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     scope_sql, scope_params = lead_scope_sql(subject_id, work_ids, table_alias="access")
     accepted_placeholders, accepted_states = accepted_review_placeholder_sql()
     placeholders = ", ".join("?" for _ in sorted(LEAD_REVIEW_STATES))
+    limit_clause = ""
+    query_params: list[Any] = [*scope_params, *tuple(sorted(LEAD_REVIEW_STATES))]
+    if max_candidates is not None:
+        limit_clause = "LIMIT ?"
+        query_params.append(max_candidates)
     rows = conn.execute(
         f"""
         SELECT access.source_access_id, access.work_id, access.source_locus_id,
@@ -732,8 +738,9 @@ def load_source_access_leads(
         WHERE {scope_sql}
           AND access.review_state IN ({placeholders})
         ORDER BY COALESCE(access.last_seen_at, access.first_seen_at, access.record_last_updated) DESC, access.source_access_id ASC
+        {limit_clause}
         """,
-        scope_params + tuple(sorted(LEAD_REVIEW_STATES)),
+        tuple(query_params),
     ).fetchall()
 
     lead_rows: list[dict[str, Any]] = []
@@ -1468,6 +1475,7 @@ def build_plan(
         work_ids=work_ids,
         history_by_event_key=history_by_event_key,
         weights=DEFAULT_SCORING_WEIGHTS,
+        max_candidates=args.max_lead_candidates,
         warnings=warnings,
     )
     open_question_leads = load_open_question_leads(
