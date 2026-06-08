@@ -801,15 +801,25 @@ def execute_gather_run(
     if isinstance(next_action, dict):
         should_call_llm = bool(next_action.get("should_call_llm", True))
     if args.mode == "live" and should_call_llm:
-        live_result = run_live_engine(
+        live_result = load_cached_live_result(
             run_dir=run_dir,
-            rendered_prompt_path=rendered_prompt_path,
+            rendered_prompt_hash=rendered_prompt_hash,
             subject_id=gather_inputs["subject"]["subject_id"],
             facet=gather_inputs["facet"],
             phase=gather_inputs["phase"],
             engine=args.engine,
-            command_timeout_seconds=command_timeout_seconds,
+            prior_state_hash=prior_state_context["context_hash"] if prior_state_context else None,
         )
+        if live_result is None:
+            live_result = run_live_engine(
+                run_dir=run_dir,
+                rendered_prompt_path=rendered_prompt_path,
+                subject_id=gather_inputs["subject"]["subject_id"],
+                facet=gather_inputs["facet"],
+                phase=gather_inputs["phase"],
+                engine=args.engine,
+                command_timeout_seconds=command_timeout_seconds,
+            )
 
     batch = build_candidate_batch(
         args=args,
@@ -1141,10 +1151,112 @@ def run_live_engine(
     )
 
     return {
+        "invoked": True,
+        "cache_hit": False,
         "raw_engine_output_path": str(raw_engine_output_path),
         "raw_engine_output": raw_engine_output,
         "raw_engine_output_hash": raw_engine_output_hash,
         "stamped_output_path": str(stamped_output_path),
+        "stamped_output_hash": stamped_output_hash,
+        "stamped_output_footer_hash": stamped_output_footer_hash,
+        "stamp_footer": stamp_footer,
+    }
+
+
+def load_cached_live_result(
+    *,
+    run_dir: Path,
+    rendered_prompt_hash: str,
+    subject_id: str,
+    facet: str,
+    phase: str,
+    engine: str,
+    prior_state_hash: str | None,
+) -> dict[str, Any] | None:
+    batch_path = run_dir / "gather-candidate-batch.json"
+    if not batch_path.is_file():
+        return None
+    try:
+        payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("mode") != "live":
+        return None
+    prompt = payload.get("prompt")
+    facet_payload = payload.get("facet")
+    subject_payload = payload.get("subject")
+    engine_payload = payload.get("engine")
+    provenance = payload.get("provenance")
+    if not all(
+        isinstance(section, dict)
+        for section in (prompt, facet_payload, subject_payload, engine_payload, provenance)
+    ):
+        return None
+    if prompt.get("rendered_prompt_hash") != rendered_prompt_hash:
+        return None
+    if subject_payload.get("subject_id") != subject_id:
+        return None
+    if facet_payload.get("name") != facet or facet_payload.get("phase") != phase:
+        return None
+    if engine_payload.get("requested_engine") != engine or provenance.get("engine_name") != engine:
+        return None
+    if provenance.get("prior_state_hash") != prior_state_hash:
+        return None
+
+    raw_engine_output_path = payload.get("engine_output_ref")
+    stamped_output_path = provenance.get("stamped_output_path")
+    raw_engine_output = payload.get("raw_engine_output")
+    raw_engine_output_hash = payload.get("raw_engine_output_hash")
+    stamped_output_hash = provenance.get("stamped_output_hash")
+    stamped_output_footer_hash = provenance.get("stamped_output_footer_hash")
+    stamp_footer = provenance.get("stamped_output_footer")
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            raw_engine_output_path,
+            stamped_output_path,
+            raw_engine_output_hash,
+            stamped_output_hash,
+            stamped_output_footer_hash,
+        )
+    ):
+        return None
+    if not isinstance(raw_engine_output, str) or not raw_engine_output:
+        return None
+    if not isinstance(stamp_footer, dict):
+        return None
+
+    raw_output_path = Path(raw_engine_output_path)
+    stamped_output_path_obj = Path(stamped_output_path)
+    if not raw_output_path.is_file() or not stamped_output_path_obj.is_file():
+        return None
+
+    cached_raw_engine_output = read_text_file(raw_output_path, label="cached raw engine output")
+    cached_stamped_output_text = read_text_file(
+        stamped_output_path_obj, label="cached stamped engine output"
+    )
+    cached_stamp_footer = parse_stamp_footer(cached_stamped_output_text)
+    if cached_stamp_footer is None:
+        return None
+    cached_raw_engine_output_hash = sha256_text(cached_raw_engine_output)
+    cached_stamped_output_hash = sha256_text(cached_stamped_output_text)
+    cached_stamp_footer_hash = sha256_text(
+        json.dumps(cached_stamp_footer, ensure_ascii=False, sort_keys=True)
+    )
+    if cached_raw_engine_output != raw_engine_output or cached_raw_engine_output_hash != raw_engine_output_hash:
+        return None
+    if cached_stamped_output_hash != stamped_output_hash:
+        return None
+    if cached_stamp_footer_hash != stamped_output_footer_hash or cached_stamp_footer != stamp_footer:
+        return None
+
+    return {
+        "invoked": False,
+        "cache_hit": True,
+        "raw_engine_output_path": raw_engine_output_path,
+        "raw_engine_output": raw_engine_output,
+        "raw_engine_output_hash": raw_engine_output_hash,
+        "stamped_output_path": stamped_output_path,
         "stamped_output_hash": stamped_output_hash,
         "stamped_output_footer_hash": stamped_output_footer_hash,
         "stamp_footer": stamp_footer,
@@ -1174,9 +1286,11 @@ def build_candidate_batch(
     phase = gather_inputs["phase"]
     mode = args.mode.replace("-", "_")
     iteration_mode = "prior_state" if args.use_prior_state else "one_shot"
-    engine_invoked = live_result is not None
+    engine_present = live_result is not None
+    engine_invoked = bool(live_result.get("invoked", False)) if isinstance(live_result, dict) else False
     candidate_type_hint = candidate_type_hint_for_facet(facet)
     candidates: list[dict[str, Any]] = []
+    engine_cache_hit = bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     if live_result is not None:
         candidates.append(
             {
@@ -1202,9 +1316,10 @@ def build_candidate_batch(
         "phase": phase,
         "engine": {
             "requested_engine": args.engine,
-            "resolved_engine": args.engine if engine_invoked else None,
+            "resolved_engine": args.engine if engine_present else None,
             "invoked": engine_invoked,
-            "engine_present": engine_invoked,
+            "cache_hit": engine_cache_hit,
+            "engine_present": engine_present,
             "runner_path": str(LLM_RUNNER_PATH),
             "bridge_path": str(LLM_RUNNER_BRIDGE_PATH),
         },
@@ -1263,7 +1378,8 @@ def build_candidate_batch(
             "llm_runner_bridge_path": str(LLM_RUNNER_BRIDGE_PATH),
             "engine_name": args.engine,
             "engine_invoked": engine_invoked,
-            "engine_present": engine_invoked,
+            "engine_cache_hit": engine_cache_hit,
+            "engine_present": engine_present,
             "timestamp": created_at,
             "network_access_attempted": False,
             "prior_state_enabled": args.use_prior_state,

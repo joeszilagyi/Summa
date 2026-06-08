@@ -544,16 +544,26 @@ def validate_invariants(
                         path="$.provenance",
                     )
             else:
-                if (
-                    engine.get("invoked") is not True
-                    or provenance.get("engine_invoked") is not True
-                ):
-                    add_error(
-                        errors,
-                        code="LIVE_ENGINE_INVOCATION_REQUIRED",
-                        message="mode=live must include engine invocation provenance",
-                        path="$.mode",
-                    )
+                cache_hit = engine.get("cache_hit") is True or provenance.get("engine_cache_hit") is True
+                if cache_hit:
+                    if engine.get("invoked") is not False or provenance.get("engine_invoked") is not False:
+                        add_error(
+                            errors,
+                            code="LIVE_ENGINE_CACHE_HIT_INVOCATION_MISMATCH",
+                            message="mode=live cache hits must record engine_invoked=false",
+                            path="$.mode",
+                        )
+                else:
+                    if (
+                        engine.get("invoked") is not True
+                        or provenance.get("engine_invoked") is not True
+                    ):
+                        add_error(
+                            errors,
+                            code="LIVE_ENGINE_INVOCATION_REQUIRED",
+                            message="mode=live must include engine invocation provenance",
+                            path="$.mode",
+                        )
                 if (
                     engine.get("engine_present") is not True
                     or provenance.get("engine_present") is not True

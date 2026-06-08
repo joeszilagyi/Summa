@@ -1482,6 +1482,115 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_run_topic_gather_live_mode_reuses_cached_output_without_reinvoking_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = fake_output
+
+    first = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--created-at",
+            "2026-06-03T12:34:56Z",
+        ],
+        env=env,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    run_root = workspace_root / "runs" / "gather"
+    run_dirs = [path for path in run_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+    batch_path = run_dirs[0] / "gather-candidate-batch.json"
+    first_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert first_payload["engine"]["invoked"] is True
+    assert first_payload["engine"]["engine_present"] is True
+    assert first_payload["engine"]["cache_hit"] is False
+    assert first_payload["provenance"]["engine_invoked"] is True
+    assert first_payload["provenance"]["engine_cache_hit"] is False
+    assert (
+        driver.load_cached_live_result(
+            run_dir=run_dirs[0],
+            rendered_prompt_hash=first_payload["prompt"]["rendered_prompt_hash"],
+            subject_id=first_payload["subject"]["subject_id"],
+            facet=first_payload["facet"]["name"],
+            phase=first_payload["facet"]["phase"],
+            engine=first_payload["provenance"]["engine_name"],
+            prior_state_hash=first_payload["provenance"]["prior_state_hash"],
+        )
+        is not None
+    )
+    assert (
+        driver.load_cached_live_result(
+            run_dir=run_dirs[0],
+            rendered_prompt_hash=first_payload["prompt"]["rendered_prompt_hash"],
+            subject_id=first_payload["subject"]["subject_id"],
+            facet=first_payload["facet"]["name"],
+            phase=first_payload["facet"]["phase"],
+            engine=first_payload["provenance"]["engine_name"],
+            prior_state_hash="different-prior-state-hash",
+        )
+        is None
+    )
+
+    def fail_invoke_llm_runner_bridge(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("live engine should have been reused from cache")
+
+    monkeypatch.setattr(driver, "invoke_llm_runner_bridge", fail_invoke_llm_runner_bridge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(DRIVER_PATH),
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--created-at",
+            "2026-06-04T12:34:56Z",
+        ],
+    )
+
+    exit_code = driver.main()
+    assert exit_code == 0
+
+    second_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    assert second_payload["engine"]["invoked"] is False
+    assert second_payload["engine"]["engine_present"] is True
+    assert second_payload["engine"]["cache_hit"] is True
+    assert second_payload["provenance"]["engine_invoked"] is False
+    assert second_payload["provenance"]["engine_cache_hit"] is True
+    assert second_payload["raw_engine_output"] == fake_output
+    assert second_payload["raw_engine_output_hash"] == hashlib.sha256(
+        fake_output.encode("utf-8")
+    ).hexdigest()
+
+
 def test_run_topic_gather_live_mode_blocks_hostile_source_text_by_default(
     tmp_path: Path,
 ) -> None:

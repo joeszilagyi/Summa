@@ -158,6 +158,9 @@
         "invoked": {
           "type": "boolean"
         },
+        "cache_hit": {
+          "type": "boolean"
+        },
         "engine_present": {
           "type": "boolean"
         },
@@ -918,6 +921,9 @@
           ]
         },
         "engine_invoked": {
+          "type": "boolean"
+        },
+        "engine_cache_hit": {
           "type": "boolean"
         },
         "engine_present": {
