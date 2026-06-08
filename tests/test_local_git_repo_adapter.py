@@ -410,3 +410,52 @@ def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> Non
     assert (output / "execution-record.json").read_bytes() == (
         json.dumps(execution, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+
+
+def test_local_git_repo_execution_reads_each_candidate_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
+    adapter_path = write_adapter(scenario_dir)
+    repo_dir = scenario_dir / "repo"
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(
+        ["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    adapter_payload = source_executor.load_validated_adapter(adapter_path)
+    records, handoff_hash = source_executor.load_validated_handoff_records(
+        handoff_jsonl, adapter_path=adapter_path
+    )
+    tracked_file = (repo_dir / "tracked.md").resolve()
+    nested_file = (repo_dir / "nested" / "data.json").resolve()
+    target_paths = {tracked_file, nested_file}
+    read_counts = {path: 0 for path in target_paths}
+    original_read_bytes = source_executor.Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        resolved = self.expanduser().resolve()
+        if resolved in target_paths:
+            read_counts[resolved] += 1
+            if read_counts[resolved] > 1:
+                raise AssertionError(f"local git repo file reread unexpectedly: {resolved}")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(source_executor.Path, "read_bytes", guarded_read_bytes)
+
+    capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_git_repo(
+        records=records,
+        adapter_payload=adapter_payload,
+        run_id="local-git-execution",
+        created_at="2026-06-03T12:34:56Z",
+        handoff_hash=handoff_hash,
+    )
+
+    assert read_counts == {tracked_file: 1, nested_file: 1}
+    assert failed is False
+    assert len(capture_events) == 1
+    assert len(extraction_records) == 2
+    assert local_paths == [str(nested_file), str(tracked_file)]
+    assert text_artifacts

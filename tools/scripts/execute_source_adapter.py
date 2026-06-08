@@ -1281,6 +1281,7 @@ def execute_local_git_repo(
         record["preserved"].get("source_metadata", {}).get("candidate_paths", [])
     )
     file_entries: list[dict[str, Any]] = []
+    file_payloads_by_path: dict[str, tuple[str, int, str | None, str, str | None]] = {}
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
     local_paths: list[str] = []
@@ -1294,12 +1295,22 @@ def execute_local_git_repo(
         ensure_path_within_root(file_path, root=repo_path)
         ensure_path_is_local_file(file_path)
         payload = file_path.read_bytes()
+        content_hash = sha256_bytes(payload)
+        byte_count = len(payload)
+        extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
         file_entries.append(
             {
                 "relative_path": relative_path,
-                "content_hash": sha256_bytes(payload),
-                "byte_count": len(payload),
+                "content_hash": content_hash,
+                "byte_count": byte_count,
             }
+        )
+        file_payloads_by_path[relative_path] = (
+            content_hash,
+            byte_count,
+            extracted_text,
+            encoding_result,
+            failure_reason,
         )
         local_paths.append(str(file_path))
     snapshot_hash = compute_git_snapshot_hash(
@@ -1337,9 +1348,13 @@ def execute_local_git_repo(
         "verification_status": "unverified",
     }
     for file_entry in file_entries:
-        file_path = (repo_path / file_entry["relative_path"]).resolve()
-        payload = file_path.read_bytes()
-        extracted_text, encoding_result, failure_reason = safe_decode_text(payload)
+        (
+            _content_hash,
+            _byte_count,
+            extracted_text,
+            encoding_result,
+            failure_reason,
+        ) = file_payloads_by_path[file_entry["relative_path"]]
         extraction_id = make_extraction_id(len(extraction_records) + 1)
         extracted_text_path = None
         if extracted_text is not None:
