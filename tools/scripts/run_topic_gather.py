@@ -1358,8 +1358,6 @@ def build_candidate_batch(
         "prompt_bundle": {
             "bundle_key": bundle["bundle_key"],
             "bundle_id": bundle["bundle_id"],
-            "template_ids": bundle["template_ids"],
-            "template_files": bundle["template_files"],
             "selected_template_id": gather_inputs["selected_template_id"],
             "selected_template_file": gather_inputs["selected_template_file"],
             "wrapper_template_id": bundle["source_text_wrapper_template_id"],

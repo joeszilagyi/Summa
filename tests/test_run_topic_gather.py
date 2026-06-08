@@ -992,6 +992,8 @@ def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> Non
             payload["prompt_bundle"]["bundle_id"]
             == pack["prompt_bundles"][f"gather.{facet}"]["bundle_id"]
         )
+        assert "template_ids" not in payload["prompt_bundle"]
+        assert "template_files" not in payload["prompt_bundle"]
 
 
 def test_missing_prompt_file_fails_clearly(tmp_path: Path, monkeypatch, capsys) -> None:

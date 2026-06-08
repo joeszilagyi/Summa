@@ -333,8 +333,6 @@
       "required": [
         "bundle_key",
         "bundle_id",
-        "template_ids",
-        "template_files",
         "selected_template_id",
         "selected_template_file",
         "wrapper_template_id"
