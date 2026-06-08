@@ -204,11 +204,9 @@ def resolve_prompt_bundles(pack: dict[str, Any], facets: list[str]) -> dict[str,
         resolved[facet] = {
             "bundle_key": bundle_key,
             "bundle_id": bundle_id,
-            "template_ids": template_ids,
             "phase_templates": phase_templates,
             "resolved_phase_prompt_files": resolved_phase_prompt_files,
             "legacy_01a_output_stem": legacy_01a_output_stem,
-            "template_files": template_files,
             "resolved_phase_template_files": _normalize_resolved_phase_template_files(
                 template_files,
                 facet=facet,

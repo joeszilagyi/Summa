@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -106,6 +105,7 @@ def resolve_gather_domain_pack(pack_id: str, raw_facets: str | None) -> dict[str
     facets: dict[str, dict[str, str]] = {}
     for facet in selected_facets:
         bundle = prompt_bundles[facet]
+        raw_bundle = pack["prompt_bundles"][bundle["bundle_key"]]
 
         facets[facet] = {
             "01a_output_stem": bundle["legacy_01a_output_stem"],
@@ -113,7 +113,7 @@ def resolve_gather_domain_pack(pack_id: str, raw_facets: str | None) -> dict[str
             "01r_prompt": bundle["resolved_phase_prompt_files"]["01r"],
             "prompt_bundle_id": bundle["bundle_id"],
             "source_text_wrapper_template_id": bundle["source_text_wrapper_template_id"],
-            "template_files": bundle["template_files"],
+            "template_files": raw_bundle["template_files"],
         }
 
     return {
