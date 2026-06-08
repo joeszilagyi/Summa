@@ -308,7 +308,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--resume", action="store_true", help="Reserved; currently refuses partial runs clearly."
     )
-    parser.add_argument("--format", choices=("json", "text"), default="json")
+    parser.add_argument(
+        "--format",
+        choices=("json", "text"),
+        default="text",
+        help="Render compact text by default; use json when you need the full manifest on stdout.",
+    )
     return parser.parse_args(argv)
 
 

@@ -843,6 +843,8 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.startswith("schema_version=topic-cycle-run.v1\n")
+    assert not proc.stdout.lstrip().startswith("{")
     manifest = load_manifest(run_dir)
     assert manifest["status"] == "dry_run"
     assert manifest["cycle_depth"] == 2
@@ -851,6 +853,39 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["feedback_plan_pre"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["active_feedback_plan_for_gather"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+
+
+def test_topic_cycle_explicit_json_format_still_prints_full_manifest(
+    tmp_path: Path,
+) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-json-format"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-json-format",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--dry-run",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["schema_version"] == "topic-cycle-run.v1"
+    assert payload["status"] == "dry_run"
+    assert payload["run_id"] == "cycle-json-format"
 
 
 def test_topic_cycle_dry_run_records_execution_ingest_report_by_reference(tmp_path: Path) -> None:
