@@ -554,14 +554,15 @@ def run_id_for_event(conn: sqlite3.Connection, event_key: str) -> str | None:
 def run_ids_for_events(conn: sqlite3.Connection, event_keys: set[str]) -> dict[str, str]:
     if not event_keys:
         return {}
-    placeholders = ", ".join("?" for _ in sorted(event_keys))
+    sorted_event_keys = sorted(event_keys)
+    placeholders = ", ".join("?" for _ in sorted_event_keys)
     rows = conn.execute(
         f"""
         SELECT provenance_event_key_v1, run_id
         FROM provenance_event
         WHERE provenance_event_key_v1 IN ({placeholders})
         """,
-        tuple(sorted(event_keys)),
+        tuple(sorted_event_keys),
     ).fetchall()
     result: dict[str, str] = {}
     for row in rows:

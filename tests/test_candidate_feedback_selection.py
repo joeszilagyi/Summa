@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import os
@@ -105,6 +106,53 @@ def bootstrap_db(tmp_path: Path) -> Path:
         applied_by="pytest.candidate_feedback_selection",
     )
     return db_path
+
+
+def test_run_ids_for_events_sorts_keys_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            canonical_store.record_provenance_event(
+                conn,
+                object_namespace="gather_candidate_batch",
+                object_id="event-a",
+                event_type="gather_candidate_batch_ingest",
+                tool_name="pytest.candidate_feedback_selection",
+                run_id="run-a",
+                event_timestamp="2026-06-02T10:00:00Z",
+                provenance_event_key_v1="prov:event:a",
+            )
+            canonical_store.record_provenance_event(
+                conn,
+                object_namespace="gather_candidate_batch",
+                object_id="event-b",
+                event_type="gather_candidate_batch_ingest",
+                tool_name="pytest.candidate_feedback_selection",
+                run_id="run-b",
+                event_timestamp="2026-06-02T11:00:00Z",
+                provenance_event_key_v1="prov:event:b",
+            )
+
+        sorted_calls: list[list[str]] = []
+        original_sorted = builtins.sorted
+
+        def sorted_spy(values: object, *args: object, **kwargs: object) -> list[str]:
+            snapshot = list(values)  # type: ignore[arg-type]
+            sorted_calls.append(snapshot)
+            return original_sorted(snapshot, *args, **kwargs)
+
+        monkeypatch.setattr(planner, "sorted", sorted_spy, raising=False)
+
+        result = planner.run_ids_for_events(conn, {"prov:event:b", "prov:event:a"})
+
+        assert result == {"prov:event:a": "run-a", "prov:event:b": "run-b"}
+        assert len(sorted_calls) == 1
+        assert sorted_calls[0] == ["prov:event:a", "prov:event:b"]
+    finally:
+        conn.close()
 
 
 def write_manifest(
