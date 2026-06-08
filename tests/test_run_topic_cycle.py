@@ -962,13 +962,28 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
             return "receipt-hash"
         raise AssertionError(f"unexpected hash_file call: {path}")
 
+    def fake_load_validated_candidate_batch(
+        path: Path,
+    ) -> tuple[dict[str, object], dict[str, object], int]:
+        if path == batch_path:
+            return {}, {"valid": True}, module.EXIT_GATHER_PASS
+        raise AssertionError(f"unexpected candidate batch reload: {path}")
+
+    original_read_json = module.read_json
+
+    def fake_read_json(path: Path, *, label: str) -> dict[str, object]:
+        if path == batch_path:
+            raise AssertionError("candidate batch should be reused after validation")
+        return original_read_json(path, label=label)
+
     monkeypatch.setattr(module, "run_command", fake_run_command)
     monkeypatch.setattr(
-        module,
-        "validate_gather_candidate_batch",
-        lambda path: ({"valid": True}, module.EXIT_GATHER_PASS),
+        module.gather_candidate_batch_validator,
+        "load_validated_gather_candidate_batch",
+        fake_load_validated_candidate_batch,
     )
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    monkeypatch.setattr(module, "read_json", fake_read_json)
 
     args = SimpleNamespace(
         mode="dry-run",

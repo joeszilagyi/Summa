@@ -920,14 +920,15 @@ def gather_stage(
             candidate_batch_sha256 = hash_file(batch_path)
         if not isinstance(rendered_prompt_sha256, str):
             rendered_prompt_sha256 = hash_file(prompt_path)
-        report, exit_code = validate_gather_candidate_batch(batch_path)
+        batch, report, exit_code = (
+            gather_candidate_batch_validator.load_validated_gather_candidate_batch(batch_path)
+        )
         stage.validation = {
             "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
             "report": report,
         }
         if exit_code != EXIT_GATHER_PASS:
             fail_stage(stage, "gather candidate batch failed validation")
-        batch = read_json(batch_path, label="candidate batch")
         validation_receipt = {
             "artifact_path": str(batch_path),
             "artifact_hash": candidate_batch_sha256,

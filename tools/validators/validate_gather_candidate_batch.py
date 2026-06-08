@@ -161,6 +161,25 @@ def load_json_object(
     return payload, errors, EXIT_PASS
 
 
+def load_validated_gather_candidate_batch(
+    target: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any], int]:
+    payload, errors, exit_code = load_json_object(target, label="gather candidate batch")
+    if payload is None:
+        return (
+            None,
+            {
+                "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
+                "errors": errors,
+                "warnings": [],
+            },
+            exit_code,
+        )
+
+    report, report_exit_code = validate_gather_candidate_batch_payload(payload, target=target)
+    return payload, report, report_exit_code
+
+
 def json_type_name(value: Any) -> str:
     if value is None:
         return "null"
@@ -1267,16 +1286,8 @@ def validate_gather_candidate_batch_payload(
 
 
 def validate_gather_candidate_batch(target: Path) -> tuple[dict[str, Any], int]:
-    payload, errors, exit_code = load_json_object(target, label="gather candidate batch")
-    if payload is None:
-        return {
-            "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
-            "errors": errors,
-            "warnings": [],
-        }, exit_code
-
-    report, report_exit_code = validate_gather_candidate_batch_payload(payload, target=target)
-    return report, report_exit_code
+    _, report, exit_code = load_validated_gather_candidate_batch(target)
+    return report, exit_code
 
 
 def main() -> int:
