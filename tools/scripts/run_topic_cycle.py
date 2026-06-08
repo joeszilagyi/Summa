@@ -1798,12 +1798,6 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     finally:
         manifest["ended_at"] = utc_now()
         manifest["budget_consumed"]["runtime_seconds"] = round(time.monotonic() - started, 6)
-        record_cycle_evidence_from_manifest(
-            args=args,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            db_path=db_path,
-        )
         if return_code == 0:
             if args.mode == "dry-run":
                 manifest["status"] = "dry_run"
@@ -1811,6 +1805,18 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 manifest["status"] = "degraded"
             else:
                 manifest["status"] = "completed"
+        ledger = manifest.get("cycle_evidence_ledger")
+        if isinstance(ledger, dict):
+            ledger["status"] = "skipped" if args.mode == "dry-run" else "recorded"
+        # Write the finalized manifest before recording evidence so the ledger hash
+        # and manifest artifact metadata both reflect the durable on-disk state.
+        write_json(manifest_path, manifest)
+        record_cycle_evidence_from_manifest(
+            args=args,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            db_path=db_path,
+        )
         write_json(manifest_path, manifest)
     return manifest, return_code
 

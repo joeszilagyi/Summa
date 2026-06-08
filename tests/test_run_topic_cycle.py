@@ -552,7 +552,7 @@ def test_topic_cycle_unexpected_exception_writes_failed_manifest(
     assert persisted["failure_stage"] == "cycle_setup"
 
 
-def test_topic_cycle_final_status_recomputes_after_evidence_spool(
+def test_topic_cycle_final_status_is_final_before_cycle_evidence_recording(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = load_run_topic_cycle_module()
@@ -579,7 +579,19 @@ def test_topic_cycle_final_status_recomputes_after_evidence_spool(
     monkeypatch.setattr(module, "gather_stage", lambda **kwargs: tmp_path / "candidate-batch.json")
     monkeypatch.setattr(module, "candidate_ingest_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "acquisition_stage", lambda **kwargs: tmp_path / "execution-run")
-    monkeypatch.setattr(module, "execution_ingest_stage", lambda **kwargs: None)
+    def fake_execution_ingest_stage(**kwargs):
+        module.add_spool_record_to_manifest(
+            kwargs["manifest"],
+            spool_path=tmp_path / "preexisting-spool.json",
+            record={
+                "spool_record_id": "spool:preexisting",
+                "operation_kind": "cycle_evidence_write",
+                "failure_kind": "synthetic",
+                "replay_status": "spooled",
+            },
+        )
+
+    monkeypatch.setattr(module, "execution_ingest_stage", fake_execution_ingest_stage)
     monkeypatch.setattr(module, "publication_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "final_store_stage", lambda **kwargs: None)
     monkeypatch.setattr(module, "graph_closure_stage", lambda **kwargs: None)
@@ -591,16 +603,12 @@ def test_topic_cycle_final_status_recomputes_after_evidence_spool(
         manifest_path: Path,
         db_path: Path,
     ) -> None:
-        module.add_spool_record_to_manifest(
-            manifest,
-            spool_path=manifest_path,
-            record={
-                "spool_record_id": "spool:cycle-evidence",
-                "operation_kind": "cycle_evidence_write",
-                "failure_kind": "synthetic",
-                "replay_status": "spooled",
-            },
-        )
+        assert manifest["status"] == "degraded"
+        assert manifest["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
+        assert manifest_path.is_file()
+        persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert persisted["status"] == "degraded"
+        assert persisted["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
 
     monkeypatch.setattr(
         module, "record_cycle_evidence_from_manifest", fake_record_cycle_evidence_from_manifest
@@ -630,8 +638,9 @@ def test_topic_cycle_final_status_recomputes_after_evidence_spool(
     assert exit_code == 0
     assert manifest["status"] == "degraded"
     assert persisted["status"] == "degraded"
+    assert manifest["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
+    assert persisted["cycle_evidence_ledger"]["status"] == "recorded"  # type: ignore[index]
     assert persisted["spool_records"]
-    assert persisted["spool_records"][0]["operation_kind"] == "cycle_evidence_write"  # type: ignore[index]
 
 
 def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
