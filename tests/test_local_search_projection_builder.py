@@ -504,6 +504,58 @@ def test_projection_is_deterministic_when_rows_are_inserted_in_different_orders(
     ]
 
 
+def test_projection_streams_index_before_materializing_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "streamed_projection.sqlite"
+    args = SimpleNamespace(
+        db=str(db),
+        profile="public_preview",
+        index_db=str(index_db),
+        output_json=None,
+        correction_ledger=str(create_correction_ledger(tmp_path)),
+        generated_at="2026-06-02T00:00:00Z",
+        format="json",
+        validate_index_file=False,
+    )
+
+    observed: dict[str, object] = {}
+    original_write_index = builder.write_index
+
+    def wrapped_write_index(
+        index_path: Path,
+        payload: dict[str, object],
+        *,
+        validate_index_file: bool = False,
+        records_path: Path | None = None,
+        defer_metadata: bool = False,
+    ) -> None:
+        if records_path is not None:
+            observed["payload_keys"] = set(payload)
+            observed["defer_metadata"] = defer_metadata
+            observed["records_path"] = records_path
+            assert "records" not in payload
+            assert "excluded_records" not in payload
+        return original_write_index(
+            index_path,
+            payload,
+            validate_index_file=validate_index_file,
+            records_path=records_path,
+            defer_metadata=defer_metadata,
+        )
+
+    monkeypatch.setattr(builder, "write_index", wrapped_write_index)
+
+    payload = builder.build_projection_payload(args, index_path=index_db)
+
+    assert observed["defer_metadata"] is True
+    assert isinstance(observed["records_path"], Path)
+    assert "records" in payload
+    assert "excluded_records" in payload
+    builder.validate_projection_index_file(index_db, payload)
+
+
 def test_builder_with_output_json_does_not_duplicate_json_stdout(tmp_path: Path) -> None:
     db = create_search_db(tmp_path)
     output_json = tmp_path / "local_projection.json"
