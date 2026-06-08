@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -1045,6 +1044,14 @@ def run_live_engine(
             str(raw_engine_output_path),
             "--phase",
             phase,
+            "--stamped-output-file",
+            str(stamped_output_path),
+            "--stamp-place",
+            subject_id,
+            "--stamp-facet",
+            facet,
+            "--stamp-phase",
+            phase,
             "--engine",
             engine,
             "--tool-name",
@@ -1054,27 +1061,6 @@ def run_live_engine(
         timeout_seconds=command_timeout_seconds,
     )
     raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
-
-    shutil.copyfile(raw_engine_output_path, stamped_output_path)
-    invoke_llm_runner_bridge(
-        [
-            "bash",
-            str(LLM_RUNNER_BRIDGE_PATH),
-            "stamp",
-            "--file",
-            str(stamped_output_path),
-            "--place",
-            subject_id,
-            "--facet",
-            facet,
-            "--phase",
-            phase,
-            "--engine",
-            engine,
-        ],
-        label="llm_runner output stamp",
-        timeout_seconds=command_timeout_seconds,
-    )
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
     stamp_footer = parse_stamp_footer(stamped_output_text)
 

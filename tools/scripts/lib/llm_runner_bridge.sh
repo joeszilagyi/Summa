@@ -16,7 +16,7 @@ runtime_log_event() {
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  llm_runner_bridge.sh run --prompt-file <path> --tmp-dir <path> --output-file <path> --phase <phase> [--engine <engine>] [--tool-name <name>]
+  llm_runner_bridge.sh run --prompt-file <path> --tmp-dir <path> --output-file <path> --phase <phase> [--engine <engine>] [--tool-name <name>] [--stamped-output-file <path> --stamp-place <place> --stamp-facet <facet> --stamp-phase <phase>]
   llm_runner_bridge.sh stamp --file <path> --place <place> --facet <facet> --phase <phase> [--engine <engine>]
 
 This bridge exposes llm_runner.sh shell functions as stable subprocess commands
@@ -44,6 +44,10 @@ case "$subcommand" in
     tmp_dir=""
     output_file=""
     phase=""
+    stamped_output_file=""
+    stamp_place=""
+    stamp_facet=""
+    stamp_phase=""
     while [[ $# -gt 0 ]]; do
       case "${1-}" in
         --prompt-file)
@@ -70,6 +74,22 @@ case "$subcommand" in
           tool_name="${2-}"
           shift 2
           ;;
+        --stamped-output-file)
+          stamped_output_file="${2-}"
+          shift 2
+          ;;
+        --stamp-place)
+          stamp_place="${2-}"
+          shift 2
+          ;;
+        --stamp-facet)
+          stamp_facet="${2-}"
+          shift 2
+          ;;
+        --stamp-phase)
+          stamp_phase="${2-}"
+          shift 2
+          ;;
         -h|--help)
           usage
           exit 0
@@ -84,10 +104,21 @@ case "$subcommand" in
     [[ -n "$tmp_dir" ]] || fail "--tmp-dir is required"
     [[ -n "$output_file" ]] || fail "--output-file is required"
     [[ -n "$phase" ]] || fail "--phase is required"
+    if [[ -n "$stamped_output_file" ]]; then
+      [[ -n "$stamp_place" ]] || fail "--stamp-place is required with --stamped-output-file"
+      [[ -n "$stamp_facet" ]] || fail "--stamp-facet is required with --stamped-output-file"
+      [[ -n "$stamp_phase" ]] || fail "--stamp-phase is required with --stamped-output-file"
+    fi
     [[ -z "$engine" ]] || llm_runner_set_engine "$engine"
     llm_runner_init
     prompt_text="$(<"$prompt_file")"
     llm_runner_run_to_file "$tmp_dir" "$prompt_text" "$output_file" "$phase" "$tool_name"
+    if [[ -n "$stamped_output_file" ]]; then
+      if [[ "$stamped_output_file" != "$output_file" ]]; then
+        cp -- "$output_file" "$stamped_output_file"
+      fi
+      llm_runner_stamp_output "$stamped_output_file" "$stamp_place" "$stamp_facet" "$stamp_phase"
+    fi
     ;;
   stamp)
     file_path=""

@@ -1188,17 +1188,15 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
     rendered_prompt_path = run_dir / "rendered-prompt.txt"
     rendered_prompt_path.write_text("prompt body", encoding="utf-8")
 
-    timeout_values: list[float | None] = []
-
     def fake_invoke_llm_runner_bridge(
         command: list[str], *, label: str, timeout_seconds: float | None
     ) -> None:
-        timeout_values.append(timeout_seconds)
-        if label == "live engine run":
-            output_path = Path(command[command.index("--output-file") + 1])
-            output_path.write_text("FAKE CODEX OUTPUT", encoding="utf-8")
-            return
-        stamped_path = Path(command[command.index("--file") + 1])
+        assert label == "live engine run"
+        assert timeout_seconds == 7.5
+        assert "--stamped-output-file" in command
+        output_path = Path(command[command.index("--output-file") + 1])
+        stamped_path = Path(command[command.index("--stamped-output-file") + 1])
+        output_path.write_text("FAKE CODEX OUTPUT", encoding="utf-8")
         stamped_path.write_text(
             "FAKE CODEX OUTPUT\n"
             "\n---\n"
@@ -1224,7 +1222,6 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
         command_timeout_seconds=7.5,
     )
 
-    assert timeout_values == [7.5, 7.5]
     assert result["raw_engine_output"] == "FAKE CODEX OUTPUT"
     assert result["stamp_footer"]["model"] == "test-model"
 
