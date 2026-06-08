@@ -523,7 +523,10 @@ def _source_lead_key_for_candidate(
         if locator is None:
             locator = canonical_reconciliation.normalize_locator(structured.get("original_locator"))
     if locator is None:
-        locator = _normalize_key_text(candidate.get("text", ""))
+        locator = (
+            _normalize_key_text(candidate.get("candidate_id"))
+            or "source-lead-candidate-fallback"
+        )
     return canonical_store.stable_write_key(
         "source-lead",
         _key_scope(workspace_id),

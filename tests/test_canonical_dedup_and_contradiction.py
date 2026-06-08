@@ -838,6 +838,40 @@ def test_source_lead_without_explicit_id_reuses_row_across_batches(tmp_path: Pat
     assert rows[0]["source_lead_id"] is not None
 
 
+def test_source_lead_without_locator_falls_back_to_candidate_id(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    candidate = {
+        "candidate_id": "cand:source-lead.raw",
+        "candidate_type": "source_lead",
+        "origin": "llm_proposed",
+        "persistence_status": "workspace_run_only",
+        "review_status": "unverified",
+        "text": "This should not become key material for source-lead identity.",
+    }
+    batch = build_batch([candidate], run_id="gather-source-lead-raw")
+    expected_source_lead_id = canonical_store.stable_write_key(
+        "source-lead",
+        "fixture_subject",
+        canonical_ingest._normalize_key_text(candidate["candidate_id"]),
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="source-lead-raw.json", db_path=db_path)
+        row = conn.execute(
+            "SELECT source_lead_id, original_locator FROM source_access ORDER BY source_access_id"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["source_lead_id"] == expected_source_lead_id
+    assert row["original_locator"] == candidate["text"]
+
+
 def test_claim_without_batch_scoped_key_is_stable_across_batches(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     first_batch = build_batch(
