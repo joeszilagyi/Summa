@@ -1115,9 +1115,6 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "counts": {"selected": 1},
     }
 
-    def fake_validate_candidate_feedback_plan(path: Path):
-        raise AssertionError(f"unexpected validate_candidate_feedback_plan call: {path}")
-
     hashed_paths: list[Path] = []
 
     def fake_hash_file(path: Path) -> str:
@@ -1158,9 +1155,6 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         )
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(
-        module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan
-    )
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
     monkeypatch.setattr(module, "run_command", fake_run_command)
 
@@ -1185,6 +1179,136 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert commands[0][check_result_arg_index] == str(
         run_dir / "canonical-store" / "check-result.json"
     )
+
+
+def test_resolve_feedback_plan_uses_validated_payload_without_reread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    feedback_plan_path = tmp_path / "candidate-feedback-plan.json"
+    payload = {
+        "schema_version": "candidate-feedback-plan.v1",
+        "generated_at": "2026-06-03T12:34:56Z",
+        "subject": {
+            "subject_id": "fixture_subject",
+            "display_name": "Fixture Subject",
+            "domain_pack": "general.v1",
+            "enabled_facets": ["sources"],
+            "query_families": ["general_research"],
+        },
+        "canonical_store": {
+            "database_name": "fixture.sqlite",
+            "schema_version": 1,
+            "current_migration_id": "migration-001",
+            "dry_run": True,
+        },
+        "scoring_policy": {
+            "policy_id": "candidate-feedback.default.v1",
+            "cycle_depth_considered": 1,
+            "previous_run_ids_considered": [],
+            "use_prior_state": False,
+            "weights": {},
+            "limits": {},
+        },
+        "counts": {
+            "gather_runs_considered": 0,
+            "facet_candidates": 0,
+            "facet_candidates_total": 0,
+            "lead_candidates": 0,
+            "lead_candidates_total": 0,
+            "productive_leads": 0,
+            "productive_leads_total": 0,
+            "deferred_candidates": 0,
+        },
+        "facet_scores": [],
+        "lead_scores": [],
+        "next_action": {
+            "action_id": "feedback-plan-action",
+            "action_kind": "facet_only",
+            "subject_id": "fixture_subject",
+            "selected_facet": "sources",
+            "selected_prompt_bundle_id": "bundle-01",
+            "should_call_llm": True,
+            "selection_score": 1.0,
+            "scoring_policy_id": "candidate-feedback.default.v1",
+            "rationale": "fixture",
+            "reason_codes": [],
+            "cycle_depth": 1,
+            "use_prior_state": False,
+            "previous_run_ids_considered": [],
+            "input_record_refs": [],
+            "suggested_cli_args": ["--facet", "sources"],
+            "selected_object_ref": None,
+            "selected_lead_kind": None,
+            "selected_source_locus_id": None,
+            "selected_source_lead_id": None,
+            "selected_label": "Sources",
+            "selected_review_state": None,
+        },
+        "deferred": [],
+        "selection_explanation": {
+            "explanation_id": "feedback-plan-explanation",
+            "selection_kind": "feedback_next_action",
+        },
+        "warnings": [],
+        "errors": [],
+    }
+    feedback_plan_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    read_calls: list[Path] = []
+    hash_calls: list[Path] = []
+
+    def fake_load_validated_candidate_feedback_plan(path: Path):
+        assert path == feedback_plan_path
+        return payload, {"valid": True}, module.EXIT_FEEDBACK_PASS
+
+    def fake_read_json(path: Path, *, label: str) -> dict[str, object]:
+        read_calls.append(path)
+        if path == feedback_plan_path:
+            raise AssertionError("candidate feedback plan should be reused after validation")
+        raise AssertionError(f"unexpected read_json call for {label}: {path}")
+
+    def fake_hash_file(path: Path) -> str:
+        hash_calls.append(path)
+        assert path == feedback_plan_path
+        return "feedback-hash"
+
+    monkeypatch.setattr(
+        module, "load_validated_candidate_feedback_plan", fake_load_validated_candidate_feedback_plan
+    )
+    monkeypatch.setattr(module, "read_json", fake_read_json)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+
+    args = SimpleNamespace(feedback_plan=str(feedback_plan_path))
+    manifest = {
+        "run_id": "cycle-feedback-plan",
+        "started_at": "2026-06-03T12:34:56Z",
+        "stages": [],
+        "selection_explanations": [],
+        "next_action": None,
+    }
+
+    result = module.resolve_feedback_plan(
+        args=args,
+        manifest=manifest,
+        workspace=tmp_path,
+        db_path=tmp_path / "canonical.sqlite",
+        run_dir=tmp_path / "run-dir",
+        runtime={"subject_manifest_path": str(tmp_path / "subject-manifest.json")},
+    )
+
+    assert result == feedback_plan_path
+    assert read_calls == []
+    assert hash_calls == [feedback_plan_path]
+    assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
+    assert manifest["feedback_plan_pre"]["path"] == str(feedback_plan_path)  # type: ignore[index]
+    assert manifest["active_feedback_plan_for_gather"]["path"] == str(feedback_plan_path)  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    assert manifest["next_action"]["selected_facet"] == "sources"  # type: ignore[index]
 
 
 def test_graph_closure_stage_hashes_report_once_without_rehashing(

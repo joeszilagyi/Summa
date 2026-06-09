@@ -47,7 +47,7 @@ from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS as EXIT_FEEDBACK_PASS,
 )
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
-    validate_candidate_feedback_plan,
+    load_validated_candidate_feedback_plan,
 )
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     EXIT_PASS as EXIT_GATHER_PASS,
@@ -850,14 +850,15 @@ def resolve_feedback_plan(
         stage = StageRecord(name="load_feedback_plan")
         stage.started_at = utc_now()
         stage.inputs = {"feedback_plan": str(path)}
-        report, exit_code = validate_candidate_feedback_plan(path)
+        payload, report, exit_code = load_validated_candidate_feedback_plan(path)
+        if payload is None:
+            raise TopicCycleError("validated feedback plan unexpectedly missing")
         stage.validation = {
             "status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail",
             "report": report,
         }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "feedback plan failed validation")
-        payload = read_json(path, label="candidate feedback plan")
         stage.evidence = {
             "artifact_schema_ids": {
                 "feedback_plan": payload.get("schema_version"),

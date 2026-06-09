@@ -786,6 +786,103 @@ def test_candidate_feedback_validator_accepts_payload_in_memory(tmp_path: Path) 
     assert report["valid"] is True
 
 
+def test_candidate_feedback_plan_validator_loads_payload_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "candidate-feedback-plan.json"
+    payload = {
+        "schema_version": "candidate-feedback-plan.v1",
+        "generated_at": "2026-06-03T12:34:56Z",
+        "subject": {
+            "subject_id": "fixture_subject",
+            "display_name": "Fixture Subject",
+            "domain_pack": "general.v1",
+            "enabled_facets": ["sources"],
+            "query_families": ["general_research"],
+        },
+        "canonical_store": {
+            "database_name": "fixture.sqlite",
+            "schema_version": 1,
+            "current_migration_id": "migration-001",
+            "dry_run": True,
+        },
+        "scoring_policy": {
+            "policy_id": "candidate-feedback.default.v1",
+            "cycle_depth_considered": 1,
+            "previous_run_ids_considered": [],
+            "use_prior_state": False,
+            "weights": {},
+            "limits": {},
+        },
+        "counts": {
+            "gather_runs_considered": 0,
+            "facet_candidates": 0,
+            "facet_candidates_total": 0,
+            "lead_candidates": 0,
+            "lead_candidates_total": 0,
+            "productive_leads": 0,
+            "productive_leads_total": 0,
+            "deferred_candidates": 0,
+        },
+        "facet_scores": [],
+        "lead_scores": [],
+        "next_action": {
+            "action_id": "feedback-plan-action",
+            "action_kind": "facet_only",
+            "subject_id": "fixture_subject",
+            "selected_facet": "sources",
+            "selected_prompt_bundle_id": "bundle-01",
+            "should_call_llm": True,
+            "selection_score": 1.0,
+            "scoring_policy_id": "candidate-feedback.default.v1",
+            "rationale": "fixture",
+            "reason_codes": [],
+            "cycle_depth": 1,
+            "use_prior_state": False,
+            "previous_run_ids_considered": [],
+            "input_record_refs": [],
+            "suggested_cli_args": ["--facet", "sources"],
+            "selected_object_ref": None,
+            "selected_lead_kind": None,
+            "selected_source_locus_id": None,
+            "selected_source_lead_id": None,
+            "selected_label": "Sources",
+            "selected_review_state": None,
+        },
+        "deferred": [],
+        "selection_explanation": {
+            "explanation_id": "feedback-plan-explanation",
+            "selection_kind": "feedback_next_action",
+        },
+        "warnings": [],
+        "errors": [],
+    }
+    load_calls: list[Path] = []
+
+    def fake_load_json_object(target: Path):
+        load_calls.append(target)
+        return payload, [], validator.EXIT_PASS
+
+    def fake_validate_payload(payload_arg: dict[str, object], *, target: Path | None = None):
+        assert payload_arg is payload
+        assert target == path
+        return {"valid": True}, validator.EXIT_PASS
+
+    monkeypatch.setattr(validator, "load_json_object", fake_load_json_object)
+    monkeypatch.setattr(
+        validator,
+        "validate_candidate_feedback_plan_payload",
+        fake_validate_payload,
+    )
+
+    loaded_payload, report, exit_code = validator.load_validated_candidate_feedback_plan(path)
+
+    assert loaded_payload is payload
+    assert report == {"valid": True}
+    assert exit_code == validator.EXIT_PASS
+    assert load_calls == [path]
+
+
 def validate_plan(path: Path) -> dict[str, object]:
     report, exit_code = validator.validate_candidate_feedback_plan(path)
     assert exit_code == validator.EXIT_PASS, report
