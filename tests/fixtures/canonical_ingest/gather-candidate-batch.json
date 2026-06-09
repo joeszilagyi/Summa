@@ -43,22 +43,12 @@
   ],
   "created_at": "2026-06-03T12:34:56Z",
   "domain_pack": {
-    "display_name": "General Runtime Pack",
-    "enabled_facets": [
-      "sources",
-      "timeline",
-      "people",
-      "places",
-      "works",
-      "open_questions"
-    ],
     "pack_id": "general.v1",
     "path": "config/domain_packs/general.v1.json",
+    "sha256": "5b2b25c46447b42ce2439a4aa3a64c8835530aab1ace3ee884f032a3ada220f0",
     "prompt_bundle_id": "general.gather.sources.v1",
     "prompt_bundle_key": "gather.sources",
-    "schema_version": "domain-pack.v1",
-    "selected_facet": "sources",
-    "status": "runtime"
+    "selected_facet": "sources"
   },
   "engine": {
     "bridge_path": "tools/scripts/lib/llm_runner_bridge.sh",
@@ -84,15 +74,8 @@
     "bundle_id": "general.gather.sources.v1",
     "bundle_key": "gather.sources",
     "selected_template_file": "tools/prompts/general/general.sources.seed.prompt",
+    "selected_template_hash": "64c275cf27d675e4d24e83e201d30ce17d9d6d457cdbd0653e1e56583c1bf95a",
     "selected_template_id": "general.sources.seed",
-    "template_files": [
-      "tools/prompts/general/general.sources.seed.prompt",
-      "tools/prompts/general/general.sources.review.prompt"
-    ],
-    "template_ids": [
-      "general.sources.seed",
-      "general.sources.review"
-    ],
     "wrapper_template_id": "default.untrusted_source_text.v1"
   },
   "provenance": {
@@ -119,27 +102,16 @@
     "blocks": [],
     "end_delimiter": "<<<END_UNTRUSTED_SOURCE_TEXT>>>",
     "source_block_count": 0,
-    "wrapper_template_id": "default.untrusted_source_text.v1"
+    "wrapper_template_hash": "3f2344d46a33f2eea94ee2375cc6fac8e998265fb979105673ba1088dcc2f9d9",
+    "wrapper_template_id": "default.untrusted_source_text.v1",
+    "wrapper_template_path": "config/llm_source_text_wrapper_template.json"
   },
   "subject": {
-    "display_name": "Fixture Gather Subject",
-    "domain_pack": "general.v1",
-    "enabled_facets": [
-      "sources",
-      "timeline",
-      "people",
-      "places",
-      "works",
-      "open_questions"
-    ],
+    "manifest_hash": "439fac0bd66ac335f519c4e513749896d6f7a7fcf74904a92380b1a156b1dd6c",
     "manifest_path": "tests/fixtures/canonical_ingest/subject_manifest.json",
-    "query_families": [
-      "general_research"
-    ],
     "resolution_source": "fixture",
-    "scope_statement": "Synthetic candidate batch fixture for canonical ingestion tests.",
-    "subject_id": "fixture_subject",
-    "workspace_root": "tests/fixtures/canonical_ingest/workspace"
+    "workspace_root": "tests/fixtures/canonical_ingest",
+    "subject_id": "fixture_subject"
   },
   "validation": {
     "errors": [],

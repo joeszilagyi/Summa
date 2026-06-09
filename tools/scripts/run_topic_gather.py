@@ -33,6 +33,9 @@ from tools.common.candidate_feedback_contract import (  # noqa: E402
 )
 from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
+    TEMPLATE_PATH as WRAPPER_TEMPLATE_PATH,
+)
+from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
     load_template,
     parse_wrapped_blocks,
@@ -1327,6 +1330,9 @@ def build_candidate_batch(
     engine_cache_hit = (
         bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     )
+    subject_manifest_path = Path(str(gather_inputs["runtime"]["subject_manifest_path"])).expanduser().resolve()
+    domain_pack_path = REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"
+    selected_template_path = (REPO_ROOT / str(gather_inputs["selected_template_file"])).resolve()
     if live_result is not None:
         candidate_record = compact_candidate_record_payload(
             candidate_type=candidate_type_hint,
@@ -1365,22 +1371,15 @@ def build_candidate_batch(
         },
         "subject": {
             "subject_id": subject["subject_id"],
-            "display_name": subject["display_name"],
-            "domain_pack": subject["domain_pack"],
-            "scope_statement": subject["scope_statement"],
-            "enabled_facets": subject["enabled_facets"],
-            "query_families": subject["query_families"],
-            "manifest_path": gather_inputs["runtime"]["subject_manifest_path"],
+            "manifest_path": str(subject_manifest_path),
+            "manifest_hash": hash_file(subject_manifest_path),
             "workspace_root": gather_inputs["runtime"]["workspace_root"],
             "resolution_source": gather_inputs["runtime"]["resolution_source"],
         },
         "domain_pack": {
             "pack_id": pack["pack_id"],
-            "schema_version": pack["schema_version"],
-            "display_name": pack["display_name"],
-            "status": pack["status"],
-            "path": str(REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"),
-            "enabled_facets": pack["enabled_facets"],
+            "path": str(domain_pack_path),
+            "sha256": hash_file(domain_pack_path),
             "selected_facet": facet,
             "prompt_bundle_key": bundle["bundle_key"],
             "prompt_bundle_id": bundle["bundle_id"],
@@ -1395,6 +1394,7 @@ def build_candidate_batch(
             "bundle_id": bundle["bundle_id"],
             "selected_template_id": gather_inputs["selected_template_id"],
             "selected_template_file": gather_inputs["selected_template_file"],
+            "selected_template_hash": hash_file(selected_template_path),
             "wrapper_template_id": bundle["source_text_wrapper_template_id"],
         },
         "prompt": {
@@ -1403,6 +1403,8 @@ def build_candidate_batch(
         },
         "source_text_wrapping": {
             "wrapper_template_id": gather_inputs["wrapper_template"].template_id,
+            "wrapper_template_path": str(WRAPPER_TEMPLATE_PATH),
+            "wrapper_template_hash": hash_file(WRAPPER_TEMPLATE_PATH),
             "begin_delimiter": gather_inputs["wrapper_template"].begin_delimiter,
             "end_delimiter": gather_inputs["wrapper_template"].end_delimiter,
             "source_block_count": len(source_wrapping_blocks),

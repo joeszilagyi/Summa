@@ -988,12 +988,35 @@ def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> Non
         )
         assert proc.returncode == 0, facet + proc.stdout + proc.stderr
         payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
+        assert payload["subject"]["manifest_path"] == str(manifest_path)
+        assert payload["subject"]["manifest_hash"] == hashlib.sha256(
+            manifest_path.read_bytes()
+        ).hexdigest()
+        assert "display_name" not in payload["subject"]
+        assert "scope_statement" not in payload["subject"]
+        assert payload["domain_pack"]["path"] == str(
+            REPO_ROOT / "config" / "domain_packs" / "general.v1.json"
+        )
+        assert payload["domain_pack"]["sha256"] == hashlib.sha256(
+            (REPO_ROOT / "config" / "domain_packs" / "general.v1.json").read_bytes()
+        ).hexdigest()
+        assert "display_name" not in payload["domain_pack"]
+        assert "status" not in payload["domain_pack"]
         assert (
             payload["prompt_bundle"]["bundle_id"]
             == pack["prompt_bundles"][f"gather.{facet}"]["bundle_id"]
         )
+        assert payload["prompt_bundle"]["selected_template_hash"] == hashlib.sha256(
+            (REPO_ROOT / payload["prompt_bundle"]["selected_template_file"]).read_bytes()
+        ).hexdigest()
         assert "template_ids" not in payload["prompt_bundle"]
         assert "template_files" not in payload["prompt_bundle"]
+        assert payload["source_text_wrapping"]["wrapper_template_path"] == str(
+            REPO_ROOT / "config" / "llm_source_text_wrapper_template.json"
+        )
+        assert payload["source_text_wrapping"]["wrapper_template_hash"] == hashlib.sha256(
+            (REPO_ROOT / "config" / "llm_source_text_wrapper_template.json").read_bytes()
+        ).hexdigest()
 
 
 def test_missing_prompt_file_fails_clearly(tmp_path: Path, monkeypatch, capsys) -> None:

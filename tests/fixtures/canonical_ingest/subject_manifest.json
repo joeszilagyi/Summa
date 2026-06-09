@@ -1,0 +1,27 @@
+{
+  "aliases": [],
+  "disambiguation_terms": [],
+  "domain_pack": "general.v1",
+  "display_name": "Fixture Gather Subject",
+  "enabled_facets": [
+    "sources",
+    "timeline",
+    "people",
+    "places",
+    "works",
+    "open_questions"
+  ],
+  "excluded_senses": [],
+  "languages": [
+    "en"
+  ],
+  "legacy_substrate_paths": [],
+  "notes": [],
+  "public_export_default": false,
+  "query_families": [
+    "general_research"
+  ],
+  "scope_statement": "Synthetic candidate batch fixture for canonical ingestion tests.",
+  "schema_version": "subject-manifest.v1",
+  "subject_id": "fixture_subject"
+}

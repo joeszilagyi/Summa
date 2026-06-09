@@ -84,14 +84,16 @@ def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "rendered-prompt.txt"
 
 
-def _render_place_shape_prompt(payload: dict[str, object]) -> str:
+def _render_place_shape_prompt(
+    payload: dict[str, object], *, subject_metadata: dict[str, object]
+) -> str:
     fixture_prompt_text = (FIXTURE_BATCH.parent / "rendered-prompt.txt").read_text(encoding="utf-8")
     prompt_body = fixture_prompt_text.split("\n\nSubject runtime:\n", 1)[0]
     prompt_bundle = dict(payload["prompt_bundle"])
     prompt_bundle["source_text_wrapper_template_id"] = prompt_bundle["wrapper_template_id"]
     return render_prompt_text(
         prompt_body=prompt_body,
-        subject=payload["subject"],
+        subject=subject_metadata,
         facet=str(payload["facet"]["name"]),
         phase=str(payload["phase"]),
         bundle=prompt_bundle,
@@ -102,6 +104,8 @@ def _render_place_shape_prompt(payload: dict[str, object]) -> str:
 
 def _place_shape_candidate_batch(
     *,
+    workspace_root: Path,
+    manifest_path: Path,
     subject_id: str,
     display_name: str,
     run_id: str,
@@ -113,15 +117,27 @@ def _place_shape_candidate_batch(
     open_question_text: str,
 ) -> dict[str, object]:
     payload = copy.deepcopy(json.loads(FIXTURE_BATCH.read_text(encoding="utf-8")))
+    domain_pack_path = REPO_ROOT / "config" / "domain_packs" / "general.v1.json"
+    pack = json.loads(domain_pack_path.read_text(encoding="utf-8"))
+    bundle = pack["prompt_bundles"]["gather.sources"]
+    prompt_bundle_file = REPO_ROOT / str(bundle["template_files"][0])
     payload["run_id"] = run_id
     payload["created_at"] = FIXED_CREATED_AT
-    payload["subject"]["subject_id"] = subject_id
-    payload["subject"]["display_name"] = display_name
-    payload["subject"]["domain_pack"] = "general.v1"
-    payload["subject"]["scope_statement"] = f"Synthetic place-dominant fixture for {display_name}."
-    payload["domain_pack"]["pack_id"] = "general.v1"
-    payload["domain_pack"]["status"] = "runtime"
-    payload["domain_pack"]["selected_facet"] = "sources"
+    payload["subject"] = {
+        "subject_id": subject_id,
+        "manifest_path": str(manifest_path),
+        "manifest_hash": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "workspace_root": str(workspace_root),
+        "resolution_source": "subject_manifest_path",
+    }
+    payload["domain_pack"] = {
+        "pack_id": "general.v1",
+        "path": str(domain_pack_path),
+        "sha256": hashlib.sha256(domain_pack_path.read_bytes()).hexdigest(),
+        "selected_facet": "sources",
+        "prompt_bundle_key": "gather.sources",
+        "prompt_bundle_id": "general.gather.sources.v1",
+    }
     payload["facet"]["name"] = "sources"
     payload["facet"]["candidate_type_hint"] = "source_lead"
     payload["phase"] = "01a"
@@ -134,7 +150,21 @@ def _place_shape_candidate_batch(
     payload["provenance"]["timestamp"] = FIXED_CREATED_AT
     payload["provenance"]["engine_invoked"] = False
     payload["provenance"]["engine_present"] = False
+    payload["prompt_bundle"] = {
+        "bundle_id": "general.gather.sources.v1",
+        "bundle_key": "gather.sources",
+        "selected_template_file": str(prompt_bundle_file.relative_to(REPO_ROOT)),
+        "selected_template_hash": hashlib.sha256(prompt_bundle_file.read_bytes()).hexdigest(),
+        "selected_template_id": "general.sources.seed",
+        "wrapper_template_id": "default.untrusted_source_text.v1",
+    }
     payload["prompt"]["rendered_prompt_path"] = f"{run_id}/rendered-prompt.txt"
+    subject_metadata = {
+        "subject_id": subject_id,
+        "display_name": display_name,
+        "domain_pack": "general.v1",
+        "scope_statement": f"Synthetic place-dominant fixture for {display_name}.",
+    }
     payload["candidates"] = [
         {
             "candidate_id": f"cand:{subject_id}.source_lead",
@@ -202,7 +232,7 @@ def _place_shape_candidate_batch(
             "text": open_question_text,
         },
     ]
-    rendered_prompt = _render_place_shape_prompt(payload)
+    rendered_prompt = _render_place_shape_prompt(payload, subject_metadata=subject_metadata)
     payload["prompt"]["rendered_prompt_hash"] = hashlib.sha256(
         rendered_prompt.encode("utf-8")
     ).hexdigest()
@@ -222,7 +252,16 @@ def write_place_shape_batch(
     guide_url: str,
     open_question_text: str,
 ) -> Path:
+    workspace_root = tmp_path / f"{run_id}-workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = write_manifest(
+        workspace_root,
+        subject_id=subject_id,
+        display_name=display_name,
+    )
     payload = _place_shape_candidate_batch(
+        workspace_root=workspace_root,
+        manifest_path=manifest_path,
         subject_id=subject_id,
         display_name=display_name,
         run_id=run_id,
@@ -237,7 +276,18 @@ def write_place_shape_batch(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     prompt_path = path.parent / str(payload["prompt"]["rendered_prompt_path"])
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(_render_place_shape_prompt(payload), encoding="utf-8")
+    prompt_path.write_text(
+        _render_place_shape_prompt(
+            payload,
+            subject_metadata={
+                "subject_id": subject_id,
+                "display_name": display_name,
+                "domain_pack": "general.v1",
+                "scope_statement": f"Synthetic place-dominant fixture for {display_name}.",
+            },
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -282,7 +332,9 @@ def test_general_pack_place_shape_first_cycle_dry_run_is_runtime_reachable_but_n
     assert proc.returncode == 0, proc.stdout + proc.stderr
     payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
     assert payload["domain_pack"]["pack_id"] == "general.v1"
-    assert payload["domain_pack"]["status"] == "runtime"
+    assert payload["domain_pack"]["sha256"] == hashlib.sha256(
+        (REPO_ROOT / "config" / "domain_packs" / "general.v1.json").read_bytes()
+    ).hexdigest()
     assert payload["facet"]["name"] == "sources"
     assert payload["candidates"] == []
 
@@ -426,7 +478,9 @@ def test_general_pack_place_shape_cycle_two_prior_state_is_subject_scoped_and_us
     connecticut_prompt = prompt_path_for(connecticut_workspace, "connecticut-cycle-two").read_text(encoding="utf-8")
 
     assert montana_payload["domain_pack"]["pack_id"] == "general.v1"
-    assert montana_payload["domain_pack"]["status"] == "runtime"
+    assert montana_payload["domain_pack"]["sha256"] == hashlib.sha256(
+        (REPO_ROOT / "config" / "domain_packs" / "general.v1.json").read_bytes()
+    ).hexdigest()
     assert montana_payload["cycle_depth"] == 2
     assert montana_payload["prior_state"]["context_hash"]
     assert montana_payload["prior_state"]["record_counts"]["works"]["total"] >= 1

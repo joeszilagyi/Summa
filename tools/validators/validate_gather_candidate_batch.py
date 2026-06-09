@@ -42,6 +42,7 @@ from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_next_action_prompt_payload,
 )
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
+from tools.scripts import resolve_subject_runtime  # noqa: E402
 
 VALIDATOR_NAME = "gather_candidate_batch"
 CONTRACT_VERSION = "1"
@@ -217,6 +218,14 @@ def matches_json_type(value: Any, type_name: str) -> bool:
     if type_name == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     return False
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def validate_candidate_extraction_record(
@@ -1000,6 +1009,27 @@ def validate_invariants(
                     message="source_text_wrapping.wrapper_template_id must match the checked-in template",
                     path="$.source_text_wrapping.wrapper_template_id",
                 )
+            wrapper_template_path = wrapping.get("wrapper_template_path")
+            if isinstance(wrapper_template_path, str):
+                template_path = Path(wrapper_template_path)
+                if not template_path.is_absolute():
+                    template_path = (REPO_ROOT / template_path).resolve()
+                if not template_path.is_file():
+                    add_error(
+                        errors,
+                        code="WRAPPER_TEMPLATE_PATH_MISSING",
+                        message="source_text_wrapping.wrapper_template_path does not point to a readable file",
+                        path="$.source_text_wrapping.wrapper_template_path",
+                    )
+                else:
+                    actual_wrapper_hash = sha256_file(template_path)
+                    if wrapping.get("wrapper_template_hash") != actual_wrapper_hash:
+                        add_error(
+                            errors,
+                            code="WRAPPER_TEMPLATE_HASH_MISMATCH",
+                            message="source_text_wrapping.wrapper_template_hash does not match the wrapper template file",
+                            path="$.source_text_wrapping.wrapper_template_hash",
+                        )
             if wrapping.get("begin_delimiter") != template.begin_delimiter:
                 add_error(
                     errors,
@@ -1143,35 +1173,166 @@ def validate_invariants(
             }
             subject_payload = payload.get("subject")
             if isinstance(subject_payload, dict):
-                expected_subject = {
-                    "subject_id": subject_payload.get("subject_id"),
-                    "display_name": subject_payload.get("display_name"),
-                    "domain_pack": subject_payload.get("domain_pack"),
-                    "scope_statement": subject_payload.get("scope_statement"),
-                }
-                expected_subject_text = render_json_payload(expected_subject)
-                actual_subject_block = parsed_metadata_blocks.get("metadata:subject")
-                if actual_subject_block is None:
+                manifest_path = subject_payload.get("manifest_path")
+                if isinstance(manifest_path, str):
+                    subject_path = Path(manifest_path)
+                    if not subject_path.is_absolute():
+                        subject_path = (REPO_ROOT / subject_path).resolve()
+                    if not subject_path.is_file():
+                        add_error(
+                            errors,
+                            code="SUBJECT_MANIFEST_PATH_MISSING",
+                            message="subject.manifest_path does not point to a readable file",
+                            path="$.subject.manifest_path",
+                        )
+                    else:
+                        manifest_hash = subject_payload.get("manifest_hash")
+                        actual_manifest_hash = sha256_file(subject_path)
+                        if manifest_hash != actual_manifest_hash:
+                            add_error(
+                                errors,
+                                code="SUBJECT_MANIFEST_HASH_MISMATCH",
+                                message="subject.manifest_hash does not match subject.manifest_path content",
+                                path="$.subject.manifest_hash",
+                            )
+                        try:
+                            manifest = resolve_subject_runtime.load_subject_manifest(subject_path)
+                        except resolve_subject_runtime.ResolutionError as exc:
+                            add_error(
+                                errors,
+                                code="SUBJECT_MANIFEST_INVALID",
+                                message=str(exc),
+                                path="$.subject.manifest_path",
+                            )
+                        else:
+                            if subject_payload.get("subject_id") != manifest["subject_id"]:
+                                add_error(
+                                    errors,
+                                    code="SUBJECT_ID_MISMATCH",
+                                    message="subject.subject_id must match the loaded subject manifest",
+                                    path="$.subject.subject_id",
+                                )
+                            expected_subject = {
+                                "subject_id": manifest["subject_id"],
+                                "display_name": manifest["display_name"],
+                                "domain_pack": manifest["domain_pack"],
+                                "scope_statement": manifest["scope_statement"],
+                            }
+                            expected_subject_text = render_json_payload(expected_subject)
+                            actual_subject_block = parsed_metadata_blocks.get("metadata:subject")
+                            if actual_subject_block is None:
+                                add_error(
+                                    errors,
+                                    code="UNTRUSTED_SUBJECT_METADATA_MISSING",
+                                    message="rendered prompt must include an untrusted subject metadata block",
+                                    path="$.prompt.rendered_prompt",
+                                )
+                            else:
+                                if actual_subject_block.provenance != "subject manifest metadata":
+                                    add_error(
+                                        errors,
+                                        code="UNTRUSTED_SUBJECT_METADATA_PROVENANCE_MISMATCH",
+                                        message="subject metadata provenance must match the wrapped prompt contract",
+                                        path="$.prompt.rendered_prompt",
+                                    )
+                                if actual_subject_block.source_text != expected_subject_text:
+                                    add_error(
+                                        errors,
+                                        code="UNTRUSTED_SUBJECT_METADATA_MISMATCH",
+                                        message="subject metadata block must serialize the rendered subject payload as inert JSON",
+                                        path="$.prompt.rendered_prompt",
+                                    )
+                else:
                     add_error(
                         errors,
-                        code="UNTRUSTED_SUBJECT_METADATA_MISSING",
-                        message="rendered prompt must include an untrusted subject metadata block",
-                        path="$.prompt.rendered_prompt",
+                        code="SUBJECT_MANIFEST_PATH_REQUIRED",
+                        message="subject.manifest_path must be present",
+                        path="$.subject.manifest_path",
                     )
-                else:
-                    if actual_subject_block.provenance != "subject manifest metadata":
+
+            domain_pack_payload = payload.get("domain_pack")
+            if isinstance(domain_pack_payload, dict):
+                domain_pack_path = domain_pack_payload.get("path")
+                if isinstance(domain_pack_path, str):
+                    pack_path = Path(domain_pack_path)
+                    if not pack_path.is_absolute():
+                        pack_path = (REPO_ROOT / pack_path).resolve()
+                    if not pack_path.is_file():
                         add_error(
                             errors,
-                            code="UNTRUSTED_SUBJECT_METADATA_PROVENANCE_MISMATCH",
-                            message="subject metadata provenance must match the wrapped prompt contract",
-                            path="$.prompt.rendered_prompt",
+                            code="DOMAIN_PACK_PATH_MISSING",
+                            message="domain_pack.path does not point to a readable file",
+                            path="$.domain_pack.path",
                         )
-                    if actual_subject_block.source_text != expected_subject_text:
+                    else:
+                        actual_hash = sha256_file(pack_path)
+                        if domain_pack_payload.get("sha256") != actual_hash:
+                            add_error(
+                                errors,
+                                code="DOMAIN_PACK_HASH_MISMATCH",
+                                message="domain_pack.sha256 does not match domain_pack.path content",
+                                path="$.domain_pack.sha256",
+                            )
+                    if isinstance(facet, dict) and domain_pack_payload.get("selected_facet") != facet.get(
+                        "name"
+                    ):
                         add_error(
                             errors,
-                            code="UNTRUSTED_SUBJECT_METADATA_MISMATCH",
-                            message="subject metadata block must serialize the rendered subject payload as inert JSON",
-                            path="$.prompt.rendered_prompt",
+                            code="DOMAIN_PACK_SELECTED_FACET_MISMATCH",
+                            message="domain_pack.selected_facet must match facet.name",
+                            path="$.domain_pack.selected_facet",
+                        )
+                else:
+                    add_error(
+                        errors,
+                        code="DOMAIN_PACK_PATH_REQUIRED",
+                        message="domain_pack.path must be present",
+                        path="$.domain_pack.path",
+                    )
+
+            if isinstance(prompt_bundle, dict):
+                selected_template_file = prompt_bundle.get("selected_template_file")
+                if isinstance(selected_template_file, str):
+                    template_path = Path(selected_template_file)
+                    if not template_path.is_absolute():
+                        template_path = (REPO_ROOT / template_path).resolve()
+                    if not template_path.is_file():
+                        add_error(
+                            errors,
+                            code="PROMPT_BUNDLE_TEMPLATE_PATH_MISSING",
+                            message="prompt_bundle.selected_template_file does not point to a readable file",
+                            path="$.prompt_bundle.selected_template_file",
+                        )
+                    else:
+                        actual_template_hash = sha256_file(template_path)
+                        if prompt_bundle.get("selected_template_hash") != actual_template_hash:
+                            add_error(
+                                errors,
+                                code="PROMPT_BUNDLE_TEMPLATE_HASH_MISMATCH",
+                                message="prompt_bundle.selected_template_hash does not match the selected template file",
+                                path="$.prompt_bundle.selected_template_hash",
+                            )
+                else:
+                    add_error(
+                        errors,
+                        code="PROMPT_BUNDLE_TEMPLATE_PATH_REQUIRED",
+                        message="prompt_bundle.selected_template_file must be present",
+                        path="$.prompt_bundle.selected_template_file",
+                    )
+                if isinstance(domain_pack_payload, dict):
+                    if domain_pack_payload.get("prompt_bundle_id") != prompt_bundle.get("bundle_id"):
+                        add_error(
+                            errors,
+                            code="DOMAIN_PACK_PROMPT_BUNDLE_ID_MISMATCH",
+                            message="domain_pack.prompt_bundle_id must match prompt_bundle.bundle_id",
+                            path="$.domain_pack.prompt_bundle_id",
+                        )
+                    if domain_pack_payload.get("prompt_bundle_key") != prompt_bundle.get("bundle_key"):
+                        add_error(
+                            errors,
+                            code="DOMAIN_PACK_PROMPT_BUNDLE_KEY_MISMATCH",
+                            message="domain_pack.prompt_bundle_key must match prompt_bundle.bundle_key",
+                            path="$.domain_pack.prompt_bundle_key",
                         )
 
             if isinstance(feedback_plan, dict):
