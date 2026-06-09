@@ -465,6 +465,40 @@ def test_runtime_ledger_append_event_updates_metadata_sidecar(tmp_path: Path) ->
     assert metadata["line_count"] == 2
 
 
+def test_runtime_ledger_rejects_non_standard_json_constants(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        (
+            '{"event_id":"event-1","event_type":"command_end","occurred_at":"2026-06-01T00:05:00Z","run_id":"run-1","schema_version":"runtime-ledger.v1","status":NaN,"workspace_id":"workspace-a"}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        runtime_ledger.RuntimeLedgerError,
+        match="contains non-standard JSON",
+    ):
+        runtime_ledger.load_events(ledger_path)
+
+
+def test_runtime_ledger_append_event_rejects_non_standard_json_constants(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    event = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="run-1",
+        event_type="command_end",
+        command="pytest-fixture",
+        status="pass",
+    )
+    event["status"] = float("nan")
+
+    with pytest.raises(runtime_ledger.RuntimeLedgerError, match="non-standard"):
+        runtime_ledger.append_event(ledger_path, event)
+
+
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

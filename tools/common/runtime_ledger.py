@@ -31,6 +31,10 @@ class RuntimeLedgerError(RuntimeError):
     """Raised when a runtime-ledger event is invalid or cannot be appended."""
 
 
+def reject_json_constant(value: str) -> None:
+    raise RuntimeLedgerError(f"runtime-ledger JSON contains a non-standard constant: {value}")
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -100,7 +104,10 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
     if event["event_type"] not in EVENT_TYPES:
         raise RuntimeLedgerError(f"unsupported runtime-ledger event_type: {event['event_type']}")
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        line = json.dumps(event, ensure_ascii=False, allow_nan=False, sort_keys=True) + "\n"
+    except ValueError as exc:
+        raise RuntimeLedgerError("runtime-ledger event contains non-standard JSON") from exc
     with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(line)
         handle.flush()
@@ -142,12 +149,16 @@ def load_events(ledger_path: Path) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                payload = json.loads(line)
+                payload = json.loads(line, parse_constant=reject_json_constant)
             except json.JSONDecodeError as exc:
                 if (not has_trailing_newline) and not raw_line.endswith("\n"):
                     break
                 raise RuntimeLedgerError(
                     f"runtime ledger {ledger_path} contains invalid JSON on line {line_number}"
+                ) from exc
+            except RuntimeLedgerError as exc:
+                raise RuntimeLedgerError(
+                    f"runtime ledger {ledger_path} contains non-standard JSON on line {line_number}"
                 ) from exc
             if not isinstance(payload, dict):
                 raise RuntimeLedgerError(
