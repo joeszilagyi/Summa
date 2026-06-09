@@ -47,7 +47,7 @@ from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS as EXIT_FEEDBACK_PASS,
 )
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
-    validate_candidate_feedback_plan,
+    load_validated_candidate_feedback_plan,
 )
 from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     EXIT_PASS as EXIT_GATHER_PASS,
@@ -56,12 +56,8 @@ from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     validate_gather_candidate_batch,
 )
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
-    EXIT_PASS as EXIT_EXECUTION_PASS,
-)
-from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     ExecutionArtifactReceipt,
     load_execution_artifacts,
-    validate_execution_artifact_receipt,
 )
 
 SCHEMA_VERSION = "topic-cycle-run.v1"
@@ -190,6 +186,26 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_json(path, payload)
+
+
+def canonical_store_check_result_path(manifest: dict[str, Any]) -> Path | None:
+    canonical_db = manifest.get("canonical_db")
+    if not isinstance(canonical_db, dict):
+        return None
+    check_result = canonical_db.get("check_result")
+    if not isinstance(check_result, dict):
+        return None
+    path_value = check_result.get("path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    return resolve_path(path_value)
+
+
+def add_canonical_store_check_result_arg(command: list[str], manifest: dict[str, Any]) -> None:
+    # The check result captures store shape only, so later stages can reuse it safely.
+    check_result_path = canonical_store_check_result_path(manifest)
+    if check_result_path is not None:
+        command.extend(["--canonical-store-check-json", str(check_result_path)])
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -352,6 +368,7 @@ def build_manifest(
         "canonical_db": {
             "path": str(db_path),
             "mutated": False,
+            "check_result": None,
             "initial_summary": None,
             "final_summary": None,
         },
@@ -541,7 +558,7 @@ def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
     return float(timeout_seconds)
 
 
-def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> object:
+def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> Any:
     return run_streaming_command(command, cwd=cwd, timeout=timeout)
 
 
@@ -660,7 +677,7 @@ def add_spool_record_to_manifest(
 
 
 def validate_store_stage(
-    *, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path
+    *, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path, run_dir: Path
 ) -> None:
     stage = StageRecord(name="validate_canonical_store")
     stage.started_at = utc_now()
@@ -689,6 +706,21 @@ def validate_store_stage(
         finally:
             conn.close()
         manifest["canonical_db"]["initial_summary"] = summary
+        check_result_path = run_dir / "canonical-store" / "check-result.json"
+        check_result_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(
+            check_result_path,
+            canonical_store.serialize_check_result(validation),
+        )
+        check_result_sha256 = hash_file(check_result_path)
+        manifest["canonical_db"]["check_result"] = {
+            "path": str(check_result_path),
+            "sha256": check_result_sha256,
+        }
+        stage.artifacts = {
+            "canonical_store_check_result": str(check_result_path),
+            "canonical_store_check_result_sha256": check_result_sha256,
+        }
         stage.validation = {
             "status": "pass",
             "schema_version": summary["schema_version"],
@@ -727,6 +759,10 @@ def build_feedback_plan_stage(
     feedback_dir = run_dir / "feedback"
     feedback_dir.mkdir(parents=True, exist_ok=True)
     output = feedback_dir / f"candidate-feedback-plan.{when}.json"
+    check_result_path = canonical_store_check_result_path(manifest)
+    stage.inputs = {"db": str(db_path)}
+    if check_result_path is not None:
+        stage.inputs["canonical_store_check_result"] = str(check_result_path)
     command = [
         sys.executable,
         str(REPO_ROOT / "tools" / "scripts" / "build_candidate_feedback_plan.py"),
@@ -745,19 +781,14 @@ def build_feedback_plan_stage(
         "--format",
         "json",
     ]
+    add_canonical_store_check_result_arg(command, manifest)
     stage.command = command
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
             fail_stage(stage, command_output_excerpt(proc) or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
-        report, exit_code = validate_candidate_feedback_plan(output)
-        stage.validation = {
-            "status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail",
-            "report": report,
-        }
-        if exit_code != EXIT_FEEDBACK_PASS:
-            fail_stage(stage, "candidate feedback plan failed validation")
+        stage.validation = {"status": "pass", "source": "child"}
         feedback_hash = hash_file(output)
         stage.evidence = {
             "artifact_schema_ids": {
@@ -819,14 +850,15 @@ def resolve_feedback_plan(
         stage = StageRecord(name="load_feedback_plan")
         stage.started_at = utc_now()
         stage.inputs = {"feedback_plan": str(path)}
-        report, exit_code = validate_candidate_feedback_plan(path)
+        payload, report, exit_code = load_validated_candidate_feedback_plan(path)
+        if payload is None:
+            raise TopicCycleError("validated feedback plan unexpectedly missing")
         stage.validation = {
             "status": "pass" if exit_code == EXIT_FEEDBACK_PASS else "fail",
             "report": report,
         }
         if exit_code != EXIT_FEEDBACK_PASS:
             fail_stage(stage, "feedback plan failed validation")
-        payload = read_json(path, label="candidate feedback plan")
         stage.evidence = {
             "artifact_schema_ids": {
                 "feedback_plan": payload.get("schema_version"),
@@ -879,6 +911,13 @@ def gather_stage(
             selected_facet = next_action.get("selected_facet")
             if isinstance(selected_facet, str) and selected_facet.strip():
                 gather_facet = selected_facet.strip()
+    stage.inputs = {
+        "subject": runtime["subject_manifest_path"],
+        "workspace": str(workspace),
+    }
+    check_result_path = canonical_store_check_result_path(manifest)
+    if check_result_path is not None:
+        stage.inputs["canonical_store_check_result"] = str(check_result_path)
     command = [
         sys.executable,
         str(REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"),
@@ -906,6 +945,7 @@ def gather_stage(
         command.extend(
             ["--db", str(db_path), "--use-prior-state", "--cycle-depth", str(args.cycle_depth)]
         )
+        add_canonical_store_check_result_arg(command, manifest)
         for previous_run_id in args.previous_run_id:
             command.extend(["--previous-run-id", previous_run_id])
     elif args.cycle_depth != 1:
@@ -924,21 +964,14 @@ def gather_stage(
             candidate_batch_sha256 = hash_file(batch_path)
         if not isinstance(rendered_prompt_sha256, str):
             rendered_prompt_sha256 = hash_file(prompt_path)
-        batch, report, exit_code = (
-            gather_candidate_batch_validator.load_validated_gather_candidate_batch(batch_path)
-        )
-        stage.validation = {
-            "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
-            "report": report,
-        }
-        if exit_code != EXIT_GATHER_PASS:
-            fail_stage(stage, "gather candidate batch failed validation")
+        batch = read_json(batch_path, label="candidate batch")
+        stage.validation = {"status": "pass", "source": "child"}
         validation_receipt = {
             "artifact_path": str(batch_path),
             "artifact_hash": candidate_batch_sha256,
             "validator_name": gather_candidate_batch_validator.VALIDATOR_NAME,
             "validator_version": gather_candidate_batch_validator.CONTRACT_VERSION,
-            "result": report,
+            "result": {"status": "pass", "source": "child"},
         }
         validation_receipt_path = (
             run_dir / "candidate-ingest" / "gather-candidate-batch-validation.json"
@@ -953,10 +986,11 @@ def gather_stage(
             "rendered_prompt": str(prompt_path),
             "rendered_prompt_sha256": rendered_prompt_sha256,
         }
-        if payload.get("prior_state"):
+        prior_state_value = payload.get("prior_state")
+        if isinstance(prior_state_value, dict):
             manifest["prior_state"] = {
-                "context_hash": payload["prior_state"].get("context_hash"),
-                "record_counts": payload["prior_state"].get("record_counts"),
+                "context_hash": prior_state_value.get("context_hash"),
+                "record_counts": prior_state_value.get("record_counts"),
             }
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -997,9 +1031,8 @@ def candidate_ingest_stage(
         fixture_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture, fixture_target)
         fixture_payload = read_json(fixture, label="candidate batch fixture")
-        prompt_ref = (
-            fixture_payload.get("prompt") if isinstance(fixture_payload.get("prompt"), dict) else {}
-        )
+        prompt_ref_value = fixture_payload.get("prompt")
+        prompt_ref = prompt_ref_value if isinstance(prompt_ref_value, dict) else {}
         rendered_prompt_path = prompt_ref.get("rendered_prompt_path")
         if isinstance(rendered_prompt_path, str) and rendered_prompt_path:
             source_prompt_path = (
@@ -1214,13 +1247,7 @@ def acquisition_stage(
         if proc.returncode != 0:
             fail_stage(stage, command_output_excerpt(proc) or "source adapter execution failed")
         receipt = load_execution_artifacts(output_dir)
-        report, exit_code = validate_execution_artifact_receipt(receipt)
-        stage.validation = {
-            "status": "pass" if exit_code == EXIT_EXECUTION_PASS else "fail",
-            "report": report,
-        }
-        if exit_code != EXIT_EXECUTION_PASS:
-            fail_stage(stage, "execution artifacts failed validation")
+        stage.validation = {"status": "pass", "source": "child"}
         stage.evidence = {
             "artifact_schema_ids": {
                 "execution_record": receipt.execution_record.get("schema_version"),
@@ -1730,7 +1757,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     try:
         runtime = resolve_runtime_stage(args=args, manifest=manifest, workspace=workspace)
-        lock_context = nullcontext()
+        lock_context: Any = nullcontext()
         if not getattr(args, "skip_workspace_lock", False):
             workspace_id = manifest["workspace"].get("workspace_id")
             if not isinstance(workspace_id, str) or not workspace_id.strip():
@@ -1747,7 +1774,12 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         try:
             with lock_context:
                 resolve_domain_pack_stage(runtime=runtime, manifest=manifest)
-                validate_store_stage(args=args, manifest=manifest, db_path=db_path)
+                validate_store_stage(
+                    args=args,
+                    manifest=manifest,
+                    db_path=db_path,
+                    run_dir=run_dir,
+                )
                 feedback_plan = resolve_feedback_plan(
                     args=args,
                     manifest=manifest,
@@ -1795,7 +1827,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     execution_artifacts=execution_artifacts,
                     run_dir=run_dir,
                 )
-                if args.build_next_feedback_plan:
+                if args.build_next_feedback_plan and args.mode != "dry-run":
                     build_feedback_plan_stage(
                         args=args,
                         manifest=manifest,
@@ -1805,6 +1837,14 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         runtime=runtime,
                         when="post",
                     )
+                elif args.build_next_feedback_plan:
+                    stage = StageRecord(
+                        name="build_feedback_plan_post",
+                        required=False,
+                        status="skipped",
+                    )
+                    stage.skipped_reason = "dry-run does not mutate canonical DB"
+                    add_stage(manifest, stage)
                 else:
                     stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
                     stage.skipped_reason = "not requested"

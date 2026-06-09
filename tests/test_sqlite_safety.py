@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-from contextlib import contextmanager
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "source_db_tools" / "sqlite_safety.py"

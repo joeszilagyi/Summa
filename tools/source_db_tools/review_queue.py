@@ -20,6 +20,10 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from tools.source_db_tools import provenance_events  # noqa: E402
 
 REVIEW_NAMESPACE = uuid.UUID("2d2d4f0a-6b0c-443a-9e69-47fd4a830243")

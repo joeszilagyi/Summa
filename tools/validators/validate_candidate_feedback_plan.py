@@ -725,19 +725,42 @@ def validate_warning_error_lists(payload: dict[str, Any], errors: list[dict[str,
         validate_string_list(payload.get(field_name), field_name=field_name, errors=errors, code="INVALID_TEXT_LIST")
 
 
-def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]:
+def load_validated_candidate_feedback_plan(
+    target: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any], int]:
     payload, errors, exit_code = load_json_object(target)
     if payload is None:
-        return {
-            "validator": VALIDATOR_NAME,
-            "contract_version": CONTRACT_VERSION,
-            "schema_path": SCHEMA_PATH,
-            "target": display_path(target),
-            "valid": False,
-            "errors": errors,
-            "warnings": [],
-            "stats": {"error_count": len(errors), "warning_count": 0},
-        }, exit_code
+        return (
+            None,
+            {
+                "validator": VALIDATOR_NAME,
+                "contract_version": CONTRACT_VERSION,
+                "schema_path": SCHEMA_PATH,
+                "target": display_path(target),
+                "valid": False,
+                "errors": errors,
+                "warnings": [],
+                "stats": {"error_count": len(errors), "warning_count": 0},
+            },
+            exit_code,
+        )
+
+    report, report_exit_code = validate_candidate_feedback_plan_payload(payload, target=target)
+    return payload, report, report_exit_code
+
+
+def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]:
+    _, report, exit_code = load_validated_candidate_feedback_plan(target)
+    return report, exit_code
+
+
+def validate_candidate_feedback_plan_payload(
+    payload: dict[str, Any],
+    *,
+    target: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    errors: list[dict[str, Any]] = []
+    target_display = "<memory>" if target is None else display_path(target)
 
     for key in sorted(REQUIRED_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required key: {key}")
@@ -829,7 +852,7 @@ def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]
         "validator": VALIDATOR_NAME,
         "contract_version": CONTRACT_VERSION,
         "schema_path": SCHEMA_PATH,
-        "target": display_path(target),
+        "target": target_display,
         "valid": not errors,
         "errors": errors,
         "warnings": [],

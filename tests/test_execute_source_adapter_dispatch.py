@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -136,6 +137,36 @@ def test_structured_json_loaders_reject_nonstandard_constants(tmp_path: Path) ->
     assert json_errors == [{"context": "line:1", "reason": "unsupported JSON constant: NaN"}]
     assert jsonl_records == {}
     assert jsonl_errors == [{"context": "line:1", "reason": "unsupported JSON constant: Infinity"}, {"context": "line:2", "reason": "unsupported JSON constant: -Infinity"}]
+
+
+def test_load_jsonl_record_map_streams_from_path_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jsonl_path = tmp_path / "bad.jsonl"
+    jsonl_path.write_text('{"value": Infinity}\n{"value": -Infinity}\n', encoding="utf-8")
+    open_calls = 0
+    original_open = Path.open
+
+    def open_spy(self: Path, *args: Any, **kwargs: Any) -> Any:
+        nonlocal open_calls
+        if self == jsonl_path:
+            open_calls += 1
+        return original_open(self, *args, **kwargs)
+
+    def read_bytes_spy(self: Path) -> bytes:
+        raise AssertionError("load_jsonl_record_map should stream from Path.open() instead of read_bytes()")
+
+    monkeypatch.setattr(Path, "open", open_spy, raising=True)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy, raising=True)
+
+    jsonl_records, jsonl_errors = source_executor.load_jsonl_record_map(jsonl_path)
+
+    assert jsonl_records == {}
+    assert jsonl_errors == [
+        {"context": "line:1", "reason": "unsupported JSON constant: Infinity"},
+        {"context": "line:2", "reason": "unsupported JSON constant: -Infinity"},
+    ]
+    assert open_calls == 1
 
 
 def test_serialize_structured_value_rejects_nonstandard_floats() -> None:

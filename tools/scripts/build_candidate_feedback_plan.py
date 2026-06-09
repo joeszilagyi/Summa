@@ -8,7 +8,6 @@ import heapq
 import json
 import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +38,7 @@ from tools.source_db_tools import canonical_store, cycle_evidence_ledger  # noqa
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS,
     validate_candidate_feedback_plan,
+    validate_candidate_feedback_plan_payload,
 )
 
 SUCCESS_EXTRACTION_STATUSES = frozenset({"completed", "ok", "recorded", "success"})
@@ -147,6 +147,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--db", required=True, help="Path to the canonical SQLite database.")
     parser.add_argument(
+        "--canonical-store-check-json",
+        help=(
+            "Optional prevalidated canonical-store check-result JSON from the cycle parent. "
+            "When supplied, the planner reuses the stored validation result instead of "
+            "re-checking the database."
+        ),
+    )
+    parser.add_argument(
         "--output-json", help="Optional JSON path for the emitted candidate-feedback plan."
     )
     parser.add_argument(
@@ -240,10 +248,21 @@ def load_runtime(
 
 def load_checked_connection(
     raw_db_path: str,
+    *,
+    canonical_store_check_json: str | None = None,
 ) -> tuple[sqlite3.Connection, canonical_store.CheckResult]:
     db_path = canonical_store.resolve_db_path(raw_db_path)
     try:
-        check_result = canonical_store.check_canonical_store(db_path)
+        if canonical_store_check_json is None:
+            check_result = canonical_store.check_canonical_store(db_path)
+        else:
+            check_result = canonical_store.load_check_result(
+                resolve_path(canonical_store_check_json)
+            )
+            if check_result.db_path != db_path:
+                raise canonical_store.CanonicalStoreError(
+                    "prevalidated canonical-store check result does not match the requested db"
+                )
         conn = canonical_store.connect_existing_read_only(db_path)
     except canonical_store.CanonicalStoreError as exc:
         raise CandidateFeedbackError(f"canonical store is not usable: {exc}") from exc
@@ -696,7 +715,7 @@ def batch_extraction_outcome_counts(
             entry = result[source_access_id]
             capture_id = int(row["capture_event_id"])
             if capture_id not in entry.setdefault("_capture_id_set", set()):
-                entry["_capture_id_set"].add(capture_id)  # type: ignore[union-attr]
+                entry["_capture_id_set"].add(capture_id)
                 entry["capture_ids"].append(capture_id)
             if row["capture_provenance_event_ref"] is not None:
                 related_event_keys_by_source_access_id[source_access_id].add(
@@ -707,7 +726,7 @@ def batch_extraction_outcome_counts(
                 continue
             extraction_id_int = int(extraction_id)
             if extraction_id_int not in entry.setdefault("_extraction_id_set", set()):
-                entry["_extraction_id_set"].add(extraction_id_int)  # type: ignore[union-attr]
+                entry["_extraction_id_set"].add(extraction_id_int)
                 entry["extraction_ids"].append(extraction_id_int)
             if row["extraction_provenance_event_ref"] is not None:
                 related_event_keys_by_source_access_id[source_access_id].add(
@@ -1824,6 +1843,15 @@ def validate_emitted_plan(path: Path) -> None:
         )
 
 
+def validate_emitted_plan_payload(payload: dict[str, Any]) -> None:
+    report, exit_code = validate_candidate_feedback_plan_payload(payload)
+    if exit_code != EXIT_PASS:
+        first = report["errors"][0]["message"] if report.get("errors") else "unknown error"
+        raise CandidateFeedbackError(
+            f"generated candidate feedback plan failed validation: {first}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -1834,7 +1862,10 @@ def main() -> int:
             else now_rfc3339()
         )
         runtime, _pack, bundles = load_runtime(args)
-        conn, check_result = load_checked_connection(args.db)
+        canonical_store_check_json = getattr(args, "canonical_store_check_json", None)
+        conn, check_result = load_checked_connection(
+            args.db, canonical_store_check_json=canonical_store_check_json
+        )
         try:
             payload = build_plan(
                 args=args,
@@ -1852,15 +1883,7 @@ def main() -> int:
             atomic_write_text(output_path, compact_json_text(payload) + "\n")
             validate_emitted_plan(output_path)
         else:
-            with tempfile.NamedTemporaryFile(
-                "w", encoding="utf-8", suffix=".json", delete=False
-            ) as handle:
-                temp_path = Path(handle.name)
-                handle.write(compact_json_text(payload) + "\n")
-            try:
-                validate_emitted_plan(temp_path)
-            finally:
-                temp_path.unlink(missing_ok=True)
+            validate_emitted_plan_payload(payload)
 
         if args.record_selection_ledger:
             record_selection_explanation_ledger(

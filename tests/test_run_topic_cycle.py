@@ -229,6 +229,7 @@ def test_validate_store_stage_reuses_validated_store_connection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = load_run_topic_cycle_module()
+    run_dir = tmp_path / "validate-store-run"
     manifest: dict[str, object] = {"canonical_db": {}, "stages": []}
     connect_calls: list[Path] = []
     validate_calls: list[tuple[object, dict[str, object]]] = []
@@ -302,6 +303,7 @@ def test_validate_store_stage_reuses_validated_store_connection(
         args=SimpleNamespace(degraded_spool=False),
         manifest=manifest,
         db_path=tmp_path / "canonical.sqlite",
+        run_dir=run_dir,
     )
 
     assert connect_calls == [tmp_path / "canonical.sqlite"]
@@ -310,6 +312,9 @@ def test_validate_store_stage_reuses_validated_store_connection(
     assert summary_calls[0][3] is False
     assert manifest["canonical_db"]["initial_summary"]["status"] == "initialized_empty"
     assert manifest["canonical_db"]["initial_summary"]["table_counts"] == {}
+    check_result_path = Path(manifest["canonical_db"]["check_result"]["path"])  # type: ignore[index]
+    assert check_result_path.is_file()
+    assert manifest["canonical_db"]["check_result"]["sha256"] == module.hash_file(check_result_path)  # type: ignore[index]
 
 
 def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: Path) -> None:
@@ -851,6 +856,7 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
             "cycle-seed.gather",
             "--feedback-plan",
             "auto",
+            "--build-next-feedback-plan",
             "--dry-run",
         ]
     )
@@ -865,7 +871,11 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["feedback_plan_pre"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["active_feedback_plan_for_gather"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["feedback_plan_post"] is None
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    stages = stages_by_name(manifest)
+    assert stages["build_feedback_plan_post"]["status"] == "skipped"
+    assert stages["build_feedback_plan_post"]["skipped_reason"] == "dry-run does not mutate canonical DB"  # type: ignore[index]
 
 
 def test_topic_cycle_explicit_json_format_still_prints_full_manifest(
@@ -985,6 +995,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     prompt_path = tmp_path / "rendered-prompt.txt"
     batch_path.write_text("{}", encoding="utf-8")
     prompt_path.write_text("prompt", encoding="utf-8")
+    expected_batch_payload = json.loads(batch_path.read_text(encoding="utf-8"))
 
     fake_payload = {
         "candidate_batch_path": str(batch_path),
@@ -993,10 +1004,13 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "rendered_prompt_sha256": "prompt-hash",
     }
 
+    commands: list[list[str]] = []
+
     def fake_run_command(
         command: list[str], *, cwd: Path, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
         assert timeout == 111.0
+        commands.append(command)
         return subprocess.CompletedProcess(
             args=command,
             returncode=0,
@@ -1011,26 +1025,18 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
             return "receipt-hash"
         raise AssertionError(f"unexpected hash_file call: {path}")
 
-    def fake_load_validated_candidate_batch(
-        path: Path,
-    ) -> tuple[dict[str, object], dict[str, object], int]:
-        if path == batch_path:
-            return {}, {"valid": True}, module.EXIT_GATHER_PASS
-        raise AssertionError(f"unexpected candidate batch reload: {path}")
+    read_calls: list[Path] = []
 
     original_read_json = module.read_json
 
     def fake_read_json(path: Path, *, label: str) -> dict[str, object]:
+        read_calls.append(path)
         if path == batch_path:
-            raise AssertionError("candidate batch should be reused after validation")
+            assert label == "candidate batch"
+            return expected_batch_payload
         return original_read_json(path, label=label)
 
     monkeypatch.setattr(module, "run_command", fake_run_command)
-    monkeypatch.setattr(
-        module.gather_candidate_batch_validator,
-        "load_validated_gather_candidate_batch",
-        fake_load_validated_candidate_batch,
-    )
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
     monkeypatch.setattr(module, "read_json", fake_read_json)
 
@@ -1038,7 +1044,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         mode="dry-run",
         facet="sources",
         phase="01a",
-        use_prior_state=False,
+        use_prior_state=True,
         cycle_depth=1,
         previous_run_id=[],
         dry_run=True,
@@ -1050,10 +1056,15 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "started_at": "2026-06-03T12:00:00Z",
         "stages": [],
         "prior_state": {},
+        "canonical_db": {
+            "check_result": {
+                "path": str(tmp_path / "canonical-store" / "check-result.json"),
+            }
+        },
     }
     runtime = {"subject_manifest_path": str(prompt_path)}
 
-    batch_path_result, batch_payload, batch_hash, validation_receipt = module.gather_stage(
+    batch_path_result, batch_payload_result, batch_hash, validation_receipt = module.gather_stage(
         args=args,
         manifest=manifest,
         workspace=tmp_path,
@@ -1064,14 +1075,15 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     )
 
     assert batch_path_result == batch_path
-    assert batch_payload == {}
+    assert batch_payload_result == expected_batch_payload
     assert batch_hash == "candidate-hash"
     assert validation_receipt["artifact_path"] == str(batch_path)
     assert validation_receipt["artifact_hash"] == "candidate-hash"
     assert validation_receipt["validator_name"] == "gather_candidate_batch"
     assert validation_receipt["validator_version"] == "1"
-    assert validation_receipt["result"] == {"valid": True}
+    assert validation_receipt["result"] == {"status": "pass", "source": "child"}
     stages = stages_by_name(manifest)
+    assert stages["run_gather"]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["candidate_batch_sha256"] == "candidate-hash"  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
     receipt_path = Path(stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt"])  # type: ignore[index]
@@ -1080,6 +1092,13 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"]
         == "receipt-hash"
     )  # type: ignore[index]
+    assert read_calls == [batch_path]
+    assert commands
+    assert "--canonical-store-check-json" in commands[0]
+    check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
+    assert commands[0][check_result_arg_index] == str(
+        tmp_path / "canonical-store" / "check-result.json"
+    )
 
 
 def test_feedback_plan_stage_hashes_output_once_without_rehashing(
@@ -1101,23 +1120,6 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "counts": {"selected": 1},
     }
 
-    def fake_run_command(
-        command: list[str], *, cwd: Path, timeout: float | None = None
-    ) -> subprocess.CompletedProcess[str]:
-        assert timeout == 123.0
-        output_index = command.index("--output-json") + 1
-        path = Path(command[output_index])
-        assert path == output_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
-
-    def fake_validate_candidate_feedback_plan(path: Path):
-        assert path == output_path
-        return ({"errors": [], "warnings": [], "counts": {}}, module.EXIT_FEEDBACK_PASS)
-
     hashed_paths: list[Path] = []
 
     def fake_hash_file(path: Path) -> str:
@@ -1126,11 +1128,7 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         hashed_paths.append(path)
         return "feedback-hash"
 
-    monkeypatch.setattr(module, "run_command", fake_run_command)
-    monkeypatch.setattr(
-        module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan
-    )
-    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    commands: list[list[str]] = []
 
     args = SimpleNamespace(degraded_spool=False)
     args.command_timeout_seconds = 123.0
@@ -1140,8 +1138,30 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "stages": [],
         "selection_explanations": [],
         "next_action": None,
+        "canonical_db": {
+            "check_result": {
+                "path": str(run_dir / "canonical-store" / "check-result.json"),
+            }
+        },
     }
     runtime = {"subject_manifest_path": str(tmp_path / "subject-manifest.json")}
+
+    def fake_run_command(
+        command: list[str], *, cwd: Path, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout == 123.0
+        commands.append(command)
+        output_index = command.index("--output-json") + 1
+        path = Path(command[output_index])
+        assert path == output_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    monkeypatch.setattr(module, "run_command", fake_run_command)
 
     result = module.build_feedback_plan_stage(
         args=args,
@@ -1157,6 +1177,143 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert hashed_paths == [output_path]
     assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
     assert manifest["selection_explanations"][0]["sha256"] == "feedback-hash"  # type: ignore[index]
+    assert manifest["stages"][-1]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
+    assert commands
+    assert "--canonical-store-check-json" in commands[0]
+    check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
+    assert commands[0][check_result_arg_index] == str(
+        run_dir / "canonical-store" / "check-result.json"
+    )
+
+
+def test_resolve_feedback_plan_uses_validated_payload_without_reread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_run_topic_cycle_module()
+
+    feedback_plan_path = tmp_path / "candidate-feedback-plan.json"
+    payload = {
+        "schema_version": "candidate-feedback-plan.v1",
+        "generated_at": "2026-06-03T12:34:56Z",
+        "subject": {
+            "subject_id": "fixture_subject",
+            "display_name": "Fixture Subject",
+            "domain_pack": "general.v1",
+            "enabled_facets": ["sources"],
+            "query_families": ["general_research"],
+        },
+        "canonical_store": {
+            "database_name": "fixture.sqlite",
+            "schema_version": 1,
+            "current_migration_id": "migration-001",
+            "dry_run": True,
+        },
+        "scoring_policy": {
+            "policy_id": "candidate-feedback.default.v1",
+            "cycle_depth_considered": 1,
+            "previous_run_ids_considered": [],
+            "use_prior_state": False,
+            "weights": {},
+            "limits": {},
+        },
+        "counts": {
+            "gather_runs_considered": 0,
+            "facet_candidates": 0,
+            "facet_candidates_total": 0,
+            "lead_candidates": 0,
+            "lead_candidates_total": 0,
+            "productive_leads": 0,
+            "productive_leads_total": 0,
+            "deferred_candidates": 0,
+        },
+        "facet_scores": [],
+        "lead_scores": [],
+        "next_action": {
+            "action_id": "feedback-plan-action",
+            "action_kind": "facet_only",
+            "subject_id": "fixture_subject",
+            "selected_facet": "sources",
+            "selected_prompt_bundle_id": "bundle-01",
+            "should_call_llm": True,
+            "selection_score": 1.0,
+            "scoring_policy_id": "candidate-feedback.default.v1",
+            "rationale": "fixture",
+            "reason_codes": [],
+            "cycle_depth": 1,
+            "use_prior_state": False,
+            "previous_run_ids_considered": [],
+            "input_record_refs": [],
+            "suggested_cli_args": ["--facet", "sources"],
+            "selected_object_ref": None,
+            "selected_lead_kind": None,
+            "selected_source_locus_id": None,
+            "selected_source_lead_id": None,
+            "selected_label": "Sources",
+            "selected_review_state": None,
+        },
+        "deferred": [],
+        "selection_explanation": {
+            "explanation_id": "feedback-plan-explanation",
+            "selection_kind": "feedback_next_action",
+        },
+        "warnings": [],
+        "errors": [],
+    }
+    feedback_plan_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    read_calls: list[Path] = []
+    hash_calls: list[Path] = []
+
+    def fake_load_validated_candidate_feedback_plan(path: Path):
+        assert path == feedback_plan_path
+        return payload, {"valid": True}, module.EXIT_FEEDBACK_PASS
+
+    def fake_read_json(path: Path, *, label: str) -> dict[str, object]:
+        read_calls.append(path)
+        if path == feedback_plan_path:
+            raise AssertionError("candidate feedback plan should be reused after validation")
+        raise AssertionError(f"unexpected read_json call for {label}: {path}")
+
+    def fake_hash_file(path: Path) -> str:
+        hash_calls.append(path)
+        assert path == feedback_plan_path
+        return "feedback-hash"
+
+    monkeypatch.setattr(
+        module, "load_validated_candidate_feedback_plan", fake_load_validated_candidate_feedback_plan
+    )
+    monkeypatch.setattr(module, "read_json", fake_read_json)
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+
+    args = SimpleNamespace(feedback_plan=str(feedback_plan_path))
+    manifest = {
+        "run_id": "cycle-feedback-plan",
+        "started_at": "2026-06-03T12:34:56Z",
+        "stages": [],
+        "selection_explanations": [],
+        "next_action": None,
+    }
+
+    result = module.resolve_feedback_plan(
+        args=args,
+        manifest=manifest,
+        workspace=tmp_path,
+        db_path=tmp_path / "canonical.sqlite",
+        run_dir=tmp_path / "run-dir",
+        runtime={"subject_manifest_path": str(tmp_path / "subject-manifest.json")},
+    )
+
+    assert result == feedback_plan_path
+    assert read_calls == []
+    assert hash_calls == [feedback_plan_path]
+    assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
+    assert manifest["feedback_plan_pre"]["path"] == str(feedback_plan_path)  # type: ignore[index]
+    assert manifest["active_feedback_plan_for_gather"]["path"] == str(feedback_plan_path)  # type: ignore[index]
+    assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    assert manifest["next_action"]["selected_facet"] == "sources"  # type: ignore[index]
 
 
 def test_graph_closure_stage_hashes_report_once_without_rehashing(
@@ -1443,25 +1600,12 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         network_safety_report=None,
     )
     load_calls = {"count": 0}
-    validate_calls = {"count": 0}
     ingest_calls = {"count": 0}
 
     def fake_load_execution_artifacts(target: Path):
         load_calls["count"] += 1
         assert target == execution_run_dir
         return fake_receipt
-
-    def fake_validate_execution_artifact_receipt(receipt: object):
-        validate_calls["count"] += 1
-        assert receipt is fake_receipt
-        return (
-            {
-                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
-                "errors": [],
-                "warnings": [],
-            },
-            module.EXIT_EXECUTION_PASS,
-        )
 
     def fake_run_command(*args, **kwargs):
         assert kwargs.get("timeout") == 222.0
@@ -1499,9 +1643,6 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     monkeypatch.setattr(module, "resolve_path", fake_resolve_path)
     monkeypatch.setattr(module, "load_execution_artifacts", fake_load_execution_artifacts)
     monkeypatch.setattr(
-        module, "validate_execution_artifact_receipt", fake_validate_execution_artifact_receipt
-    )
-    monkeypatch.setattr(
         module.canonical_ingest,
         "load_validated_execution_artifacts",
         lambda *_: pytest.fail("unexpected execution reload"),
@@ -1532,7 +1673,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     assert acquired_run_dir == execution_run_dir
     assert receipt is fake_receipt
     assert load_calls["count"] == 1
-    assert validate_calls["count"] == 1
+    assert manifest["stages"][-1]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
 
     result = module.execution_ingest_stage(
         args=args,
@@ -1654,9 +1795,7 @@ def test_topic_cycle_manifest_write_is_atomic_and_hashes_written_file(
         atomic_calls.append(
             (
                 path,
-                json.loads(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-                ),
+                json.loads(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)),
             )
         )
         path.write_text(
@@ -1752,17 +1891,17 @@ def test_topic_cycle_missing_db_spool_hashes_manifest_once(
     db_path = tmp_path / "missing.sqlite"
     manifest_path.write_text(
         json.dumps(
-                {
-                    "schema_version": "topic-cycle-run.v1",
-                    "run_id": "cycle-spool",
-                    "status": "completed",
-                    "mode": "local",
-                    "cycle_event_id": "cycle:spool",
-                    "workspace": {"workspace_id": "workspace:spool"},
-                    "canonical_db": {"path": str(db_path), "mutated": False},
-                    "stages": [],
-                    "cycle_evidence_ledger": {"status": "recorded"},
-                    "run_dir": str(tmp_path),
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-spool",
+                "status": "completed",
+                "mode": "local",
+                "cycle_event_id": "cycle:spool",
+                "workspace": {"workspace_id": "workspace:spool"},
+                "canonical_db": {"path": str(db_path), "mutated": False},
+                "stages": [],
+                "cycle_evidence_ledger": {"status": "recorded"},
+                "run_dir": str(tmp_path),
             },
             ensure_ascii=False,
             indent=2,

@@ -145,6 +145,61 @@ class CheckResult:
     extra_tables: tuple[str, ...]
 
 
+def serialize_check_result(check_result: CheckResult) -> dict[str, Any]:
+    return {
+        "db_path": str(check_result.db_path),
+        "schema_version": check_result.schema_version,
+        "current_migration_id": check_result.current_migration_id,
+        "tables": list(check_result.tables),
+        "extra_tables": list(check_result.extra_tables),
+    }
+
+
+def load_check_result_payload(
+    payload: Any,
+    *,
+    label: str = "canonical store check result",
+) -> CheckResult:
+    if not isinstance(payload, dict):
+        raise CanonicalStoreError(f"{label} must be a JSON object")
+    db_path = _require_nonblank(payload.get("db_path"), f"{label} db_path")
+    schema_version_value = payload.get("schema_version")
+    if schema_version_value is None or isinstance(schema_version_value, bool):
+        raise CanonicalStoreError(f"{label} schema_version must be an integer")
+    try:
+        schema_version = int(schema_version_value)
+    except (TypeError, ValueError) as exc:
+        raise CanonicalStoreError(f"{label} schema_version must be an integer") from exc
+    current_migration_id = _require_nonblank(
+        payload.get("current_migration_id"), f"{label} current_migration_id"
+    )
+    tables_value = payload.get("tables")
+    if not isinstance(tables_value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in tables_value
+    ):
+        raise CanonicalStoreError(f"{label} tables must be a list of strings")
+    extra_tables_value = payload.get("extra_tables")
+    if not isinstance(extra_tables_value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in extra_tables_value
+    ):
+        raise CanonicalStoreError(f"{label} extra_tables must be a list of strings")
+    return CheckResult(
+        db_path=resolve_db_path(db_path),
+        schema_version=schema_version,
+        current_migration_id=current_migration_id,
+        tables=tuple(tables_value),
+        extra_tables=tuple(extra_tables_value),
+    )
+
+
+def load_check_result(path: Path) -> CheckResult:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CanonicalStoreError(f"could not read canonical store check result: {path}") from exc
+    return load_check_result_payload(payload, label=str(path))
+
+
 @dataclass(frozen=True)
 class CanonicalWriteResult:
     table: str
@@ -3304,11 +3359,14 @@ def build_prior_state_context(
     def current_text() -> str:
         return "\n".join(lines).rstrip() + "\n"
 
-    if len(current_text()) > max_chars:
+    initial_text = current_text()
+    if len(initial_text) > max_chars:
         raise CanonicalStoreError(
             "prior-state context exceeds max_chars before any records are rendered"
         )
 
+    current_length = len(initial_text)
+    trailing_blank_lines = 0
     section_specs: list[tuple[str, str, list[dict[str, Any]]]] = [
         ("Accepted / high-confidence works", "works", prior_state["records"]["works"]),
         ("Accepted / high-confidence entities", "entities", prior_state["records"]["entities"]),
@@ -3331,13 +3389,18 @@ def build_prior_state_context(
     any_records = False
 
     def add_line(text: str) -> bool:
-        nonlocal truncated
-        candidate_lines = [*lines, text]
-        candidate_text = "\n".join(candidate_lines).rstrip() + "\n"
-        if len(candidate_text) > max_chars:
+        nonlocal truncated, current_length, trailing_blank_lines
+        if text == "":
+            lines.append(text)
+            trailing_blank_lines += 1
+            return True
+        candidate_length = current_length + trailing_blank_lines + len(text) + 1
+        if candidate_length > max_chars:
             truncated = True
             return False
         lines.append(text)
+        current_length = candidate_length
+        trailing_blank_lines = 0
         return True
 
     for title, count_key, records in section_specs:

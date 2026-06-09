@@ -48,7 +48,11 @@ from tools.common.network_safety_gate import (  # noqa: E402
     evaluate_request,
     load_request,
 )
-from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
+from tools.common.source_adapter_handoff import (  # noqa: E402
+    infer_handoff_variant,
+    utc_now,
+    validate_source_adapter_handoff_record,
+)
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
     resolve_json_record_path,
@@ -229,34 +233,66 @@ def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
-    result, exit_code = validate_source_adapter.validate_source_adapter(adapter_path)
+    payload, errors, load_exit = validate_source_adapter.load_json_object(adapter_path)
+    if load_exit != validate_source_adapter.EXIT_PASS:
+        message = errors[0]["message"] if errors else "source adapter could not be loaded"
+        raise SourceAcquisitionError(message)
+    if not isinstance(payload, dict):
+        raise SourceAcquisitionError("source adapter could not be loaded")
+    result, exit_code = validate_source_adapter.validate_source_adapter_payload(payload)
     if exit_code != validate_source_adapter.EXIT_PASS:
         message = "source adapter validation failed"
         errors = result.get("errors", [])
         if errors:
             message = errors[0].get("message", message)
         raise SourceAcquisitionError(message)
-    return json.loads(adapter_path.read_text(encoding="utf-8"))
+    return payload
 
 
 def load_validated_handoff_records(
-    handoff_path: Path, *, adapter_path: Path
+    handoff_path: Path,
+    *,
+    adapter_path: Path,
+    preloaded_records: list[tuple[int | None, dict[str, Any]]] | None = None,
+    adapter_payload: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    report, exit_code = validate_source_adapter_handoff.validate_source_adapter_handoff(
-        handoff_path, adapter_path=adapter_path
+    if preloaded_records is None:
+        loaded_records, errors, load_exit = validate_source_adapter_handoff.load_records(
+            handoff_path
+        )
+        if load_exit != validate_source_adapter_handoff.EXIT_PASS:
+            message = (
+                errors[0]["message"] if errors else "source-adapter handoff could not be loaded"
+            )
+            raise SourceAcquisitionError(message)
+    else:
+        loaded_records = preloaded_records
+    if adapter_payload is None:
+        adapter_payload = load_validated_adapter(adapter_path)
+    records = validate_loaded_handoff_records(
+        loaded_records,
+        adapter_path=adapter_path,
+        adapter_payload=adapter_payload,
     )
-    if exit_code != validate_source_adapter_handoff.EXIT_PASS:
-        errors = report.get("errors", [])
-        message = errors[0]["message"] if errors else "source-adapter handoff validation failed"
-        raise SourceAcquisitionError(message)
-    loaded_records, errors, load_exit = validate_source_adapter_handoff.load_records(handoff_path)
-    if load_exit != validate_source_adapter_handoff.EXIT_PASS:
-        message = errors[0]["message"] if errors else "source-adapter handoff could not be loaded"
-        raise SourceAcquisitionError(message)
-    records = [record for _, record in loaded_records]
-    if not records:
-        raise SourceAcquisitionError("handoff artifact does not contain any records")
     return records, sha256_file(handoff_path)
+
+
+def validate_loaded_handoff_records(
+    records: list[tuple[int | None, dict[str, Any]]],
+    *,
+    adapter_path: Path,
+    adapter_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    record_dicts = [record for _, record in records]
+    if not record_dicts:
+        raise SourceAcquisitionError("handoff artifact does not contain any records")
+    ensure_single_adapter_context(record_dicts, expected_adapter_path=adapter_path)
+    validate_handoff_sequence(record_dicts)
+    for record in record_dicts:
+        errors = validate_source_adapter_handoff_record(record, adapter_payload=adapter_payload)
+        if errors:
+            raise SourceAcquisitionError(errors[0])
+    return record_dicts
 
 
 def ensure_single_adapter_context(
@@ -295,12 +331,14 @@ def validate_handoff_sequence(records: list[dict[str, Any]]) -> None:
     if not records:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
 
-    sequences = [record.get("sequence") for record in records]
-    if any(
-        not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1
-        for sequence in sequences
-    ):
-        raise SourceAcquisitionError("handoff artifact sequence values must be positive integers")
+    sequences: list[int] = []
+    for record in records:
+        sequence = record.get("sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+            raise SourceAcquisitionError(
+                "handoff artifact sequence values must be positive integers"
+            )
+        sequences.append(sequence)
     if len(set(sequences)) != len(sequences):
         raise SourceAcquisitionError("handoff artifact must not repeat sequence values")
     expected_sequences = list(range(1, len(records) + 1))
@@ -615,8 +653,8 @@ def _select_json_record_path_slice(
                     text, record_path=record_path, position=position, segments=segments[1:]
                 )
             skipped_end, skipped_error = _skip_json_value(text, position)
-            if skipped_error is not None:
-                return None, skipped_error
+            if skipped_error is not None or skipped_end is None:
+                return None, skipped_error or f"record_path could not be resolved: {record_path}"
             position = _skip_json_whitespace(text, skipped_end)
             if position >= len(text):
                 return None, f"record_path could not be resolved: {record_path}"
@@ -644,8 +682,8 @@ def _select_json_record_path_slice(
                     text, record_path=record_path, position=position, segments=segments[1:]
                 )
             skipped_end, skipped_error = _skip_json_value(text, position)
-            if skipped_error is not None:
-                return None, skipped_error
+            if skipped_error is not None or skipped_end is None:
+                return None, skipped_error or f"record_path could not be resolved: {record_path}"
             position = _skip_json_whitespace(text, skipped_end)
             current_index += 1
             if position >= len(text):
@@ -711,13 +749,21 @@ def load_json_record_map(
 
 def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if isinstance(payload, Path):
-        payload = payload.read_bytes()
+        record_map, errors, _, _ = load_jsonl_record_map_from_path(payload)
+        return record_map, errors
+    record_map, errors, _, _ = load_jsonl_record_map_from_bytes(payload)
+    return record_map, errors
+
+
+def load_jsonl_record_map_from_bytes(
+    payload: bytes,
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
     record_map: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     try:
         lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError:
-        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
     for line_number, raw_line in enumerate(lines, start=1):
         if not raw_line.strip():
             continue
@@ -737,7 +783,48 @@ def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[d
             errors.append({"context": f"line:{line_number}", "reason": str(exc)})
             continue
         record_map[f"line:{line_number}"] = value
-    return record_map, errors
+    return record_map, errors, sha256_bytes(payload), len(payload)
+
+
+def load_jsonl_record_map_from_path(
+    path: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
+    record_map: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                digest.update(raw_line)
+                byte_count += len(raw_line)
+                try:
+                    line = raw_line.decode("utf-8").rstrip("\r\n")
+                except UnicodeDecodeError:
+                    return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(
+                        line,
+                        object_pairs_hook=no_duplicate_object_pairs,
+                        parse_constant=reject_json_constant,
+                    )
+                except DuplicateJsonKeyError as exc:
+                    errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+                    continue
+                except json.JSONDecodeError as exc:
+                    errors.append(
+                        {"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg}
+                    )
+                    continue
+                except ValueError as exc:
+                    errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+                    continue
+                record_map[f"line:{line_number}"] = value
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
+    return record_map, errors, digest.hexdigest(), byte_count
 
 
 def load_xml_record_map(
@@ -856,6 +943,19 @@ def load_structured_record_map(
     return {}, [
         {"context": "file", "reason": f"unsupported structured format: {structured_format}"}
     ]
+
+
+def load_structured_record_map_from_path(
+    path: Path, *, structured_format: str, record_path: str | None
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
+    if structured_format == "jsonl":
+        return load_jsonl_record_map_from_path(path)
+    with path.open("rb") as handle:
+        payload = handle.read()
+    record_map, errors = load_structured_record_map(
+        payload, structured_format=structured_format, record_path=record_path
+    )
+    return record_map, errors, sha256_bytes(payload), len(payload)
 
 
 def structured_record_map_cache_key(
@@ -1486,7 +1586,7 @@ def execute_structured_data(
     capture_index_by_path: dict[str, str] = {}
     capture_hash_by_path: dict[str, str] = {}
     capture_size_by_path: dict[str, int] = {}
-    record_map_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, str]]]] = {}
+    record_map_cache: dict[tuple[str, str, str], tuple[dict[str, Any], list[dict[str, str]]]] = {}
     records_by_source_path: dict[str, list[dict[str, Any]]] = {}
     root = expected_local_root(adapter_payload, adapter_path=adapter_path)
 
@@ -1506,11 +1606,17 @@ def execute_structured_data(
             source_path = Path(source_path_value).expanduser().resolve()
             ensure_path_within_root(source_path, root=root)
         ensure_path_is_local_file(source_path)
-        payload = source_path.read_bytes()
         capture_id = make_capture_id(capture_index)
         capture_index_by_path[source_path_value] = capture_id
-        capture_hash_by_path[source_path_value] = sha256_bytes(payload)
-        capture_size_by_path[source_path_value] = len(payload)
+        structured_format = grouped_records[0]["source_specific"]["structured_format"]
+        cache_key = structured_record_map_cache_key(
+            source_path_value, structured_format, record_path
+        )
+        record_map, parse_errors, capture_hash, capture_size = load_structured_record_map_from_path(
+            source_path, structured_format=structured_format, record_path=record_path
+        )
+        capture_hash_by_path[source_path_value] = capture_hash
+        capture_size_by_path[source_path_value] = capture_size
         local_paths.append(str(source_path))
         capture_events.append(
             {
@@ -1528,8 +1634,8 @@ def execute_structured_data(
                 },
                 "original_locator": grouped_records[0]["preserved"]["original_locator"],
                 "normalized_local_path": str(source_path),
-                "content_hash": capture_hash_by_path[source_path_value],
-                "byte_count": capture_size_by_path[source_path_value],
+                "content_hash": capture_hash,
+                "byte_count": capture_size,
                 "content_type": guess_content_type(source_path),
                 "captured_at": created_at,
                 "capture_method": "structured_data_load",
@@ -1539,13 +1645,6 @@ def execute_structured_data(
                 "canonical_persistence_attempted": False,
                 "verification_status": "unverified",
             }
-        )
-        structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = structured_record_map_cache_key(
-            source_path_value, structured_format, record_path
-        )
-        record_map, parse_errors = load_structured_record_map(
-            payload, structured_format=structured_format, record_path=record_path
         )
         record_map_cache[cache_key] = (record_map, parse_errors)
 
@@ -1652,7 +1751,13 @@ def execute_local_git_repo(
     run_id: str,
     created_at: str,
     handoff_hash: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], list[str], bool]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, str],
+    list[str],
+    bool,
+]:
     if len(records) != 1:
         raise SourceAcquisitionError(
             "local_git_repo execution expects exactly one snapshot handoff record"
@@ -2180,13 +2285,13 @@ def _remote_fetch_host_queue(
     max_response_bytes: int,
     min_interval_seconds: float,
     payload_spool_dir: Path,
-) -> dict[int, dict[str, Any]]:
-    results: dict[int, dict[str, Any]] = {}
+) -> dict[tuple[str, str], dict[str, Any]]:
+    results: dict[tuple[str, str], dict[str, Any]] = {}
     opener = build_opener(NoAutoRedirectHandler)
     for index, task in enumerate(tasks):
         if index > 0 and min_interval_seconds > 0:
             time.sleep(min_interval_seconds)
-        results[int(task["sequence"])] = remote_fetch_one(
+        results[task["fetch_key"]] = remote_fetch_one(
             url=task["url"],
             method=task["method"],
             user_agent=user_agent,
@@ -2303,8 +2408,6 @@ def _build_remote_fetch_artifacts(
         if retain_payload:
             capture_event["transient_payload_path"] = f"payloads/{capture_id}.bin"
             capture_event["payload_retention_policy"] = "transient_run_artifact"
-        elif payload_source_path is not None:
-            payload_source_path.unlink(missing_ok=True)
 
     extraction_record = build_extraction_record(
         extraction_id=extraction_id,
@@ -2352,7 +2455,7 @@ def execute_remote_fetches(
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, str],
-    dict[str, Path],
+    dict[str, bytes | Path],
     bool,
     dict[str, Any],
 ]:
@@ -2364,7 +2467,7 @@ def execute_remote_fetches(
     capture_events: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
-    binary_artifacts: dict[str, Path] = {}
+    binary_artifacts: dict[str, bytes | Path] = {}
     failed = False
     summary = {
         "urls_planned": len(records),
@@ -2389,6 +2492,7 @@ def execute_remote_fetches(
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
     record_plans: list[dict[str, Any]] = []
     host_tasks: dict[str, list[dict[str, Any]]] = {}
+    seen_fetch_keys: set[tuple[str, str]] = set()
     for index, record in enumerate(
         sorted(records, key=lambda item: int(item["sequence"])), start=1
     ):
@@ -2470,19 +2574,23 @@ def execute_remote_fetches(
             record_plans.append(record_plan)
             continue
         host_key = _remote_fetch_host_key(url)
-        host_tasks.setdefault(host_key, []).append(
-            {
-                "sequence": int(record["sequence"]),
-                "url": url,
-                "method": method,
-            }
-        )
+        fetch_key = (url, method)
+        if fetch_key not in seen_fetch_keys:
+            host_tasks.setdefault(host_key, []).append(
+                {
+                    "fetch_key": fetch_key,
+                    "url": url,
+                    "method": method,
+                }
+            )
+            seen_fetch_keys.add(fetch_key)
         record_plan["kind"] = "fetch"
         record_plan["host"] = host_key
         record_plan["method"] = method
+        record_plan["fetch_key"] = fetch_key
         record_plans.append(record_plan)
 
-    fetch_results_by_sequence: dict[int, dict[str, Any]] = {}
+    fetch_results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     if host_tasks:
         max_workers = min(4, len(host_tasks))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -2501,7 +2609,7 @@ def execute_remote_fetches(
                 for host, tasks in host_tasks.items()
             }
             for future in as_completed(futures):
-                fetch_results_by_sequence.update(future.result())
+                fetch_results_by_key.update(future.result())
 
     for record_plan in record_plans:
         if record_plan["kind"] == "denied":
@@ -2509,7 +2617,7 @@ def execute_remote_fetches(
             extraction_records.append(record_plan["extraction_record"])
             continue
 
-        fetch_result = fetch_results_by_sequence[int(record_plan["sequence"])]
+        fetch_result = fetch_results_by_key[record_plan["fetch_key"]]
         capture_event, extraction_record, extracted_text, record_failed = (
             _build_remote_fetch_artifacts(
                 record=record_plan["record"],
@@ -2571,7 +2679,7 @@ def execute_remote_url_manifest(
     dict[str, Any],
     list[str],
     dict[str, str],
-    dict[str, Path],
+    dict[str, bytes | Path],
 ]:
     if gate_request_path is None:
         raise SourceAcquisitionError(
@@ -2751,13 +2859,12 @@ def main() -> int:
                 else "source-adapter handoff could not be loaded"
             )
             raise SourceAcquisitionError(message)
-        ensure_single_adapter_context(
-            [record for _, record in raw_records], expected_adapter_path=adapter_path
-        )
         records, handoff_hash = load_validated_handoff_records(
-            handoff_path, adapter_path=adapter_path
+            handoff_path,
+            adapter_path=adapter_path,
+            preloaded_records=raw_records,
+            adapter_payload=adapter_payload,
         )
-        validate_handoff_sequence(records)
         variant = determine_variant(records, adapter_payload=adapter_payload)
         executor_mode = determine_executor_mode(args.mode, variant=variant)
         planned_actions = planned_actions_for_records(records, variant=variant)
@@ -2781,6 +2888,7 @@ def main() -> int:
                 dry_run_gate_request_path = resolve_cli_path(
                     args.network_safety_request, base_dir=Path.cwd()
                 )
+                assert remote_payload_spool_dir is not None
                 (
                     remote_execution_record,
                     remote_denial_record,
@@ -2834,7 +2942,7 @@ def main() -> int:
         capture_events: list[dict[str, Any]] = []
         extraction_records: list[dict[str, Any]] = []
         text_artifacts: dict[str, str] = {}
-        binary_artifacts: dict[str, bytes] = {}
+        binary_artifacts: dict[str, bytes | Path] = {}
         local_input_paths: list[str] = []
         failed = False
 
@@ -2936,6 +3044,7 @@ def main() -> int:
                 if args.network_safety_request
                 else None
             )
+            assert remote_payload_spool_dir is not None
             (
                 execution_record,
                 denial_record,

@@ -125,3 +125,127 @@ def compact_candidate_record_payload(
         "reason": reason,
         "source_span": source_span,
     }
+
+
+def compact_prior_state_prompt_payload(
+    prior_state: Mapping[str, Any],
+    *,
+    cycle_depth: int,
+) -> dict[str, Any]:
+    """Return the compact prior-state object rendered into gather prompts.
+
+    The prompt-facing object keeps the selected canonical IDs and short review
+    facts while omitting the verbose audit payload and rendered context text
+    that the store keeps for validation and history.
+    """
+
+    def compact_selected_counts() -> dict[str, dict[str, Any]]:
+        counts = prior_state.get("record_counts")
+        compacted: dict[str, dict[str, Any]] = {}
+        if not isinstance(counts, Mapping):
+            return compacted
+        for family, family_counts in counts.items():
+            if not isinstance(family_counts, Mapping):
+                continue
+            compacted[str(family)] = {
+                "selected": family_counts.get("selected"),
+                "total": family_counts.get("total"),
+            }
+        return compacted
+
+    def compact_record_list(
+        records: Any,
+        *,
+        field_names: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        if not isinstance(records, list):
+            return compacted
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            compact_record: dict[str, Any] = {}
+            for field_name in field_names:
+                value = record.get(field_name)
+                if value is not None:
+                    compact_record[field_name] = value
+            compacted.append(compact_record)
+        return compacted
+
+    source = prior_state.get("source")
+    compact_source: dict[str, Any] = {}
+    if isinstance(source, Mapping):
+        for key in ("kind", "subject_id", "schema_version", "subject_scope"):
+            value = source.get(key)
+            if value is not None:
+                compact_source[key] = value
+
+    limits = prior_state.get("limits")
+    compact_limits: dict[str, Any] = {}
+    if isinstance(limits, Mapping):
+        for key in ("per_family_limit", "max_prior_cycles", "high_confidence_threshold"):
+            value = limits.get(key)
+            if value is not None:
+                compact_limits[key] = value
+
+    records = prior_state.get("records")
+    record_map = records if isinstance(records, Mapping) else {}
+    previous_run_ids = prior_state.get("previous_run_ids")
+    compact_payload = {
+        "source": compact_source,
+        "policy": prior_state.get("policy"),
+        "cycle_depth": cycle_depth,
+        "previous_run_ids": list(previous_run_ids) if isinstance(previous_run_ids, list) else [],
+        "limits": compact_limits,
+        "record_counts": compact_selected_counts(),
+        "records": {
+            "works": compact_record_list(
+                record_map.get("works"), field_names=("work_id", "review_state", "confidence_score")
+            ),
+            "entities": compact_record_list(
+                record_map.get("entities"),
+                field_names=("detected_entity_id", "review_state", "confidence_score"),
+            ),
+            "source_claims": compact_record_list(
+                record_map.get("source_claims"),
+                field_names=("source_claim_id", "review_state", "confidence_score"),
+            ),
+            "source_access": compact_record_list(
+                record_map.get("source_access"),
+                field_names=(
+                    "source_access_id",
+                    "work_id",
+                    "source_lead_id",
+                    "review_state",
+                    "authority_level",
+                ),
+            ),
+            "relationships": compact_record_list(
+                record_map.get("relationships"),
+                field_names=(
+                    "source_relationship_id",
+                    "from_object_ref",
+                    "to_object_ref",
+                    "predicate",
+                    "review_state",
+                    "confidence_score",
+                ),
+            ),
+            "extraction_summaries": compact_record_list(
+                record_map.get("extraction_summaries"),
+                field_names=(
+                    "extraction_id",
+                    "capture_event_id",
+                    "review_state",
+                    "extraction_status",
+                ),
+            ),
+        },
+    }
+    schema_version = prior_state.get("schema_version")
+    if schema_version is not None:
+        compact_payload["schema_version"] = schema_version
+    truncated = prior_state.get("truncated")
+    if truncated is not None:
+        compact_payload["truncated"] = truncated
+    return compact_payload

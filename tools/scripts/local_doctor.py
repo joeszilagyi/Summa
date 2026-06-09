@@ -75,6 +75,14 @@ def redact(value: Any) -> Any:
     return text
 
 
+def dict_or_empty(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def list_or_empty(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def finding(code: str, finding_class: str, message: str, **details: Any) -> dict[str, Any]:
     if finding_class not in FINDING_CLASSES:
         raise ValueError(f"unknown finding class: {finding_class}")
@@ -215,10 +223,9 @@ def inspect_workspaces(registry_path: Path) -> tuple[list[dict[str, Any]], list[
 
 
 def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
-    scheduler_policy = workspace.get("scheduler_policy")
-    saturation = (
-        scheduler_policy.get("saturation_state") if isinstance(scheduler_policy, dict) else None
-    )
+    scheduler_policy = dict_or_empty(workspace.get("scheduler_policy"))
+    saturation_value = scheduler_policy.get("saturation_state")
+    saturation = saturation_value if isinstance(saturation_value, dict) else None
     if not isinstance(saturation, dict):
         return {
             "state": "not_evaluated",
@@ -228,9 +235,8 @@ def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
         }
     state = str(saturation.get("state") or "not_evaluated")
     action = str(saturation.get("scheduler_action") or "run")
-    reasons = (
-        saturation.get("reason_codes") if isinstance(saturation.get("reason_codes"), list) else []
-    )
+    reason_values = saturation.get("reason_codes")
+    reasons: list[Any] = reason_values if isinstance(reason_values, list) else []
     if state in {"saturated", "cooldown"}:
         interpretation = f"Workspace is {state}; scheduler action is {action}."
     else:
@@ -248,7 +254,7 @@ def workspace_saturation_summary(workspace: dict[str, Any]) -> dict[str, Any]:
 
 
 def sqlite_integrity_for_path(path: Path, *, quick_check: bool = False) -> dict[str, Any]:
-    result = {
+    result: dict[str, Any] = {
         "path": str(path),
         "status": "unknown",
         "integrity_result": None,
@@ -537,7 +543,7 @@ def inspect_graph_closure(
 
 def inspect_locks(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     lock_root = repo_root / "runtime" / "locks"
-    locks = []
+    locks: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
     if not lock_root.exists():
         return locks, []
@@ -572,7 +578,7 @@ def inspect_locks(repo_root: Path) -> tuple[list[dict[str, Any]], list[dict[str,
 
 def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     policy_path = repo_root / "config" / "durability_policies" / "local_first_crown_jewels.v1.json"
-    posture = {
+    posture: dict[str, Any] = {
         "policy_path": str(policy_path),
         "policy_status": "present" if policy_path.exists() else "missing",
         "backup_root": None,
@@ -609,7 +615,7 @@ def inspect_backup_posture(repo_root: Path) -> tuple[dict[str, Any], list[dict[s
 
     backup_root = repo_root / policy.get("backup_root", "runtime/backups/crown_jewels")
     posture["backup_root"] = str(backup_root)
-    candidates = (
+    candidates: list[Path] = (
         [path for path in backup_root.rglob("*") if path.is_file()] if backup_root.exists() else []
     )
     if not candidates:
@@ -663,7 +669,7 @@ def inspect_migration_posture(
     validate_all: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     ledger_root = repo_root / "runtime" / "ledgers"
-    posture = {
+    posture: dict[str, Any] = {
         "ledger_root": str(ledger_root),
         "ledger_count": 0,
         "event_count": 0,
@@ -696,7 +702,7 @@ def inspect_migration_posture(
         )
         return posture, findings
 
-    ledger_paths = sorted(
+    ledger_paths: list[Path] = sorted(
         path for path in ledger_root.glob("*.migration-ledger.jsonl") if path.is_file()
     )
     posture["ledger_count"] = len(ledger_paths)

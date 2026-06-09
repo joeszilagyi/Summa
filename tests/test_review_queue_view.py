@@ -1,3 +1,4 @@
+import argparse
 import json
 import sqlite3
 import subprocess
@@ -6,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.scripts import build_review_queue_view as review_queue_view
 from tools.source_db_tools import review_queue
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -474,3 +476,89 @@ def test_review_queue_rolls_back_when_provenance_write_fails(tmp_path: Path, mon
     assert int(work_row["accepted_for_citation"]) == 0
     assert history_count == 0
     assert provenance_count == 0
+
+
+def test_review_queue_view_helpers_cover_rendering_and_validation(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = review_queue.list_review_items(conn, state="all", limit=1)
+    finally:
+        conn.close()
+
+    assert review_queue_view.count_key(None) == "(empty)"
+    assert review_queue_view.count_key("") == "(empty)"
+    assert review_queue_view.count_key("work") == "work"
+    assert review_queue_view.count_by(rows, "review_state") == {"ambiguous": 1}
+    assert review_queue_view.text_value(None) == "-"
+    assert review_queue_view.text_value("a\nb\tc") == "a b c"
+
+    normalized = review_queue_view.normalize_item(rows[0])
+    assert normalized["available_actions"]["writer_surface"].endswith("review_queue.py")
+    assert "accept" in normalized["available_actions"]["commands"]
+    assert review_queue_view.review_command("accept", normalized["object_ref"]).endswith(
+        "accept claim:1"
+    )
+    assert review_queue_view.review_command("accept", None) is None
+
+    with pytest.raises(review_queue_view.ReviewQueueViewError, match="limit must be non-negative"):
+        review_queue_view.validate_args(
+            argparse.Namespace(limit=-1, min_confidence=None, max_confidence=None)
+        )
+
+    with pytest.raises(review_queue_view.ReviewQueueViewError, match="min-confidence"):
+        review_queue_view.validate_args(
+            argparse.Namespace(limit=1, min_confidence=0.9, max_confidence=0.1)
+        )
+
+    with pytest.raises(review_queue_view.ReviewQueueViewError, match="review database not found"):
+        review_queue_view.resolve_db_path(str(tmp_path / "missing.sqlite"))
+
+
+def test_review_queue_view_emits_text_and_rejects_invalid_db(tmp_path: Path) -> None:
+    db = create_review_db(tmp_path)
+    output = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL),
+            "--db",
+            str(db),
+            "--state",
+            "all",
+            "--object-type",
+            "work",
+            "--limit",
+            "1",
+            "--format",
+            "text",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert output.returncode == 0, output.stdout + output.stderr
+    assert "schema_version=review-queue.v1" in output.stdout
+    assert "item[0].object_ref=work:1" in output.stdout
+    assert "writer_surface=" in output.stdout
+
+    invalid = tmp_path / "invalid.sqlite"
+    invalid.write_text("not a database", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL),
+            "--db",
+            str(invalid),
+            "--format",
+            "json",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "could not open review database read-only" in result.stderr or "file is not a database" in result.stderr

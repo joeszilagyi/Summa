@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -96,17 +96,19 @@ def backup_database(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     backup_path: Path | None = None
-    lock_context = (
-        acquire_workspace_lock(
-            workspace_id,
-            **(
-                {"command": "sqlite_safety.backup"}
-                | ({"lock_root": lock_root} if lock_root is not None else {})
-            ),
+    lock_context: AbstractContextManager[object]
+    if workspace_id is not None:
+        lock_context = (
+            acquire_workspace_lock(
+                workspace_id,
+                command="sqlite_safety.backup",
+                lock_root=lock_root if lock_root is not None else None,
+            )
+            if lock_root is not None
+            else acquire_workspace_lock(workspace_id, command="sqlite_safety.backup")
         )
-        if workspace_id
-        else nullcontext()
-    )
+    else:
+        lock_context = nullcontext()
     try:
         with lock_context:
             source_conn = sqlite3.connect(_readonly_uri(source_path), uri=True)

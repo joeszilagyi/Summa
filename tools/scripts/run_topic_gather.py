@@ -30,13 +30,20 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_candidate_record_payload,
     compact_next_action_prompt_payload,
+    compact_prior_state_prompt_payload,
 )
 from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
+    TEMPLATE_PATH as WRAPPER_TEMPLATE_PATH,
+)
+from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
     load_template,
-    parse_wrapped_blocks,
     render_wrapped_block,
+)
+from tools.common.source_text_profile import (  # noqa: E402
+    build_source_text_profile,
+    source_text_profile_hazard_flags,
 )
 from tools.common.subprocess_capture import (  # noqa: E402
     command_output_excerpt,
@@ -189,6 +196,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db",
         help="Canonical SQLite store used for optional prior-state gather context.",
+    )
+    parser.add_argument(
+        "--canonical-store-check-json",
+        help=(
+            "Optional prevalidated canonical-store check-result JSON from the cycle parent. "
+            "When supplied, prior-state loading reuses the stored validation result instead of "
+            "re-checking the database."
+        ),
     )
     parser.add_argument(
         "--feedback-plan",
@@ -445,6 +460,12 @@ def resolve_source_text_blocks(
         if source_size <= SOURCE_TEXT_BLOCK_BYTE_CAP:
             source_text = read_text_file(source_path, label="source text file")
             hazard_flags = detect_hazard_flags(source_text)
+            source_profile = build_source_text_profile(source_text, byte_count=source_size)
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             rendered_blocks.append(
                 render_wrapped_block(
                     source_ref=source_ref,
@@ -462,6 +483,7 @@ def resolve_source_text_blocks(
                     "provenance": provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": byte_count,
@@ -482,6 +504,12 @@ def resolve_source_text_blocks(
                 index, chunk_index=chunk_index
             )
             hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
+            source_profile = build_source_text_profile(source_text, byte_count=len(chunk_bytes))
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             hazard_scan_tail = (hazard_scan_tail + source_text)[-SOURCE_TEXT_HAZARD_SCAN_OVERLAP:]
             rendered_blocks.append(
                 render_wrapped_block(
@@ -499,6 +527,7 @@ def resolve_source_text_blocks(
                     "provenance": chunk_provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": len(chunk_bytes),
@@ -509,6 +538,12 @@ def resolve_source_text_blocks(
         if chunk_count == 0:
             source_text = ""
             hazard_flags = detect_hazard_flags(source_text)
+            source_profile = build_source_text_profile(source_text, byte_count=0)
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             rendered_blocks.append(
                 render_wrapped_block(
                     source_ref=source_ref,
@@ -525,6 +560,7 @@ def resolve_source_text_blocks(
                     "provenance": provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": 0,
@@ -776,24 +812,19 @@ def execute_gather_run(
         args=args,
         source_wrapping_blocks=source_wrapping_blocks,
     )
-    rendered_prompt = render_prompt_text(
+    rendered_prompt, prompt_budget = build_prompt_rendering(
         prompt_body=prompt_body,
         subject=gather_inputs["subject"],
         facet=gather_inputs["facet"],
         phase=gather_inputs["phase"],
+        cycle_depth=args.cycle_depth,
         bundle=gather_inputs["bundle"],
         wrapped_blocks=rendered_blocks,
         next_action=next_action,
         prior_state=prior_state_context,
         template=gather_inputs["wrapper_template"],
     )
-    parsed_blocks = parse_wrapped_blocks(
-        rendered_prompt, template=gather_inputs["wrapper_template"]
-    )
-    rendered_source_blocks = [
-        block for block in parsed_blocks if block.source_ref.startswith("source:")
-    ]
-    if len(rendered_source_blocks) != len(source_wrapping_blocks):
+    if prompt_budget["source_block_count"] != len(source_wrapping_blocks):
         raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
 
     rendered_prompt_hash = sha256_text(rendered_prompt)
@@ -853,6 +884,7 @@ def execute_gather_run(
         rendered_prompt=rendered_prompt,
         rendered_prompt_path=rendered_prompt_path,
         source_wrapping_blocks=source_wrapping_blocks,
+        prompt_budget=prompt_budget,
         live_result=live_result,
         prior_state=prior_state_context,
         feedback_plan=feedback_plan,
@@ -919,8 +951,19 @@ def resolve_prior_state_context(
         raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     try:
         try:
-            outline = canonical_store.load_canonical_outline()
-            canonical_store.validate_existing_store(conn, outline=outline)
+            canonical_store_check_json = getattr(args, "canonical_store_check_json", None)
+            if canonical_store_check_json is None:
+                outline = canonical_store.load_canonical_outline()
+                canonical_store.validate_existing_store(conn, outline=outline)
+            else:
+                check_result_path = Path(canonical_store_check_json).expanduser()
+                if not check_result_path.is_absolute():
+                    check_result_path = (Path.cwd() / check_result_path).resolve()
+                check_result = canonical_store.load_check_result(check_result_path)
+                if check_result.db_path != db_path:
+                    raise canonical_store.CanonicalStoreError(
+                        "prevalidated canonical-store check result does not match the requested db"
+                    )
             prior_state = canonical_store.load_gather_prior_state(
                 conn,
                 subject_id=subject_id,
@@ -960,18 +1003,19 @@ def render_untrusted_json_block(
     )
 
 
-def render_prompt_text(
+def build_prompt_rendering(
     *,
     prompt_body: str,
     subject: dict[str, Any],
     facet: str,
     phase: str,
+    cycle_depth: int,
     bundle: dict[str, Any],
     wrapped_blocks: list[str],
     next_action: dict[str, Any] | None = None,
     prior_state: dict[str, Any] | None = None,
     template: WrapperTemplate,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     subject_metadata = {
         "subject_id": subject["subject_id"],
         "display_name": subject["display_name"],
@@ -999,34 +1043,81 @@ def render_prompt_text(
         render_untrusted_json_block(
             source_ref="metadata:prior-state",
             provenance="prior canonical state context",
-            payload=prior_state,
+            payload=compact_prior_state_prompt_payload(
+                prior_state,
+                cycle_depth=cycle_depth,
+            ),
             template=template,
         )
         if isinstance(prior_state, dict)
         else ""
     )
-    metadata_sections = [
-        f"Untrusted subject metadata:\n{subject_block}\n",
-    ]
-    if next_action_block:
-        metadata_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
-    if prior_state_block:
-        metadata_sections.append(
-            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
-        )
-    return (
-        f"{prompt_body.rstrip()}\n\n"
+    prompt_sections = [
+        f"{prompt_body.rstrip()}\n\n",
         "Subject runtime:\n"
         f"- subject_id: {subject['subject_id']}\n"
         f"- facet: {facet}\n"
         f"- phase: {phase}\n"
         f"- prompt_bundle_id: {bundle['bundle_id']}\n"
         f"- prompt_bundle_key: {bundle['bundle_key']}\n"
-        f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n"
-        + "".join(metadata_sections)
-        + "Wrapped source text blocks:\n"
-        + f"{source_block_section}\n"
+        f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n",
+        f"Untrusted subject metadata:\n{subject_block}\n",
+    ]
+    if next_action_block:
+        prompt_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
+    if prior_state_block:
+        prompt_sections.append(f"Untrusted prior canonical state metadata:\n{prior_state_block}\n")
+    source_text_blocks_section = "Wrapped source text blocks:\n" + f"{source_block_section}\n"
+    prompt_sections.append(source_text_blocks_section)
+    section_byte_counts = {
+        "prompt_body": len(prompt_sections[0].encode("utf-8")),
+        "subject_runtime": len(prompt_sections[1].encode("utf-8")),
+        "subject_metadata": len(prompt_sections[2].encode("utf-8")),
+        "source_text_blocks": len(source_text_blocks_section.encode("utf-8")),
+    }
+    if next_action_block:
+        section_byte_counts["feedback_plan_metadata"] = len(prompt_sections[3].encode("utf-8"))
+    if prior_state_block:
+        prior_state_index = 4 if next_action_block else 3
+        section_byte_counts["prior_state_metadata"] = len(
+            prompt_sections[prior_state_index].encode("utf-8")
+        )
+    prompt_budget = {
+        "section_byte_counts": section_byte_counts,
+        "prompt_total_byte_count": sum(section_byte_counts.values()),
+        "source_block_count": len(wrapped_blocks),
+        "metadata_block_count": 1 + int(bool(next_action_block)) + int(bool(prior_state_block)),
+        "section_order": list(section_byte_counts.keys()),
+    }
+    return "".join(prompt_sections), prompt_budget
+
+
+def render_prompt_text(
+    *,
+    prompt_body: str,
+    subject: dict[str, Any],
+    facet: str,
+    phase: str,
+    cycle_depth: int,
+    bundle: dict[str, Any],
+    wrapped_blocks: list[str],
+    next_action: dict[str, Any] | None = None,
+    prior_state: dict[str, Any] | None = None,
+    template: WrapperTemplate,
+) -> str:
+    rendered_prompt, _ = build_prompt_rendering(
+        prompt_body=prompt_body,
+        subject=subject,
+        facet=facet,
+        phase=phase,
+        cycle_depth=cycle_depth,
+        bundle=bundle,
+        wrapped_blocks=wrapped_blocks,
+        next_action=next_action,
+        prior_state=prior_state,
+        template=template,
     )
+    return rendered_prompt
 
 
 def candidate_type_hint_for_facet(facet: str) -> str:
@@ -1306,6 +1397,7 @@ def build_candidate_batch(
     rendered_prompt: str,
     rendered_prompt_path: Path,
     source_wrapping_blocks: list[dict[str, Any]],
+    prompt_budget: dict[str, Any] | None,
     live_result: dict[str, Any] | None,
     prior_state: dict[str, Any] | None,
     feedback_plan: dict[str, Any] | None,
@@ -1327,6 +1419,11 @@ def build_candidate_batch(
     engine_cache_hit = (
         bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     )
+    subject_manifest_path = (
+        Path(str(gather_inputs["runtime"]["subject_manifest_path"])).expanduser().resolve()
+    )
+    domain_pack_path = REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"
+    selected_template_path = (REPO_ROOT / str(gather_inputs["selected_template_file"])).resolve()
     if live_result is not None:
         candidate_record = compact_candidate_record_payload(
             candidate_type=candidate_type_hint,
@@ -1365,22 +1462,15 @@ def build_candidate_batch(
         },
         "subject": {
             "subject_id": subject["subject_id"],
-            "display_name": subject["display_name"],
-            "domain_pack": subject["domain_pack"],
-            "scope_statement": subject["scope_statement"],
-            "enabled_facets": subject["enabled_facets"],
-            "query_families": subject["query_families"],
-            "manifest_path": gather_inputs["runtime"]["subject_manifest_path"],
+            "manifest_path": str(subject_manifest_path),
+            "manifest_hash": hash_file(subject_manifest_path),
             "workspace_root": gather_inputs["runtime"]["workspace_root"],
             "resolution_source": gather_inputs["runtime"]["resolution_source"],
         },
         "domain_pack": {
             "pack_id": pack["pack_id"],
-            "schema_version": pack["schema_version"],
-            "display_name": pack["display_name"],
-            "status": pack["status"],
-            "path": str(REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"),
-            "enabled_facets": pack["enabled_facets"],
+            "path": str(domain_pack_path),
+            "sha256": hash_file(domain_pack_path),
             "selected_facet": facet,
             "prompt_bundle_key": bundle["bundle_key"],
             "prompt_bundle_id": bundle["bundle_id"],
@@ -1395,14 +1485,18 @@ def build_candidate_batch(
             "bundle_id": bundle["bundle_id"],
             "selected_template_id": gather_inputs["selected_template_id"],
             "selected_template_file": gather_inputs["selected_template_file"],
+            "selected_template_hash": hash_file(selected_template_path),
             "wrapper_template_id": bundle["source_text_wrapper_template_id"],
         },
         "prompt": {
             "rendered_prompt_path": str(rendered_prompt_path),
             "rendered_prompt_hash": sha256_text(rendered_prompt),
+            "budget": prompt_budget,
         },
         "source_text_wrapping": {
             "wrapper_template_id": gather_inputs["wrapper_template"].template_id,
+            "wrapper_template_path": str(WRAPPER_TEMPLATE_PATH),
+            "wrapper_template_hash": hash_file(WRAPPER_TEMPLATE_PATH),
             "begin_delimiter": gather_inputs["wrapper_template"].begin_delimiter,
             "end_delimiter": gather_inputs["wrapper_template"].end_delimiter,
             "source_block_count": len(source_wrapping_blocks),
@@ -1457,7 +1551,11 @@ def build_candidate_batch(
         },
     }
     if prior_state is not None:
-        prior_state_rendered_text = render_json_payload(prior_state)
+        prior_state_rendered_payload = compact_prior_state_prompt_payload(
+            prior_state,
+            cycle_depth=args.cycle_depth,
+        )
+        prior_state_rendered_text = render_json_payload(prior_state_rendered_payload)
         batch["prior_state"] = {
             **prior_state,
             "prior_state_rendered_source_ref": "metadata:prior-state",

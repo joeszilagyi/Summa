@@ -120,6 +120,16 @@ def _optional_score(value: object) -> float | int | None:
     return None
 
 
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def _parse_rfc3339_timestamp(value: object, field_name: str) -> dt.datetime:
     text = _require_nonblank(value, field_name)
     try:
@@ -1482,7 +1492,8 @@ def _record_feedback_candidates_payload(
 ) -> None:
     explanation = payload.get("selection_explanation")
     if isinstance(explanation, dict):
-        policy = explanation.get("policy") if isinstance(explanation.get("policy"), dict) else {}
+        policy_value = explanation.get("policy")
+        policy = policy_value if isinstance(policy_value, dict) else {}
         policy_id = _optional_text(policy.get("policy_id"))
         for candidate in explanation.get("considered_candidates", []):
             if not isinstance(candidate, dict):
@@ -1601,30 +1612,26 @@ def record_topic_cycle_manifest(
     """
 
     run_id = _require_nonblank(manifest.get("run_id"), "manifest.run_id")
-    workspace = manifest.get("workspace") if isinstance(manifest.get("workspace"), dict) else {}
-    subject = manifest.get("subject") if isinstance(manifest.get("subject"), dict) else {}
-    domain_pack = (
-        manifest.get("domain_pack") if isinstance(manifest.get("domain_pack"), dict) else {}
-    )
-    ledger = (
-        manifest.get("cycle_evidence_ledger")
-        if isinstance(manifest.get("cycle_evidence_ledger"), dict)
-        else {}
-    )
+    workspace = _dict_or_empty(manifest.get("workspace"))
+    subject = _dict_or_empty(manifest.get("subject"))
+    domain_pack = _dict_or_empty(manifest.get("domain_pack"))
+    ledger = _dict_or_empty(manifest.get("cycle_evidence_ledger"))
     cycle_event_id = _optional_text(ledger.get("cycle_event_id"))
     final_feedback_plan: Mapping[str, Any] = {}
-    if isinstance(manifest.get("active_feedback_plan_for_gather"), dict):
-        final_feedback_plan = manifest["active_feedback_plan_for_gather"]
-    elif isinstance(manifest.get("feedback_plan_pre"), dict):
-        final_feedback_plan = manifest["feedback_plan_pre"]
-    elif isinstance(manifest.get("feedback_plan"), dict):
-        final_feedback_plan = manifest["feedback_plan"]
+    active_feedback_plan_for_gather = manifest.get("active_feedback_plan_for_gather")
+    feedback_plan_pre = manifest.get("feedback_plan_pre")
+    feedback_plan = manifest.get("feedback_plan")
+    if isinstance(active_feedback_plan_for_gather, dict):
+        final_feedback_plan = active_feedback_plan_for_gather
+    elif isinstance(feedback_plan_pre, dict):
+        final_feedback_plan = feedback_plan_pre
+    elif isinstance(feedback_plan, dict):
+        final_feedback_plan = feedback_plan
     final_feedback_plan_ref = _optional_text(final_feedback_plan.get("path"))
-    stages = manifest.get("stages") if isinstance(manifest.get("stages"), list) else []
+    stages = _dict_list(manifest.get("stages"))
     status = _require_nonblank(manifest.get("status"), "manifest.status")
-    warning_count = (
-        len(manifest.get("warnings", [])) if isinstance(manifest.get("warnings"), list) else 0
-    )
+    warnings = manifest.get("warnings")
+    warning_count = len(warnings) if isinstance(warnings, list) else 0
     error_count = 1 if status == "failed" else 0
     event_id = record_cycle_event_start(
         conn,
@@ -1668,9 +1675,9 @@ def record_topic_cycle_manifest(
             required_stage=bool(raw_stage.get("required", True)),
             skipped_reason=_optional_text(raw_stage.get("skipped_reason")),
             command_name=_command_name(raw_stage.get("command")),
-            validation_status=_optional_text((raw_stage.get("validation") or {}).get("status"))
-            if isinstance(raw_stage.get("validation"), dict)
-            else None,
+            validation_status=_optional_text(
+                _dict_or_empty(raw_stage.get("validation")).get("status")
+            ),
             error_summary=_optional_text(raw_stage.get("error_message")),
             metadata={"counts": raw_stage.get("counts"), "inputs": raw_stage.get("inputs")},
         )

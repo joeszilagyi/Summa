@@ -1976,15 +1976,15 @@ def ingest_execution_artifacts(
                 raise CanonicalIngestError(
                     "execution-artifact batch write failed for detected entities"
                 )
-            for row, entity_row in zip(pending_entity_records, entity_rows, strict=True):
+            for record, entity_row in zip(pending_entity_records, entity_rows, strict=True):
                 _bump(report, "inserted", "extraction_detected_entity")
                 entity_candidates.append(
                     {
                         "detected_entity_id": int(entity_row["detected_entity_id"]),
-                        "entity_label": row["entity_label"],
-                        "entity_type": row["entity_type"],
-                        "confidence_score": row["confidence_score"],
-                        "structured": row["structured"],
+                        "entity_label": record["entity_label"],
+                        "entity_type": record["entity_type"],
+                        "confidence_score": record["confidence_score"],
+                        "structured": record["structured"],
                     }
                 )
 

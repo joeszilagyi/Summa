@@ -16,7 +16,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -71,6 +71,14 @@ def _format_run_id(*, run_id: str, workspace_id: str, attempt_number: int | str,
 
 class ScheduledCycleError(RuntimeError):
     """Raised when scheduled topic-cycle execution cannot continue safely."""
+
+
+class CycleProcessResult(Protocol):
+    @property
+    def returncode(self) -> int: ...
+
+    @property
+    def stdout(self) -> str: ...
 
 
 def utc_now() -> str:
@@ -279,7 +287,7 @@ def parse_child_manifest_output(raw_manifest: str | None) -> dict[str, Any] | No
 def resolve_child_manifest(
     *,
     child_manifest_path: Path,
-    proc: subprocess.CompletedProcess[str] | None,
+    proc: CycleProcessResult | None,
 ) -> dict[str, Any] | None:
     if not child_manifest_path.is_file():
         child_manifest = parse_child_manifest_output(proc.stdout if proc is not None else None)
@@ -439,16 +447,16 @@ def default_cycle_invoker(
     command: list[str],
     *,
     timeout: float | None = None,
-) -> subprocess.CompletedProcess[str]:
+) -> CycleProcessResult:
     return run_streaming_command(command, cwd=REPO_ROOT, timeout=timeout)
 
 
 def invoke_cycle(
-    cycle_invoker: Callable[..., subprocess.CompletedProcess[str]],
+    cycle_invoker: Callable[..., CycleProcessResult],
     command: list[str],
     *,
     timeout_seconds: float | None,
-) -> subprocess.CompletedProcess[str]:
+) -> CycleProcessResult:
     try:
         return cycle_invoker(command, timeout=timeout_seconds)
     except TypeError as exc:
@@ -460,7 +468,7 @@ def invoke_cycle(
 def run_scheduled_cycles(
     args: argparse.Namespace,
     *,
-    cycle_invoker: Callable[[list[str]], subprocess.CompletedProcess[str]] = default_cycle_invoker,
+    cycle_invoker: Callable[[list[str]], CycleProcessResult] = default_cycle_invoker,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], int]:
     started_at = normalize_timestamp(args.timestamp)
@@ -531,7 +539,7 @@ def run_scheduled_cycles(
         workspace_lock_root: Path,
         workspace_mutex: threading.Lock,
     ) -> tuple[dict[str, Any], int, int, int, int, int]:
-        proc: subprocess.CompletedProcess[str] | None = None
+        proc: CycleProcessResult | None = None
         result["runtime_consumed_seconds"] = 0.0
         attempted_delta = 0
         completed_delta = 0
