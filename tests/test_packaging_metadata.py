@@ -7,8 +7,8 @@ import venv
 from pathlib import Path
 from typing import Any
 
-import pytest
-from packaging.version import Version
+import pytest  # type: ignore[import-not-found]
+from packaging.version import Version  # type: ignore[import-not-found]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HYGIENE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "repo-hygiene.yml"
