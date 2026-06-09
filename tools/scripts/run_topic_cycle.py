@@ -541,7 +541,7 @@ def resolve_command_timeout_seconds(args: argparse.Namespace) -> float:
     return float(timeout_seconds)
 
 
-def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> object:
+def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) -> Any:
     return run_streaming_command(command, cwd=cwd, timeout=timeout)
 
 
@@ -927,6 +927,8 @@ def gather_stage(
         batch, report, exit_code = (
             gather_candidate_batch_validator.load_validated_gather_candidate_batch(batch_path)
         )
+        if batch is None:
+            raise TopicCycleError("validated gather candidate batch unexpectedly missing")
         stage.validation = {
             "status": "pass" if exit_code == EXIT_GATHER_PASS else "fail",
             "report": report,
@@ -953,10 +955,11 @@ def gather_stage(
             "rendered_prompt": str(prompt_path),
             "rendered_prompt_sha256": rendered_prompt_sha256,
         }
-        if payload.get("prior_state"):
+        prior_state_value = payload.get("prior_state")
+        if isinstance(prior_state_value, dict):
             manifest["prior_state"] = {
-                "context_hash": payload["prior_state"].get("context_hash"),
-                "record_counts": payload["prior_state"].get("record_counts"),
+                "context_hash": prior_state_value.get("context_hash"),
+                "record_counts": prior_state_value.get("record_counts"),
             }
         finish_stage(stage)
         add_stage(manifest, stage)
@@ -997,9 +1000,8 @@ def candidate_ingest_stage(
         fixture_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture, fixture_target)
         fixture_payload = read_json(fixture, label="candidate batch fixture")
-        prompt_ref = (
-            fixture_payload.get("prompt") if isinstance(fixture_payload.get("prompt"), dict) else {}
-        )
+        prompt_ref_value = fixture_payload.get("prompt")
+        prompt_ref = prompt_ref_value if isinstance(prompt_ref_value, dict) else {}
         rendered_prompt_path = prompt_ref.get("rendered_prompt_path")
         if isinstance(rendered_prompt_path, str) and rendered_prompt_path:
             source_prompt_path = (
@@ -1730,7 +1732,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     try:
         runtime = resolve_runtime_stage(args=args, manifest=manifest, workspace=workspace)
-        lock_context = nullcontext()
+        lock_context: Any = nullcontext()
         if not getattr(args, "skip_workspace_lock", False):
             workspace_id = manifest["workspace"].get("workspace_id")
             if not isinstance(workspace_id, str) or not workspace_id.strip():

@@ -404,8 +404,7 @@ def build_search_artifacts(
         temp_dir = tempfile.TemporaryDirectory(prefix=".publication-search.")
         root = Path(temp_dir.name)
     else:
-        root = search_artifacts_dir
-        assert root is not None
+        root = search_artifacts_dir if search_artifacts_dir is not None else Path.cwd()
         root.mkdir(parents=True, exist_ok=True)
 
     index_db_path = root / "local_search.sqlite"
@@ -496,7 +495,7 @@ def read_publication_snapshot(
         }
 
         authority_total = 0
-        public_authorities = []
+        public_authorities: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -520,7 +519,7 @@ def read_publication_snapshot(
         public_authority_ids = {item["authority_record_id"] for item in public_authorities}
 
         work_total = 0
-        public_works = []
+        public_works: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -543,7 +542,7 @@ def read_publication_snapshot(
         public_work_ids = {item["work_id"] for item in public_works}
 
         source_total = 0
-        public_sources = []
+        public_sources: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT
@@ -571,7 +570,7 @@ def read_publication_snapshot(
             )
 
         claim_total = 0
-        public_claims = []
+        public_claims: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -593,7 +592,7 @@ def read_publication_snapshot(
             )
 
         relationship_total = 0
-        public_relationships = []
+        public_relationships: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -615,7 +614,7 @@ def read_publication_snapshot(
             )
 
         topic_total = 0
-        public_topics = []
+        public_topics: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -638,7 +637,7 @@ def read_publication_snapshot(
             )
 
         subject_total = 0
-        public_work_subjects = []
+        public_work_subjects: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -668,7 +667,7 @@ def read_publication_snapshot(
             )
 
         detected_total = 0
-        public_detected_entities = []
+        public_detected_entities: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT *
@@ -696,7 +695,7 @@ def read_publication_snapshot(
             )
 
         provenance_total = 0
-        public_provenance_events = []
+        public_provenance_events: list[dict[str, Any]] = []
         for row in conn.execute(
             """
             SELECT provenance_event_id, event_type, actor_label, event_timestamp
@@ -735,7 +734,7 @@ def read_publication_snapshot(
         search_artifacts_dir=search_artifacts_dir,
     )
 
-    timeline_events: list[dict[str, str]] = []
+    timeline_events: list[dict[str, Any]] = []
     for work in public_works:
         if work["first_seen_at"]:
             timeline_events.append(
@@ -785,7 +784,7 @@ def read_publication_snapshot(
         "timeline_events": query_fingerprint("timeline_events", timeline_events),
     }
 
-    validation_summary = {
+    validation_summary: dict[str, Any] = {
         "public_authorities": len(public_authorities),
         "public_works": len(public_works),
         "public_sources": len(public_sources),

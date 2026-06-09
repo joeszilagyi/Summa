@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
@@ -77,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def render_text(payload: dict[str, object]) -> str:
+def render_text(payload: dict[str, Any]) -> str:
     lines = [
         f"status={payload['status']}",
         f"output_dir={payload['output_dir']}",
@@ -116,7 +117,7 @@ def main() -> int:
         presentation_path = output_dir / "public_presentation.json"
         publish_root = output_dir / "static"
         leak_report_path = output_dir / "leak-scan-report.json"
-        graph_closure_report: dict[str, object] | None = None
+        graph_closure_report: dict[str, Any] | None = None
         graph_closure_report_path = output_dir / "graph-closure-report.json"
         if args.graph_closure_preflight:
             graph_closure_report = canonical_graph_closure.audit_canonical_graph_closure(
@@ -155,7 +156,7 @@ def main() -> int:
             "publish_root": report_path(publish_root, base_dir=output_dir),
             "manifest_path": report_path(publish_root / "build-manifest.json", base_dir=output_dir),
         }
-        leak_report = scan_public_site_for_leaks(publish_root)
+        leak_report: dict[str, Any] = scan_public_site_for_leaks(publish_root)
         atomic_write_json(leak_report_path, leak_report)
         if leak_report["status"] != "pass":
             finding_codes = ", ".join(

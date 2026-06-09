@@ -295,12 +295,14 @@ def validate_handoff_sequence(records: list[dict[str, Any]]) -> None:
     if not records:
         raise SourceAcquisitionError("handoff artifact does not contain any records")
 
-    sequences = [record.get("sequence") for record in records]
-    if any(
-        not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1
-        for sequence in sequences
-    ):
-        raise SourceAcquisitionError("handoff artifact sequence values must be positive integers")
+    sequences: list[int] = []
+    for record in records:
+        sequence = record.get("sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+            raise SourceAcquisitionError(
+                "handoff artifact sequence values must be positive integers"
+            )
+        sequences.append(sequence)
     if len(set(sequences)) != len(sequences):
         raise SourceAcquisitionError("handoff artifact must not repeat sequence values")
     expected_sequences = list(range(1, len(records) + 1))
@@ -615,8 +617,8 @@ def _select_json_record_path_slice(
                     text, record_path=record_path, position=position, segments=segments[1:]
                 )
             skipped_end, skipped_error = _skip_json_value(text, position)
-            if skipped_error is not None:
-                return None, skipped_error
+            if skipped_error is not None or skipped_end is None:
+                return None, skipped_error or f"record_path could not be resolved: {record_path}"
             position = _skip_json_whitespace(text, skipped_end)
             if position >= len(text):
                 return None, f"record_path could not be resolved: {record_path}"
@@ -644,8 +646,8 @@ def _select_json_record_path_slice(
                     text, record_path=record_path, position=position, segments=segments[1:]
                 )
             skipped_end, skipped_error = _skip_json_value(text, position)
-            if skipped_error is not None:
-                return None, skipped_error
+            if skipped_error is not None or skipped_end is None:
+                return None, skipped_error or f"record_path could not be resolved: {record_path}"
             position = _skip_json_whitespace(text, skipped_end)
             current_index += 1
             if position >= len(text):
@@ -1486,7 +1488,7 @@ def execute_structured_data(
     capture_index_by_path: dict[str, str] = {}
     capture_hash_by_path: dict[str, str] = {}
     capture_size_by_path: dict[str, int] = {}
-    record_map_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, str]]]] = {}
+    record_map_cache: dict[tuple[str, str, str], tuple[dict[str, Any], list[dict[str, str]]]] = {}
     records_by_source_path: dict[str, list[dict[str, Any]]] = {}
     root = expected_local_root(adapter_payload, adapter_path=adapter_path)
 
@@ -1652,7 +1654,13 @@ def execute_local_git_repo(
     run_id: str,
     created_at: str,
     handoff_hash: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str], list[str], bool]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, str],
+    list[str],
+    bool,
+]:
     if len(records) != 1:
         raise SourceAcquisitionError(
             "local_git_repo execution expects exactly one snapshot handoff record"
@@ -2352,7 +2360,7 @@ def execute_remote_fetches(
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, str],
-    dict[str, Path],
+    dict[str, bytes | Path],
     bool,
     dict[str, Any],
 ]:
@@ -2364,7 +2372,7 @@ def execute_remote_fetches(
     capture_events: list[dict[str, Any]] = []
     extraction_records: list[dict[str, Any]] = []
     text_artifacts: dict[str, str] = {}
-    binary_artifacts: dict[str, Path] = {}
+    binary_artifacts: dict[str, bytes | Path] = {}
     failed = False
     summary = {
         "urls_planned": len(records),
@@ -2571,7 +2579,7 @@ def execute_remote_url_manifest(
     dict[str, Any],
     list[str],
     dict[str, str],
-    dict[str, Path],
+    dict[str, bytes | Path],
 ]:
     if gate_request_path is None:
         raise SourceAcquisitionError(
@@ -2781,6 +2789,7 @@ def main() -> int:
                 dry_run_gate_request_path = resolve_cli_path(
                     args.network_safety_request, base_dir=Path.cwd()
                 )
+                assert remote_payload_spool_dir is not None
                 (
                     remote_execution_record,
                     remote_denial_record,
@@ -2834,7 +2843,7 @@ def main() -> int:
         capture_events: list[dict[str, Any]] = []
         extraction_records: list[dict[str, Any]] = []
         text_artifacts: dict[str, str] = {}
-        binary_artifacts: dict[str, bytes] = {}
+        binary_artifacts: dict[str, bytes | Path] = {}
         local_input_paths: list[str] = []
         failed = False
 
@@ -2936,6 +2945,7 @@ def main() -> int:
                 if args.network_safety_request
                 else None
             )
+            assert remote_payload_spool_dir is not None
             (
                 execution_record,
                 denial_record,
