@@ -164,6 +164,19 @@ def build_success_event(*, workspace_id: str, run_id: str, occurred_at: str) -> 
     )
 
 
+def build_unknown_status_event(
+    *, workspace_id: str, run_id: str, occurred_at: str, status: str
+) -> dict[str, object]:
+    return runtime_ledger.build_event(
+        workspace_id=workspace_id,
+        run_id=run_id,
+        event_type="command_end",
+        command="pytest-fixture",
+        status=status,
+        occurred_at=occurred_at,
+    )
+
+
 def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path: Path) -> None:
     workspaces_root = tmp_path / "workspaces"
     ledger_root = tmp_path / "runtime" / "ledgers"
@@ -497,6 +510,60 @@ def test_runtime_ledger_append_event_rejects_non_standard_json_constants(
 
     with pytest.raises(runtime_ledger.RuntimeLedgerError, match="non-standard"):
         runtime_ledger.append_event(ledger_path, event)
+
+
+def test_unknown_terminal_status_does_not_count_as_success(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="unknown.status")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="unknown_status_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    ledger_root = tmp_path / "runtime" / "ledgers"
+    append_ledger_events(
+        ledger_root / "unknown_status_workspace.runtime-ledger.jsonl",
+        [
+            build_unknown_status_event(
+                workspace_id="unknown_status_workspace",
+                run_id="unknown-status-run-1",
+                occurred_at="2026-06-01T04:05:00Z",
+                status="degraded",
+            )
+        ],
+    )
+
+    proc = run_reconciliation(
+        [
+            "--registry",
+            str(registry_path),
+            "--ledger-root",
+            str(ledger_root),
+            "--generated-at",
+            "2026-06-01T04:10:00Z",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    entry = payload["entries"][0]
+    assert entry["derived_failure_state"] == {
+        "status": "blocked",
+        "attempt_count": 1,
+        "last_failure_at": "2026-06-01T04:05:00Z",
+        "last_failure_reason": scheduler_reconciliation.UNKNOWN_STATUS_BLOCK_REASON,
+        "blocked_reason": scheduler_reconciliation.UNKNOWN_STATUS_BLOCK_REASON,
+    }
+    assert entry["recommendation"] == "replace"
 
 
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
