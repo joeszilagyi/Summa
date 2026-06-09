@@ -413,32 +413,46 @@ llm_runner_run_to_file() {
 _llm_runner_has_stamp_footer() {
   local file="$1"
 
-  python3 - "$file" <<'PY'
-from __future__ import annotations
+  local -a tail_lines=()
+  local line
 
-import re
-import sys
-from pathlib import Path
+  [[ -r "$file" ]] || return 1
 
-path = Path(sys.argv[1])
-try:
-    text = path.read_text(encoding="utf-8")
-except OSError:
-    raise SystemExit(1)
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    tail_lines+=("$line")
+    if (( ${#tail_lines[@]} > 8 )); then
+      tail_lines=("${tail_lines[@]:1}")
+    fi
+  done < "$file" || return 1
 
-pattern = re.compile(
-    r"\n---\n"
-    r"RUN_META_VERSION: run-body-footer\.v1\n"
-    r"GENERATED_BY: [^\n]+\n"
-    r"MODEL: [^\n]+\n"
-    r"PLACE: [^\n]+\n"
-    r"FACET: [^\n]+\n"
-    r"PHASE: [^\n]+\n"
-    r"RUN_TS: [^\n]+\n"
-    r"\Z"
-)
-raise SystemExit(0 if pattern.search(text) else 1)
-PY
+  (( ${#tail_lines[@]} == 8 )) || return 1
+  [[ "${tail_lines[0]}" == "---" ]] || return 1
+  [[ "${tail_lines[1]}" == "RUN_META_VERSION: run-body-footer.v1" ]] || return 1
+  case "${tail_lines[2]}" in
+    GENERATED_BY:*) ;;
+    *) return 1 ;;
+  esac
+  case "${tail_lines[3]}" in
+    MODEL:*) ;;
+    *) return 1 ;;
+  esac
+  case "${tail_lines[4]}" in
+    PLACE:*) ;;
+    *) return 1 ;;
+  esac
+  case "${tail_lines[5]}" in
+    FACET:*) ;;
+    *) return 1 ;;
+  esac
+  case "${tail_lines[6]}" in
+    PHASE:*) ;;
+    *) return 1 ;;
+  esac
+  case "${tail_lines[7]}" in
+    RUN_TS:*) ;;
+    *) return 1 ;;
+  esac
+  return 0
 }
 
 llm_runner_stamp_output() {
