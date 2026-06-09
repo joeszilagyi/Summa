@@ -39,6 +39,16 @@ def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def normalize_timestamp(raw_value: str, *, label: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeLedgerError(f"{label} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def new_run_id(prefix: str = "run") -> str:
     return f"{prefix}-{uuid.uuid4()}"
 
@@ -78,7 +88,9 @@ def build_event(
         "run_id": run_id,
         "workspace_id": workspace_id,
         "event_type": event_type,
-        "occurred_at": occurred_at or utc_now(),
+        "occurred_at": normalize_timestamp(occurred_at, label="occurred_at")
+        if occurred_at is not None
+        else utc_now(),
     }
     optional = {
         "command": command,
@@ -103,9 +115,17 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
             raise RuntimeLedgerError(f"runtime-ledger event missing required key: {key}")
     if event["event_type"] not in EVENT_TYPES:
         raise RuntimeLedgerError(f"unsupported runtime-ledger event_type: {event['event_type']}")
+    if not isinstance(event["occurred_at"], str):
+        raise RuntimeLedgerError("runtime-ledger event occurred_at must be a string timestamp")
+    normalized_event = dict(event)
+    normalized_event["occurred_at"] = normalize_timestamp(
+        event["occurred_at"], label="runtime-ledger event occurred_at"
+    )
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        line = json.dumps(event, ensure_ascii=False, allow_nan=False, sort_keys=True) + "\n"
+        line = (
+            json.dumps(normalized_event, ensure_ascii=False, allow_nan=False, sort_keys=True) + "\n"
+        )
     except ValueError as exc:
         raise RuntimeLedgerError("runtime-ledger event contains non-standard JSON") from exc
     with ledger_path.open("a", encoding="utf-8") as handle:
