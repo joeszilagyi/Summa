@@ -527,6 +527,53 @@ def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path
     assert entry["derived_failure_state"] == entry["registry_failure_state"]
 
 
+def test_reconciliation_normalizes_generated_at_to_utc_z(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="generated.at")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="generated_at_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    ledger_root = tmp_path / "runtime" / "ledgers"
+    append_ledger_events(
+        ledger_root / "generated_at_workspace.runtime-ledger.jsonl",
+        [
+            runtime_ledger.build_event(
+                workspace_id="generated_at_workspace",
+                run_id="generated-at-run-1",
+                event_type="command_start",
+                command="pytest-fixture",
+                occurred_at="2026-06-01T03:05:00Z",
+            )
+        ],
+    )
+
+    proc = run_reconciliation(
+        [
+            "--registry",
+            str(registry_path),
+            "--ledger-root",
+            str(ledger_root),
+            "--generated-at",
+            "2026-06-01T02:10:00-05:00",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["generated_at"] == "2026-06-01T07:10:00Z"
+
+
 def test_reconciliation_resolves_ledger_root_relative_to_cwd(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
