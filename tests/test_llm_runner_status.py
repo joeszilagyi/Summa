@@ -255,13 +255,27 @@ def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> Non
 
 def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> None:
     prompt_text = "y" * 200_000
+    expected_schema = (
+        '{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],'
+        '"additionalProperties":false}'
+    )
     args, stdin, _output = _run_llm_runner_with_fake_engine(
         tmp_path,
         engine="claude",
         prompt_text=prompt_text,
     )
 
-    assert args == ["-p", "--model", "sonnet", "--effort", "high"]
+    assert args[0] == "-p"
+    assert "--model" in args
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert "--effort" in args
+    assert args[args.index("--effort") + 1] == "high"
+    assert "--max-budget-usd" in args
+    assert args[args.index("--max-budget-usd") + 1] == "0.50"
+    assert "--output-format" in args
+    assert args[args.index("--output-format") + 1] == "json"
+    assert "--json-schema" in args
+    assert args[args.index("--json-schema") + 1] == expected_schema
     assert stdin == prompt_text
 
 
@@ -398,6 +412,42 @@ def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None
     )
 
     assert args[0] == "-p"
+    assert stdin == prompt_text
+    assert output == "engine-output\n"
+
+
+def test_llm_runner_run_to_file_materializes_claude_json_output(
+    tmp_path: Path,
+) -> None:
+    prompt_text = "claude json probe"
+    output_file = tmp_path / "result.txt"
+    json_engine_script = """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$ARGS_FILE"
+cat > "$STDIN_FILE"
+python3 - <<'PY'
+from __future__ import annotations
+
+import json
+
+print(json.dumps({"text": "engine-output\\n"}))
+PY
+exit "$EXIT_CODE"
+"""
+    args, stdin, output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="claude",
+        prompt_text=prompt_text,
+        use_run_to_file=True,
+        output_file=output_file,
+        engine_script=json_engine_script,
+    )
+
+    assert args[0] == "-p"
+    assert "--max-budget-usd" in args
+    assert "--output-format" in args
+    assert args[args.index("--output-format") + 1] == "json"
+    assert "--json-schema" in args
     assert stdin == prompt_text
     assert output == "engine-output\n"
 

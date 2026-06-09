@@ -28,6 +28,8 @@
 #   CODEX_OUTPUT_SCHEMA_FILE   JSON schema path        (default: unset)
 #   CLAUDE_MODEL              model string or alias   (default: sonnet)
 #   CLAUDE_EFFORT             low | medium | high     (default: high)
+#   CLAUDE_MAX_BUDGET_USD     positive decimal budget  (default: 0.50)
+#   CLAUDE_JSON_SCHEMA        JSON schema string       (default: {"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false})
 #
 # Depends on: runtime_logging.sh (runtime_log_event must be defined before
 #   llm_runner_run_quiet is called)
@@ -45,6 +47,9 @@ LLM_RUNNER_CODEX_MODEL_VERBOSITY="${CODEX_MODEL_VERBOSITY:-low}"
 LLM_RUNNER_CODEX_OUTPUT_SCHEMA_FILE="${CODEX_OUTPUT_SCHEMA_FILE:-}"
 LLM_RUNNER_CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 LLM_RUNNER_CLAUDE_EFFORT="${CLAUDE_EFFORT:-high}"
+LLM_RUNNER_CLAUDE_MAX_BUDGET_USD="${CLAUDE_MAX_BUDGET_USD:-0.50}"
+LLM_RUNNER_CLAUDE_JSON_SCHEMA_DEFAULT='{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}'
+LLM_RUNNER_CLAUDE_JSON_SCHEMA="${CLAUDE_JSON_SCHEMA:-$LLM_RUNNER_CLAUDE_JSON_SCHEMA_DEFAULT}"
 
 readonly LLM_RUNNER_SUPPORTED_ENGINES="codex|claude"
 readonly LLM_RUNNER_REQUIRED_RUNTIME_LOGGER="runtime_log_event"
@@ -172,6 +177,18 @@ _llm_runner_exec_codex_json() {
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
+_llm_runner_exec_claude() {
+  local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
+  ( cd "$tmp_dir" && \
+    printf '%s' "$prompt_text" | claude -p \
+      --model "$LLM_RUNNER_CLAUDE_MODEL" \
+      --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
+      --max-budget-usd "$LLM_RUNNER_CLAUDE_MAX_BUDGET_USD" \
+      --output-format json \
+      --json-schema "$LLM_RUNNER_CLAUDE_JSON_SCHEMA" \
+  ) >"$stdout_file" 2>"$stderr_file"
+}
+
 _llm_runner_materialize_codex_json_output() {
   local event_file="$1" output_file="$2" usage_file="${3:-}"
 
@@ -258,13 +275,91 @@ raise SystemExit(0)
 PY
 }
 
-_llm_runner_exec_claude() {
-  local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
-  ( cd "$tmp_dir" && \
-    printf '%s' "$prompt_text" | claude -p \
-      --model "$LLM_RUNNER_CLAUDE_MODEL" \
-      --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
-  ) >"$stdout_file" 2>"$stderr_file"
+_llm_runner_materialize_claude_output() {
+  local input_file="$1" output_file="$2"
+
+  python3 - "$input_file" "$output_file" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+
+try:
+    raw_text = input_path.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    raise SystemExit(1)
+
+try:
+    parsed = json.loads(raw_text)
+except json.JSONDecodeError:
+    output_path.write_text(raw_text, encoding="utf-8")
+    raise SystemExit(0)
+
+final_text = None
+if isinstance(parsed, str):
+    final_text = parsed
+elif isinstance(parsed, dict):
+    for key in ("text", "result"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            final_text = value
+            break
+    if final_text is None:
+        content = parsed.get("content")
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            if parts:
+                final_text = "".join(parts)
+        if final_text is None:
+            message = parsed.get("message")
+            if isinstance(message, dict):
+                for key in ("text", "result"):
+                    value = message.get(key)
+                    if isinstance(value, str):
+                        final_text = value
+                        break
+                if final_text is None:
+                    content = message.get("content")
+                    if isinstance(content, list):
+                        parts = []
+                        for item in content:
+                            if isinstance(item, str):
+                                parts.append(item)
+                            elif isinstance(item, dict):
+                                text = item.get("text")
+                                if isinstance(text, str):
+                                    parts.append(text)
+                        if parts:
+                            final_text = "".join(parts)
+elif isinstance(parsed, list):
+    parts = []
+    for item in parsed:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    if parts:
+        final_text = "".join(parts)
+
+if final_text is None:
+    output_path.write_text(raw_text, encoding="utf-8")
+else:
+    output_path.write_text(final_text, encoding="utf-8")
+raise SystemExit(0)
+PY
 }
 
 # ---------------------------------------------------------------------------
@@ -377,7 +472,10 @@ llm_runner_run_to_file() {
       fi
       ;;
     claude)
-      if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
+      if _llm_runner_exec_claude "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
+        if ! _llm_runner_materialize_claude_output "$output_tmp_file" "$output_tmp_file"; then
+          return 1
+        fi
         if ! mv -- "$output_tmp_file" "$output_file"; then
           return 1
         fi
