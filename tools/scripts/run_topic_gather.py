@@ -453,9 +453,7 @@ def resolve_source_text_blocks(
         if source_size <= SOURCE_TEXT_BLOCK_BYTE_CAP:
             source_text = read_text_file(source_path, label="source text file")
             hazard_flags = detect_hazard_flags(source_text)
-            source_profile = build_source_text_profile(
-                source_text, byte_count=source_size
-            )
+            source_profile = build_source_text_profile(source_text, byte_count=source_size)
             hazard_flags.extend(
                 flag
                 for flag in source_text_profile_hazard_flags(source_profile)
@@ -499,9 +497,7 @@ def resolve_source_text_blocks(
                 index, chunk_index=chunk_index
             )
             hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
-            source_profile = build_source_text_profile(
-                source_text, byte_count=len(chunk_bytes)
-            )
+            source_profile = build_source_text_profile(source_text, byte_count=len(chunk_bytes))
             hazard_flags.extend(
                 flag
                 for flag in source_text_profile_hazard_flags(source_profile)
@@ -1058,9 +1054,7 @@ def build_prompt_rendering(
     if next_action_block:
         prompt_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
     if prior_state_block:
-        prompt_sections.append(
-            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
-        )
+        prompt_sections.append(f"Untrusted prior canonical state metadata:\n{prior_state_block}\n")
     source_text_blocks_section = "Wrapped source text blocks:\n" + f"{source_block_section}\n"
     prompt_sections.append(source_text_blocks_section)
     section_byte_counts = {
@@ -1413,7 +1407,9 @@ def build_candidate_batch(
     engine_cache_hit = (
         bool(live_result.get("cache_hit", False)) if isinstance(live_result, dict) else False
     )
-    subject_manifest_path = Path(str(gather_inputs["runtime"]["subject_manifest_path"])).expanduser().resolve()
+    subject_manifest_path = (
+        Path(str(gather_inputs["runtime"]["subject_manifest_path"])).expanduser().resolve()
+    )
     domain_pack_path = REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"
     selected_template_path = (REPO_ROOT / str(gather_inputs["selected_template_file"])).resolve()
     if live_result is not None:
