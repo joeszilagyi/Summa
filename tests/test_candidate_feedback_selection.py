@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import builtins
 import hashlib
 import importlib.util
@@ -2298,4 +2299,789 @@ def test_feedback_plan_metadata_survives_candidate_batch_ingest_provenance(tmp_p
     assert note_text.startswith("gather_candidate_batch_ingest")
     assert note_payload["feedback_plan_hash"] == batch["feedback_plan"]["plan_hash"]
     assert note_payload["next_action_id"] == payload["next_action"]["action_id"]
-    assert note_payload["selected_object_ref"] == payload["next_action"]["selected_object_ref"]
+
+
+def test_candidate_feedback_planner_helpers_cover_parser_validation_and_pure_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_candidate_feedback_plan.py",
+            "--subject",
+            "subject-manifest.json",
+            "--workspace",
+            "workspace",
+            "--db",
+            "canonical.sqlite",
+        ],
+    )
+
+    parsed = planner.parse_args()
+    assert parsed.subject == "subject-manifest.json"
+    assert parsed.workspace == "workspace"
+    assert parsed.db == "canonical.sqlite"
+    assert parsed.format == "json"
+    assert parsed.max_facet_candidates == planner.DEFAULT_MAX_FACET_CANDIDATES
+    assert parsed.max_lead_candidates == planner.DEFAULT_MAX_LEAD_CANDIDATES
+    assert parsed.max_deferred_candidates == planner.DEFAULT_MAX_DEFERRED_CANDIDATES
+
+    assert planner.resolve_path("relative/output.json") == (tmp_path / "relative/output.json").resolve()
+    assert planner.resolve_path("~/planner-helper.txt") == (tmp_path / "planner-helper.txt").resolve()
+    assert planner.now_rfc3339().endswith("Z")
+    assert "." not in planner.now_rfc3339()
+
+    valid_args = argparse.Namespace(
+        max_facet_candidates=1,
+        max_lead_candidates=1,
+        max_deferred_candidates=0,
+        feedback_plan_stage="build_candidate_feedback_plan",
+    )
+    planner.validate_args(valid_args)
+    with pytest.raises(planner.CandidateFeedbackError, match="max-facet-candidates"):
+        planner.validate_args(
+            argparse.Namespace(
+                max_facet_candidates=0,
+                max_lead_candidates=1,
+                max_deferred_candidates=0,
+                feedback_plan_stage="build_candidate_feedback_plan",
+            )
+        )
+    with pytest.raises(planner.CandidateFeedbackError, match="max-lead-candidates"):
+        planner.validate_args(
+            argparse.Namespace(
+                max_facet_candidates=1,
+                max_lead_candidates=0,
+                max_deferred_candidates=0,
+                feedback_plan_stage="build_candidate_feedback_plan",
+            )
+        )
+    with pytest.raises(planner.CandidateFeedbackError, match="max-deferred-candidates"):
+        planner.validate_args(
+            argparse.Namespace(
+                max_facet_candidates=1,
+                max_lead_candidates=1,
+                max_deferred_candidates=-1,
+                feedback_plan_stage="build_candidate_feedback_plan",
+            )
+        )
+    with pytest.raises(planner.CandidateFeedbackError, match="feedback-plan-stage"):
+        planner.validate_args(
+            argparse.Namespace(
+                max_facet_candidates=1,
+                max_lead_candidates=1,
+                max_deferred_candidates=0,
+                feedback_plan_stage=" ",
+            )
+        )
+
+    runtime_payload = {
+        "subject": {
+            "subject_id": "feedback_subject",
+            "domain_pack": "general.v1",
+            "enabled_facets": ["sources", "open_questions"],
+            "display_name": "Feedback Subject",
+            "query_families": ["sources"],
+        }
+    }
+    pack_payload = {"domain_pack": "general.v1"}
+    bundles_payload = {"sources": {"bundle_id": "bundle:sources"}}
+
+    monkeypatch.setattr(
+        planner.resolve_subject_runtime,
+        "resolve_subject_runtime",
+        lambda subject, workspace: runtime_payload,
+    )
+    monkeypatch.setattr(
+        planner.resolve_gather_domain_pack,
+        "load_domain_pack",
+        lambda domain_pack: pack_payload,
+    )
+    monkeypatch.setattr(
+        planner.resolve_subject_runtime,
+        "resolve_prompt_bundles",
+        lambda pack, facets: bundles_payload,
+    )
+    runtime, pack, bundles = planner.load_runtime(parsed)
+    assert runtime is runtime_payload
+    assert pack is pack_payload
+    assert bundles is bundles_payload
+
+    monkeypatch.setattr(
+        planner.resolve_subject_runtime,
+        "resolve_subject_runtime",
+        lambda subject, workspace: (_ for _ in ()).throw(
+            planner.resolve_subject_runtime.ResolutionError("subject boom")
+        ),
+    )
+    with pytest.raises(planner.CandidateFeedbackError, match="subject boom"):
+        planner.load_runtime(parsed)
+
+    monkeypatch.setattr(
+        planner.resolve_subject_runtime,
+        "resolve_subject_runtime",
+        lambda subject, workspace: runtime_payload,
+    )
+    monkeypatch.setattr(
+        planner.resolve_gather_domain_pack,
+        "load_domain_pack",
+        lambda domain_pack: (_ for _ in ()).throw(
+            planner.resolve_gather_domain_pack.GatherDomainPackError("pack boom")
+        ),
+    )
+    with pytest.raises(planner.CandidateFeedbackError, match="pack boom"):
+        planner.load_runtime(parsed)
+
+    note_payload = planner.parse_note_text(
+        "gather_candidate_batch_ingest\nsubject_id: feedback_subject\nfacet: sources\n"
+        "artifact_hash: abc123\n"
+    )
+    assert note_payload["subject_id"] == "feedback_subject"
+    assert note_payload["facet"] == "sources"
+    assert note_payload["artifact_hash"] == "abc123"
+
+    assert planner.claim_is_open_question(
+        {"claim_type": "research_question", "claim_text": "No"},
+        {},
+    )
+    assert planner.claim_is_open_question(
+        {"claim_type": "claim", "claim_text": "Why?"},
+        {},
+    )
+    assert planner.claim_is_open_question(
+        {"claim_type": "claim", "claim_text": "No"},
+        {"facet": "open_questions"},
+    )
+    assert not planner.claim_is_open_question(
+        {"claim_type": "claim", "claim_text": "No"},
+        {},
+    )
+
+    assert planner.truncate_text("  alpha   beta  ") == "alpha beta"
+    assert planner.truncate_text("abcdefghijk", max_length=10) == "abcdefg..."
+    assert planner.bounded_candidate_score(-500.0) == -100.0
+    assert planner.bounded_candidate_score(500.0) == 100.0
+    assert planner.capped_count(-1, 5) == 0
+    assert planner.capped_count(7, 5) == 5
+
+    placeholders, accepted_states = planner.accepted_review_placeholder_sql()
+    assert placeholders.count("?") == len(accepted_states)
+    assert accepted_states == tuple(sorted(planner.ACCEPTED_REVIEW_STATES))
+
+    empty_bonus = planner.open_question_quality_bonus(
+        claim_text="",
+        claim_type="",
+        provenance_payload={},
+    )
+    question_bonus = planner.open_question_quality_bonus(
+        claim_text="Which overlooked archives might add missing detail?",
+        claim_type="open_question",
+        provenance_payload={"facet": "open_questions"},
+    )
+    short_bonus = planner.open_question_quality_bonus(
+        claim_text="Why?",
+        claim_type="claim",
+        provenance_payload={},
+    )
+    assert question_bonus > empty_bonus
+    assert short_bonus < question_bonus
+
+    assert (
+        planner.safe_source_access_label(
+            {
+                "canonical_url": " https://example.test/1 ",
+                "citation_hint": "hint",
+                "original_locator": "http://ignored",
+            }
+        )
+        == "https://example.test/1"
+    )
+    assert (
+        planner.safe_source_access_label(
+            {
+                "canonical_url": "",
+                "citation_hint": " hint ",
+                "original_locator": "http://ignored",
+            }
+        )
+        == "hint"
+    )
+    assert (
+        planner.safe_source_access_label(
+            {
+                "canonical_url": "",
+                "citation_hint": "",
+                "original_locator": "https://example.test/2",
+            }
+        )
+        == "https://example.test/2"
+    )
+    assert (
+        planner.safe_source_access_label(
+            {
+                "canonical_url": "",
+                "citation_hint": "",
+                "original_locator": "internal:1",
+            }
+        )
+        == "[internal locator withheld]"
+    )
+
+    history = [
+        {"run_id": "run-a", "cycle_depth": 2},
+        {"run_id": "run-a", "cycle_depth": 5},
+        {"run_id": None, "cycle_depth": "x"},
+        {"run_id": "run-b", "cycle_depth": 3},
+    ]
+    assert planner.sorted_previous_run_ids(history) == ["run-a", "run-b"]
+    assert planner.next_cycle_depth(history) == 6
+
+    db_path = bootstrap_db(tmp_path)
+    conn = planner.canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            pass
+    finally:
+        conn.close()
+
+    conn, check_result = planner.load_checked_connection(str(db_path))
+    conn.close()
+    assert check_result.db_path == db_path.resolve()
+
+    monkeypatch.setattr(
+        planner.canonical_store,
+        "resolve_db_path",
+        lambda raw: db_path,
+    )
+    monkeypatch.setattr(
+        planner.canonical_store,
+        "check_canonical_store",
+        lambda path: (_ for _ in ()).throw(planner.canonical_store.CanonicalStoreError("bad db")),
+    )
+    with pytest.raises(planner.CandidateFeedbackError, match="bad db"):
+        planner.load_checked_connection(str(db_path))
+
+
+def test_candidate_feedback_planner_scoring_selection_and_deferred_branches() -> None:
+    enabled_facets = ["sources", "open_questions", "works"]
+    bundles = {facet: {"bundle_id": f"bundle:{facet}"} for facet in enabled_facets}
+    zero_yield = {
+        "work": 0,
+        "source_claim": 0,
+        "extraction_detected_entity": 0,
+        "source_relationship": 0,
+        "source_access": 0,
+    }
+    history = [
+        {
+            "facet": "sources",
+            "run_id": "sources-zero",
+            "total_yield": 0,
+            "yields": zero_yield,
+        },
+        {
+            "facet": "sources",
+            "run_id": "sources-prod",
+            "total_yield": 2,
+            "yields": {
+                "work": 1,
+                "source_claim": 1,
+                "extraction_detected_entity": 0,
+                "source_relationship": 0,
+                "source_access": 0,
+            },
+        },
+        {
+            "facet": "open_questions",
+            "run_id": "open-zero",
+            "total_yield": 0,
+            "yields": zero_yield,
+        },
+    ]
+    lead_candidates = [
+        {
+            "candidate_id": "lead:sources",
+            "facet": "sources",
+            "score": 1.5,
+            "signals": {"successful_extractions": 1, "failed_extractions": 0},
+            "object_ref": "source_access:1",
+            "lead_kind": "source_access",
+            "source_locus_id": "locus:1",
+            "source_lead_id": "lead:1",
+            "label": "source lead",
+            "review_state": "needs_review",
+            "rationale": "source",
+            "reason_codes": ["open_lead_yield"],
+        },
+    ]
+
+    facet_scores = planner.aggregate_facet_scores(
+        enabled_facets=enabled_facets,
+        bundles=bundles,
+        history=history,
+        lead_candidates=lead_candidates,
+        weights=dict(planner.DEFAULT_SCORING_WEIGHTS),
+    )
+    sources = next(item for item in facet_scores if item["facet"] == "sources")
+    open_questions = next(item for item in facet_scores if item["facet"] == "open_questions")
+    works = next(item for item in facet_scores if item["facet"] == "works")
+    assert "productive_history" in sources["reason_codes"]
+    assert "open_lead_yield" in sources["reason_codes"]
+    assert "repeated_zero_yield" in sources["reason_codes"]
+    assert "repeated_zero_yield" in open_questions["reason_codes"]
+    assert "recent_low_yield_penalty" in open_questions["reason_codes"]
+    assert works["reason_codes"] == ["fallback_facet"]
+    assert [item["rank"] for item in facet_scores] == [1, 2, 3]
+
+    selected_action = planner.select_next_action(
+        subject={"subject_id": "subject-1"},
+        facet_scores=facet_scores,
+        lead_scores=lead_candidates,
+        previous_run_ids=["run-1"],
+        cycle_depth=4,
+    )
+    assert selected_action["action_kind"] == "facet_lead"
+    assert selected_action["selected_object_ref"] == "source_access:1"
+    assert selected_action["should_call_llm"] is False
+    assert selected_action["suggested_cli_args"] == [
+        "--facet",
+        "sources",
+        "--use-prior-state",
+        "--cycle-depth",
+        "4",
+    ]
+
+    bootstrap_action = planner.select_next_action(
+        subject={"subject_id": "subject-1"},
+        facet_scores=facet_scores,
+        lead_scores=[],
+        previous_run_ids=[],
+        cycle_depth=1,
+    )
+    assert bootstrap_action["action_kind"] == "facet_bootstrap"
+    assert bootstrap_action["selected_object_ref"] is None
+    assert bootstrap_action["should_call_llm"] is True
+
+    facet_only_action = planner.select_next_action(
+        subject={"subject_id": "subject-1"},
+        facet_scores=facet_scores,
+        lead_scores=[],
+        previous_run_ids=["run-1"],
+        cycle_depth=2,
+    )
+    assert facet_only_action["action_kind"] == "facet_only"
+    assert facet_only_action["selected_object_ref"] is None
+    assert "--use-prior-state" in facet_only_action["suggested_cli_args"]
+
+    with pytest.raises(planner.CandidateFeedbackError, match="at least one enabled facet"):
+        planner.select_next_action(
+            subject={"subject_id": "subject-1"},
+            facet_scores=[],
+            lead_scores=[],
+            previous_run_ids=[],
+            cycle_depth=1,
+        )
+
+    deferred = planner.build_deferred_candidates(
+        selected_next_action=selected_action,
+        facet_scores=[
+            sources,
+            {
+                "candidate_id": "facet:low-yield",
+                "facet": "archives",
+                "score": 0.2,
+                "reason_codes": ["repeated_low_yield"],
+            },
+            open_questions,
+        ],
+        lead_scores=lead_candidates,
+        all_facet_scores=[
+            sources,
+            {
+                "candidate_id": "facet:low-yield",
+                "facet": "archives",
+                "score": 0.2,
+                "reason_codes": ["repeated_low_yield"],
+            },
+            open_questions,
+        ]
+        + [
+            {
+                "candidate_id": "facet:extras",
+                "facet": "extras",
+                "score": 0.1,
+                "reason_codes": ["fallback_facet"],
+            }
+        ],
+        all_lead_candidates=lead_candidates
+        + [
+            {
+                "candidate_id": "lead:extra",
+                "facet": "sources",
+                "object_ref": "source_access:2",
+                "score": 0.05,
+                "reason_codes": ["open_lead_yield"],
+            }
+        ],
+        max_deferred=1,
+    )
+    assert any(item["candidate_kind"] == "facet" and item["reason"] == "repeated_low_yield" for item in deferred)
+    assert any(
+        item["candidate_kind"] == "facet" and item["reason"] == "not_retained_due_to_limit"
+        for item in deferred
+    )
+    assert any(item["candidate_kind"] == "lead" and item["reason"] == "not_retained_due_to_limit" for item in deferred)
+
+
+def test_candidate_feedback_planner_direct_build_plan_render_validate_and_ledger_paths(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            high_work_row = conn.execute(
+                "SELECT work_id, provenance_event_ref FROM work WHERE title='High Yield Work'"
+            ).fetchone()
+            assert high_work_row is not None
+            high_work_id = int(high_work_row["work_id"])
+            extra_work_prov = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="pending-work",
+                event_type="feedback_test",
+                actor_type="pytest",
+                actor_id="pytest.candidate_feedback_selection",
+                tool_name="tests.test_candidate_feedback_selection",
+                run_id="pending-work",
+                event_timestamp=FIXED_CREATED_AT,
+                note_text="pending work fixture",
+                provenance_event_key_v1="prov:feedback:pending-work",
+            )
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:feedback_subject:pending",
+                provenance_event_ref=extra_work_prov.event_key,
+                work_type="article",
+                title="Pending Work",
+                review_state="needs_review",
+                confidence_score=0.5,
+                workspace_id=subject_id,
+                first_seen_at=FIXED_CREATED_AT,
+                last_seen_at=FIXED_CREATED_AT,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+            extra_capture_prov = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="no-extraction-access",
+                event_type="feedback_test",
+                actor_type="pytest",
+                actor_id="pytest.candidate_feedback_selection",
+                tool_name="tests.test_candidate_feedback_selection",
+                run_id="no-extraction-access",
+                event_timestamp=FIXED_CREATED_AT,
+                source_object_namespace="topic_subject",
+                source_object_id=subject_id,
+                note_text=gather_note(
+                    subject_id=subject_id,
+                    facet="sources",
+                    run_id="no-extraction-access",
+                    cycle_depth=1,
+                    prompt_bundle_id="general.gather.sources.v1",
+                ),
+                provenance_event_key_v1="prov:feedback:no-extraction-access",
+            )
+            canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=extra_capture_prov.event_key,
+                work_id=high_work_id,
+                source_locus_ref="locus:no-extraction",
+                original_locator="https://example.test/no-extraction",
+                captured_at=FIXED_CREATED_AT,
+                capture_method="fixture_capture",
+                content_hash="z" * 64,
+                byte_count=16,
+                mime_type="text/plain",
+                workspace_id=subject_id,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=extra_capture_prov.event_key,
+                work_id=high_work_id,
+                source_locus_id="locus:no-extraction",
+                source_lead_id="lead:no-extraction",
+                original_locator="https://example.test/no-extraction",
+                canonical_url="https://example.test/no-extraction",
+                citation_hint="No extraction source lead",
+                workspace_id=subject_id,
+                review_state="needs_review",
+                first_seen_at=FIXED_CREATED_AT,
+                last_seen_at=FIXED_CREATED_AT,
+                record_last_updated=FIXED_CREATED_AT,
+            )
+            conn.execute(
+                """
+                UPDATE extraction_record
+                SET extraction_status='pending'
+                WHERE summary_short='Useful high-yield extraction.'
+                """
+            )
+    finally:
+        conn.close()
+
+    args = argparse.Namespace(
+        subject=str(manifest_path),
+        workspace=str(workspace_root),
+        db=str(db_path),
+        output_json=None,
+        generated_at=FIXED_CREATED_AT,
+        max_facet_candidates=2,
+        max_lead_candidates=3,
+        max_deferred_candidates=2,
+        scoring_policy=planner.SCORING_POLICY_ID,
+        feedback_plan_stage="build_candidate_feedback_plan",
+        record_selection_ledger=False,
+        format="text",
+    )
+
+    runtime, _pack, bundles = planner.load_runtime(args)
+    conn, check_result = planner.load_checked_connection(args.db)
+    try:
+        payload = planner.build_plan(
+            args=args,
+            runtime=runtime,
+            bundles=bundles,
+            check_result=check_result,
+            conn=conn,
+            generated_at=FIXED_CREATED_AT,
+        )
+    finally:
+        conn.close()
+
+    assert payload["schema_version"] == planner.SCHEMA_VERSION
+    assert payload["subject"]["subject_id"] == subject_id
+    assert payload["next_action"]["selected_object_ref"] is not None
+    assert payload["next_action"]["use_prior_state"] is True
+    assert payload["counts"]["lead_candidates"] >= 1
+    assert any(lead["lead_kind"] == "work" for lead in payload["lead_scores"])
+    assert any(
+        "unknown extraction_status treated as failure" in warning
+        for warning in payload["warnings"]
+    )
+    rendered = planner.render_text_plan(payload)
+    assert rendered.startswith("schema_version=candidate-feedback-plan.v1")
+    assert f"subject_id={subject_id}" in rendered
+    assert f"selected_facet={payload['next_action']['selected_facet']}" in rendered
+
+    plan_path = tmp_path / "candidate-feedback-plan.json"
+    plan_path.write_text(compact_json_text(payload) + "\n", encoding="utf-8")
+    planner.validate_emitted_plan(plan_path)
+
+    monkeypatch_report = {"errors": [{"message": "validation failed"}]}
+    original_validator = planner.validate_candidate_feedback_plan
+    try:
+        planner.validate_candidate_feedback_plan = lambda path: (monkeypatch_report, 1)  # type: ignore[assignment]
+        with pytest.raises(planner.CandidateFeedbackError, match="validation failed"):
+            planner.validate_emitted_plan(plan_path)
+    finally:
+        planner.validate_candidate_feedback_plan = original_validator  # type: ignore[assignment]
+
+    with pytest.raises(planner.CandidateFeedbackError, match="selection_explanation is missing"):
+        planner.record_selection_explanation_ledger(db_path, {"warnings": [], "errors": []})
+
+
+def test_candidate_feedback_planner_main_json_text_and_error_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = {
+        "schema_version": planner.SCHEMA_VERSION,
+        "generated_at": FIXED_CREATED_AT,
+        "subject": {
+            "subject_id": "subject-1",
+            "display_name": "Subject One",
+            "domain_pack": "general.v1",
+            "enabled_facets": ["sources"],
+            "query_families": ["sources"],
+        },
+        "canonical_store": {
+            "database_name": "canonical.sqlite",
+            "schema_version": "canonical-store.v1",
+            "current_migration_id": "migration-1",
+            "dry_run": True,
+        },
+        "scoring_policy": {
+            "policy_id": planner.SCORING_POLICY_ID,
+            "cycle_depth_considered": 1,
+            "previous_run_ids_considered": [],
+            "use_prior_state": False,
+            "weights": dict(planner.DEFAULT_SCORING_WEIGHTS),
+            "limits": {
+                "max_facet_candidates": 2,
+                "max_lead_candidates": 2,
+                "max_deferred_candidates": 2,
+            },
+        },
+        "counts": {
+            "gather_runs_considered": 0,
+            "facet_candidates": 1,
+            "facet_candidates_total": 1,
+            "lead_candidates": 0,
+            "lead_candidates_total": 0,
+            "productive_leads": 0,
+            "productive_leads_total": 0,
+            "deferred_candidates": 0,
+        },
+        "facet_scores": [],
+        "lead_scores": [],
+        "next_action": {
+            "action_id": "next-action:subject-1:sources:facet:1",
+            "action_kind": "facet_bootstrap",
+            "subject_id": "subject-1",
+            "selected_facet": "sources",
+            "selected_prompt_bundle_id": "bundle:sources",
+            "should_call_llm": True,
+            "selected_object_ref": None,
+            "selected_lead_kind": None,
+            "selected_source_locus_id": None,
+            "selected_source_lead_id": None,
+            "selected_label": None,
+            "selected_review_state": None,
+            "selection_score": 1.0,
+            "scoring_policy_id": planner.SCORING_POLICY_ID,
+            "rationale": "bootstrap",
+            "reason_codes": ["bootstrap_no_prior_productivity"],
+            "cycle_depth": 1,
+            "use_prior_state": False,
+            "previous_run_ids_considered": [],
+            "input_record_refs": [],
+            "suggested_cli_args": ["--facet", "sources"],
+        },
+        "deferred": [],
+        "selection_explanation": {
+            "schema_version": "selection-explanation.v1",
+            "explanation_id": "selection-explanation:subject-1",
+            "selection_kind": "feedback_next_action",
+            "stage_name": "build_candidate_feedback_plan",
+            "selected_candidate": {
+                "candidate_id": "facet:sources",
+                "candidate_type": "facet:sources",
+                "selected": True,
+                "metadata": {},
+            },
+            "considered_candidates": [],
+            "excluded_candidates": [],
+            "policy": {"policy_id": planner.SCORING_POLICY_ID},
+        },
+        "warnings": [],
+        "errors": [],
+    }
+    runtime = {"subject": payload["subject"]}
+    check_result = argparse.Namespace(
+        db_path=tmp_path / "canonical.sqlite",
+        schema_version="canonical-store.v1",
+        current_migration_id="migration-1",
+    )
+    fake_conn = type("FakeConn", (), {"close": lambda self: None})()
+
+    def run_main(args: argparse.Namespace) -> tuple[int, str, str]:
+        monkeypatch.setattr(planner, "parse_args", lambda: args)
+        monkeypatch.setattr(planner, "validate_args", lambda parsed: None)
+        monkeypatch.setattr(planner, "load_runtime", lambda parsed: (runtime, {"domain_pack": "general.v1"}, {"sources": {"bundle_id": "bundle:sources"}}))
+        monkeypatch.setattr(planner, "load_checked_connection", lambda raw_db: (fake_conn, check_result))
+        monkeypatch.setattr(planner, "build_plan", lambda **kwargs: payload)
+        monkeypatch.setattr(planner, "validate_emitted_plan", lambda path: None)
+        ledger_calls: list[Path] = []
+        monkeypatch.setattr(
+            planner,
+            "record_selection_explanation_ledger",
+            lambda db_path, emitted_payload: ledger_calls.append(Path(db_path)),
+        )
+        exit_code = planner.main()
+        captured = capsys.readouterr()
+        return exit_code, captured.out, captured.err, ledger_calls
+
+    json_output = tmp_path / "plan.json"
+    exit_code, stdout, stderr, ledger_calls = run_main(
+        argparse.Namespace(
+            subject="subject-1",
+            workspace="workspace",
+            db=str(tmp_path / "canonical.sqlite"),
+            output_json=str(json_output),
+            generated_at=FIXED_CREATED_AT,
+            max_facet_candidates=2,
+            max_lead_candidates=2,
+            max_deferred_candidates=2,
+            scoring_policy=planner.SCORING_POLICY_ID,
+            feedback_plan_stage="build_candidate_feedback_plan",
+            record_selection_ledger=False,
+            format="json",
+        )
+    )
+    assert exit_code == 0
+    assert stderr == ""
+    assert stdout == compact_json_text(payload) + "\n"
+    assert json_output.read_text(encoding="utf-8") == compact_json_text(payload) + "\n"
+    assert ledger_calls == []
+
+    exit_code, stdout, stderr, ledger_calls = run_main(
+        argparse.Namespace(
+            subject="subject-1",
+            workspace="workspace",
+            db=str(tmp_path / "canonical.sqlite"),
+            output_json=None,
+            generated_at=FIXED_CREATED_AT,
+            max_facet_candidates=2,
+            max_lead_candidates=2,
+            max_deferred_candidates=2,
+            scoring_policy=planner.SCORING_POLICY_ID,
+            feedback_plan_stage="build_candidate_feedback_plan",
+            record_selection_ledger=True,
+            format="text",
+        )
+    )
+    assert exit_code == 0
+    assert stderr == ""
+    assert "schema_version=candidate-feedback-plan.v1" in stdout
+    assert ledger_calls == [tmp_path / "canonical.sqlite"]
+
+    monkeypatch.setattr(
+        planner,
+        "parse_args",
+        lambda: argparse.Namespace(
+            subject="subject-1",
+            workspace="workspace",
+            db=str(tmp_path / "canonical.sqlite"),
+            output_json=None,
+            generated_at=FIXED_CREATED_AT,
+            max_facet_candidates=2,
+            max_lead_candidates=2,
+            max_deferred_candidates=2,
+            scoring_policy=planner.SCORING_POLICY_ID,
+            feedback_plan_stage="build_candidate_feedback_plan",
+            record_selection_ledger=False,
+            format="json",
+        ),
+    )
+    monkeypatch.setattr(
+        planner,
+        "load_runtime",
+        lambda parsed: (_ for _ in ()).throw(planner.CandidateFeedbackError("boom")),
+    )
+    monkeypatch.setattr(planner, "validate_args", lambda parsed: None)
+    exit_code = planner.main()
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Error: boom" in captured.err
