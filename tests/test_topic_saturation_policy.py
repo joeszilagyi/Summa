@@ -37,7 +37,9 @@ def bootstrap_db(tmp_path: Path) -> Path:
 
 
 def policy_payload(**overrides: object) -> dict[str, object]:
-    payload = json.loads((REPO_ROOT / "config" / "topic_saturation_policy.v1.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (REPO_ROOT / "config" / "topic_saturation_policy.v1.json").read_text(encoding="utf-8")
+    )
     payload.update(overrides)
     return payload
 
@@ -45,7 +47,9 @@ def policy_payload(**overrides: object) -> dict[str, object]:
 def write_policy(tmp_path: Path, **overrides: object) -> Path:
     index = len(list(tmp_path.glob("topic_saturation_policy*.json")))
     path = tmp_path / f"topic_saturation_policy{index}.json"
-    path.write_text(json.dumps(policy_payload(**overrides), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(policy_payload(**overrides), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return path
 
 
@@ -101,7 +105,11 @@ def workspace_record(
 def write_registry(tmp_path: Path, workspaces: list[dict[str, object]]) -> Path:
     registry_path = tmp_path / "topic_workspaces.local.json"
     registry_path.write_text(
-        json.dumps({"schema_version": "topic-workspace-registry.v1", "workspaces": workspaces}, indent=2, sort_keys=True)
+        json.dumps(
+            {"schema_version": "topic-workspace-registry.v1", "workspaces": workspaces},
+            indent=2,
+            sort_keys=True,
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -156,7 +164,9 @@ def add_cycle(
     return provenance.event_key
 
 
-def evaluate(db_path: Path, *, subject_id: str, policy_path: Path, workspace_id: str | None = None) -> dict[str, object]:
+def evaluate(
+    db_path: Path, *, subject_id: str, policy_path: Path, workspace_id: str | None = None
+) -> dict[str, object]:
     conn = canonical_store.connect_existing_read_only(db_path)
     try:
         return topic_saturation.evaluate_saturation(
@@ -191,7 +201,9 @@ def test_bootstrap_topic_with_insufficient_history_is_not_saturated(tmp_path: Pa
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="bootstrap_subject", run_id="run-1", cycle_depth=1, event_index=1)
+            add_cycle(
+                conn, subject_id="bootstrap_subject", run_id="run-1", cycle_depth=1, event_index=1
+            )
     finally:
         conn.close()
     result = evaluate(db_path, subject_id="bootstrap_subject", policy_path=policy)
@@ -206,8 +218,22 @@ def test_active_topic_with_reviewable_yield_stays_runnable(tmp_path: Path) -> No
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="active_subject", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="active_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn,
+                subject_id="active_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="active_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
     result = evaluate(db_path, subject_id="active_subject", policy_path=policy)
@@ -224,8 +250,22 @@ def test_evaluate_saturations_batches_multiple_subjects_once(
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="subject.one", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="subject.two", run_id="run-2", cycle_depth=1, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn,
+                subject_id="subject.one",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="subject.two",
+                run_id="run-2",
+                cycle_depth=1,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
 
@@ -403,8 +443,12 @@ def test_saturated_topic_with_consecutive_low_yield_is_deprioritized(tmp_path: P
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="saturated_subject", run_id="run-1", cycle_depth=1, event_index=1)
-            add_cycle(conn, subject_id="saturated_subject", run_id="run-2", cycle_depth=2, event_index=2)
+            add_cycle(
+                conn, subject_id="saturated_subject", run_id="run-1", cycle_depth=1, event_index=1
+            )
+            add_cycle(
+                conn, subject_id="saturated_subject", run_id="run-2", cycle_depth=2, event_index=2
+            )
     finally:
         conn.close()
     result = evaluate(db_path, subject_id="saturated_subject", policy_path=policy)
@@ -418,14 +462,36 @@ def test_configurable_threshold_changes_state(tmp_path: Path) -> None:
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="threshold_subject", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="threshold_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn,
+                subject_id="threshold_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="threshold_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
     low_threshold = write_policy(tmp_path, lookback_cycles=2, min_new_reviewable_records=1)
-    high_threshold = write_policy(tmp_path, lookback_cycles=2, min_new_reviewable_records=2, min_useful_yield=10.0)
-    assert evaluate(db_path, subject_id="threshold_subject", policy_path=low_threshold)["state"] == "active"
-    assert evaluate(db_path, subject_id="threshold_subject", policy_path=high_threshold)["state"] == "saturated"
+    high_threshold = write_policy(
+        tmp_path, lookback_cycles=2, min_new_reviewable_records=2, min_useful_yield=10.0
+    )
+    assert (
+        evaluate(db_path, subject_id="threshold_subject", policy_path=low_threshold)["state"]
+        == "active"
+    )
+    assert (
+        evaluate(db_path, subject_id="threshold_subject", policy_path=high_threshold)["state"]
+        == "saturated"
+    )
 
 
 def test_review_backlog_pressure_reason_is_recorded(tmp_path: Path) -> None:
@@ -434,8 +500,17 @@ def test_review_backlog_pressure_reason_is_recorded(tmp_path: Path) -> None:
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="backlog_subject", run_id="run-1", cycle_depth=1, event_index=1)
-            add_cycle(conn, subject_id="backlog_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn, subject_id="backlog_subject", run_id="run-1", cycle_depth=1, event_index=1
+            )
+            add_cycle(
+                conn,
+                subject_id="backlog_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
     result = evaluate(db_path, subject_id="backlog_subject", policy_path=policy)
@@ -449,11 +524,28 @@ def test_accepted_only_mode_saturates_without_accepted_records(tmp_path: Path) -
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="accepted_only_subject", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="accepted_only_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn,
+                subject_id="accepted_only_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="accepted_only_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
-    assert evaluate(db_path, subject_id="accepted_only_subject", policy_path=policy)["state"] == "saturated"
+    assert (
+        evaluate(db_path, subject_id="accepted_only_subject", policy_path=policy)["state"]
+        == "saturated"
+    )
 
 
 def test_reviewable_yield_mode_keeps_unaccepted_reviewable_topic_active(tmp_path: Path) -> None:
@@ -462,11 +554,27 @@ def test_reviewable_yield_mode_keeps_unaccepted_reviewable_topic_active(tmp_path
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="reviewable_subject", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="reviewable_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
+            add_cycle(
+                conn,
+                subject_id="reviewable_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="reviewable_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
     finally:
         conn.close()
-    assert evaluate(db_path, subject_id="reviewable_subject", policy_path=policy)["state"] == "active"
+    assert (
+        evaluate(db_path, subject_id="reviewable_subject", policy_path=policy)["state"] == "active"
+    )
 
 
 def test_selector_deprioritizes_saturated_workspace_and_records_reason(tmp_path: Path) -> None:
@@ -479,17 +587,43 @@ def test_selector_deprioritizes_saturated_workspace_and_records_reason(tmp_path:
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="active_subject", run_id="run-1", cycle_depth=1, event_index=1, review_state="needs_review")
-            add_cycle(conn, subject_id="active_subject", run_id="run-2", cycle_depth=2, event_index=2, review_state="needs_review")
-            add_cycle(conn, subject_id="saturated_subject", run_id="run-1", cycle_depth=1, event_index=1)
-            add_cycle(conn, subject_id="saturated_subject", run_id="run-2", cycle_depth=2, event_index=2)
+            add_cycle(
+                conn,
+                subject_id="active_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn,
+                subject_id="active_subject",
+                run_id="run-2",
+                cycle_depth=2,
+                event_index=2,
+                review_state="needs_review",
+            )
+            add_cycle(
+                conn, subject_id="saturated_subject", run_id="run-1", cycle_depth=1, event_index=1
+            )
+            add_cycle(
+                conn, subject_id="saturated_subject", run_id="run-2", cycle_depth=2, event_index=2
+            )
     finally:
         conn.close()
     registry = write_registry(
         tmp_path,
         [
-            workspace_record(workspace_id="saturated_subject", workspace_root=saturated_root, manifest_path=saturated_manifest),
-            workspace_record(workspace_id="active_subject", workspace_root=active_root, manifest_path=active_manifest),
+            workspace_record(
+                workspace_id="saturated_subject",
+                workspace_root=saturated_root,
+                manifest_path=saturated_manifest,
+            ),
+            workspace_record(
+                workspace_id="active_subject",
+                workspace_root=active_root,
+                manifest_path=active_manifest,
+            ),
         ],
     )
     proc = subprocess.run(
@@ -521,7 +655,9 @@ def test_selector_deprioritizes_saturated_workspace_and_records_reason(tmp_path:
     assert payload["selected_workspaces"][0]["workspace_id"] == "active_subject"
     skipped = {item["workspace_id"]: item for item in payload["skipped_workspaces"]}
     assert skipped["saturated_subject"]["saturation"]["scheduler_action"] == "deprioritize"
-    assert skipped["saturated_subject"]["reasons"] == ["selection limit reached after saturation deprioritization"]
+    assert skipped["saturated_subject"]["reasons"] == [
+        "selection limit reached after saturation deprioritization"
+    ]
 
 
 def test_selector_override_includes_halted_saturated_workspace(tmp_path: Path) -> None:
@@ -532,13 +668,21 @@ def test_selector_override_includes_halted_saturated_workspace(tmp_path: Path) -
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="halted_subject", run_id="run-1", cycle_depth=1, event_index=1)
-            add_cycle(conn, subject_id="halted_subject", run_id="run-2", cycle_depth=2, event_index=2)
+            add_cycle(
+                conn, subject_id="halted_subject", run_id="run-1", cycle_depth=1, event_index=1
+            )
+            add_cycle(
+                conn, subject_id="halted_subject", run_id="run-2", cycle_depth=2, event_index=2
+            )
     finally:
         conn.close()
     registry = write_registry(
         tmp_path,
-        [workspace_record(workspace_id="halted_subject", workspace_root=root, manifest_path=manifest)],
+        [
+            workspace_record(
+                workspace_id="halted_subject", workspace_root=root, manifest_path=manifest
+            )
+        ],
     )
     proc = subprocess.run(
         [
@@ -596,7 +740,9 @@ def test_evaluator_cli_outputs_saturation_json(tmp_path: Path) -> None:
     assert payload["state"] == "active_bootstrap"
 
 
-def test_evaluator_main_uses_atomic_output_and_strict_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_evaluator_main_uses_atomic_output_and_strict_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = load_evaluator_module()
     db_path = bootstrap_db(tmp_path)
     policy = write_policy(tmp_path, lookback_cycles=1)
@@ -733,19 +879,53 @@ def test_evaluate_saturation_batches_cycle_count_queries(tmp_path: Path) -> None
         conn.close()
 
     assert result["recent_yield_summary"]["cycle_count"] == 3  # type: ignore[index]
-    assert sum("SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
-    assert sum("SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
     assert (
         sum(
-            "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?" in sql
+            "SELECT COUNT(*) AS count FROM work WHERE provenance_event_ref=?" in sql
             for sql in executed_sql
         )
         == 0
     )
-    assert sum("SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
-    assert sum("SELECT COUNT(*) AS count FROM capture_event WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
-    assert sum("SELECT COUNT(*) AS count FROM extraction_record WHERE provenance_event_ref=?" in sql for sql in executed_sql) == 0
-    assert sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql) == 1
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM source_claim WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM extraction_detected_entity WHERE provenance_event_ref=?"
+            in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM source_relationship WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM capture_event WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert (
+        sum(
+            "SELECT COUNT(*) AS count FROM extraction_record WHERE provenance_event_ref=?" in sql
+            for sql in executed_sql
+        )
+        == 0
+    )
+    assert (
+        sum("WITH requested_events(event_key, artifact_hash) AS" in sql for sql in executed_sql)
+        == 1
+    )
 
 
 def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_path: Path) -> None:
@@ -756,7 +936,9 @@ def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_pat
     try:
         with conn:
             add_cycle(conn, subject_id=subject_id, run_id="run-1", cycle_depth=1, event_index=1)
-            add_cycle(conn, subject_id=other_subject_id, run_id="run-2", cycle_depth=1, event_index=2)
+            add_cycle(
+                conn, subject_id=other_subject_id, run_id="run-2", cycle_depth=1, event_index=2
+            )
         traces: list[str] = []
         conn.set_trace_callback(traces.append)
         events = topic_saturation.load_recent_gather_events(conn, subject_id=subject_id, limit=10)
@@ -770,18 +952,29 @@ def test_load_recent_gather_events_uses_structured_source_object_filters(tmp_pat
     assert not any("LIKE" in statement for statement in traces)
 
 
-def test_load_recent_gather_events_uses_sql_json_extraction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_recent_gather_events_uses_sql_json_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
-            add_cycle(conn, subject_id="json_extract_subject", run_id="run-1", cycle_depth=7, event_index=1, artifact_hash="artifact-hash")
+            add_cycle(
+                conn,
+                subject_id="json_extract_subject",
+                run_id="run-1",
+                cycle_depth=7,
+                event_index=1,
+                artifact_hash="artifact-hash",
+            )
         monkeypatch.setattr(
             topic_saturation,
             "parse_note_text",
             lambda _: (_ for _ in ()).throw(AssertionError("parse_note_text should not be called")),
         )
-        events = topic_saturation.load_recent_gather_events(conn, subject_id="json_extract_subject", limit=1)
+        events = topic_saturation.load_recent_gather_events(
+            conn, subject_id="json_extract_subject", limit=1
+        )
     finally:
         conn.close()
 

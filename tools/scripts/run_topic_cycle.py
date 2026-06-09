@@ -966,7 +966,9 @@ def gather_stage(
         if not isinstance(rendered_prompt_sha256, str):
             rendered_prompt_sha256 = hash_file(prompt_path)
         batch = read_json(batch_path, label="candidate batch")
-        engine_usage = batch.get("engine", {}).get("usage") if isinstance(batch.get("engine"), dict) else None
+        engine_usage = (
+            batch.get("engine", {}).get("usage") if isinstance(batch.get("engine"), dict) else None
+        )
         if isinstance(engine_usage, dict):
             budget_consumed = manifest.setdefault(
                 "budget_consumed",
