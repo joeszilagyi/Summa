@@ -303,6 +303,37 @@ def test_rejected_source_access_does_not_count_as_useful_yield(tmp_path: Path) -
     assert cycle["low_yield"] is True
 
 
+def test_source_access_count_for_event_includes_direct_provenance_event_ref(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_key = add_cycle(
+                conn,
+                subject_id="source_access_subject",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+            )
+            canonical_store.record_source_access(
+                conn,
+                original_locator="https://example.test/source-access",
+                provenance_event_ref=event_key,
+                review_state="accepted",
+                workspace_id="source_access_subject",
+                first_seen_at=FIXED_TIMESTAMP,
+                last_seen_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        count = topic_saturation.source_access_count_for_event(conn, event_key)
+    finally:
+        conn.close()
+
+    assert count == 1
+
+
 def test_authority_reconciliation_counts_toward_useful_yield(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     policy = write_policy(tmp_path, lookback_cycles=1)
