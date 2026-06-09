@@ -856,6 +856,7 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
             "cycle-seed.gather",
             "--feedback-plan",
             "auto",
+            "--build-next-feedback-plan",
             "--dry-run",
         ]
     )
@@ -870,7 +871,11 @@ def test_topic_cycle_prior_state_and_feedback_plan_auto(tmp_path: Path) -> None:
     assert manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["feedback_plan_pre"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
     assert manifest["active_feedback_plan_for_gather"]["path"] == manifest["feedback_plan"]["path"]  # type: ignore[index]
+    assert manifest["feedback_plan_post"] is None
     assert manifest["selection_explanations"][0]["selection_kind"] == "feedback_next_action"
+    stages = stages_by_name(manifest)
+    assert stages["build_feedback_plan_post"]["status"] == "skipped"
+    assert stages["build_feedback_plan_post"]["skipped_reason"] == "dry-run does not mutate canonical DB"  # type: ignore[index]
 
 
 def test_topic_cycle_explicit_json_format_still_prints_full_manifest(

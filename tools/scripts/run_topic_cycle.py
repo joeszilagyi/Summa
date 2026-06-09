@@ -1827,7 +1827,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     execution_artifacts=execution_artifacts,
                     run_dir=run_dir,
                 )
-                if args.build_next_feedback_plan:
+                if args.build_next_feedback_plan and args.mode != "dry-run":
                     build_feedback_plan_stage(
                         args=args,
                         manifest=manifest,
@@ -1837,6 +1837,14 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         runtime=runtime,
                         when="post",
                     )
+                elif args.build_next_feedback_plan:
+                    stage = StageRecord(
+                        name="build_feedback_plan_post",
+                        required=False,
+                        status="skipped",
+                    )
+                    stage.skipped_reason = "dry-run does not mutate canonical DB"
+                    add_stage(manifest, stage)
                 else:
                     stage = StageRecord(name="feedback_plan_post", required=False, status="skipped")
                     stage.skipped_reason = "not requested"
