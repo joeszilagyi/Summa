@@ -713,13 +713,21 @@ def load_json_record_map(
 
 def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if isinstance(payload, Path):
-        payload = payload.read_bytes()
+        record_map, errors, _, _ = load_jsonl_record_map_from_path(payload)
+        return record_map, errors
+    record_map, errors, _, _ = load_jsonl_record_map_from_bytes(payload)
+    return record_map, errors
+
+
+def load_jsonl_record_map_from_bytes(
+    payload: bytes,
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
     record_map: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     try:
         lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError:
-        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}]
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
     for line_number, raw_line in enumerate(lines, start=1):
         if not raw_line.strip():
             continue
@@ -739,7 +747,46 @@ def load_jsonl_record_map(payload: bytes | Path) -> tuple[dict[str, Any], list[d
             errors.append({"context": f"line:{line_number}", "reason": str(exc)})
             continue
         record_map[f"line:{line_number}"] = value
-    return record_map, errors
+    return record_map, errors, sha256_bytes(payload), len(payload)
+
+
+def load_jsonl_record_map_from_path(
+    path: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
+    record_map: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                digest.update(raw_line)
+                byte_count += len(raw_line)
+                try:
+                    line = raw_line.decode("utf-8").rstrip("\r\n")
+                except UnicodeDecodeError:
+                    return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(
+                        line,
+                        object_pairs_hook=no_duplicate_object_pairs,
+                        parse_constant=reject_json_constant,
+                    )
+                except DuplicateJsonKeyError as exc:
+                    errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+                    continue
+                except json.JSONDecodeError as exc:
+                    errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
+                    continue
+                except ValueError as exc:
+                    errors.append({"context": f"line:{line_number}", "reason": str(exc)})
+                    continue
+                record_map[f"line:{line_number}"] = value
+    except UnicodeDecodeError:
+        return {}, [{"context": "file", "reason": "file is not valid UTF-8"}], "", 0
+    return record_map, errors, digest.hexdigest(), byte_count
 
 
 def load_xml_record_map(
@@ -1508,11 +1555,25 @@ def execute_structured_data(
             source_path = Path(source_path_value).expanduser().resolve()
             ensure_path_within_root(source_path, root=root)
         ensure_path_is_local_file(source_path)
-        payload = source_path.read_bytes()
         capture_id = make_capture_id(capture_index)
         capture_index_by_path[source_path_value] = capture_id
-        capture_hash_by_path[source_path_value] = sha256_bytes(payload)
-        capture_size_by_path[source_path_value] = len(payload)
+        structured_format = grouped_records[0]["source_specific"]["structured_format"]
+        cache_key = structured_record_map_cache_key(
+            source_path_value, structured_format, record_path
+        )
+        if structured_format == "jsonl":
+            record_map, parse_errors, capture_hash, capture_size = load_jsonl_record_map_from_path(
+                source_path
+            )
+        else:
+            payload = source_path.read_bytes()
+            capture_hash = sha256_bytes(payload)
+            capture_size = len(payload)
+            record_map, parse_errors = load_structured_record_map(
+                payload, structured_format=structured_format, record_path=record_path
+            )
+        capture_hash_by_path[source_path_value] = capture_hash
+        capture_size_by_path[source_path_value] = capture_size
         local_paths.append(str(source_path))
         capture_events.append(
             {
@@ -1530,8 +1591,8 @@ def execute_structured_data(
                 },
                 "original_locator": grouped_records[0]["preserved"]["original_locator"],
                 "normalized_local_path": str(source_path),
-                "content_hash": capture_hash_by_path[source_path_value],
-                "byte_count": capture_size_by_path[source_path_value],
+                "content_hash": capture_hash,
+                "byte_count": capture_size,
                 "content_type": guess_content_type(source_path),
                 "captured_at": created_at,
                 "capture_method": "structured_data_load",
@@ -1541,13 +1602,6 @@ def execute_structured_data(
                 "canonical_persistence_attempted": False,
                 "verification_status": "unverified",
             }
-        )
-        structured_format = grouped_records[0]["source_specific"]["structured_format"]
-        cache_key = structured_record_map_cache_key(
-            source_path_value, structured_format, record_path
-        )
-        record_map, parse_errors = load_structured_record_map(
-            payload, structured_format=structured_format, record_path=record_path
         )
         record_map_cache[cache_key] = (record_map, parse_errors)
 
