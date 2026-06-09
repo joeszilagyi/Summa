@@ -297,9 +297,10 @@ llm_runner_run_quiet() {
     runtime_log_event LLM_OK \
       "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s"
     return 0
+  else
+    rc=$?
   fi
 
-  rc=$?
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
@@ -371,6 +372,8 @@ llm_runner_run_to_file() {
         runtime_log_event LLM_OK \
           "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
         return 0
+      else
+        rc=$?
       fi
       ;;
     claude)
@@ -385,11 +388,12 @@ llm_runner_run_to_file() {
         runtime_log_event LLM_OK \
           "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
         return 0
+      else
+        rc=$?
       fi
       ;;
   esac
 
-  rc=$?
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
