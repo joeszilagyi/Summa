@@ -550,7 +550,7 @@ def build_graph_shape(
     for table in GRAPH_NODE_TABLES:
         if cache.table_exists(table):
             node_families[table] = count_table(conn, table, cache)
-    edge_ref_family_counts = {"from": {}, "to": {}}
+    edge_ref_family_counts: dict[str, dict[str, int]] = {"from": {}, "to": {}}
     degree_distribution: dict[str, int] = {}
     component_summary: dict[str, Any] = {
         "status": "skipped",

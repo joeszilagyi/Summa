@@ -696,7 +696,7 @@ def batch_extraction_outcome_counts(
             entry = result[source_access_id]
             capture_id = int(row["capture_event_id"])
             if capture_id not in entry.setdefault("_capture_id_set", set()):
-                entry["_capture_id_set"].add(capture_id)  # type: ignore[union-attr]
+                entry["_capture_id_set"].add(capture_id)
                 entry["capture_ids"].append(capture_id)
             if row["capture_provenance_event_ref"] is not None:
                 related_event_keys_by_source_access_id[source_access_id].add(
@@ -707,7 +707,7 @@ def batch_extraction_outcome_counts(
                 continue
             extraction_id_int = int(extraction_id)
             if extraction_id_int not in entry.setdefault("_extraction_id_set", set()):
-                entry["_extraction_id_set"].add(extraction_id_int)  # type: ignore[union-attr]
+                entry["_extraction_id_set"].add(extraction_id_int)
                 entry["extraction_ids"].append(extraction_id_int)
             if row["extraction_provenance_event_ref"] is not None:
                 related_event_keys_by_source_access_id[source_access_id].add(

@@ -761,10 +761,10 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
                     "authority_reconciliation": "reconciliation_key_v1",
                     "provenance_event": "provenance_event_key_v1",
                 }[table]
-                columns = {
+                table_columns = {
                     row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
                 }
-                if key_column not in columns:
+                if key_column not in table_columns:
                     continue
                 rows = conn.execute(
                     f"SELECT {key_column} AS value FROM {table} WHERE {key_column} IS NOT NULL ORDER BY {key_column}"
@@ -809,17 +809,19 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
 def db_summary(
     db_path: Path,
     *,
-    store_summary: dict[str, Any] | None = None,
+    store_summary: object | None = None,
 ) -> dict[str, Any]:
-    if store_summary is None:
-        store_summary = canonical_store.check_canonical_store(db_path)
+    summary = canonical_store.check_canonical_store(db_path) if store_summary is None else store_summary
+    row_counts = (
+        row_count_summary(db_path)
+        if store_summary is None
+        else _summary_field(summary, "table_counts", {})
+    )
     return {
         "path": str(db_path),
-        "schema_version": _summary_field(store_summary, "schema_version"),
-        "current_migration_id": _summary_field(store_summary, "current_migration_id"),
-        "row_counts": _summary_field(store_summary, "table_counts", {})
-        if store_summary is not None
-        else row_count_summary(db_path),
+        "schema_version": _summary_field(summary, "schema_version"),
+        "current_migration_id": _summary_field(summary, "current_migration_id"),
+        "row_counts": row_counts,
         "key_hashes": table_content_hash_summary(db_path),
     }
 
