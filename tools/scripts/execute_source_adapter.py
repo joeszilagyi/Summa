@@ -2249,13 +2249,13 @@ def _remote_fetch_host_queue(
     max_response_bytes: int,
     min_interval_seconds: float,
     payload_spool_dir: Path,
-) -> dict[int, dict[str, Any]]:
-    results: dict[int, dict[str, Any]] = {}
+) -> dict[tuple[str, str], dict[str, Any]]:
+    results: dict[tuple[str, str], dict[str, Any]] = {}
     opener = build_opener(NoAutoRedirectHandler)
     for index, task in enumerate(tasks):
         if index > 0 and min_interval_seconds > 0:
             time.sleep(min_interval_seconds)
-        results[int(task["sequence"])] = remote_fetch_one(
+        results[task["fetch_key"]] = remote_fetch_one(
             url=task["url"],
             method=task["method"],
             user_agent=user_agent,
@@ -2372,8 +2372,6 @@ def _build_remote_fetch_artifacts(
         if retain_payload:
             capture_event["transient_payload_path"] = f"payloads/{capture_id}.bin"
             capture_event["payload_retention_policy"] = "transient_run_artifact"
-        elif payload_source_path is not None:
-            payload_source_path.unlink(missing_ok=True)
 
     extraction_record = build_extraction_record(
         extraction_id=extraction_id,
@@ -2458,6 +2456,7 @@ def execute_remote_fetches(
     allowlist_hosts, allowlist_prefixes = gate_allowlist(gate_report)
     record_plans: list[dict[str, Any]] = []
     host_tasks: dict[str, list[dict[str, Any]]] = {}
+    seen_fetch_keys: set[tuple[str, str]] = set()
     for index, record in enumerate(
         sorted(records, key=lambda item: int(item["sequence"])), start=1
     ):
@@ -2539,19 +2538,23 @@ def execute_remote_fetches(
             record_plans.append(record_plan)
             continue
         host_key = _remote_fetch_host_key(url)
-        host_tasks.setdefault(host_key, []).append(
-            {
-                "sequence": int(record["sequence"]),
-                "url": url,
-                "method": method,
-            }
-        )
+        fetch_key = (url, method)
+        if fetch_key not in seen_fetch_keys:
+            host_tasks.setdefault(host_key, []).append(
+                {
+                    "fetch_key": fetch_key,
+                    "url": url,
+                    "method": method,
+                }
+            )
+            seen_fetch_keys.add(fetch_key)
         record_plan["kind"] = "fetch"
         record_plan["host"] = host_key
         record_plan["method"] = method
+        record_plan["fetch_key"] = fetch_key
         record_plans.append(record_plan)
 
-    fetch_results_by_sequence: dict[int, dict[str, Any]] = {}
+    fetch_results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     if host_tasks:
         max_workers = min(4, len(host_tasks))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -2570,7 +2573,7 @@ def execute_remote_fetches(
                 for host, tasks in host_tasks.items()
             }
             for future in as_completed(futures):
-                fetch_results_by_sequence.update(future.result())
+                fetch_results_by_key.update(future.result())
 
     for record_plan in record_plans:
         if record_plan["kind"] == "denied":
@@ -2578,7 +2581,7 @@ def execute_remote_fetches(
             extraction_records.append(record_plan["extraction_record"])
             continue
 
-        fetch_result = fetch_results_by_sequence[int(record_plan["sequence"])]
+        fetch_result = fetch_results_by_key[record_plan["fetch_key"]]
         capture_event, extraction_record, extracted_text, record_failed = (
             _build_remote_fetch_artifacts(
                 record=record_plan["record"],
