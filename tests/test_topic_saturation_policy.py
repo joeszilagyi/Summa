@@ -123,10 +123,11 @@ def add_cycle(
     run_id: str,
     cycle_depth: int,
     event_index: int,
+    event_timestamp: str | None = None,
     review_state: str | None = None,
     artifact_hash: str | None = None,
 ) -> str:
-    event_timestamp = f"2026-06-04T12:0{event_index}:00Z"
+    timestamp = event_timestamp or f"2026-06-04T12:0{event_index}:00Z"
     note = {
         "subject_id": subject_id,
         "facet": "sources",
@@ -142,7 +143,7 @@ def add_cycle(
         event_type="gather_candidate_batch_ingest",
         tool_name="tests/test_topic_saturation_policy.py",
         run_id=run_id,
-        event_timestamp=event_timestamp,
+        event_timestamp=timestamp,
         source_object_namespace=topic_saturation.GATHER_EVENT_SOURCE_NAMESPACE,
         source_object_id=subject_id,
         note_text=json.dumps(note, sort_keys=True),
@@ -158,8 +159,8 @@ def add_cycle(
             claim_type="fixture_claim",
             review_state=review_state,
             workspace_id=subject_id,
-            created_at=event_timestamp,
-            record_last_updated=event_timestamp,
+            created_at=timestamp,
+            record_last_updated=timestamp,
         )
     return provenance.event_key
 
@@ -296,6 +297,42 @@ def test_evaluate_saturations_batches_multiple_subjects_once(
     assert set(results) == {"workspace.one", "workspace.two"}
     assert results["workspace.one"]["subject_id"] == "subject.one"
     assert results["workspace.two"]["subject_id"] == "subject.two"
+
+
+def test_load_recent_gather_events_orders_by_normalized_timestamp(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            late_utc_event = add_cycle(
+                conn,
+                subject_id="timestamp_subject",
+                run_id="run-late-utc",
+                cycle_depth=1,
+                event_index=1,
+                event_timestamp="2026-06-04T09:00:00-03:00",
+            )
+            add_cycle(
+                conn,
+                subject_id="timestamp_subject",
+                run_id="run-early-utc",
+                cycle_depth=1,
+                event_index=2,
+                event_timestamp="2026-06-04T11:30:00Z",
+            )
+        events = topic_saturation.load_recent_gather_events(
+            conn,
+            subject_id="timestamp_subject",
+            limit=1,
+        )
+    finally:
+        conn.close()
+
+    assert len(events) == 1
+    assert events[0]["event_key"] == late_utc_event
+    assert events[0]["event_timestamp"] == "2026-06-04T09:00:00-03:00"
 
 
 def test_rejected_source_access_does_not_count_as_useful_yield(tmp_path: Path) -> None:

@@ -15,7 +15,9 @@ from typing import Any
 
 SCHEMA_VERSION = "topic-saturation.v1"
 POLICY_SCHEMA_VERSION = "topic-saturation-policy.v1"
-DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "topic_saturation_policy.v1.json"
+DEFAULT_POLICY_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "topic_saturation_policy.v1.json"
+)
 GATHER_EVENT_SOURCE_NAMESPACE = "topic_subject"
 USEFUL_FAMILY_TABLES = (
     "work",
@@ -66,7 +68,9 @@ def load_policy(path: str | Path | None = None) -> Policy:
     try:
         payload = json.loads(policy_path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise TopicSaturationError(f"could not read saturation policy: {policy_path}: {exc}") from exc
+        raise TopicSaturationError(
+            f"could not read saturation policy: {policy_path}: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
         raise TopicSaturationError("saturation policy must be a JSON object")
     validate_policy(payload)
@@ -75,7 +79,9 @@ def load_policy(path: str | Path | None = None) -> Policy:
 
 def validate_policy(policy: dict[str, Any]) -> None:
     if policy.get("schema_version") != POLICY_SCHEMA_VERSION:
-        raise TopicSaturationError(f"saturation policy schema_version must be {POLICY_SCHEMA_VERSION}")
+        raise TopicSaturationError(
+            f"saturation policy schema_version must be {POLICY_SCHEMA_VERSION}"
+        )
     if not isinstance(policy.get("policy_id"), str) or not policy["policy_id"].strip():
         raise TopicSaturationError("saturation policy policy_id is required")
     if not isinstance(policy.get("enabled"), bool):
@@ -111,11 +117,19 @@ def validate_policy(policy: dict[str, Any]) -> None:
     ):
         value = weights.get(key)
         if not isinstance(value, (int, float)) or value < 0:
-            raise TopicSaturationError(f"saturation policy family_weights.{key} must be nonnegative")
+            raise TopicSaturationError(
+                f"saturation policy family_weights.{key} must be nonnegative"
+            )
     for field in ("accepted_review_states", "reviewable_review_states", "backlog_review_states"):
         values = policy.get(field)
-        if not isinstance(values, list) or not values or not all(isinstance(item, str) and item for item in values):
-            raise TopicSaturationError(f"saturation policy {field} must be a non-empty string array")
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(item, str) and item for item in values)
+        ):
+            raise TopicSaturationError(
+                f"saturation policy {field} must be a non-empty string array"
+            )
 
 
 def parse_note_text(note_text: Any) -> dict[str, Any]:
@@ -154,7 +168,7 @@ def load_recent_gather_events_for_subjects(
             CASE WHEN json_valid(provenance_event.note_text) THEN json_extract(provenance_event.note_text, '$.artifact_hash') END AS artifact_hash,
             row_number() OVER (
               PARTITION BY requested_subjects.subject_id
-              ORDER BY provenance_event.event_timestamp DESC, provenance_event.provenance_event_id DESC
+              ORDER BY datetime(provenance_event.event_timestamp) DESC, provenance_event.provenance_event_id DESC
             ) AS rn
           FROM provenance_event
           INNER JOIN requested_subjects
@@ -173,11 +187,13 @@ def load_recent_gather_events_for_subjects(
           artifact_hash
         FROM ranked_events
         WHERE rn <= ?
-        ORDER BY subject_id, event_timestamp DESC, provenance_event_id DESC
+        ORDER BY subject_id, datetime(event_timestamp) DESC, provenance_event_id DESC
         """,
         tuple(unique_subject_ids) + (GATHER_EVENT_SOURCE_NAMESPACE, limit),
     ).fetchall()
-    events_by_subject: dict[str, list[dict[str, Any]]] = {subject_id: [] for subject_id in unique_subject_ids}
+    events_by_subject: dict[str, list[dict[str, Any]]] = {
+        subject_id: [] for subject_id in unique_subject_ids
+    }
     for row in rows:
         subject_id = str(row["subject_id"])
         facet = row["facet"]
@@ -323,7 +339,11 @@ def source_access_count_for_event(
         "SELECT note_text FROM provenance_event WHERE provenance_event_key_v1=?",
         (event_key,),
     ).fetchone()
-    artifact_hash = parse_note_text(note_row["note_text"]).get("artifact_hash") if note_row is not None else None
+    artifact_hash = (
+        parse_note_text(note_row["note_text"]).get("artifact_hash")
+        if note_row is not None
+        else None
+    )
     if isinstance(artifact_hash, str) and artifact_hash:
         for row in conn.execute(
             f"""
@@ -376,7 +396,9 @@ def source_access_counts_for_events(
         FROM matched
         GROUP BY event_key
         """,
-        tuple(value for event in events for value in (event["event_key"], event.get("_artifact_hash")))
+        tuple(
+            value for event in events for value in (event["event_key"], event.get("_artifact_hash"))
+        )
         + (tuple(states) * 3 if states else ()),
     ).fetchall()
     result = {str(event["event_key"]): 0 for event in events}
@@ -543,8 +565,12 @@ def cycle_yields(
     family_counts_by_table = {
         "work": _count_by_provenance_grouped(conn, "work", event_keys),
         "source_claim": _count_by_provenance_grouped(conn, "source_claim", event_keys),
-        "extraction_detected_entity": _count_by_provenance_grouped(conn, "extraction_detected_entity", event_keys),
-        "source_relationship": _count_by_provenance_grouped(conn, "source_relationship", event_keys),
+        "extraction_detected_entity": _count_by_provenance_grouped(
+            conn, "extraction_detected_entity", event_keys
+        ),
+        "source_relationship": _count_by_provenance_grouped(
+            conn, "source_relationship", event_keys
+        ),
         "capture_event": _count_by_provenance_grouped(conn, "capture_event", event_keys),
         "extraction_record": _count_by_provenance_grouped(conn, "extraction_record", event_keys),
     }
@@ -571,8 +597,12 @@ def cycle_yields(
             {
                 "work": family_counts_by_table["work"].get(event_key, 0),
                 "source_claim": family_counts_by_table["source_claim"].get(event_key, 0),
-                "extraction_detected_entity": family_counts_by_table["extraction_detected_entity"].get(event_key, 0),
-                "source_relationship": family_counts_by_table["source_relationship"].get(event_key, 0),
+                "extraction_detected_entity": family_counts_by_table[
+                    "extraction_detected_entity"
+                ].get(event_key, 0),
+                "source_relationship": family_counts_by_table["source_relationship"].get(
+                    event_key, 0
+                ),
                 "capture_event": family_counts_by_table["capture_event"].get(event_key, 0),
                 "extraction_record": family_counts_by_table["extraction_record"].get(event_key, 0),
                 "source_access": source_access_counts.get(event_key, 0),
@@ -580,12 +610,10 @@ def cycle_yields(
             }
         )
         accepted_records = sum(
-            accepted_counts_by_table[table].get(event_key, 0)
-            for table in REVIEW_STATE_TABLES
+            accepted_counts_by_table[table].get(event_key, 0) for table in REVIEW_STATE_TABLES
         )
         reviewable_records = sum(
-            reviewable_counts_by_table[table].get(event_key, 0)
-            for table in REVIEW_STATE_TABLES
+            reviewable_counts_by_table[table].get(event_key, 0) for table in REVIEW_STATE_TABLES
         )
         useful_yield = (
             weights["accepted_record"] * accepted_records
@@ -612,7 +640,9 @@ def cycle_yields(
     return cycles
 
 
-def cycle_yield(conn: sqlite3.Connection, *, event: dict[str, Any], policy: Policy) -> dict[str, Any]:
+def cycle_yield(
+    conn: sqlite3.Connection, *, event: dict[str, Any], policy: Policy
+) -> dict[str, Any]:
     cycles = cycle_yields(conn, events=[event], policy=policy)
     if cycles:
         return cycles[0]
@@ -646,7 +676,9 @@ def evaluate_saturations(
             for workspace_id, subject_id in workspace_subject_pairs
         }
 
-    unique_subject_ids = list(dict.fromkeys(subject_id for _, subject_id in workspace_subject_pairs))
+    unique_subject_ids = list(
+        dict.fromkeys(subject_id for _, subject_id in workspace_subject_pairs)
+    )
     events_by_subject = load_recent_gather_events_for_subjects(
         conn,
         subject_ids=unique_subject_ids,
@@ -658,7 +690,9 @@ def evaluate_saturations(
         for event in events_by_subject.get(subject_id, [])
     ]
     cycles = cycle_yields(conn, events=ordered_events, policy=policy)
-    cycles_by_subject: dict[str, list[dict[str, Any]]] = {subject_id: [] for subject_id in unique_subject_ids}
+    cycles_by_subject: dict[str, list[dict[str, Any]]] = {
+        subject_id: [] for subject_id in unique_subject_ids
+    }
     for cycle in cycles:
         subject_id = cycle.get("subject_id")
         if isinstance(subject_id, str):
@@ -783,7 +817,9 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     summary["low_yield_cycle_count"] = sum(1 for cycle in cycles if cycle["low_yield"])
     summary["consecutive_low_yield_cycles"] = consecutive_low_yield(cycles)
     summary["new_accepted_records"] = sum(int(cycle["new_accepted_records"]) for cycle in cycles)
-    summary["new_reviewable_records"] = sum(int(cycle["new_reviewable_records"]) for cycle in cycles)
+    summary["new_reviewable_records"] = sum(
+        int(cycle["new_reviewable_records"]) for cycle in cycles
+    )
     summary["useful_yield"] = round(sum(float(cycle["useful_yield"]) for cycle in cycles), 4)
     return summary
 
@@ -791,6 +827,8 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
 def next_eligible_cycle(cycles: list[dict[str, Any]], *, policy: Policy, state: str) -> int | None:
     if state != "cooldown":
         return None
-    depths = [cycle.get("cycle_depth") for cycle in cycles if isinstance(cycle.get("cycle_depth"), int)]
+    depths = [
+        cycle.get("cycle_depth") for cycle in cycles if isinstance(cycle.get("cycle_depth"), int)
+    ]
     current = max(depths) if depths else len(cycles)
     return current + int(policy.raw["cooldown_cycles"]) + 1
