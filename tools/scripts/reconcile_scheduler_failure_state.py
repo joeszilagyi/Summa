@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (
     REPO_ROOT,
@@ -20,6 +19,9 @@ for candidate in (
     candidate_text = str(candidate)
     if candidate_text not in sys.path:
         sys.path.insert(0, candidate_text)
+
+import validate_scheduler_failure_state_reconciliation  # noqa: E402
+import validate_topic_workspace_registry  # noqa: E402
 
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.runtime_ledger import DEFAULT_LEDGER_ROOT  # noqa: E402
@@ -40,12 +42,16 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     resolve_workspaces,
 )
 
-import validate_scheduler_failure_state_reconciliation  # noqa: E402
-import validate_topic_workspace_registry  # noqa: E402
-
 
 class ReconciliationError(RuntimeError):
     """Raised when reconciliation inputs are invalid or unsafe."""
+
+
+def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return ((base or Path.cwd()) / path).resolve()
 
 
 def utc_now() -> str:
@@ -70,7 +76,9 @@ def parse_args() -> argparse.Namespace:
             f"  Without either, the default is {default_registry_display}."
         ),
     )
-    parser.add_argument("--registry", help="Optional path to the topic workspace registry JSON file.")
+    parser.add_argument(
+        "--registry", help="Optional path to the topic workspace registry JSON file."
+    )
     parser.add_argument(
         "--workspace-id",
         action="append",
@@ -84,8 +92,12 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / DEFAULT_LEDGER_ROOT,
         help="Directory containing per-workspace runtime-ledger JSONL files.",
     )
-    parser.add_argument("--generated-at", help="Optional timestamp override for deterministic tests.")
-    parser.add_argument("--output-json", type=Path, help="Optional path for the reconciliation JSON artifact.")
+    parser.add_argument(
+        "--generated-at", help="Optional timestamp override for deterministic tests."
+    )
+    parser.add_argument(
+        "--output-json", type=Path, help="Optional path for the reconciliation JSON artifact."
+    )
     parser.add_argument(
         "--output-registry",
         type=Path,
@@ -106,11 +118,15 @@ def parse_timestamp(raw_value: str, *, label: str) -> datetime:
 
 
 def validate_registry_or_raise(registry_path: Path) -> None:
-    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(registry_path)
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
+        registry_path
+    )
     if exit_code != validate_topic_workspace_registry.EXIT_PASS:
         errors = result.get("errors", [])
         if errors:
-            raise ReconciliationError(errors[0].get("message", "topic workspace registry validation failed"))
+            raise ReconciliationError(
+                errors[0].get("message", "topic workspace registry validation failed")
+            )
         raise ReconciliationError("topic workspace registry validation failed")
 
 
@@ -145,7 +161,9 @@ def reconciliation_entry(
 ) -> dict[str, Any]:
     scheduler_policy = workspace.get("scheduler_policy")
     registry_failure_state = None
-    if isinstance(scheduler_policy, dict) and isinstance(scheduler_policy.get("failure_state"), dict):
+    if isinstance(scheduler_policy, dict) and isinstance(
+        scheduler_policy.get("failure_state"), dict
+    ):
         registry_failure_state = copy.deepcopy(scheduler_policy["failure_state"])
     recommendation = "replace" if registry_failure_state != derived_failure_state else "keep"
     return {
@@ -172,9 +190,12 @@ def build_reconciliation_payload(args: argparse.Namespace) -> dict[str, Any]:
     validate_registry_or_raise(registry_path)
     generated_at = args.generated_at or utc_now()
     parse_timestamp(generated_at, label="generated_at")
+    ledger_root = resolve_path(args.ledger_root)
 
     try:
-        resolved_workspaces = resolve_workspaces(registry_path=registry_path, workspace_ids=args.workspace_ids)
+        resolved_workspaces = resolve_workspaces(
+            registry_path=registry_path, workspace_ids=args.workspace_ids
+        )
     except TopicWorkspaceRegistryError as exc:
         raise ReconciliationError(str(exc)) from exc
 
@@ -183,14 +204,19 @@ def build_reconciliation_payload(args: argparse.Namespace) -> dict[str, Any]:
         workspace_id = workspace.get("workspace_id")
         if not isinstance(workspace_id, str) or not workspace_id:
             raise ReconciliationError("resolved workspace record is missing workspace_id")
-        ledger_path = args.ledger_root / f"{workspace_id}.runtime-ledger.jsonl"
+        ledger_path = ledger_root / f"{workspace_id}.runtime-ledger.jsonl"
         events = read_runtime_ledger(ledger_path, workspace_id=workspace_id)
         scheduler_policy = workspace.get("scheduler_policy")
-        run_budget = scheduler_policy.get("run_budget") if isinstance(scheduler_policy, dict) else None
-        retry_policy = scheduler_policy.get("retry_policy") if isinstance(scheduler_policy, dict) else None
+        run_budget = (
+            scheduler_policy.get("run_budget") if isinstance(scheduler_policy, dict) else None
+        )
+        retry_policy = (
+            scheduler_policy.get("retry_policy") if isinstance(scheduler_policy, dict) else None
+        )
         current_failure_state = (
             copy.deepcopy(scheduler_policy.get("failure_state"))
-            if isinstance(scheduler_policy, dict) and isinstance(scheduler_policy.get("failure_state"), dict)
+            if isinstance(scheduler_policy, dict)
+            and isinstance(scheduler_policy.get("failure_state"), dict)
             else None
         )
         derived_failure_state, reasons, run_outcomes = derive_failure_state(
@@ -218,7 +244,9 @@ def build_reconciliation_payload(args: argparse.Namespace) -> dict[str, Any]:
         "workspace_count": len(entries),
         "changed_count": changed_count,
         "unchanged_count": len(entries) - changed_count,
-        "updated_registry_path": str(args.output_registry) if args.output_registry is not None else None,
+        "updated_registry_path": str(args.output_registry)
+        if args.output_registry is not None
+        else None,
         "entries": entries,
     }
     return payload
@@ -231,7 +259,9 @@ def apply_to_registry(
     entries: list[dict[str, Any]],
 ) -> None:
     if output_registry_path.resolve() == registry_path.resolve():
-        raise ReconciliationError("--output-registry must differ from --registry so the apply step stays deliberate")
+        raise ReconciliationError(
+            "--output-registry must differ from --registry so the apply step stays deliberate"
+        )
 
     registry_payload = load_registry_json(registry_path)
     by_workspace = {entry["workspace_id"]: entry for entry in entries}
@@ -257,10 +287,16 @@ def apply_to_registry(
                 workspace.pop("scheduler_policy", None)
 
     atomic_write_json(output_registry_path, registry_payload)
-    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(output_registry_path)
+    result, exit_code = validate_topic_workspace_registry.validate_topic_workspace_registry(
+        output_registry_path
+    )
     if exit_code != validate_topic_workspace_registry.EXIT_PASS:
         errors = result.get("errors", [])
-        first = errors[0].get("message", "topic workspace registry validation failed") if errors else "topic workspace registry validation failed"
+        first = (
+            errors[0].get("message", "topic workspace registry validation failed")
+            if errors
+            else "topic workspace registry validation failed"
+        )
         raise ReconciliationError(f"reconciled registry failed validation: {first}")
 
 
@@ -290,12 +326,18 @@ def render_text(payload: dict[str, Any]) -> str:
 
 def maybe_write_payload(output_json: Path, payload: dict[str, Any]) -> None:
     atomic_write_json(output_json, payload)
-    report, exit_code = validate_scheduler_failure_state_reconciliation.validate_scheduler_failure_state_reconciliation(
-        output_json
+    report, exit_code = (
+        validate_scheduler_failure_state_reconciliation.validate_scheduler_failure_state_reconciliation(
+            output_json
+        )
     )
     if exit_code != validate_scheduler_failure_state_reconciliation.EXIT_PASS:
         errors = report.get("errors", [])
-        first = errors[0].get("message", "reconciliation payload failed validation") if errors else "reconciliation payload failed validation"
+        first = (
+            errors[0].get("message", "reconciliation payload failed validation")
+            if errors
+            else "reconciliation payload failed validation"
+        )
         raise ReconciliationError(first)
 
 
@@ -305,11 +347,17 @@ def main(argv: list[str] | None = None) -> int:
         payload = build_reconciliation_payload(args)
         registry_path = Path(payload["registry_path"])
         if args.output_registry is not None:
-            apply_to_registry(registry_path=registry_path, output_registry_path=args.output_registry, entries=payload["entries"])
+            apply_to_registry(
+                registry_path=registry_path,
+                output_registry_path=args.output_registry,
+                entries=payload["entries"],
+            )
         if args.output_json is not None:
             maybe_write_payload(args.output_json, payload)
         if args.format == "json":
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            sys.stdout.write(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            )
         else:
             sys.stdout.write(render_text(payload))
     except (ReconciliationError, SchedulerFailureReconciliationError) as exc:
