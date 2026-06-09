@@ -687,11 +687,11 @@ def validate_invariants(
                         message="mode=live must include engine_present=true",
                         path="$.engine",
                     )
-                if not isinstance(raw_engine_output, str) or not raw_engine_output:
+                if raw_engine_output not in (None, ""):
                     add_error(
                         errors,
-                        code="LIVE_RAW_OUTPUT_REQUIRED",
-                        message="mode=live must include raw_engine_output",
+                        code="LIVE_RAW_OUTPUT_FORBIDDEN",
+                        message="mode=live must not include raw_engine_output; use engine_output_ref instead",
                         path="$.raw_engine_output",
                     )
                 if (
