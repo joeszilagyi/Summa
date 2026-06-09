@@ -66,6 +66,8 @@ def test_live_gather_runtime_reaches_llm_runner_through_bridge() -> None:
     assert 'readonly LLM_RUNNER_LIB="$SELF_DIR/llm_runner.sh"' in bridge_text
     assert 'source "$RUNTIME_LOG_LIB"' in bridge_text
     assert 'source "$LLM_RUNNER_LIB"' in bridge_text
+    assert 'llm_runner_run_to_file_from_file "$tmp_dir" "$prompt_file" "$output_file"' in bridge_text
+    assert 'prompt_text="$(<"$prompt_file")"' not in bridge_text
 
 
 def test_gather_doc_describes_llm_runner_as_live_engine_path() -> None:
