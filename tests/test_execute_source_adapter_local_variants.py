@@ -147,7 +147,17 @@ def test_execute_structured_data_reads_each_source_file_once_per_grouped_capture
         count_if_source(self)
         return original_open(self, *args, **kwargs)
 
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        if self.resolve() in read_counts:
+            raise AssertionError(
+                "structured execution should stream from Path.open() instead of read_bytes()"
+            )
+        return original_read_bytes(self)
+
     monkeypatch.setattr(Path, "open", guarded_open, raising=True)
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes, raising=True)
 
     capture_events, extraction_records, text_artifacts, local_paths, failed = (
         source_executor.execute_structured_data(

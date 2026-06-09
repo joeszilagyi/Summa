@@ -909,6 +909,19 @@ def load_structured_record_map(
     ]
 
 
+def load_structured_record_map_from_path(
+    path: Path, *, structured_format: str, record_path: str | None
+) -> tuple[dict[str, Any], list[dict[str, str]], str, int]:
+    if structured_format == "jsonl":
+        return load_jsonl_record_map_from_path(path)
+    with path.open("rb") as handle:
+        payload = handle.read()
+    record_map, errors = load_structured_record_map(
+        payload, structured_format=structured_format, record_path=record_path
+    )
+    return record_map, errors, sha256_bytes(payload), len(payload)
+
+
 def structured_record_map_cache_key(
     source_path_value: str, structured_format: str, record_path: str | None
 ) -> tuple[str, str, str]:
@@ -1563,17 +1576,9 @@ def execute_structured_data(
         cache_key = structured_record_map_cache_key(
             source_path_value, structured_format, record_path
         )
-        if structured_format == "jsonl":
-            record_map, parse_errors, capture_hash, capture_size = load_jsonl_record_map_from_path(
-                source_path
-            )
-        else:
-            payload = source_path.read_bytes()
-            capture_hash = sha256_bytes(payload)
-            capture_size = len(payload)
-            record_map, parse_errors = load_structured_record_map(
-                payload, structured_format=structured_format, record_path=record_path
-            )
+        record_map, parse_errors, capture_hash, capture_size = load_structured_record_map_from_path(
+            source_path, structured_format=structured_format, record_path=record_path
+        )
         capture_hash_by_path[source_path_value] = capture_hash
         capture_size_by_path[source_path_value] = capture_size
         local_paths.append(str(source_path))
