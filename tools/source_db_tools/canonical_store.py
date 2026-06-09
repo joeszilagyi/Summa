@@ -164,6 +164,8 @@ def load_check_result_payload(
         raise CanonicalStoreError(f"{label} must be a JSON object")
     db_path = _require_nonblank(payload.get("db_path"), f"{label} db_path")
     schema_version_value = payload.get("schema_version")
+    if schema_version_value is None or isinstance(schema_version_value, bool):
+        raise CanonicalStoreError(f"{label} schema_version must be an integer")
     try:
         schema_version = int(schema_version_value)
     except (TypeError, ValueError) as exc:

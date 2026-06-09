@@ -237,6 +237,8 @@ def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
     if load_exit != validate_source_adapter.EXIT_PASS:
         message = errors[0]["message"] if errors else "source adapter could not be loaded"
         raise SourceAcquisitionError(message)
+    if not isinstance(payload, dict):
+        raise SourceAcquisitionError("source adapter could not be loaded")
     result, exit_code = validate_source_adapter.validate_source_adapter_payload(payload)
     if exit_code != validate_source_adapter.EXIT_PASS:
         message = "source adapter validation failed"
