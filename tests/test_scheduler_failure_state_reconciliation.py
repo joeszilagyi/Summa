@@ -478,6 +478,25 @@ def test_runtime_ledger_append_event_updates_metadata_sidecar(tmp_path: Path) ->
     assert metadata["line_count"] == 2
 
 
+def test_runtime_ledger_normalizes_timestamps_before_append(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    event = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="run-1",
+        event_type="command_end",
+        command="pytest-fixture",
+        status="pass",
+        occurred_at="2026-06-01T23:30:00-01:00",
+    )
+
+    assert event["occurred_at"] == "2026-06-02T00:30:00Z"
+
+    runtime_ledger.append_event(ledger_path, event)
+    loaded = runtime_ledger.load_events(ledger_path)
+
+    assert loaded == [event]
+
+
 def test_runtime_ledger_rejects_non_standard_json_constants(tmp_path: Path) -> None:
     ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -495,6 +514,21 @@ def test_runtime_ledger_rejects_non_standard_json_constants(tmp_path: Path) -> N
         runtime_ledger.load_events(ledger_path)
 
 
+def test_runtime_ledger_build_event_rejects_invalid_timestamp() -> None:
+    with pytest.raises(
+        runtime_ledger.RuntimeLedgerError,
+        match="must be an ISO-8601 timestamp",
+    ):
+        runtime_ledger.build_event(
+            workspace_id="workspace-a",
+            run_id="run-1",
+            event_type="command_end",
+            command="pytest-fixture",
+            status="pass",
+            occurred_at="not-a-timestamp",
+        )
+
+
 def test_runtime_ledger_append_event_rejects_non_standard_json_constants(
     tmp_path: Path,
 ) -> None:
@@ -509,6 +543,24 @@ def test_runtime_ledger_append_event_rejects_non_standard_json_constants(
     event["status"] = float("nan")
 
     with pytest.raises(runtime_ledger.RuntimeLedgerError, match="non-standard"):
+        runtime_ledger.append_event(ledger_path, event)
+
+
+def test_runtime_ledger_append_event_rejects_invalid_timestamp(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    event = runtime_ledger.build_event(
+        workspace_id="workspace-a",
+        run_id="run-1",
+        event_type="command_end",
+        command="pytest-fixture",
+        status="pass",
+    )
+    event["occurred_at"] = "still-not-a-timestamp"
+
+    with pytest.raises(
+        runtime_ledger.RuntimeLedgerError,
+        match="must be an ISO-8601 timestamp",
+    ):
         runtime_ledger.append_event(ledger_path, event)
 
 
@@ -602,7 +654,7 @@ def test_runtime_ledger_and_outcomes_sort_by_normalized_timestamp(
     assert derived == {
         "status": "retryable",
         "attempt_count": 1,
-        "last_failure_at": "2026-06-01T23:30:00-01:00",
+        "last_failure_at": "2026-06-02T00:30:00Z",
         "last_failure_reason": "later failure",
     }
     assert reasons == ["1 consecutive terminal runtime failure(s) since the last success"]
