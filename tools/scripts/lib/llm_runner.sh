@@ -16,7 +16,9 @@
 #   # optionally: llm_runner_set_engine "claude"  (or via --agent flag)
 #   llm_runner_init || fail "LLM engine unavailable"
 #   llm_runner_run_quiet "$tmp" "$prompt" "$phase" "MyTool.sh"
+#   # or: llm_runner_run_quiet_from_file "$tmp" "$prompt_file" "$phase" "MyTool.sh"
 #   # or: llm_runner_run_to_file "$tmp" "$prompt" "$output_file" "$phase" "MyTool.sh"
+#   # or: llm_runner_run_to_file_from_file "$tmp" "$prompt_file" "$output_file" "$phase" "MyTool.sh"
 #   llm_runner_stamp_output "$output_file" "$place" "$facet" "$phase"
 #
 # Env var inputs (all optional; lib sets safe defaults):
@@ -177,6 +179,20 @@ _llm_runner_exec_codex_json() {
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
+_llm_runner_exec_codex_from_file() {
+  local tmp_dir="$1" prompt_file="$2" stdout_file="$3" stderr_file="$4"
+  ( cd "$tmp_dir" && \
+    codex exec "${_LLM_RUNNER_CODEX_ARGS[@]}" - < "$prompt_file" \
+  ) >"$stdout_file" 2>"$stderr_file"
+}
+
+_llm_runner_exec_codex_json_from_file() {
+  local tmp_dir="$1" prompt_file="$2" stdout_file="$3" stderr_file="$4"
+  ( cd "$tmp_dir" && \
+    codex exec --json "${_LLM_RUNNER_CODEX_ARGS[@]}" - < "$prompt_file" \
+  ) >"$stdout_file" 2>"$stderr_file"
+}
+
 _llm_runner_exec_claude() {
   local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
@@ -186,6 +202,19 @@ _llm_runner_exec_claude() {
       --max-budget-usd "$LLM_RUNNER_CLAUDE_MAX_BUDGET_USD" \
       --output-format json \
       --json-schema "$LLM_RUNNER_CLAUDE_JSON_SCHEMA" \
+  ) >"$stdout_file" 2>"$stderr_file"
+}
+
+_llm_runner_exec_claude_from_file() {
+  local tmp_dir="$1" prompt_file="$2" stdout_file="$3" stderr_file="$4"
+  ( cd "$tmp_dir" && \
+    claude -p \
+      --model "$LLM_RUNNER_CLAUDE_MODEL" \
+      --effort "$LLM_RUNNER_CLAUDE_EFFORT" \
+      --max-budget-usd "$LLM_RUNNER_CLAUDE_MAX_BUDGET_USD" \
+      --output-format json \
+      --json-schema "$LLM_RUNNER_CLAUDE_JSON_SCHEMA" \
+      < "$prompt_file" \
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
@@ -407,6 +436,51 @@ llm_runner_run_quiet() {
 }
 
 # ---------------------------------------------------------------------------
+# llm_runner_run_quiet_from_file <tmp_dir> <prompt_file> <phase> <tool_name>
+#   Run the selected engine in <tmp_dir> with prompt text streamed from a file.
+#   Captures stderr; emits LLM_OK / LLM_FAIL log events via runtime_log_event.
+#   Returns the engine exit code on failure.
+# ---------------------------------------------------------------------------
+llm_runner_run_quiet_from_file() {
+  local tmp_dir="$1" prompt_file="$2" phase="$3" tool_name="${4:-llm_runner}"
+  local stderr_file start_ts end_ts elapsed rc
+
+  [[ "$_LLM_RUNNER_INITIALIZED" == "1" ]] || {
+    printf 'llm_runner: llm_runner_init must be called before llm_runner_run_quiet_from_file\n' >&2
+    return 1
+  }
+
+  _llm_runner_require_tmp_dir "$tmp_dir" || return 1
+  [[ -r "$prompt_file" ]] || {
+    printf 'llm_runner: prompt file "%s" is not readable\n' "$prompt_file" >&2
+    return 1
+  }
+
+  stderr_file="$(mktemp "${tmp_dir%/}/llm.${phase}.stderr.XXXXXX")"
+  : > "$stderr_file"
+  start_ts="$(date +%s)"
+
+  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}_from_file" "$tmp_dir" "$prompt_file" "/dev/null" "$stderr_file"; then
+    end_ts="$(date +%s)"
+    elapsed=$((end_ts - start_ts))
+    runtime_log_event LLM_OK \
+      "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s"
+    return 0
+  else
+    rc=$?
+  fi
+
+  end_ts="$(date +%s)"
+  elapsed=$((end_ts - start_ts))
+  runtime_log_event LLM_FAIL \
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
+  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
+  printf 'Captured stderr: %s\n' "$stderr_file" >&2
+  tail -n 80 "$stderr_file" >&2 || true
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # llm_runner_run_to_file <tmp_dir> <prompt_text> <output_file> <phase> <tool_name>
 #   Run the selected engine in <tmp_dir> with <prompt_text> and capture stdout
 #   in <output_file>. Captures stderr and emits the same runtime log events as
@@ -473,6 +547,105 @@ llm_runner_run_to_file() {
       ;;
     claude)
       if _llm_runner_exec_claude "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
+        if ! _llm_runner_materialize_claude_output "$output_tmp_file" "$output_tmp_file"; then
+          return 1
+        fi
+        if ! mv -- "$output_tmp_file" "$output_file"; then
+          return 1
+        fi
+        rm -f -- "$usage_file"
+        trap - RETURN
+        end_ts="$(date +%s)"
+        elapsed=$((end_ts - start_ts))
+        runtime_log_event LLM_OK \
+          "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
+        return 0
+      else
+        rc=$?
+      fi
+      ;;
+  esac
+
+  end_ts="$(date +%s)"
+  elapsed=$((end_ts - start_ts))
+  runtime_log_event LLM_FAIL \
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
+  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
+  printf 'Captured stderr: %s\n' "$stderr_file" >&2
+  tail -n 80 "$stderr_file" >&2 || true
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# llm_runner_run_to_file_from_file <tmp_dir> <prompt_file> <output_file> <phase> <tool_name>
+#   Run the selected engine in <tmp_dir> with prompt text streamed from a file
+#   and capture stdout in <output_file>.
+# ---------------------------------------------------------------------------
+llm_runner_run_to_file_from_file() {
+  local tmp_dir="$1" prompt_file="$2" output_file="$3" phase="$4" tool_name="${5:-llm_runner}"
+  local stderr_file output_tmp_file event_tmp_file usage_tmp_file usage_file start_ts end_ts elapsed rc
+
+  [[ "$_LLM_RUNNER_INITIALIZED" == "1" ]] || {
+    printf 'llm_runner: llm_runner_init must be called before llm_runner_run_to_file_from_file\n' >&2
+    return 1
+  }
+
+  _llm_runner_require_tmp_dir "$tmp_dir" || return 1
+  _llm_runner_require_output_dir "$output_file" || return 1
+  [[ -r "$prompt_file" ]] || {
+    printf 'llm_runner: prompt file "%s" is not readable\n' "$prompt_file" >&2
+    return 1
+  }
+
+  if [[ -e "$output_file" && ! -w "$output_file" ]]; then
+    printf 'llm_runner: output file "%s" is not writable\n' "$output_file" >&2
+    return 1
+  fi
+
+  output_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").tmp.XXXXXX")"
+  event_tmp_file=""
+  usage_tmp_file=""
+  usage_file="${output_file}.usage.json"
+  trap 'rm -f -- "$output_tmp_file"; if [[ -n "${event_tmp_file:-}" ]]; then rm -f -- "$event_tmp_file"; fi; if [[ -n "${usage_tmp_file:-}" ]]; then rm -f -- "$usage_tmp_file"; fi' RETURN
+  stderr_file="$(mktemp "${tmp_dir%/}/llm.${phase}.stderr.XXXXXX")"
+  : > "$stderr_file"
+  start_ts="$(date +%s)"
+
+  case "$LLM_RUNNER_ENGINE" in
+    codex)
+      event_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").events.XXXXXX")"
+      usage_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").usage.XXXXXX")"
+      if _llm_runner_exec_codex_json_from_file "$tmp_dir" "$prompt_file" "$event_tmp_file" "$stderr_file"; then
+        if ! _llm_runner_materialize_codex_json_output \
+          "$event_tmp_file" \
+          "$output_tmp_file" \
+          "$usage_tmp_file"
+        then
+          return 1
+        fi
+        if ! mv -- "$output_tmp_file" "$output_file"; then
+          return 1
+        fi
+        if [[ -f "$usage_tmp_file" ]]; then
+          if ! mv -- "$usage_tmp_file" "$usage_file"; then
+            return 1
+          fi
+        else
+          rm -f -- "$usage_file"
+        fi
+        rm -f -- "$event_tmp_file"
+        trap - RETURN
+        end_ts="$(date +%s)"
+        elapsed=$((end_ts - start_ts))
+        runtime_log_event LLM_OK \
+          "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
+        return 0
+      else
+        rc=$?
+      fi
+      ;;
+    claude)
+      if _llm_runner_exec_claude_from_file "$tmp_dir" "$prompt_file" "$output_tmp_file" "$stderr_file"; then
         if ! _llm_runner_materialize_claude_output "$output_tmp_file" "$output_tmp_file"; then
           return 1
         fi

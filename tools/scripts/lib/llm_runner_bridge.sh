@@ -111,8 +111,7 @@ case "$subcommand" in
     fi
     [[ -z "$engine" ]] || llm_runner_set_engine "$engine"
     llm_runner_init
-    prompt_text="$(<"$prompt_file")"
-    llm_runner_run_to_file "$tmp_dir" "$prompt_text" "$output_file" "$phase" "$tool_name"
+    llm_runner_run_to_file_from_file "$tmp_dir" "$prompt_file" "$output_file" "$phase" "$tool_name"
     if [[ -n "$stamped_output_file" ]]; then
       if [[ "$stamped_output_file" != "$output_file" ]]; then
         cp -- "$output_file" "$stamped_output_file"
