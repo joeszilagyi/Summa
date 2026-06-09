@@ -8,14 +8,17 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "reconcile_scheduler_failure_state.py"
 SELECTOR = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
-VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_scheduler_failure_state_reconciliation.py"
+VALIDATOR_PATH = (
+    REPO_ROOT / "tools" / "validators" / "validate_scheduler_failure_state_reconciliation.py"
+)
 TOPIC_VALIDATOR_PATH = REPO_ROOT / "tools" / "validators" / "validate_topic_workspace_registry.py"
 RUNTIME_LEDGER_PATH = REPO_ROOT / "tools" / "common" / "runtime_ledger.py"
-SCHEDULER_RECONCILIATION_PATH = REPO_ROOT / "tools" / "common" / "scheduler_failure_reconciliation.py"
+SCHEDULER_RECONCILIATION_PATH = (
+    REPO_ROOT / "tools" / "common" / "scheduler_failure_reconciliation.py"
+)
 
 for candidate in (REPO_ROOT, REPO_ROOT / "tools" / "validators", REPO_ROOT / "tools" / "common"):
     candidate_text = str(candidate)
@@ -42,10 +45,12 @@ scheduler_reconciliation = load_module(
 )
 
 
-def run_reconciliation(args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_reconciliation(
+    args: list[str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        cwd=REPO_ROOT,
+        cwd=cwd or REPO_ROOT,
         text=True,
         capture_output=True,
         check=False,
@@ -135,7 +140,9 @@ def append_ledger_events(ledger_path: Path, events: list[dict[str, object]]) -> 
             handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def build_failure_event(*, workspace_id: str, run_id: str, occurred_at: str, message: str) -> dict[str, object]:
+def build_failure_event(
+    *, workspace_id: str, run_id: str, occurred_at: str, message: str
+) -> dict[str, object]:
     return runtime_ledger.build_event(
         workspace_id=workspace_id,
         run_id=run_id,
@@ -194,7 +201,7 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
                         "attempt_count": 1,
                         "last_failure_at": "2026-06-01T00:00:00Z",
                         "next_retry_at": "2026-06-01T00:10:00Z",
-                        "last_failure_reason": "stale prior failure"
+                        "last_failure_reason": "stale prior failure",
                     },
                 },
             ),
@@ -321,7 +328,9 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
 
     report, exit_code = validator.validate_scheduler_failure_state_reconciliation(output_json)
     assert exit_code == validator.EXIT_PASS, report
-    registry_report, registry_exit = topic_validator.validate_topic_workspace_registry(output_registry)
+    registry_report, registry_exit = topic_validator.validate_topic_workspace_registry(
+        output_registry
+    )
     assert registry_exit == topic_validator.EXIT_PASS, registry_report
 
     selector_proc = run_selector(
@@ -336,16 +345,22 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
     )
     assert selector_proc.returncode == 0, selector_proc.stdout + selector_proc.stderr
     selector_payload = json.loads(selector_proc.stdout)
-    assert [entry["workspace_id"] for entry in selector_payload["selected_workspaces"]] == ["recovered_workspace"]
+    assert [entry["workspace_id"] for entry in selector_payload["selected_workspaces"]] == [
+        "recovered_workspace"
+    ]
     skipped = {entry["workspace_id"]: entry for entry in selector_payload["skipped_workspaces"]}
-    assert skipped["retryable_workspace"]["reasons"] == ["retry backoff active until 2026-06-01T02:15:00Z"]
+    assert skipped["retryable_workspace"]["reasons"] == [
+        "retry backoff active until 2026-06-01T02:15:00Z"
+    ]
     assert skipped["blocked_workspace"]["reasons"] == [
         "failure_state is blocked: attempt_count 3 reached run_budget.max_attempts 3; retryable failure count 3 exceeded retry_policy.max_retryable_failures 2",
         "attempt_count 3 reached run_budget.max_attempts 3",
     ]
 
 
-def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failures(tmp_path: Path) -> None:
+def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failures(
+    tmp_path: Path,
+) -> None:
     ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
     append_ledger_events(
         ledger_path,
@@ -365,7 +380,7 @@ def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failu
     )
     ledger_path.write_text(
         ledger_path.read_text(encoding="utf-8")
-        + "{\"schema_version\": \"runtime-ledger.v1\", \"event_id\": \"broken\",\n"
+        + '{"schema_version": "runtime-ledger.v1", "event_id": "broken",\n'
         + json.dumps(
             build_success_event(
                 workspace_id="workspace-a",
@@ -396,8 +411,9 @@ def test_runtime_ledger_load_events_tolerates_truncated_terminal_json_without_ne
     )
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger_path.write_text(
-        json.dumps(first_event, ensure_ascii=False, sort_keys=True) + "\n"
-        + "{\"bad\": \"json_fragment",
+        json.dumps(first_event, ensure_ascii=False, sort_keys=True)
+        + "\n"
+        + '{"bad": "json_fragment',
         encoding="utf-8",
     )
 
@@ -468,7 +484,7 @@ def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path
                         "attempt_count": 2,
                         "last_failure_at": "2026-06-01T00:00:00Z",
                         "last_failure_reason": "manual block carry-forward",
-                        "blocked_reason": "operator review required"
+                        "blocked_reason": "operator review required",
                     },
                 },
             )
@@ -509,3 +525,57 @@ def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path
     assert entry["recommendation"] == "keep"
     assert entry["reasons"] == ["no terminal runtime-ledger outcomes found"]
     assert entry["derived_failure_state"] == entry["registry_failure_state"]
+
+
+def test_reconciliation_resolves_ledger_root_relative_to_cwd(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="relative.subject")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="relative_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+            )
+        ],
+    )
+
+    cwd = tmp_path / "runner-cwd"
+    ledger_root = cwd / "runtime" / "ledgers"
+    append_ledger_events(
+        ledger_root / "relative_workspace.runtime-ledger.jsonl",
+        [
+            build_failure_event(
+                workspace_id="relative_workspace",
+                run_id="relative-run-1",
+                occurred_at="2026-06-01T03:05:00Z",
+                message="fixture timeout",
+            )
+        ],
+    )
+
+    output_json = tmp_path / "relative-reconciliation.json"
+    proc = run_reconciliation(
+        [
+            "--registry",
+            str(registry_path),
+            "--ledger-root",
+            "runtime/ledgers",
+            "--generated-at",
+            "2026-06-01T03:10:00Z",
+            "--output-json",
+            str(output_json),
+            "--format",
+            "json",
+        ],
+        cwd=cwd,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["workspace_count"] == 1
+    entry = payload["entries"][0]
+    assert entry["workspace_id"] == "relative_workspace"
+    assert entry["latest_failure_at"] == "2026-06-01T03:05:00Z"
