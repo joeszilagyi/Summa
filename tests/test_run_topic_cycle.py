@@ -1187,7 +1187,9 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert commands
     assert "--canonical-store-check-json" in commands[0]
     check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
-    assert commands[0][check_result_arg_index] == str(run_dir / "canonical-store" / "check-result.json")
+    assert commands[0][check_result_arg_index] == str(
+        run_dir / "canonical-store" / "check-result.json"
+    )
 
 
 def test_graph_closure_stage_hashes_report_once_without_rehashing(
@@ -1669,9 +1671,7 @@ def test_topic_cycle_manifest_write_is_atomic_and_hashes_written_file(
         atomic_calls.append(
             (
                 path,
-                json.loads(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-                ),
+                json.loads(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)),
             )
         )
         path.write_text(
@@ -1767,17 +1767,17 @@ def test_topic_cycle_missing_db_spool_hashes_manifest_once(
     db_path = tmp_path / "missing.sqlite"
     manifest_path.write_text(
         json.dumps(
-                {
-                    "schema_version": "topic-cycle-run.v1",
-                    "run_id": "cycle-spool",
-                    "status": "completed",
-                    "mode": "local",
-                    "cycle_event_id": "cycle:spool",
-                    "workspace": {"workspace_id": "workspace:spool"},
-                    "canonical_db": {"path": str(db_path), "mutated": False},
-                    "stages": [],
-                    "cycle_evidence_ledger": {"status": "recorded"},
-                    "run_dir": str(tmp_path),
+            {
+                "schema_version": "topic-cycle-run.v1",
+                "run_id": "cycle-spool",
+                "status": "completed",
+                "mode": "local",
+                "cycle_event_id": "cycle:spool",
+                "workspace": {"workspace_id": "workspace:spool"},
+                "canonical_db": {"path": str(db_path), "mutated": False},
+                "stages": [],
+                "cycle_evidence_ledger": {"status": "recorded"},
+                "run_dir": str(tmp_path),
             },
             ensure_ascii=False,
             indent=2,

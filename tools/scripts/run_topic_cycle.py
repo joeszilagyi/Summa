@@ -201,9 +201,7 @@ def canonical_store_check_result_path(manifest: dict[str, Any]) -> Path | None:
     return resolve_path(path_value)
 
 
-def add_canonical_store_check_result_arg(
-    command: list[str], manifest: dict[str, Any]
-) -> None:
+def add_canonical_store_check_result_arg(command: list[str], manifest: dict[str, Any]) -> None:
     # The check result captures store shape only, so later stages can reuse it safely.
     check_result_path = canonical_store_check_result_path(manifest)
     if check_result_path is not None:

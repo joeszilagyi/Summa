@@ -966,9 +966,7 @@ def resolve_prior_state_context(
                 check_result_path = Path(canonical_store_check_json).expanduser()
                 if not check_result_path.is_absolute():
                     check_result_path = (Path.cwd() / check_result_path).resolve()
-                check_result = canonical_store.load_check_result(
-                    check_result_path
-                )
+                check_result = canonical_store.load_check_result(check_result_path)
                 if check_result.db_path != db_path:
                     raise canonical_store.CanonicalStoreError(
                         "prevalidated canonical-store check result does not match the requested db"

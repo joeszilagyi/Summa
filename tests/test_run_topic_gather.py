@@ -422,7 +422,9 @@ def test_run_topic_gather_default_run_id_reuses_prompt_hash(
     batch_path = run_dir / "gather-candidate-batch.json"
     prompt_path = run_dir / "rendered-prompt.txt"
     first_payload = json.loads(batch_path.read_text(encoding="utf-8"))
-    prompt_hash = hashlib.sha256(prompt_path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+    prompt_hash = hashlib.sha256(
+        prompt_path.read_text(encoding="utf-8").encode("utf-8")
+    ).hexdigest()
     assert first_payload["run_id"].endswith(prompt_hash[:16])
     assert "20260603" not in first_payload["run_id"]
 
@@ -761,7 +763,9 @@ def test_run_topic_gather_json_summary_includes_hashes(tmp_path: Path) -> None:
     prompt_hash = hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest()
     batch_payload = json.loads(candidate_batch_path.read_text(encoding="utf-8"))
 
-    assert candidate_batch_path.read_text(encoding="utf-8") == compact_json_text(batch_payload) + "\n"
+    assert (
+        candidate_batch_path.read_text(encoding="utf-8") == compact_json_text(batch_payload) + "\n"
+    )
     assert payload["candidate_batch_sha256"] == candidate_hash
     assert payload["rendered_prompt_sha256"] == prompt_hash
     assert "rendered_prompt" not in payload
@@ -1048,10 +1052,12 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     )
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["url_count"] == 0
-    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"][
-        "duplicate_block_count"
-    ] == 0
-    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["likely_boilerplate"] is True
+    assert (
+        payload["source_text_wrapping"]["blocks"][0]["source_profile"]["duplicate_block_count"] == 0
+    )
+    assert (
+        payload["source_text_wrapping"]["blocks"][0]["source_profile"]["likely_boilerplate"] is True
+    )
     assert "likely_boilerplate" in payload["source_text_wrapping"]["blocks"][0]["hazard_flags"]
     assert (
         payload["source_text_wrapping"]["blocks"][1]["start_offset"]
@@ -1156,34 +1162,44 @@ def test_all_general_active_gather_bundles_are_selectable(tmp_path: Path) -> Non
         assert proc.returncode == 0, facet + proc.stdout + proc.stderr
         payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
         assert payload["subject"]["manifest_path"] == str(manifest_path)
-        assert payload["subject"]["manifest_hash"] == hashlib.sha256(
-            manifest_path.read_bytes()
-        ).hexdigest()
+        assert (
+            payload["subject"]["manifest_hash"]
+            == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        )
         assert "display_name" not in payload["subject"]
         assert "scope_statement" not in payload["subject"]
         assert payload["domain_pack"]["path"] == str(
             REPO_ROOT / "config" / "domain_packs" / "general.v1.json"
         )
-        assert payload["domain_pack"]["sha256"] == hashlib.sha256(
-            (REPO_ROOT / "config" / "domain_packs" / "general.v1.json").read_bytes()
-        ).hexdigest()
+        assert (
+            payload["domain_pack"]["sha256"]
+            == hashlib.sha256(
+                (REPO_ROOT / "config" / "domain_packs" / "general.v1.json").read_bytes()
+            ).hexdigest()
+        )
         assert "display_name" not in payload["domain_pack"]
         assert "status" not in payload["domain_pack"]
         assert (
             payload["prompt_bundle"]["bundle_id"]
             == pack["prompt_bundles"][f"gather.{facet}"]["bundle_id"]
         )
-        assert payload["prompt_bundle"]["selected_template_hash"] == hashlib.sha256(
-            (REPO_ROOT / payload["prompt_bundle"]["selected_template_file"]).read_bytes()
-        ).hexdigest()
+        assert (
+            payload["prompt_bundle"]["selected_template_hash"]
+            == hashlib.sha256(
+                (REPO_ROOT / payload["prompt_bundle"]["selected_template_file"]).read_bytes()
+            ).hexdigest()
+        )
         assert "template_ids" not in payload["prompt_bundle"]
         assert "template_files" not in payload["prompt_bundle"]
         assert payload["source_text_wrapping"]["wrapper_template_path"] == str(
             REPO_ROOT / "config" / "llm_source_text_wrapper_template.json"
         )
-        assert payload["source_text_wrapping"]["wrapper_template_hash"] == hashlib.sha256(
-            (REPO_ROOT / "config" / "llm_source_text_wrapper_template.json").read_bytes()
-        ).hexdigest()
+        assert (
+            payload["source_text_wrapping"]["wrapper_template_hash"]
+            == hashlib.sha256(
+                (REPO_ROOT / "config" / "llm_source_text_wrapper_template.json").read_bytes()
+            ).hexdigest()
+        )
 
 
 def test_missing_prompt_file_fails_clearly(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -1791,9 +1807,10 @@ def test_run_topic_gather_live_mode_reuses_cached_output_without_reinvoking_engi
     assert second_payload["provenance"]["engine_invoked"] is False
     assert second_payload["provenance"]["engine_cache_hit"] is True
     assert second_payload["raw_engine_output"] == fake_output
-    assert second_payload["raw_engine_output_hash"] == hashlib.sha256(
-        fake_output.encode("utf-8")
-    ).hexdigest()
+    assert (
+        second_payload["raw_engine_output_hash"]
+        == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
+    )
 
 
 def test_run_topic_gather_live_mode_blocks_hostile_source_text_by_default(
