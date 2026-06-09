@@ -20,10 +20,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
-try:
-    import provenance_events
-except ImportError:  # pragma: no cover - package import fallback
-    from tools.source_db_tools import provenance_events  # type: ignore
+from tools.source_db_tools import provenance_events  # noqa: E402
 
 REVIEW_NAMESPACE = uuid.UUID("2d2d4f0a-6b0c-443a-9e69-47fd4a830243")
 SCRIPT_PATH = "tools/source_db_tools/review_queue.py"

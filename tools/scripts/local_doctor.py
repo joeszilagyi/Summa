@@ -53,9 +53,11 @@ VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import validate_crown_jewel_store_policy  # noqa: E402
-import validate_migration_ledger  # noqa: E402
-import validate_topic_workspace_registry  # noqa: E402
+from tools.validators import (  # noqa: E402
+    validate_crown_jewel_store_policy,
+    validate_migration_ledger,
+    validate_topic_workspace_registry,
+)
 
 
 def redact(value: Any) -> Any:

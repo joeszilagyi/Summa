@@ -24,10 +24,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-try:
-    import identifier_normalization
-except ImportError:  # pragma: no cover - package import fallback
-    from tools.source_db_tools import identifier_normalization  # type: ignore
+from tools.source_db_tools import identifier_normalization  # noqa: E402
 
 AUTHORITY_NAMESPACE = uuid.UUID("8b3022f5-6267-4545-8f41-3d337657d4f5")
 

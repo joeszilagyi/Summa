@@ -25,9 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import validate_subject_manifest  # noqa: E402
-import validate_topic_workspace_registry  # noqa: E402
-
 from tools.common.topic_workspace_registry import (  # noqa: E402
     discover_registry_path,
     is_path_within,
@@ -36,6 +33,10 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     reference_path_for_registry,
     resolve_existing_path,
     write_registry_json,
+)
+from tools.validators import (  # noqa: E402
+    validate_subject_manifest,
+    validate_topic_workspace_registry,
 )
 
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
