@@ -188,8 +188,14 @@ def build_reconciliation_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not registry_path.is_file():
         raise ReconciliationError(f"topic workspace registry is not a file: {registry_path}")
     validate_registry_or_raise(registry_path)
-    generated_at = args.generated_at or utc_now()
-    parse_timestamp(generated_at, label="generated_at")
+    generated_at_input = args.generated_at or utc_now()
+    generated_at = (
+        parse_timestamp(generated_at_input, label="generated_at")
+        .astimezone(UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     ledger_root = resolve_path(args.ledger_root)
 
     try:
