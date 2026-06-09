@@ -246,7 +246,7 @@ def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> Non
     assert "-s" in args
     assert "workspace-write" in args
     assert "model=gpt-5.4-mini" in args
-    assert "model_reasoning_effort=high" in args
+    assert "model_reasoning_effort=medium" in args
     assert "model_max_output_tokens=8192" in args
     assert "model_verbosity=low" in args
     assert args[-1] == "-"
@@ -269,7 +269,7 @@ def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> No
     assert "--model" in args
     assert args[args.index("--model") + 1] == "sonnet"
     assert "--effort" in args
-    assert args[args.index("--effort") + 1] == "high"
+    assert args[args.index("--effort") + 1] == "medium"
     assert "--max-budget-usd" in args
     assert args[args.index("--max-budget-usd") + 1] == "0.50"
     assert "--output-format" in args
