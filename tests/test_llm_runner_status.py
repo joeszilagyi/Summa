@@ -488,3 +488,54 @@ def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) 
     assert "PLACE: place" in stamped
     assert "FACET: facet" in stamped
     assert "PHASE: phase" in stamped
+
+
+def test_llm_runner_stamp_output_does_not_spawn_python(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf 'python3 should not be invoked by stamp_output\\n' >&2
+            exit 99
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    output_file = tmp_path / "stamped.txt"
+    output_file.write_text("body line\n", encoding="utf-8")
+
+    script = textwrap.dedent(
+        f"""\
+        set -euo pipefail
+        runtime_log_event() {{
+          :
+        }}
+        export PATH="{fake_bin}:$PATH"
+        source "{RUNNER_PATH}"
+        llm_runner_stamp_output "{output_file}" "place" "facet" "phase"
+        """
+    )
+    proc = subprocess.run(
+        ["bash", "-lc", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "LLM_ENGINE": "codex",
+            "CODEX_MODEL": "test-model",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    stamped = output_file.read_text(encoding="utf-8")
+    assert stamped.count("RUN_META_VERSION: run-body-footer.v1") == 1
+    assert "GENERATED_BY: codex" in stamped
+    assert "python3 should not be invoked" not in proc.stderr
