@@ -990,6 +990,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     prompt_path = tmp_path / "rendered-prompt.txt"
     batch_path.write_text("{}", encoding="utf-8")
     prompt_path.write_text("prompt", encoding="utf-8")
+    expected_batch_payload = json.loads(batch_path.read_text(encoding="utf-8"))
 
     fake_payload = {
         "candidate_batch_path": str(batch_path),
@@ -1019,26 +1020,18 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
             return "receipt-hash"
         raise AssertionError(f"unexpected hash_file call: {path}")
 
-    def fake_load_validated_candidate_batch(
-        path: Path,
-    ) -> tuple[dict[str, object], dict[str, object], int]:
-        if path == batch_path:
-            return {}, {"valid": True}, module.EXIT_GATHER_PASS
-        raise AssertionError(f"unexpected candidate batch reload: {path}")
+    read_calls: list[Path] = []
 
     original_read_json = module.read_json
 
     def fake_read_json(path: Path, *, label: str) -> dict[str, object]:
+        read_calls.append(path)
         if path == batch_path:
-            raise AssertionError("candidate batch should be reused after validation")
+            assert label == "candidate batch"
+            return expected_batch_payload
         return original_read_json(path, label=label)
 
     monkeypatch.setattr(module, "run_command", fake_run_command)
-    monkeypatch.setattr(
-        module.gather_candidate_batch_validator,
-        "load_validated_gather_candidate_batch",
-        fake_load_validated_candidate_batch,
-    )
     monkeypatch.setattr(module, "hash_file", fake_hash_file)
     monkeypatch.setattr(module, "read_json", fake_read_json)
 
@@ -1066,7 +1059,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     }
     runtime = {"subject_manifest_path": str(prompt_path)}
 
-    batch_path_result, batch_payload, batch_hash, validation_receipt = module.gather_stage(
+    batch_path_result, batch_payload_result, batch_hash, validation_receipt = module.gather_stage(
         args=args,
         manifest=manifest,
         workspace=tmp_path,
@@ -1077,14 +1070,15 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     )
 
     assert batch_path_result == batch_path
-    assert batch_payload == {}
+    assert batch_payload_result == expected_batch_payload
     assert batch_hash == "candidate-hash"
     assert validation_receipt["artifact_path"] == str(batch_path)
     assert validation_receipt["artifact_hash"] == "candidate-hash"
     assert validation_receipt["validator_name"] == "gather_candidate_batch"
     assert validation_receipt["validator_version"] == "1"
-    assert validation_receipt["result"] == {"valid": True}
+    assert validation_receipt["result"] == {"status": "pass", "source": "child"}
     stages = stages_by_name(manifest)
+    assert stages["run_gather"]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["candidate_batch_sha256"] == "candidate-hash"  # type: ignore[index]
     assert stages["run_gather"]["artifacts"]["rendered_prompt_sha256"] == "prompt-hash"  # type: ignore[index]
     receipt_path = Path(stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt"])  # type: ignore[index]
@@ -1093,6 +1087,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"]
         == "receipt-hash"
     )  # type: ignore[index]
+    assert read_calls == [batch_path]
     assert commands
     assert "--canonical-store-check-json" in commands[0]
     check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
