@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common import topic_saturation  # noqa: E402
 from tools.source_db_tools import canonical_store  # noqa: E402
 
@@ -126,12 +127,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.output_json:
         output_path = resolve_path(args.output_json)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        atomic_write_json(output_path, payload)
     if args.format == "text":
         sys.stdout.write(render_text(payload))
     else:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n"
+        )
     return 0
 
 

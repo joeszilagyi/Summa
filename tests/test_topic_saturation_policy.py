@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -14,6 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EVALUATOR = REPO_ROOT / "tools" / "scripts" / "evaluate_topic_saturation.py"
 SELECTOR = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
 FIXED_TIMESTAMP = "2026-06-04T12:00:00Z"
+
+
+def load_evaluator_module():
+    spec = importlib.util.spec_from_file_location("evaluate_topic_saturation", EVALUATOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def bootstrap_db(tmp_path: Path) -> Path:
@@ -553,6 +563,91 @@ def test_evaluator_cli_outputs_saturation_json(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert payload["schema_version"] == "topic-saturation.v1"
     assert payload["state"] == "active_bootstrap"
+
+
+def test_evaluator_main_uses_atomic_output_and_strict_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_evaluator_module()
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    root = tmp_path / "workspaces" / "cli_subject"
+    write_manifest(root, subject_id="cli_subject")
+    output_json = tmp_path / "output" / "saturation.json"
+    atomic_calls: list[tuple[Path, dict[str, object]]] = []
+
+    def fake_atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+        atomic_calls.append((path, payload))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module, "atomic_write_json", fake_atomic_write_json)
+    monkeypatch.setattr(module.sys, "stdout", io.StringIO())
+
+    exit_code = module.main(
+        [
+            "--workspace",
+            str(root),
+            "--db",
+            str(db_path),
+            "--policy",
+            str(policy),
+            "--evaluated-at",
+            FIXED_TIMESTAMP,
+            "--output-json",
+            str(output_json),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(atomic_calls) == 1
+    assert atomic_calls[0][0] == output_json
+    stdout_payload = json.loads(module.sys.stdout.getvalue())
+    assert stdout_payload == atomic_calls[0][1]
+    assert output_json.is_file()
+
+
+def test_evaluate_saturation_uses_workspace_id_for_backlog_count(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    policy = write_policy(tmp_path, lookback_cycles=1)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = add_cycle(
+                conn,
+                subject_id="subject.alpha",
+                run_id="run-1",
+                cycle_depth=1,
+                event_index=1,
+            )
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=provenance,
+                source_claim_key_v1="claim:workspace-mismatch",
+                about_object_ref="subject:workspace-alpha",
+                claim_text="Workspace-scoped backlog claim.",
+                claim_type="fixture_claim",
+                review_state="needs_review",
+                workspace_id="workspace.alpha",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        result = topic_saturation.evaluate_saturation(
+            conn,
+            workspace_id="workspace.alpha",
+            subject_id="subject.alpha",
+            policy=topic_saturation.load_policy(policy),
+            evaluated_at=FIXED_TIMESTAMP,
+        )
+    finally:
+        conn.close()
+
+    assert result["workspace_id"] == "workspace.alpha"
+    assert result["recent_yield_summary"]["review_backlog_count"] == 1  # type: ignore[index]
 
 
 def test_evaluator_is_read_only(tmp_path: Path) -> None:

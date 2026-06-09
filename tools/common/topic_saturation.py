@@ -488,7 +488,7 @@ def _evaluate_saturation_result(
         low_streak = consecutive_low_yield(cycles)
         backlog = scoped_backlog_count(
             conn,
-            subject_id=subject_id,
+            subject_id=workspace_id,
             states=list(policy.raw["backlog_review_states"]),
         )
         summary["review_backlog_count"] = backlog
@@ -506,7 +506,7 @@ def _evaluate_saturation_result(
     if not cycles:
         summary["review_backlog_count"] = scoped_backlog_count(
             conn,
-            subject_id=subject_id,
+            subject_id=workspace_id,
             states=list(policy.raw["backlog_review_states"]),
         )
     return {
