@@ -1719,7 +1719,7 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     batch_path = batch_path_for(workspace_root, run_id)
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "live"
-    assert payload["raw_engine_output"] == fake_output
+    assert payload["raw_engine_output"] is None
     assert (
         payload["raw_engine_output_hash"] == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
     )
@@ -1728,6 +1728,7 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
         Path(payload["engine_output_ref"]).resolve()
         == Path(payload["provenance"]["stamped_output_path"]).resolve()
     )
+    assert Path(payload["engine_output_ref"]).read_text(encoding="utf-8").startswith(fake_output)
     assert (
         payload["provenance"]["stamped_output_hash"]
         == hashlib.sha256(
@@ -1816,7 +1817,7 @@ def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     assert usage["usage"]["output_tokens"] == 4
     assert usage["usage"]["reasoning_output_tokens"] == 2
     assert usage["usage"]["total_tokens"] == 15
-    assert payload["raw_engine_output"] == fake_output
+    assert payload["raw_engine_output"] is None
     assert (
         Path(payload["engine_output_ref"]).resolve()
         == Path(payload["provenance"]["stamped_output_path"]).resolve()
@@ -1947,7 +1948,7 @@ def test_run_topic_gather_live_mode_reuses_cached_output_without_reinvoking_engi
     assert second_payload["engine"]["cache_hit"] is True
     assert second_payload["provenance"]["engine_invoked"] is False
     assert second_payload["provenance"]["engine_cache_hit"] is True
-    assert second_payload["raw_engine_output"] == fake_output
+    assert second_payload["raw_engine_output"] is None
     assert (
         second_payload["raw_engine_output_hash"]
         == hashlib.sha256(fake_output.encode("utf-8")).hexdigest()
@@ -2037,7 +2038,7 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
     }
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["encoding"] == "utf-8"
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
-    assert payload["raw_engine_output"] == fake_output
+    assert payload["raw_engine_output"] is None
     candidate_record = json.loads(payload["candidates"][0]["text"])
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
     assert candidate_record == {

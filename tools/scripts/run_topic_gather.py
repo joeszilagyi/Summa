@@ -1373,8 +1373,6 @@ def load_cached_live_result(
         )
     ):
         return None
-    if not isinstance(raw_engine_output, str) or not raw_engine_output:
-        return None
     if not isinstance(stamp_footer, dict):
         return None
     stamp_footer = cast(dict[str, Any], stamp_footer)
@@ -1403,10 +1401,9 @@ def load_cached_live_result(
     cached_stamp_footer_hash = sha256_text(
         json.dumps(cached_stamp_footer, ensure_ascii=False, sort_keys=True)
     )
-    if (
-        cached_raw_engine_output != raw_engine_output
-        or cached_raw_engine_output_hash != raw_engine_output_hash
-    ):
+    if raw_engine_output not in (None, "") and cached_raw_engine_output != raw_engine_output:
+        return None
+    if cached_raw_engine_output_hash != raw_engine_output_hash:
         return None
     if cached_stamped_output_hash != stamped_output_hash:
         return None
@@ -1584,7 +1581,7 @@ def build_candidate_batch(
             else None,
         },
         "candidates": candidates,
-        "raw_engine_output": live_result["raw_engine_output"] if live_result is not None else None,
+        "raw_engine_output": None,
         "raw_engine_output_hash": live_result["raw_engine_output_hash"]
         if live_result is not None
         else None,

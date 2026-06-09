@@ -657,9 +657,14 @@ def validate_invariants(
                         path="$.provenance",
                     )
             else:
-                cache_hit = engine.get("cache_hit") is True or provenance.get("engine_cache_hit") is True
+                cache_hit = (
+                    engine.get("cache_hit") is True or provenance.get("engine_cache_hit") is True
+                )
                 if cache_hit:
-                    if engine.get("invoked") is not False or provenance.get("engine_invoked") is not False:
+                    if (
+                        engine.get("invoked") is not False
+                        or provenance.get("engine_invoked") is not False
+                    ):
                         add_error(
                             errors,
                             code="LIVE_ENGINE_CACHE_HIT_INVOCATION_MISMATCH",
@@ -687,11 +692,11 @@ def validate_invariants(
                         message="mode=live must include engine_present=true",
                         path="$.engine",
                     )
-                if not isinstance(raw_engine_output, str) or not raw_engine_output:
+                if raw_engine_output not in (None, ""):
                     add_error(
                         errors,
-                        code="LIVE_RAW_OUTPUT_REQUIRED",
-                        message="mode=live must include raw_engine_output",
+                        code="LIVE_RAW_OUTPUT_FORBIDDEN",
+                        message="mode=live must not include raw_engine_output; use engine_output_ref instead",
                         path="$.raw_engine_output",
                     )
                 if (
@@ -840,7 +845,10 @@ def validate_invariants(
                             message="prompt.budget.prompt_total_byte_count must equal the sum of prompt section byte counts",
                             path="$.prompt.budget.prompt_total_byte_count",
                         )
-                    if prompt_text is not None and len(prompt_text.encode("utf-8")) != prompt_total_byte_count:
+                    if (
+                        prompt_text is not None
+                        and len(prompt_text.encode("utf-8")) != prompt_total_byte_count
+                    ):
                         add_error(
                             errors,
                             code="PROMPT_BUDGET_PROMPT_MISMATCH",
@@ -1369,9 +1377,9 @@ def validate_invariants(
                                 message="domain_pack.sha256 does not match domain_pack.path content",
                                 path="$.domain_pack.sha256",
                             )
-                    if isinstance(facet, dict) and domain_pack_payload.get("selected_facet") != facet.get(
-                        "name"
-                    ):
+                    if isinstance(facet, dict) and domain_pack_payload.get(
+                        "selected_facet"
+                    ) != facet.get("name"):
                         add_error(
                             errors,
                             code="DOMAIN_PACK_SELECTED_FACET_MISMATCH",
@@ -1416,14 +1424,18 @@ def validate_invariants(
                         path="$.prompt_bundle.selected_template_file",
                     )
                 if isinstance(domain_pack_payload, dict):
-                    if domain_pack_payload.get("prompt_bundle_id") != prompt_bundle.get("bundle_id"):
+                    if domain_pack_payload.get("prompt_bundle_id") != prompt_bundle.get(
+                        "bundle_id"
+                    ):
                         add_error(
                             errors,
                             code="DOMAIN_PACK_PROMPT_BUNDLE_ID_MISMATCH",
                             message="domain_pack.prompt_bundle_id must match prompt_bundle.bundle_id",
                             path="$.domain_pack.prompt_bundle_id",
                         )
-                    if domain_pack_payload.get("prompt_bundle_key") != prompt_bundle.get("bundle_key"):
+                    if domain_pack_payload.get("prompt_bundle_key") != prompt_bundle.get(
+                        "bundle_key"
+                    ):
                         add_error(
                             errors,
                             code="DOMAIN_PACK_PROMPT_BUNDLE_KEY_MISMATCH",
