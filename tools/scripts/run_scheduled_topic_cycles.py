@@ -51,6 +51,9 @@ EXIT_INTEGRITY_FAILURE = 6
 EXIT_PARTIAL_OUTPUT = 7
 EXIT_INTERNAL_CRASH = 8
 MAX_FAILURE_REASON_LENGTH = 2048
+KNOWN_CHILD_STATUSES = {"completed", "degraded", "dry_run", "failed", "partial"}
+SUCCESS_CHILD_STATUSES = {"completed", "degraded", "dry_run"}
+FAILURE_CHILD_STATUSES = {"failed", "partial"}
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -284,6 +287,15 @@ def parse_child_manifest_output(raw_manifest: str | None) -> dict[str, Any] | No
     return payload
 
 
+def normalize_child_manifest_status(raw_status: Any) -> str | None:
+    if not isinstance(raw_status, str):
+        return None
+    status = raw_status.strip().casefold()
+    if status in KNOWN_CHILD_STATUSES:
+        return status
+    return None
+
+
 def resolve_child_manifest(
     *,
     child_manifest_path: Path,
@@ -492,6 +504,8 @@ def run_scheduled_cycles(
         "selected_workspace_count": sum(1 for record in records if planned_record_selected(record)),
         "attempted_workspace_count": 0,
         "completed_workspace_count": 0,
+        "degraded_workspace_count": 0,
+        "dry_run_workspace_count": 0,
         "failed_workspace_count": 0,
         "deferred_workspace_count": 0,
         "budget_summary": {
@@ -538,11 +552,13 @@ def run_scheduled_cycles(
         result: dict[str, Any],
         workspace_lock_root: Path,
         workspace_mutex: threading.Lock,
-    ) -> tuple[dict[str, Any], int, int, int, int, int]:
+    ) -> tuple[dict[str, Any], int, int, int, int, int, int, int]:
         proc: CycleProcessResult | None = None
         result["runtime_consumed_seconds"] = 0.0
         attempted_delta = 0
         completed_delta = 0
+        degraded_delta = 0
+        dry_run_delta = 0
         failed_delta = 0
         deferred_delta = 0
         code_delta = EXIT_SUCCESS
@@ -644,6 +660,8 @@ def run_scheduled_cycles(
                             completed_delta,
                             failed_delta,
                             deferred_delta,
+                            degraded_delta,
+                            dry_run_delta,
                         )
                     elapsed = round(monotonic() - start, 6)
             except WorkspaceLockError as exc:
@@ -665,6 +683,8 @@ def run_scheduled_cycles(
                     completed_delta,
                     failed_delta,
                     deferred_delta,
+                    degraded_delta,
+                    dry_run_delta,
                 )
             except Exception as exc:
                 result["outcome"] = "failed"
@@ -685,6 +705,8 @@ def run_scheduled_cycles(
                     completed_delta,
                     failed_delta,
                     deferred_delta,
+                    degraded_delta,
+                    dry_run_delta,
                 )
         result["runtime_consumed_seconds"] = elapsed
         result["cycle_run_id"] = child_run_id
@@ -699,8 +721,7 @@ def run_scheduled_cycles(
         )
         if isinstance(child_manifest, dict):
             raw_child_status = child_manifest.get("status")
-            if isinstance(raw_child_status, str):
-                child_status = raw_child_status
+            child_status = normalize_child_manifest_status(raw_child_status)
             cycle_event_id = child_manifest.get("cycle_event_id")
             if isinstance(cycle_event_id, str) and cycle_event_id:
                 result["cycle_event_id"] = cycle_event_id
@@ -731,48 +752,127 @@ def run_scheduled_cycles(
                 artifact_refs=artifact_refs,
                 failure={"message": result["failure_reason"]},
             )
-        elif proc is not None and proc.returncode == 0:
-            result["outcome"] = "completed"
-            completed_delta += 1
-            code_delta = EXIT_SUCCESS
-            append_ledger_event(
-                ledger_path=ledger_path,
-                workspace_id=workspace_id,
-                run_id=child_run_id,
-                event_type="command_end",
-                occurred_at=child_ended_at,
-                status="success",
-                artifact_refs=artifact_refs,
-            )
         else:
-            result["outcome"] = "failed"
-            is_partial = child_status == "partial"
-            assert proc is not None
-            _set_failure(
-                result=result,
-                reason_code="topic_cycle_partial_output" if is_partial else "topic_cycle_failed",
-                reason=_bounded_failure_message(
-                    command_output_excerpt(proc) or "topic cycle failed"
-                ),
-                stage="child_cycle_exec",
-                recoverability="retryable" if is_partial else "non_retryable",
-            )
-            failed_delta += 1
-            code_delta = EXIT_PARTIAL_OUTPUT if is_partial else EXIT_INTEGRITY_FAILURE
-            _update_global_exit_code(code_delta)
-            append_ledger_event(
-                ledger_path=ledger_path,
-                workspace_id=workspace_id,
-                run_id=child_run_id,
-                event_type="command_failure",
-                occurred_at=child_ended_at,
-                artifact_refs=artifact_refs,
-                failure={"message": result["failure_reason"]},
-            )
+            if child_status in SUCCESS_CHILD_STATUSES:
+                if proc is not None and proc.returncode == 0:
+                    result["outcome"] = child_status
+                    if child_status == "completed":
+                        completed_delta += 1
+                    elif child_status == "degraded":
+                        degraded_delta += 1
+                    else:
+                        dry_run_delta += 1
+                    code_delta = EXIT_SUCCESS
+                    append_ledger_event(
+                        ledger_path=ledger_path,
+                        workspace_id=workspace_id,
+                        run_id=child_run_id,
+                        event_type="command_end",
+                        occurred_at=child_ended_at,
+                        status="success",
+                        artifact_refs=artifact_refs,
+                    )
+                else:
+                    result["outcome"] = "failed"
+                    assert proc is not None
+                    _set_failure(
+                        result=result,
+                        reason_code="topic_cycle_failed",
+                        reason=_bounded_failure_message(
+                            command_output_excerpt(proc) or "topic cycle failed"
+                        ),
+                        stage="child_cycle_exec",
+                        recoverability="non_retryable",
+                    )
+                    failed_delta += 1
+                    code_delta = EXIT_INTEGRITY_FAILURE
+                    _update_global_exit_code(code_delta)
+                    append_ledger_event(
+                        ledger_path=ledger_path,
+                        workspace_id=workspace_id,
+                        run_id=child_run_id,
+                        event_type="command_failure",
+                        occurred_at=child_ended_at,
+                        artifact_refs=artifact_refs,
+                        failure={"message": result["failure_reason"]},
+                    )
+            elif child_status in FAILURE_CHILD_STATUSES:
+                result["outcome"] = child_status
+                is_partial = child_status == "partial"
+                assert proc is not None
+                _set_failure(
+                    result=result,
+                    reason_code="topic_cycle_partial_output"
+                    if is_partial
+                    else "topic_cycle_failed",
+                    reason=_bounded_failure_message(
+                        command_output_excerpt(proc) or "topic cycle failed"
+                    ),
+                    stage="child_cycle_exec",
+                    recoverability="retryable" if is_partial else "non_retryable",
+                )
+                failed_delta += 1
+                code_delta = EXIT_PARTIAL_OUTPUT if is_partial else EXIT_INTEGRITY_FAILURE
+                _update_global_exit_code(code_delta)
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=child_run_id,
+                    event_type="command_failure",
+                    occurred_at=child_ended_at,
+                    artifact_refs=artifact_refs,
+                    failure={"message": result["failure_reason"]},
+                )
+            elif proc is not None and proc.returncode == 0:
+                result["outcome"] = "completed"
+                completed_delta += 1
+                code_delta = EXIT_SUCCESS
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=child_run_id,
+                    event_type="command_end",
+                    occurred_at=child_ended_at,
+                    status="success",
+                    artifact_refs=artifact_refs,
+                )
+            else:
+                result["outcome"] = "failed"
+                assert proc is not None
+                _set_failure(
+                    result=result,
+                    reason_code="topic_cycle_failed",
+                    reason=_bounded_failure_message(
+                        command_output_excerpt(proc) or "topic cycle failed"
+                    ),
+                    stage="child_cycle_exec",
+                    recoverability="non_retryable",
+                )
+                failed_delta += 1
+                code_delta = EXIT_INTEGRITY_FAILURE
+                _update_global_exit_code(code_delta)
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=child_run_id,
+                    event_type="command_failure",
+                    occurred_at=child_ended_at,
+                    artifact_refs=artifact_refs,
+                    failure={"message": result["failure_reason"]},
+                )
         result["scheduler_failure_state_record"] = manifest_relative_path(
             ledger_path, run_dir=run_dir
         )
-        return result, code_delta, attempted_delta, completed_delta, failed_delta, deferred_delta
+        return (
+            result,
+            code_delta,
+            attempted_delta,
+            completed_delta,
+            failed_delta,
+            deferred_delta,
+            degraded_delta,
+            dry_run_delta,
+        )
 
     attempted_index = 0
     pending: list[tuple[int, Any]] = []
@@ -916,9 +1016,13 @@ def run_scheduled_cycles(
                 completed_delta,
                 failed_delta,
                 deferred_delta,
+                degraded_delta,
+                dry_run_delta,
             ) = future.result()
             manifest["attempted_workspace_count"] += attempted_delta
             manifest["completed_workspace_count"] += completed_delta
+            manifest["degraded_workspace_count"] += degraded_delta
+            manifest["dry_run_workspace_count"] += dry_run_delta
             manifest["failed_workspace_count"] += failed_delta
             manifest["deferred_workspace_count"] += deferred_delta
             if run_exit_code > exit_code:
@@ -928,6 +1032,10 @@ def run_scheduled_cycles(
     manifest["ended_at"] = utc_now()
     if manifest["failed_workspace_count"]:
         manifest["status"] = "failed"
+    elif manifest["degraded_workspace_count"]:
+        manifest["status"] = "degraded"
+    elif manifest["dry_run_workspace_count"]:
+        manifest["status"] = "dry_run"
     elif manifest["attempted_workspace_count"]:
         manifest["status"] = "completed"
     else:
@@ -943,6 +1051,8 @@ def render_text(payload: dict[str, Any]) -> str:
         f"status={payload['status']}",
         f"attempted={payload['attempted_workspace_count']}",
         f"completed={payload['completed_workspace_count']}",
+        f"degraded={payload['degraded_workspace_count']}",
+        f"dry_run={payload['dry_run_workspace_count']}",
         f"failed={payload['failed_workspace_count']}",
         f"deferred={payload['deferred_workspace_count']}",
     ]

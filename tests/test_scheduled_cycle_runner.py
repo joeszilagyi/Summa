@@ -663,7 +663,9 @@ def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path)
     observed_timeouts: list[float | None] = []
     commands: list[list[str]] = []
 
-    def invoker(command: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    def invoker(
+        command: list[str], timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         observed_timeouts.append(timeout)
         run_dir = Path(command[command.index("--run-dir") + 1])
@@ -1003,11 +1005,103 @@ def test_scheduled_runner_partial_child_output_exit_code(tmp_path: Path) -> None
 
     assert exit_code == scheduled_runner.EXIT_PARTIAL_OUTPUT
     result = payload["workspace_results"][0]
-    assert result["outcome"] == "failed"
+    assert result["outcome"] == "partial"
     assert result["failure_reason_code"] == "topic_cycle_partial_output"
     assert result["error_code"] == "topic_cycle_partial_output"
     assert result["stage"] == "child_cycle_exec"
     assert result["recoverability"] == "retryable"
+
+
+@pytest.mark.parametrize(
+    ("child_status", "returncode", "expected_outcome", "expected_run_status", "expected_exit_code"),
+    [
+        ("completed", 0, "completed", "completed", scheduled_runner.EXIT_SUCCESS),
+        ("degraded", 0, "degraded", "degraded", scheduled_runner.EXIT_SUCCESS),
+        ("dry_run", 0, "dry_run", "dry_run", scheduled_runner.EXIT_SUCCESS),
+        ("partial", 5, "partial", "failed", scheduled_runner.EXIT_PARTIAL_OUTPUT),
+        ("failed", 5, "failed", "failed", scheduled_runner.EXIT_INTEGRITY_FAILURE),
+    ],
+)
+def test_scheduled_runner_maps_child_manifest_status_distinctly(
+    tmp_path: Path,
+    child_status: str,
+    returncode: int,
+    expected_outcome: str,
+    expected_run_status: str,
+    expected_exit_code: int,
+) -> None:
+    workspace, manifest = write_workspace(tmp_path, f"{child_status}_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id=f"{child_status}_subject", workspace=workspace, manifest=manifest
+            )
+        ],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    def invoker(command: list[str]) -> subprocess.CompletedProcess[str]:
+        run_dir = Path(command[command.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = command[command.index("--run-id") + 1]
+        (run_dir / "topic-cycle-run.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "topic-cycle-run.v1",
+                    "run_id": run_id,
+                    "cycle_event_id": f"cycle:{run_id}",
+                    "status": child_status,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command, returncode, "", "" if returncode == 0 else f"{child_status} failure"
+        )
+
+    args = scheduled_runner.parse_args(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
+            "--mode",
+            "dry-run" if child_status == "dry_run" else "local",
+        ]
+    )
+
+    payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
+
+    result = payload["workspace_results"][0]
+    assert exit_code == expected_exit_code
+    assert result["outcome"] == expected_outcome
+    assert payload["status"] == expected_run_status
+    if child_status == "completed":
+        assert payload["completed_workspace_count"] == 1
+        assert payload["degraded_workspace_count"] == 0
+        assert payload["dry_run_workspace_count"] == 0
+        assert payload["failed_workspace_count"] == 0
+    elif child_status == "degraded":
+        assert payload["completed_workspace_count"] == 0
+        assert payload["degraded_workspace_count"] == 1
+        assert payload["dry_run_workspace_count"] == 0
+        assert payload["failed_workspace_count"] == 0
+    elif child_status == "dry_run":
+        assert payload["completed_workspace_count"] == 0
+        assert payload["degraded_workspace_count"] == 0
+        assert payload["dry_run_workspace_count"] == 1
+        assert payload["failed_workspace_count"] == 0
+    else:
+        assert payload["completed_workspace_count"] == 0
+        assert payload["degraded_workspace_count"] == 0
+        assert payload["dry_run_workspace_count"] == 0
+        assert payload["failed_workspace_count"] == 1
 
 
 def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> None:
