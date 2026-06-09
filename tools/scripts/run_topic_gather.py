@@ -79,6 +79,7 @@ LLM_RUNNER_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner.sh"
 LLM_RUNNER_BRIDGE_PATH = REPO_ROOT / "tools" / "scripts" / "lib" / "llm_runner_bridge.sh"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 STAMP_RUN_TS_FORMAT = "%Y-%m-%dT%H%M%SZ"
+LLM_USAGE_SCHEMA_VERSION = "llm-usage.v1"
 SOURCE_TEXT_BLOCK_BYTE_CAP = 256 * 1024
 SOURCE_TEXT_HAZARD_SCAN_OVERLAP = 256
 HOSTILE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
@@ -350,6 +351,17 @@ def read_text_file(path: Path, *, label: str) -> str:
         raise GatherDriverError(f"could not read {label}: {path}") from exc
     except UnicodeDecodeError as exc:
         raise GatherDriverError(f"{label} must be valid UTF-8 text: {path}") from exc
+
+
+def read_json_file(path: Path, *, label: str) -> dict[str, Any]:
+    raw_text = read_text_file(path, label=label)
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise GatherDriverError(f"{label} is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise GatherDriverError(f"{label} must be a JSON object: {path}")
+    return payload
 
 
 @cache
@@ -1181,6 +1193,25 @@ def parse_stamp_footer(text: str) -> dict[str, str]:
     }
 
 
+def engine_usage_sidecar_path(output_path: Path) -> Path:
+    return Path(f"{output_path}.usage.json")
+
+
+def load_engine_usage_sidecar(*, output_path: Path, engine: str) -> dict[str, Any] | None:
+    usage_path = engine_usage_sidecar_path(output_path)
+    if not usage_path.is_file():
+        return None
+    payload = read_json_file(usage_path, label="llm usage sidecar")
+    if payload.get("schema_version") != LLM_USAGE_SCHEMA_VERSION:
+        raise GatherDriverError(f"llm usage sidecar has an unexpected schema_version: {usage_path}")
+    if payload.get("engine") != engine:
+        raise GatherDriverError(f"llm usage sidecar engine mismatch: {usage_path}")
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        raise GatherDriverError(f"llm usage sidecar must include usage metrics: {usage_path}")
+    return payload
+
+
 def invoke_llm_runner_bridge(
     command: list[str], *, label: str, timeout_seconds: float | None
 ) -> None:
@@ -1253,6 +1284,7 @@ def run_live_engine(
     raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
     stamp_footer = parse_stamp_footer(stamped_output_text)
+    engine_usage = load_engine_usage_sidecar(output_path=raw_engine_output_path, engine=engine)
     raw_engine_output_hash = sha256_text(raw_engine_output)
     stamped_output_hash = sha256_text(stamped_output_text)
     stamped_output_footer_hash = sha256_text(
@@ -1269,6 +1301,7 @@ def run_live_engine(
         "stamped_output_hash": stamped_output_hash,
         "stamped_output_footer_hash": stamped_output_footer_hash,
         "stamp_footer": stamp_footer,
+        "usage": engine_usage,
     }
 
 
@@ -1373,6 +1406,8 @@ def load_cached_live_result(
     ):
         return None
 
+    cached_usage = load_engine_usage_sidecar(output_path=raw_output_path, engine=engine)
+
     return {
         "invoked": False,
         "cache_hit": True,
@@ -1383,6 +1418,7 @@ def load_cached_live_result(
         "stamped_output_hash": stamped_output_hash,
         "stamped_output_footer_hash": stamped_output_footer_hash,
         "stamp_footer": stamp_footer,
+        "usage": cached_usage,
     }
 
 
@@ -1459,6 +1495,7 @@ def build_candidate_batch(
             "engine_present": engine_present,
             "runner_path": str(LLM_RUNNER_PATH),
             "bridge_path": str(LLM_RUNNER_BRIDGE_PATH),
+            "usage": live_result["usage"] if live_result is not None else None,
         },
         "subject": {
             "subject_id": subject["subject_id"],

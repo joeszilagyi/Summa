@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -81,6 +82,7 @@ def _run_llm_runner_with_fake_engine(
     use_run_to_file: bool = False,
     output_file: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    engine_script: str | None = None,
 ) -> tuple[list[str], str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -89,7 +91,8 @@ def _run_llm_runner_with_fake_engine(
     fake_engine = bin_dir / engine
     fake_engine.write_text(
         textwrap.dedent(
-            """\
+            engine_script
+            or """\
             #!/usr/bin/env bash
             set -euo pipefail
             printf '%s\n' "$@" > "$ARGS_FILE"
@@ -215,9 +218,80 @@ def test_llm_runner_run_to_file_preserves_existing_output_on_failure(tmp_path: P
     )
 
     assert args[0] == "exec"
+    assert "--json" in args
     assert args[-1] == "-"
     assert stdin == prompt_text
     assert output == "existing output\n"
+
+
+def test_llm_runner_run_to_file_materializes_usage_sidecar_from_json_events(
+    tmp_path: Path,
+) -> None:
+    prompt_text = "usage probe prompt"
+    output_file = tmp_path / "result.txt"
+    json_engine_script = """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$ARGS_FILE"
+cat > "$STDIN_FILE"
+python3 - <<'PY'
+from __future__ import annotations
+
+import json
+
+print(json.dumps({"type": "thread.started", "thread_id": "thread-fake"}))
+print(json.dumps({"type": "turn.started"}))
+print(
+    json.dumps(
+        {
+            "type": "item.completed",
+            "item": {"id": "item_0", "type": "agent_message", "text": "engine-output\\n"},
+        }
+    )
+)
+print(
+    json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 12,
+                "cached_input_tokens": 3,
+                "output_tokens": 4,
+                "reasoning_output_tokens": 2,
+            },
+        }
+    )
+)
+PY
+exit "$EXIT_CODE"
+"""
+    args, stdin, output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+        use_run_to_file=True,
+        output_file=output_file,
+        engine_script=json_engine_script,
+    )
+
+    usage_path = Path(f"{output_file}.usage.json")
+    assert args[0] == "exec"
+    assert "--json" in args
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+    assert output == "engine-output\n"
+    assert usage_path.is_file()
+    usage_payload = json.loads(usage_path.read_text(encoding="utf-8"))
+    assert usage_payload == {
+        "schema_version": "llm-usage.v1",
+        "engine": "codex",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 3,
+            "output_tokens": 4,
+            "reasoning_output_tokens": 2,
+            "total_tokens": 16,
+        },
+    }
 
 
 def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None:
