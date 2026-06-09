@@ -996,6 +996,18 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
     batch_path.write_text("{}", encoding="utf-8")
     prompt_path.write_text("prompt", encoding="utf-8")
     expected_batch_payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    expected_engine_usage = {
+        "schema_version": "llm-usage.v1",
+        "engine": "codex",
+        "usage": {
+            "input_tokens": 9,
+            "cached_input_tokens": 4,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 2,
+            "total_tokens": 14,
+        },
+    }
+    expected_batch_payload["engine"] = {"usage": expected_engine_usage}
 
     fake_payload = {
         "candidate_batch_path": str(batch_path),
@@ -1093,6 +1105,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         == "receipt-hash"
     )  # type: ignore[index]
     assert read_calls == [batch_path]
+    assert manifest["budget_consumed"]["llm_usage"] == expected_engine_usage  # type: ignore[index]
     assert commands
     assert "--canonical-store-check-json" in commands[0]
     check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1

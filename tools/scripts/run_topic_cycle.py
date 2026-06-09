@@ -389,6 +389,7 @@ def build_manifest(
         "budget": None,
         "budget_consumed": {
             "runtime_seconds": 0.0,
+            "llm_usage": None,
         },
         "status": "planned",
         "failure_stage": None,
@@ -965,6 +966,17 @@ def gather_stage(
         if not isinstance(rendered_prompt_sha256, str):
             rendered_prompt_sha256 = hash_file(prompt_path)
         batch = read_json(batch_path, label="candidate batch")
+        engine_usage = batch.get("engine", {}).get("usage") if isinstance(batch.get("engine"), dict) else None
+        if isinstance(engine_usage, dict):
+            budget_consumed = manifest.setdefault(
+                "budget_consumed",
+                {
+                    "runtime_seconds": 0.0,
+                    "llm_usage": None,
+                },
+            )
+            if isinstance(budget_consumed, dict):
+                budget_consumed["llm_usage"] = engine_usage
         stage.validation = {"status": "pass", "source": "child"}
         validation_receipt = {
             "artifact_path": str(batch_path),

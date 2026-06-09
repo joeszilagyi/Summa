@@ -348,7 +348,45 @@ log_path="${FAKE_CODEX_LOG:?}"
     idx=$((idx + 1))
   done
 } > "$log_path"
-printf '%s' "${FAKE_CODEX_OUTPUT:-FAKE CODEX OUTPUT}"
+if [[ "${FAKE_CODEX_JSON:-0}" == "1" ]]; then
+  python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+
+text = os.environ.get("FAKE_CODEX_OUTPUT", "FAKE CODEX OUTPUT")
+input_tokens = int(os.environ.get("FAKE_CODEX_INPUT_TOKENS", "7"))
+cached_input_tokens = int(os.environ.get("FAKE_CODEX_CACHED_INPUT_TOKENS", "2"))
+output_tokens = int(os.environ.get("FAKE_CODEX_OUTPUT_TOKENS", "3"))
+reasoning_output_tokens = int(os.environ.get("FAKE_CODEX_REASONING_OUTPUT_TOKENS", "1"))
+print(json.dumps({"type": "thread.started", "thread_id": "thread-fake"}))
+print(json.dumps({"type": "turn.started"}))
+print(
+    json.dumps(
+        {
+            "type": "item.completed",
+            "item": {"id": "item_0", "type": "agent_message", "text": text},
+        }
+    )
+)
+print(
+    json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": input_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_output_tokens": reasoning_output_tokens,
+            },
+        }
+    )
+)
+PY
+else
+  printf '%s' "${FAKE_CODEX_OUTPUT:-FAKE CODEX OUTPUT}"
+fi
 """,
         encoding="utf-8",
     )
@@ -1717,8 +1755,65 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     assert "GENERATED_BY: codex" in stamped_text
     log_text = fake_log.read_text(encoding="utf-8")
     assert "arg[1]=exec" in log_text
+    assert "--json" in log_text
     assert "--skip-git-repo-check" in log_text
     assert "workspace-write" in log_text
+
+
+def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    run_id = "live-fake-codex-json"
+    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = fake_output
+    env["FAKE_CODEX_JSON"] = "1"
+    env["FAKE_CODEX_INPUT_TOKENS"] = "11"
+    env["FAKE_CODEX_CACHED_INPUT_TOKENS"] = "5"
+    env["FAKE_CODEX_OUTPUT_TOKENS"] = "4"
+    env["FAKE_CODEX_REASONING_OUTPUT_TOKENS"] = "2"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ],
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    batch_path = batch_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    usage = payload["engine"]["usage"]
+    assert usage["schema_version"] == "llm-usage.v1"
+    assert usage["engine"] == "codex"
+    assert usage["usage"]["input_tokens"] == 11
+    assert usage["usage"]["cached_input_tokens"] == 5
+    assert usage["usage"]["output_tokens"] == 4
+    assert usage["usage"]["reasoning_output_tokens"] == 2
+    assert usage["usage"]["total_tokens"] == 15
+    assert payload["raw_engine_output"] == fake_output
+    assert "--json" in fake_log.read_text(encoding="utf-8")
 
     blocked_paths = {
         Path(payload["engine_output_ref"]).resolve(),
@@ -1977,6 +2072,25 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
             "RUN_TS: 2026-06-03T123456Z\n",
             encoding="utf-8",
         )
+        usage_path = Path(f"{output_path}.usage.json")
+        usage_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "llm-usage.v1",
+                    "engine": "codex",
+                    "usage": {
+                        "input_tokens": 12,
+                        "cached_input_tokens": 3,
+                        "output_tokens": 4,
+                        "reasoning_output_tokens": 2,
+                        "total_tokens": 16,
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     monkeypatch.setattr(driver, "invoke_llm_runner_bridge", fake_invoke_llm_runner_bridge)
 
@@ -1992,6 +2106,17 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
 
     assert result["raw_engine_output"] == "FAKE CODEX OUTPUT"
     assert result["stamp_footer"]["model"] == "test-model"
+    assert result["usage"] == {
+        "schema_version": "llm-usage.v1",
+        "engine": "codex",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 3,
+            "output_tokens": 4,
+            "reasoning_output_tokens": 2,
+            "total_tokens": 16,
+        },
+    }
 
 
 def test_run_topic_gather_keeps_network_access_flag_false(tmp_path: Path) -> None:

@@ -165,6 +165,99 @@ _llm_runner_exec_codex() {
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
+_llm_runner_exec_codex_json() {
+  local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
+  ( cd "$tmp_dir" && \
+    printf '%s' "$prompt_text" | codex exec --json "${_LLM_RUNNER_CODEX_ARGS[@]}" - \
+  ) >"$stdout_file" 2>"$stderr_file"
+}
+
+_llm_runner_materialize_codex_json_output() {
+  local event_file="$1" output_file="$2" usage_file="${3:-}"
+
+  python3 - "$event_file" "$output_file" "$usage_file" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+event_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+usage_path = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
+try:
+    raw_text = event_path.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    raise SystemExit(1)
+
+lines = [line for line in raw_text.splitlines() if line.strip()]
+json_events: list[dict[str, object]] = []
+for line in lines:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        output_path.write_text(raw_text, encoding="utf-8")
+        if usage_path is not None:
+            usage_path.unlink(missing_ok=True)
+        raise SystemExit(0)
+    if not isinstance(event, dict):
+        output_path.write_text(raw_text, encoding="utf-8")
+        if usage_path is not None:
+            usage_path.unlink(missing_ok=True)
+        raise SystemExit(0)
+    json_events.append(event)
+
+final_text = None
+usage: dict[str, object] | None = None
+for event in json_events:
+    event_type = event.get("type")
+    if event_type == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str):
+                final_text = text
+            elif text is None:
+                final_text = ""
+            else:
+                final_text = str(text)
+    elif event_type == "turn.completed":
+        usage_payload = event.get("usage")
+        if isinstance(usage_payload, dict):
+            usage = dict(usage_payload)
+
+if final_text is None:
+    raise SystemExit(1)
+
+output_path.write_text(final_text, encoding="utf-8")
+if usage_path is not None:
+    if usage is None:
+        usage_path.unlink(missing_ok=True)
+    else:
+        try:
+            input_tokens = int(usage.get("input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            input_tokens = 0
+        try:
+            output_tokens = int(usage.get("output_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            output_tokens = 0
+        usage.setdefault("total_tokens", input_tokens + output_tokens)
+        usage_payload = {
+            "schema_version": "llm-usage.v1",
+            "engine": "codex",
+            "usage": usage,
+        }
+        usage_path.write_text(
+            json.dumps(usage_payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+raise SystemExit(0)
+PY
+}
+
 _llm_runner_exec_claude() {
   local tmp_dir="$1" prompt_text="$2" stdout_file="$3" stderr_file="$4"
   ( cd "$tmp_dir" && \
@@ -225,7 +318,7 @@ llm_runner_run_quiet() {
 # ---------------------------------------------------------------------------
 llm_runner_run_to_file() {
   local tmp_dir="$1" prompt_text="$2" output_file="$3" phase="$4" tool_name="${5:-llm_runner}"
-  local stderr_file output_tmp_file start_ts end_ts elapsed rc
+  local stderr_file output_tmp_file event_tmp_file usage_tmp_file usage_file start_ts end_ts elapsed rc
 
   [[ "$_LLM_RUNNER_INITIALIZED" == "1" ]] || {
     printf 'llm_runner: llm_runner_init must be called before llm_runner_run_to_file\n' >&2
@@ -241,22 +334,60 @@ llm_runner_run_to_file() {
   fi
 
   output_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").tmp.XXXXXX")"
-  trap 'rm -f "$output_tmp_file"' RETURN
+  event_tmp_file=""
+  usage_tmp_file=""
+  usage_file="${output_file}.usage.json"
+  trap 'rm -f -- "$output_tmp_file"; if [[ -n "${event_tmp_file:-}" ]]; then rm -f -- "$event_tmp_file"; fi; if [[ -n "${usage_tmp_file:-}" ]]; then rm -f -- "$usage_tmp_file"; fi' RETURN
   stderr_file="$(mktemp "${tmp_dir%/}/llm.${phase}.stderr.XXXXXX")"
   : > "$stderr_file"
   start_ts="$(date +%s)"
 
-  if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
-    if ! mv -- "$output_tmp_file" "$output_file"; then
-      return 1
-    fi
-    trap - RETURN
-    end_ts="$(date +%s)"
-    elapsed=$((end_ts - start_ts))
-    runtime_log_event LLM_OK \
-      "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
-    return 0
-  fi
+  case "$LLM_RUNNER_ENGINE" in
+    codex)
+      event_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").events.XXXXXX")"
+      usage_tmp_file="$(mktemp "$(dirname -- "$output_file")/.$(basename -- "$output_file").usage.XXXXXX")"
+      if _llm_runner_exec_codex_json "$tmp_dir" "$prompt_text" "$event_tmp_file" "$stderr_file"; then
+        if ! _llm_runner_materialize_codex_json_output \
+          "$event_tmp_file" \
+          "$output_tmp_file" \
+          "$usage_tmp_file"
+        then
+          return 1
+        fi
+        if ! mv -- "$output_tmp_file" "$output_file"; then
+          return 1
+        fi
+        if [[ -f "$usage_tmp_file" ]]; then
+          if ! mv -- "$usage_tmp_file" "$usage_file"; then
+            return 1
+          fi
+        else
+          rm -f -- "$usage_file"
+        fi
+        rm -f -- "$event_tmp_file"
+        trap - RETURN
+        end_ts="$(date +%s)"
+        elapsed=$((end_ts - start_ts))
+        runtime_log_event LLM_OK \
+          "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
+        return 0
+      fi
+      ;;
+    claude)
+      if "_llm_runner_exec_${LLM_RUNNER_ENGINE}" "$tmp_dir" "$prompt_text" "$output_tmp_file" "$stderr_file"; then
+        if ! mv -- "$output_tmp_file" "$output_file"; then
+          return 1
+        fi
+        rm -f -- "$usage_file"
+        trap - RETURN
+        end_ts="$(date +%s)"
+        elapsed=$((end_ts - start_ts))
+        runtime_log_event LLM_OK \
+          "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} elapsed=${elapsed}s output_file=${output_file}"
+        return 0
+      fi
+      ;;
+  esac
 
   rc=$?
   end_ts="$(date +%s)"
