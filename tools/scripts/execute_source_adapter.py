@@ -233,14 +233,18 @@ def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
-    result, exit_code = validate_source_adapter.validate_source_adapter(adapter_path)
+    payload, errors, load_exit = validate_source_adapter.load_json_object(adapter_path)
+    if load_exit != validate_source_adapter.EXIT_PASS:
+        message = errors[0]["message"] if errors else "source adapter could not be loaded"
+        raise SourceAcquisitionError(message)
+    result, exit_code = validate_source_adapter.validate_source_adapter_payload(payload)
     if exit_code != validate_source_adapter.EXIT_PASS:
         message = "source adapter validation failed"
         errors = result.get("errors", [])
         if errors:
             message = errors[0].get("message", message)
         raise SourceAcquisitionError(message)
-    return json.loads(adapter_path.read_text(encoding="utf-8"))
+    return payload
 
 
 def load_validated_handoff_records(

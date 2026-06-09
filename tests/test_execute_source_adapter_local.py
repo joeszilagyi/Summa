@@ -368,6 +368,25 @@ def test_load_validated_handoff_records_streams_handoff_hash(
     assert len(handoff_hash) == 64
 
 
+def test_load_validated_adapter_does_not_re_read_adapter_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_read_text = source_executor.Path.read_text
+    read_calls = {"count": 0}
+
+    def guarded_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.expanduser().resolve() == ADAPTER.resolve():
+            read_calls["count"] += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(source_executor.Path, "read_text", guarded_read_text)
+
+    payload = source_executor.load_validated_adapter(ADAPTER)
+
+    assert payload["input_family"] == "local_directory"
+    assert read_calls["count"] == 1
+
+
 def test_execute_local_source_loads_handoff_once_before_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
