@@ -1164,11 +1164,17 @@ def write_json(path: Path, payload: dict[str, Any], *, sync: bool = True) -> Non
 
 
 def parse_stamp_footer(text: str) -> dict[str, str]:
+    _raw_text, footer = split_stamped_output(text)
+    return footer
+
+
+def split_stamped_output(text: str) -> tuple[str, dict[str, str]]:
     footer_delimiter = "\n---\n"
     footer_prefix = f"{footer_delimiter}RUN_META_VERSION: "
     start = text.rfind(footer_prefix)
     if start < 0:
         raise GatherDriverError("stamped engine output is missing the llm_runner footer")
+    raw_text = text[:start]
     footer_text = text[start + len(footer_delimiter) :]
     values: dict[str, str] = {}
     for line in footer_text.splitlines():
@@ -1182,7 +1188,7 @@ def parse_stamp_footer(text: str) -> dict[str, str]:
     for key in required:
         if key not in values:
             raise GatherDriverError(f"stamped engine output footer is missing {key}")
-    return {
+    footer = {
         "run_meta_version": values["RUN_META_VERSION"],
         "generated_by": values["GENERATED_BY"],
         "model": values["MODEL"],
@@ -1191,6 +1197,7 @@ def parse_stamp_footer(text: str) -> dict[str, str]:
         "phase": values["PHASE"],
         "run_ts": values["RUN_TS"],
     }
+    return raw_text, footer
 
 
 def engine_usage_sidecar_path(output_path: Path) -> Path:
@@ -1249,7 +1256,6 @@ def run_live_engine(
     ensure_file(LLM_RUNNER_PATH, label="llm_runner library")
     tmp_dir = run_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    raw_engine_output_path = run_dir / "raw-engine-output.txt"
     stamped_output_path = run_dir / "stamped-engine-output.txt"
 
     invoke_llm_runner_bridge(
@@ -1262,7 +1268,7 @@ def run_live_engine(
             "--tmp-dir",
             str(tmp_dir),
             "--output-file",
-            str(raw_engine_output_path),
+            str(stamped_output_path),
             "--phase",
             phase,
             "--stamped-output-file",
@@ -1281,10 +1287,9 @@ def run_live_engine(
         label="live engine run",
         timeout_seconds=command_timeout_seconds,
     )
-    raw_engine_output = read_text_file(raw_engine_output_path, label="raw engine output")
     stamped_output_text = read_text_file(stamped_output_path, label="stamped engine output")
-    stamp_footer = parse_stamp_footer(stamped_output_text)
-    engine_usage = load_engine_usage_sidecar(output_path=raw_engine_output_path, engine=engine)
+    raw_engine_output, stamp_footer = split_stamped_output(stamped_output_text)
+    engine_usage = load_engine_usage_sidecar(output_path=stamped_output_path, engine=engine)
     raw_engine_output_hash = sha256_text(raw_engine_output)
     stamped_output_hash = sha256_text(stamped_output_text)
     stamped_output_footer_hash = sha256_text(
@@ -1294,7 +1299,7 @@ def run_live_engine(
     return {
         "invoked": True,
         "cache_hit": False,
-        "raw_engine_output_path": str(raw_engine_output_path),
+        "raw_engine_output_path": str(stamped_output_path),
         "raw_engine_output": raw_engine_output,
         "raw_engine_output_hash": raw_engine_output_hash,
         "stamped_output_path": str(stamped_output_path),
@@ -1381,13 +1386,18 @@ def load_cached_live_result(
     if not raw_output_path.is_file() or not stamped_output_path_obj.is_file():
         return None
 
-    cached_raw_engine_output = read_text_file(raw_output_path, label="cached raw engine output")
     cached_stamped_output_text = read_text_file(
         stamped_output_path_obj, label="cached stamped engine output"
     )
-    cached_stamp_footer = parse_stamp_footer(cached_stamped_output_text)
-    if cached_stamp_footer is None:
-        return None
+    if raw_output_path == stamped_output_path_obj:
+        cached_raw_engine_output, cached_stamp_footer = split_stamped_output(
+            cached_stamped_output_text
+        )
+    else:
+        cached_raw_engine_output = read_text_file(raw_output_path, label="cached raw engine output")
+        cached_stamp_footer = parse_stamp_footer(cached_stamped_output_text)
+        if cached_stamp_footer is None:
+            return None
     cached_raw_engine_output_hash = sha256_text(cached_raw_engine_output)
     cached_stamped_output_hash = sha256_text(cached_stamped_output_text)
     cached_stamp_footer_hash = sha256_text(

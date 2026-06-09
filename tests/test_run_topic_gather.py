@@ -1725,6 +1725,10 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     )
     assert payload["engine_output_ref"]
     assert (
+        Path(payload["engine_output_ref"]).resolve()
+        == Path(payload["provenance"]["stamped_output_path"]).resolve()
+    )
+    assert (
         payload["provenance"]["stamped_output_hash"]
         == hashlib.sha256(
             Path(payload["provenance"]["stamped_output_path"])
@@ -1813,6 +1817,10 @@ def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     assert usage["usage"]["reasoning_output_tokens"] == 2
     assert usage["usage"]["total_tokens"] == 15
     assert payload["raw_engine_output"] == fake_output
+    assert (
+        Path(payload["engine_output_ref"]).resolve()
+        == Path(payload["provenance"]["stamped_output_path"]).resolve()
+    )
     assert "--json" in fake_log.read_text(encoding="utf-8")
 
     blocked_paths = {
@@ -2059,10 +2067,11 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
         assert "--stamped-output-file" in command
         output_path = Path(command[command.index("--output-file") + 1])
         stamped_path = Path(command[command.index("--stamped-output-file") + 1])
+        assert output_path == stamped_path
         output_path.write_text("FAKE CODEX OUTPUT", encoding="utf-8")
         stamped_path.write_text(
             "FAKE CODEX OUTPUT\n"
-            "\n---\n"
+            "---\n"
             "RUN_META_VERSION: 1\n"
             "GENERATED_BY: codex\n"
             "MODEL: test-model\n"
@@ -2105,6 +2114,7 @@ def test_run_topic_gather_live_engine_uses_command_timeout(
     )
 
     assert result["raw_engine_output"] == "FAKE CODEX OUTPUT"
+    assert result["raw_engine_output_path"] == result["stamped_output_path"]
     assert result["stamp_footer"]["model"] == "test-model"
     assert result["usage"] == {
         "schema_version": "llm-usage.v1",
