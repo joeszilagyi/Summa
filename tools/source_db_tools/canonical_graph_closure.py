@@ -133,9 +133,9 @@ class GraphClosureLookup:
             return False
         if self._provenance_keys is None:
             self._provenance_keys = {
-                _text(row[0])
+                text
                 for row in self.conn.execute("SELECT provenance_event_key_v1 FROM provenance_event")
-                if _text(row[0]) is not None
+                if (text := _text(row[0])) is not None
             }
         return text in self._provenance_keys
 

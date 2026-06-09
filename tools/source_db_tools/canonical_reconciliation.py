@@ -1780,9 +1780,11 @@ def _structured_contradictions_for_claim_group(
     include_excluded_claim_states: bool = False,
 ) -> list[canonical_store.CanonicalWriteResult]:
     results: list[canonical_store.CanonicalWriteResult] = []
-    payloads: dict[int, dict[str, Any] | None] = {}
+    payloads: dict[int, dict[str, Any]] = {}
     for row in claim_rows:
-        payloads[int(row["source_claim_id"])] = _structured_claim_payload(row)
+        payload = _structured_claim_payload(row)
+        if payload is not None:
+            payloads[int(row["source_claim_id"])] = payload
 
     claims_for_ref_type_cache: dict[
         tuple[str | None, str, str, tuple[str, ...]], list[sqlite3.Row]
@@ -1790,9 +1792,9 @@ def _structured_contradictions_for_claim_group(
 
     for left_row in claim_rows:
         left_claim_id = int(left_row["source_claim_id"])
-        left_payload = payloads[left_claim_id]
-        if left_payload is None:
+        if left_claim_id not in payloads:
             continue
+        left_payload = payloads[left_claim_id]
 
         left_about_ref = _claim_about_ref(left_row, left_payload)
         left_claim_type = str(
@@ -1819,6 +1821,8 @@ def _structured_contradictions_for_claim_group(
                 right_payload = payloads.get(right_claim_id)
                 if right_payload is None:
                     right_payload = _structured_claim_payload(right_row)
+                    if right_payload is None:
+                        continue
                     payloads[right_claim_id] = right_payload
                 if right_claim_id == left_claim_id:
                     continue

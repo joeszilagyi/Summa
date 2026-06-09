@@ -112,6 +112,14 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _optional_score(value: object) -> float | int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
 def _parse_rfc3339_timestamp(value: object, field_name: str) -> dt.datetime:
     text = _require_nonblank(value, field_name)
     try:
@@ -913,9 +921,7 @@ def record_cycle_candidates_considered(
             candidate_ref_type="selection_explanation",
             candidate_ref_id=str(candidate.get("candidate_id") or ""),
             candidate_label=None if candidate.get("label") is None else str(candidate.get("label")),
-            score=candidate.get("score")
-            if isinstance(candidate.get("score"), (int, float))
-            else None,
+            score=_optional_score(candidate.get("score")),
             score_policy_id=score_policy_id,
             rationale=None
             if candidate.get("rationale") is None
@@ -1493,9 +1499,7 @@ def _record_feedback_candidates_payload(
                 candidate_ref_type="selection_explanation",
                 candidate_ref_id=candidate_id,
                 candidate_label=_optional_text(candidate.get("label")),
-                score=candidate.get("score")
-                if isinstance(candidate.get("score"), (int, float))
-                else None,
+                score=_optional_score(candidate.get("score")),
                 score_policy_id=policy_id,
                 rationale=_optional_text(candidate.get("rationale")),
                 reason={
