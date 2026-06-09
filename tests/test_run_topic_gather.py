@@ -808,6 +808,44 @@ def test_run_topic_gather_wraps_hostile_source_text_only_inside_wrapper(tmp_path
     )
 
 
+def test_run_topic_gather_does_not_reparse_wrapped_blocks_for_counting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "count-without-reparse"
+
+    def parse_wrapped_blocks_guard(*args: object, **kwargs: object) -> list[object]:
+        raise AssertionError("run_topic_gather should not reparse wrapped blocks for counting")
+
+    monkeypatch.setattr(driver, "parse_wrapped_blocks", parse_wrapped_blocks_guard, raising=False)
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+            "--source-text-file",
+            str(HOSTILE_SOURCE_FIXTURE),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    batch_payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
+    assert batch_payload["source_text_wrapping"]["source_block_count"] == 1
+    assert batch_payload["prompt"]["budget"]["source_block_count"] == 1
+
+
 def test_run_topic_gather_hazard_detection_searches_each_flag_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

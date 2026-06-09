@@ -39,7 +39,6 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
     WrapperTemplate,
     load_template,
-    parse_wrapped_blocks,
     render_wrapped_block,
 )
 from tools.common.source_text_profile import (  # noqa: E402
@@ -825,13 +824,7 @@ def execute_gather_run(
         prior_state=prior_state_context,
         template=gather_inputs["wrapper_template"],
     )
-    parsed_blocks = parse_wrapped_blocks(
-        rendered_prompt, template=gather_inputs["wrapper_template"]
-    )
-    rendered_source_blocks = [
-        block for block in parsed_blocks if block.source_ref.startswith("source:")
-    ]
-    if len(rendered_source_blocks) != len(source_wrapping_blocks):
+    if prompt_budget["source_block_count"] != len(source_wrapping_blocks):
         raise GatherDriverError("wrapped source block count mismatch after prompt rendering")
 
     rendered_prompt_hash = sha256_text(rendered_prompt)
