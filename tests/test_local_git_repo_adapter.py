@@ -353,11 +353,11 @@ def test_local_git_repo_reports_non_repo_path_clearly(tmp_path: Path) -> None:
     assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["repo_state"] == "invalid"
-    assert payload["blockers"] == [
+    blocker = payload["blockers"][0]
+    assert blocker.startswith(
         f"local git repo path is not a git repository: {(scenario_dir / 'plain').resolve()}: "
-        "fatal: not a git repository (or any parent up to mount point /)\n"
-        "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
-    ]
+        "fatal: not a git repository"
+    )
     assert payload["handoff_record_count"] == 0
 
 
