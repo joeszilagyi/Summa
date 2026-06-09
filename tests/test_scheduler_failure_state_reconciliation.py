@@ -566,6 +566,48 @@ def test_unknown_terminal_status_does_not_count_as_success(tmp_path: Path) -> No
     assert entry["recommendation"] == "replace"
 
 
+def test_runtime_ledger_and_outcomes_sort_by_normalized_timestamp(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    append_ledger_events(
+        ledger_path,
+        [
+            build_success_event(
+                workspace_id="workspace-a",
+                run_id="success-run",
+                occurred_at="2026-06-02T00:00:00Z",
+            ),
+            build_failure_event(
+                workspace_id="workspace-a",
+                run_id="failure-run",
+                occurred_at="2026-06-01T23:30:00-01:00",
+                message="later failure",
+            ),
+        ],
+    )
+
+    events = scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
+    assert [event["run_id"] for event in events] == ["success-run", "failure-run"]
+
+    outcomes = scheduler_reconciliation.summarize_run_outcomes(events)
+    assert [outcome.run_id for outcome in outcomes] == ["success-run", "failure-run"]
+
+    derived, reasons, _ = scheduler_reconciliation.derive_failure_state(
+        current_failure_state=None,
+        run_budget=None,
+        retry_policy=None,
+        events=events,
+    )
+    assert derived == {
+        "status": "retryable",
+        "attempt_count": 1,
+        "last_failure_at": "2026-06-01T23:30:00-01:00",
+        "last_failure_reason": "later failure",
+    }
+    assert reasons == ["1 consecutive terminal runtime failure(s) since the last success"]
+
+
 def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

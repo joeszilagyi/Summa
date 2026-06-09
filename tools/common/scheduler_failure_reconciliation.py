@@ -42,6 +42,10 @@ def parse_timestamp(raw_value: str, *, label: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def occurrence_sort_key(raw_value: str, *, label: str, tie_breaker: str) -> tuple[datetime, str]:
+    return parse_timestamp(raw_value, label=label), tie_breaker
+
+
 def read_runtime_ledger(path: Path, *, workspace_id: str) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -64,7 +68,13 @@ def read_runtime_ledger(path: Path, *, workspace_id: str) -> list[dict[str, Any]
             )
         parse_timestamp(occurred_at, label=f"{path}:{line_number}:occurred_at")
         events.append(payload)
-    events.sort(key=lambda event: (event["occurred_at"], str(event.get("event_id", ""))))
+    events.sort(
+        key=lambda event: occurrence_sort_key(
+            str(event["occurred_at"]),
+            label=f"{path}:occurred_at",
+            tie_breaker=str(event.get("event_id", "")),
+        )
+    )
     return events
 
 
@@ -84,7 +94,11 @@ def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
         if not terminal_events:
             continue
         terminal_events.sort(
-            key=lambda event: (event["occurred_at"], str(event.get("event_id", "")))
+            key=lambda event: occurrence_sort_key(
+                str(event["occurred_at"]),
+                label="terminal runtime-ledger occurred_at",
+                tie_breaker=str(event.get("event_id", "")),
+            )
         )
         last_event = terminal_events[-1]
         event_type = last_event.get("event_type")
@@ -129,7 +143,13 @@ def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
             )
         )
 
-    outcomes.sort(key=lambda outcome: (outcome.occurred_at, outcome.run_id))
+    outcomes.sort(
+        key=lambda outcome: occurrence_sort_key(
+            outcome.occurred_at,
+            label="runtime-ledger outcome occurred_at",
+            tie_breaker=outcome.run_id,
+        )
+    )
     return outcomes
 
 
