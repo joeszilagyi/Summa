@@ -30,6 +30,7 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_candidate_record_payload,
     compact_next_action_prompt_payload,
+    compact_prior_state_prompt_payload,
 )
 from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
@@ -784,6 +785,7 @@ def execute_gather_run(
         subject=gather_inputs["subject"],
         facet=gather_inputs["facet"],
         phase=gather_inputs["phase"],
+        cycle_depth=args.cycle_depth,
         bundle=gather_inputs["bundle"],
         wrapped_blocks=rendered_blocks,
         next_action=next_action,
@@ -969,6 +971,7 @@ def render_prompt_text(
     subject: dict[str, Any],
     facet: str,
     phase: str,
+    cycle_depth: int,
     bundle: dict[str, Any],
     wrapped_blocks: list[str],
     next_action: dict[str, Any] | None = None,
@@ -1002,7 +1005,10 @@ def render_prompt_text(
         render_untrusted_json_block(
             source_ref="metadata:prior-state",
             provenance="prior canonical state context",
-            payload=prior_state,
+            payload=compact_prior_state_prompt_payload(
+                prior_state,
+                cycle_depth=cycle_depth,
+            ),
             template=template,
         )
         if isinstance(prior_state, dict)
@@ -1459,7 +1465,11 @@ def build_candidate_batch(
         },
     }
     if prior_state is not None:
-        prior_state_rendered_text = render_json_payload(prior_state)
+        prior_state_rendered_payload = compact_prior_state_prompt_payload(
+            prior_state,
+            cycle_depth=args.cycle_depth,
+        )
+        prior_state_rendered_text = render_json_payload(prior_state_rendered_payload)
         batch["prior_state"] = {
             **prior_state,
             "prior_state_rendered_source_ref": "metadata:prior-state",

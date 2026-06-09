@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.common.candidate_feedback_contract import compact_prior_state_prompt_payload
 from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -242,8 +243,15 @@ def test_gather_iteration_empty_prior_state_dry_run_succeeds(tmp_path: Path) -> 
     assert payload["prior_state"]["record_counts"]["previous_runs"] == {"total": 0, "selected": 0, "rendered": 0}
     assert payload["prior_state"]["previous_run_ids"] == []
     assert payload["prior_state"]["context_hash"] == payload["provenance"]["prior_state_hash"]
-    assert "PRIOR CANONICAL STATE CONTEXT" in prompt_text
-    assert "No prior canonical records were selected for this subject." in prompt_text
+    expected_prior_state_text = json.dumps(
+        compact_prior_state_prompt_payload(payload["prior_state"], cycle_depth=1),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert expected_prior_state_text in prompt_text
+    assert "PRIOR CANONICAL STATE CONTEXT" not in prompt_text
+    assert "No prior canonical records were selected for this subject." not in prompt_text
 
 
 def test_gather_iteration_cycle_two_sees_cycle_one_state(tmp_path: Path) -> None:
@@ -288,12 +296,19 @@ def test_gather_iteration_cycle_two_sees_cycle_one_state(tmp_path: Path) -> None
     assert payload["prior_state"]["record_counts"]["works"]["total"] >= 1
     assert payload["prior_state"]["record_counts"]["entities"]["total"] >= 1
     assert payload["prior_state"]["record_counts"]["source_claims"]["total"] >= 1
-    assert "PRIOR CANONICAL STATE CONTEXT" in prompt_text
-    assert "Accepted Alpha Work" in prompt_text
-    assert "Accepted Alpha Entity" in prompt_text
-    assert "needs_review lead" in prompt_text
-    assert "verified truth" in prompt_text
-    assert "This remains a needs-review lead rather than an accepted fact." in prompt_text
+    expected_prior_state_text = json.dumps(
+        compact_prior_state_prompt_payload(payload["prior_state"], cycle_depth=2),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert expected_prior_state_text in prompt_text
+    assert "PRIOR CANONICAL STATE CONTEXT" not in prompt_text
+    assert "Accepted Alpha Work" not in prompt_text
+    assert "Accepted Alpha Entity" not in prompt_text
+    assert "needs_review lead" not in prompt_text
+    assert "verified truth" not in prompt_text
+    assert "This remains a needs-review lead rather than an accepted fact." not in prompt_text
 
 
 def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(tmp_path: Path) -> None:
@@ -336,8 +351,15 @@ def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(tm
     assert payload["prior_state"]["record_counts"]["works"]["total"] >= 3
     assert payload["prior_state"]["record_counts"]["works"]["selected"] == 2
     assert payload["prior_state"]["record_counts"]["works"]["rendered"] == 2
-    assert "Accepted Alpha Work" in prompt_text
-    assert "Accepted Extra Work 1" in prompt_text
+    expected_prior_state_text = json.dumps(
+        compact_prior_state_prompt_payload(payload["prior_state"], cycle_depth=2),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert expected_prior_state_text in prompt_text
+    assert "Accepted Alpha Work" not in prompt_text
+    assert "Accepted Extra Work 1" not in prompt_text
     assert "Accepted Extra Work 3" not in prompt_text
 
 

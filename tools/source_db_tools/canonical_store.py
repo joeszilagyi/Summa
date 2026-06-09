@@ -3304,11 +3304,14 @@ def build_prior_state_context(
     def current_text() -> str:
         return "\n".join(lines).rstrip() + "\n"
 
-    if len(current_text()) > max_chars:
+    initial_text = current_text()
+    if len(initial_text) > max_chars:
         raise CanonicalStoreError(
             "prior-state context exceeds max_chars before any records are rendered"
         )
 
+    current_length = len(initial_text)
+    trailing_blank_lines = 0
     section_specs: list[tuple[str, str, list[dict[str, Any]]]] = [
         ("Accepted / high-confidence works", "works", prior_state["records"]["works"]),
         ("Accepted / high-confidence entities", "entities", prior_state["records"]["entities"]),
@@ -3331,13 +3334,18 @@ def build_prior_state_context(
     any_records = False
 
     def add_line(text: str) -> bool:
-        nonlocal truncated
-        candidate_lines = [*lines, text]
-        candidate_text = "\n".join(candidate_lines).rstrip() + "\n"
-        if len(candidate_text) > max_chars:
+        nonlocal truncated, current_length, trailing_blank_lines
+        if text == "":
+            lines.append(text)
+            trailing_blank_lines += 1
+            return True
+        candidate_length = current_length + trailing_blank_lines + len(text) + 1
+        if candidate_length > max_chars:
             truncated = True
             return False
         lines.append(text)
+        current_length = candidate_length
+        trailing_blank_lines = 0
         return True
 
     for title, count_key, records in section_specs:

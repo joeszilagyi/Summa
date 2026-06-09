@@ -40,6 +40,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_next_action_prompt_payload,
+    compact_prior_state_prompt_payload,
 )
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
 from tools.scripts import resolve_subject_runtime  # noqa: E402
@@ -797,6 +798,7 @@ def validate_invariants(
     prior_state = payload.get("prior_state")
     facet = payload.get("facet")
     prompt_bundle = payload.get("prompt_bundle")
+    cycle_depth_value = cycle_depth if isinstance(cycle_depth, int) else 1
     if cycle_depth is not None and not isinstance(cycle_depth, int):
         add_error(
             errors,
@@ -1389,7 +1391,12 @@ def validate_invariants(
                     for key, value in prior_state.items()
                     if not key.startswith("prior_state_rendered_")
                 }
-                expected_prior_state_text = render_json_payload(prior_state_payload)
+                expected_prior_state_text = render_json_payload(
+                    compact_prior_state_prompt_payload(
+                        prior_state_payload,
+                        cycle_depth=cycle_depth_value,
+                    )
+                )
                 expected_prior_state_hash = hashlib.sha256(
                     expected_prior_state_text.encode("utf-8")
                 ).hexdigest()
