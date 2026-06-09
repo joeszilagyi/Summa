@@ -199,6 +199,14 @@ def parse_args() -> argparse.Namespace:
         help="Canonical SQLite store used for optional prior-state gather context.",
     )
     parser.add_argument(
+        "--canonical-store-check-json",
+        help=(
+            "Optional prevalidated canonical-store check-result JSON from the cycle parent. "
+            "When supplied, prior-state loading reuses the stored validation result instead of "
+            "re-checking the database."
+        ),
+    )
+    parser.add_argument(
         "--feedback-plan",
         help="Optional candidate-feedback-plan JSON artifact used to select the next gather action.",
     )
@@ -950,8 +958,21 @@ def resolve_prior_state_context(
         raise GatherDriverError(f"prior-state store is not usable: {exc}") from exc
     try:
         try:
-            outline = canonical_store.load_canonical_outline()
-            canonical_store.validate_existing_store(conn, outline=outline)
+            canonical_store_check_json = getattr(args, "canonical_store_check_json", None)
+            if canonical_store_check_json is None:
+                outline = canonical_store.load_canonical_outline()
+                canonical_store.validate_existing_store(conn, outline=outline)
+            else:
+                check_result_path = Path(canonical_store_check_json).expanduser()
+                if not check_result_path.is_absolute():
+                    check_result_path = (Path.cwd() / check_result_path).resolve()
+                check_result = canonical_store.load_check_result(
+                    check_result_path
+                )
+                if check_result.db_path != db_path:
+                    raise canonical_store.CanonicalStoreError(
+                        "prevalidated canonical-store check result does not match the requested db"
+                    )
             prior_state = canonical_store.load_gather_prior_state(
                 conn,
                 subject_id=subject_id,

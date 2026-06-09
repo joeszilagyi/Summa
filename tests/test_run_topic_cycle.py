@@ -229,6 +229,7 @@ def test_validate_store_stage_reuses_validated_store_connection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = load_run_topic_cycle_module()
+    run_dir = tmp_path / "validate-store-run"
     manifest: dict[str, object] = {"canonical_db": {}, "stages": []}
     connect_calls: list[Path] = []
     validate_calls: list[tuple[object, dict[str, object]]] = []
@@ -302,6 +303,7 @@ def test_validate_store_stage_reuses_validated_store_connection(
         args=SimpleNamespace(degraded_spool=False),
         manifest=manifest,
         db_path=tmp_path / "canonical.sqlite",
+        run_dir=run_dir,
     )
 
     assert connect_calls == [tmp_path / "canonical.sqlite"]
@@ -310,6 +312,9 @@ def test_validate_store_stage_reuses_validated_store_connection(
     assert summary_calls[0][3] is False
     assert manifest["canonical_db"]["initial_summary"]["status"] == "initialized_empty"
     assert manifest["canonical_db"]["initial_summary"]["table_counts"] == {}
+    check_result_path = Path(manifest["canonical_db"]["check_result"]["path"])  # type: ignore[index]
+    assert check_result_path.is_file()
+    assert manifest["canonical_db"]["check_result"]["sha256"] == module.hash_file(check_result_path)  # type: ignore[index]
 
 
 def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: Path) -> None:
@@ -993,10 +998,13 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "rendered_prompt_sha256": "prompt-hash",
     }
 
+    commands: list[list[str]] = []
+
     def fake_run_command(
         command: list[str], *, cwd: Path, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
         assert timeout == 111.0
+        commands.append(command)
         return subprocess.CompletedProcess(
             args=command,
             returncode=0,
@@ -1038,7 +1046,7 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         mode="dry-run",
         facet="sources",
         phase="01a",
-        use_prior_state=False,
+        use_prior_state=True,
         cycle_depth=1,
         previous_run_id=[],
         dry_run=True,
@@ -1050,6 +1058,11 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         "started_at": "2026-06-03T12:00:00Z",
         "stages": [],
         "prior_state": {},
+        "canonical_db": {
+            "check_result": {
+                "path": str(tmp_path / "canonical-store" / "check-result.json"),
+            }
+        },
     }
     runtime = {"subject_manifest_path": str(prompt_path)}
 
@@ -1080,6 +1093,12 @@ def test_gather_stage_uses_payload_hashes_from_child(monkeypatch, tmp_path: Path
         stages["run_gather"]["artifacts"]["candidate_batch_validation_receipt_sha256"]
         == "receipt-hash"
     )  # type: ignore[index]
+    assert commands
+    assert "--canonical-store-check-json" in commands[0]
+    check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
+    assert commands[0][check_result_arg_index] == str(
+        tmp_path / "canonical-store" / "check-result.json"
+    )
 
 
 def test_feedback_plan_stage_hashes_output_once_without_rehashing(
@@ -1101,19 +1120,6 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "counts": {"selected": 1},
     }
 
-    def fake_run_command(
-        command: list[str], *, cwd: Path, timeout: float | None = None
-    ) -> subprocess.CompletedProcess[str]:
-        assert timeout == 123.0
-        output_index = command.index("--output-json") + 1
-        path = Path(command[output_index])
-        assert path == output_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
-
     def fake_validate_candidate_feedback_plan(path: Path):
         raise AssertionError(f"unexpected validate_candidate_feedback_plan call: {path}")
 
@@ -1125,11 +1131,7 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         hashed_paths.append(path)
         return "feedback-hash"
 
-    monkeypatch.setattr(module, "run_command", fake_run_command)
-    monkeypatch.setattr(
-        module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan
-    )
-    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    commands: list[list[str]] = []
 
     args = SimpleNamespace(degraded_spool=False)
     args.command_timeout_seconds = 123.0
@@ -1139,8 +1141,33 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         "stages": [],
         "selection_explanations": [],
         "next_action": None,
+        "canonical_db": {
+            "check_result": {
+                "path": str(run_dir / "canonical-store" / "check-result.json"),
+            }
+        },
     }
     runtime = {"subject_manifest_path": str(tmp_path / "subject-manifest.json")}
+
+    def fake_run_command(
+        command: list[str], *, cwd: Path, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout == 123.0
+        commands.append(command)
+        output_index = command.index("--output-json") + 1
+        path = Path(command[output_index])
+        assert path == output_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        module, "validate_candidate_feedback_plan", fake_validate_candidate_feedback_plan
+    )
+    monkeypatch.setattr(module, "hash_file", fake_hash_file)
+    monkeypatch.setattr(module, "run_command", fake_run_command)
 
     result = module.build_feedback_plan_stage(
         args=args,
@@ -1157,6 +1184,10 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
     assert manifest["selection_explanations"][0]["sha256"] == "feedback-hash"  # type: ignore[index]
     assert manifest["stages"][-1]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
+    assert commands
+    assert "--canonical-store-check-json" in commands[0]
+    check_result_arg_index = commands[0].index("--canonical-store-check-json") + 1
+    assert commands[0][check_result_arg_index] == str(run_dir / "canonical-store" / "check-result.json")
 
 
 def test_graph_closure_stage_hashes_report_once_without_rehashing(

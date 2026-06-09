@@ -17,6 +17,7 @@ from tools.common.candidate_feedback_contract import (
     compact_next_action_prompt_payload,
     compact_prior_state_prompt_payload,
 )
+from tools.source_db_tools import canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
@@ -590,6 +591,125 @@ def test_resolve_prior_state_context_reuses_validated_store_connection(
     assert validate_calls[0][0] is dummy_conn
     assert len(load_calls) == 1
     assert load_calls[0][0] is dummy_conn
+    assert prior_context_calls == [
+        {
+            "prior_state": {
+                "subject_id": "alpha.fixture",
+                "per_family_limit": 4,
+                "high_confidence_threshold": driver.canonical_store.DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE,
+                "policy": driver.PRIOR_STATE_POLICY,
+            },
+            "cycle_depth": 2,
+            "previous_run_ids": ["run-1"],
+            "max_chars": 1024,
+        }
+    ]
+
+
+def test_resolve_prior_state_context_uses_prevalidated_store_check_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        applied_at=FIXED_CREATED_AT,
+        applied_by="pytest.run_topic_gather",
+    )
+    check_result = canonical_store.check_canonical_store(db_path)
+    check_result_path = tmp_path / "canonical-store-check.json"
+    check_result_path.write_text(
+        json.dumps(
+            canonical_store.serialize_check_result(check_result),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dummy_conn = SimpleNamespace(close=lambda: None)
+    connect_calls: list[Path] = []
+    load_calls: list[tuple[object, str]] = []
+    prior_context_calls: list[dict[str, object]] = []
+
+    def fake_connect_existing_read_only(path: Path) -> object:
+        connect_calls.append(path)
+        return dummy_conn
+
+    def fake_load_gather_prior_state(
+        conn: object,
+        *,
+        subject_id: str,
+        per_family_limit: int,
+        high_confidence_threshold: float,
+        policy: str,
+    ) -> dict[str, object]:
+        load_calls.append((conn, subject_id))
+        return {
+            "subject_id": subject_id,
+            "per_family_limit": per_family_limit,
+            "high_confidence_threshold": high_confidence_threshold,
+            "policy": policy,
+        }
+
+    def fake_build_prior_state_context(
+        prior_state: dict[str, object],
+        *,
+        cycle_depth: int,
+        previous_run_ids: list[str] | None,
+        max_chars: int,
+    ) -> dict[str, object]:
+        prior_context_calls.append(
+            {
+                "prior_state": prior_state,
+                "cycle_depth": cycle_depth,
+                "previous_run_ids": previous_run_ids,
+                "max_chars": max_chars,
+            }
+        )
+        return {
+            "schema_version": "prior-state-context.v1",
+            "context_text": "prior context",
+            "context_hash": "hash",
+        }
+
+    monkeypatch.setattr(
+        driver.canonical_store, "connect_existing_read_only", fake_connect_existing_read_only
+    )
+    monkeypatch.setattr(
+        driver.canonical_store,
+        "validate_existing_store",
+        lambda *_args, **_kwargs: pytest.fail("unexpected validate_existing_store"),
+    )
+    monkeypatch.setattr(
+        driver.canonical_store, "load_gather_prior_state", fake_load_gather_prior_state
+    )
+    monkeypatch.setattr(
+        driver.canonical_store, "build_prior_state_context", fake_build_prior_state_context
+    )
+
+    result = driver.resolve_prior_state_context(
+        SimpleNamespace(
+            facet="sources",
+            use_prior_state=True,
+            db=db_path,
+            canonical_store_check_json=check_result_path,
+            prior_state_limit=4,
+            prior_state_policy=driver.PRIOR_STATE_POLICY,
+            prior_state_max_chars=1024,
+            previous_run_id=["run-1"],
+            cycle_depth=2,
+        ),
+        subject_id="alpha.fixture",
+    )
+
+    assert result == {
+        "schema_version": "prior-state-context.v1",
+        "context_text": "prior context",
+        "context_hash": "hash",
+    }
+    assert connect_calls == [db_path]
+    assert load_calls == [(dummy_conn, "alpha.fixture")]
     assert prior_context_calls == [
         {
             "prior_state": {

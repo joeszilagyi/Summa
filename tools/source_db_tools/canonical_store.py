@@ -145,6 +145,59 @@ class CheckResult:
     extra_tables: tuple[str, ...]
 
 
+def serialize_check_result(check_result: CheckResult) -> dict[str, Any]:
+    return {
+        "db_path": str(check_result.db_path),
+        "schema_version": check_result.schema_version,
+        "current_migration_id": check_result.current_migration_id,
+        "tables": list(check_result.tables),
+        "extra_tables": list(check_result.extra_tables),
+    }
+
+
+def load_check_result_payload(
+    payload: Any,
+    *,
+    label: str = "canonical store check result",
+) -> CheckResult:
+    if not isinstance(payload, dict):
+        raise CanonicalStoreError(f"{label} must be a JSON object")
+    db_path = _require_nonblank(payload.get("db_path"), f"{label} db_path")
+    schema_version_value = payload.get("schema_version")
+    try:
+        schema_version = int(schema_version_value)
+    except (TypeError, ValueError) as exc:
+        raise CanonicalStoreError(f"{label} schema_version must be an integer") from exc
+    current_migration_id = _require_nonblank(
+        payload.get("current_migration_id"), f"{label} current_migration_id"
+    )
+    tables_value = payload.get("tables")
+    if not isinstance(tables_value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in tables_value
+    ):
+        raise CanonicalStoreError(f"{label} tables must be a list of strings")
+    extra_tables_value = payload.get("extra_tables")
+    if not isinstance(extra_tables_value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in extra_tables_value
+    ):
+        raise CanonicalStoreError(f"{label} extra_tables must be a list of strings")
+    return CheckResult(
+        db_path=resolve_db_path(db_path),
+        schema_version=schema_version,
+        current_migration_id=current_migration_id,
+        tables=tuple(tables_value),
+        extra_tables=tuple(extra_tables_value),
+    )
+
+
+def load_check_result(path: Path) -> CheckResult:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CanonicalStoreError(f"could not read canonical store check result: {path}") from exc
+    return load_check_result_payload(payload, label=str(path))
+
+
 @dataclass(frozen=True)
 class CanonicalWriteResult:
     table: str

@@ -2581,6 +2581,37 @@ def test_candidate_feedback_planner_helpers_cover_parser_validation_and_pure_bra
         planner.load_checked_connection(str(db_path))
 
 
+def test_candidate_feedback_planner_uses_prevalidated_store_check_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    check_result = canonical_store.check_canonical_store(db_path)
+    check_result_path = tmp_path / "canonical-store-check.json"
+    check_result_path.write_text(
+        json.dumps(
+            canonical_store.serialize_check_result(check_result),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        planner.canonical_store,
+        "check_canonical_store",
+        lambda *_: pytest.fail("unexpected check_canonical_store"),
+    )
+
+    conn, loaded_check_result = planner.load_checked_connection(
+        str(db_path), canonical_store_check_json=str(check_result_path)
+    )
+    try:
+        assert loaded_check_result == check_result
+    finally:
+        conn.close()
+
+
 def test_candidate_feedback_planner_scoring_selection_and_deferred_branches() -> None:
     enabled_facets = ["sources", "open_questions", "works"]
     bundles = {facet: {"bundle_id": f"bundle:{facet}"} for facet in enabled_facets}
@@ -3016,7 +3047,11 @@ def test_candidate_feedback_planner_main_json_text_and_error_paths(
         monkeypatch.setattr(planner, "parse_args", lambda: args)
         monkeypatch.setattr(planner, "validate_args", lambda parsed: None)
         monkeypatch.setattr(planner, "load_runtime", lambda parsed: (runtime, {"domain_pack": "general.v1"}, {"sources": {"bundle_id": "bundle:sources"}}))
-        monkeypatch.setattr(planner, "load_checked_connection", lambda raw_db: (fake_conn, check_result))
+        monkeypatch.setattr(
+            planner,
+            "load_checked_connection",
+            lambda raw_db, **kwargs: (fake_conn, check_result),
+        )
         monkeypatch.setattr(planner, "build_plan", lambda **kwargs: payload)
         file_validation_calls: list[Path] = []
         payload_validation_calls: list[dict[str, Any]] = []
