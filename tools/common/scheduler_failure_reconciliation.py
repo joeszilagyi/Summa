@@ -7,14 +7,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from tools.common.runtime_ledger import RuntimeLedgerError, load_events as load_runtime_events
-
+from tools.common.runtime_ledger import RuntimeLedgerError
+from tools.common.runtime_ledger import load_events as load_runtime_events
 
 FAILURE_EVENT_TYPE = "command_failure"
 SUCCESS_EVENT_TYPE = "command_end"
 TERMINAL_EVENT_TYPES = {FAILURE_EVENT_TYPE, SUCCESS_EVENT_TYPE}
 SUCCESS_STATUSES = {"pass", "passed", "success", "succeeded", "ok"}
 FAILURE_STATUSES = {"fail", "failed", "error"}
+UNKNOWN_STATUS_BLOCK_REASON = "command_end status is not a recognized success or failure value"
 
 
 class SchedulerFailureReconciliationError(RuntimeError):
@@ -77,10 +78,14 @@ def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
 
     outcomes: list[RunOutcome] = []
     for run_id, run_events in runs.items():
-        terminal_events = [event for event in run_events if event.get("event_type") in TERMINAL_EVENT_TYPES]
+        terminal_events = [
+            event for event in run_events if event.get("event_type") in TERMINAL_EVENT_TYPES
+        ]
         if not terminal_events:
             continue
-        terminal_events.sort(key=lambda event: (event["occurred_at"], str(event.get("event_id", ""))))
+        terminal_events.sort(
+            key=lambda event: (event["occurred_at"], str(event.get("event_id", "")))
+        )
         last_event = terminal_events[-1]
         event_type = last_event.get("event_type")
         occurred_at = str(last_event["occurred_at"])
@@ -103,6 +108,16 @@ def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
                     status="failure",
                     occurred_at=occurred_at,
                     failure_reason=f"command_end status {status}",
+                )
+            )
+            continue
+        if status not in SUCCESS_STATUSES:
+            outcomes.append(
+                RunOutcome(
+                    run_id=run_id,
+                    status="failure",
+                    occurred_at=occurred_at,
+                    failure_reason=UNKNOWN_STATUS_BLOCK_REASON,
                 )
             )
             continue
@@ -144,7 +159,21 @@ def derive_failure_state(
 
     latest_outcome = run_outcomes[-1]
     if latest_outcome.status == "success":
-        return {"status": "healthy", "attempt_count": 0}, ["latest terminal run recovered successfully"], run_outcomes
+        return (
+            {"status": "healthy", "attempt_count": 0},
+            ["latest terminal run recovered successfully"],
+            run_outcomes,
+        )
+
+    if latest_outcome.failure_reason == UNKNOWN_STATUS_BLOCK_REASON:
+        derived = {
+            "status": "blocked",
+            "attempt_count": 1,
+            "last_failure_at": latest_outcome.occurred_at,
+            "last_failure_reason": latest_outcome.failure_reason,
+            "blocked_reason": UNKNOWN_STATUS_BLOCK_REASON,
+        }
+        return derived, [UNKNOWN_STATUS_BLOCK_REASON], run_outcomes
 
     consecutive_failures: list[RunOutcome] = []
     for outcome in reversed(run_outcomes):
@@ -164,16 +193,20 @@ def derive_failure_state(
 
     backoff_seconds = value_as_positive_int(retry_policy, "backoff_seconds")
     if backoff_seconds is not None:
-        next_retry = parse_timestamp(newest_failure.occurred_at, label="last_failure_at") + timedelta(
-            seconds=backoff_seconds
+        next_retry = parse_timestamp(
+            newest_failure.occurred_at, label="last_failure_at"
+        ) + timedelta(seconds=backoff_seconds)
+        derived["next_retry_at"] = (
+            next_retry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
-        derived["next_retry_at"] = next_retry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         reasons.append(f"retry backoff derived from retry_policy.backoff_seconds {backoff_seconds}")
 
     blocked_reasons: list[str] = []
     max_attempts = value_as_positive_int(run_budget, "max_attempts")
     if max_attempts is not None and attempt_count >= max_attempts:
-        blocked_reasons.append(f"attempt_count {attempt_count} reached run_budget.max_attempts {max_attempts}")
+        blocked_reasons.append(
+            f"attempt_count {attempt_count} reached run_budget.max_attempts {max_attempts}"
+        )
 
     max_retryable_failures = value_as_positive_int(retry_policy, "max_retryable_failures")
     if max_retryable_failures is not None and attempt_count > max_retryable_failures:
