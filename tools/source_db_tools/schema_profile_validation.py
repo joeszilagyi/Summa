@@ -16,22 +16,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-try:
-    import claim_types
-    import confidence_model
-    import identifier_normalization
-    import relationship_predicates
-    import rights_retention
-    import source_types
-except ImportError:  # pragma: no cover - package import fallback
-    from tools.source_db_tools import (
-        claim_types,  # type: ignore
-        confidence_model,  # type: ignore
-        identifier_normalization,  # type: ignore
-        relationship_predicates,  # type: ignore
-        rights_retention,  # type: ignore
-        source_types,  # type: ignore
-    )
+from tools.source_db_tools import (  # noqa: E402
+    claim_types,
+    confidence_model,
+    identifier_normalization,
+    relationship_predicates,
+    rights_retention,
+    source_types,
+)
 
 PROFILE_PATH = Path(__file__).resolve().with_name("schema_profiles.json")
 REPORT_SCHEMA_VERSION = "schema-profile-validation-report.v1"

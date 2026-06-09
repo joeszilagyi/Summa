@@ -31,8 +31,6 @@ if str(REPO_ROOT) not in sys.path:
 if str(VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATORS_DIR))
 
-import validate_subject_manifest  # noqa: E402
-
 from tools.common import topic_saturation  # noqa: E402
 from tools.common.selection_explanation import build_scheduler_selection_explanation  # noqa: E402
 from tools.common.topic_workspace_registry import (  # noqa: E402
@@ -44,7 +42,10 @@ from tools.common.topic_workspace_registry import (  # noqa: E402
     resolve_workspaces,
 )
 from tools.source_db_tools import canonical_store  # noqa: E402
-from tools.validators import validate_topic_workspace_registry  # noqa: E402
+from tools.validators import (  # noqa: E402
+    validate_subject_manifest,
+    validate_topic_workspace_registry,
+)
 
 
 class SelectionError(RuntimeError):
