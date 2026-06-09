@@ -184,4 +184,7 @@ def record_event(
             timestamp,
         ),
     )
-    return int(cursor.lastrowid)
+    row_id = cursor.lastrowid
+    if row_id is None:
+        raise RuntimeError("sqlite did not return a provenance_event row id")
+    return int(row_id)
