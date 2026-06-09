@@ -778,7 +778,9 @@ def load_jsonl_record_map_from_path(
                     errors.append({"context": f"line:{line_number}", "reason": str(exc)})
                     continue
                 except json.JSONDecodeError as exc:
-                    errors.append({"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg})
+                    errors.append(
+                        {"context": f"line:{line_number},column:{exc.colno}", "reason": exc.msg}
+                    )
                     continue
                 except ValueError as exc:
                     errors.append({"context": f"line:{line_number}", "reason": str(exc)})
