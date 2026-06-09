@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sqlite3
@@ -417,3 +418,159 @@ def test_operator_path_smoke_run_topic_cycle_uses_the_real_script_path(
     assert "real topic-cycle path" in summary
     assert captured["command"][1] == str(REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py")
     assert captured["command"][captured["command"].index("--run-id") + 1] == "fixture-smoke"
+
+
+def test_operator_path_smoke_helpers_cover_resolution_and_rendering(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    scripts_dir = repo / "tools" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("bootstrap_topic_workspace.py", "build_operator_dashboard.py"):
+        (scripts_dir / name).write_text("# stub\n", encoding="utf-8")
+
+    assert operator_path_smoke.resolve_repo_root(str(repo)) == repo.resolve()
+    with pytest.raises(operator_path_smoke.OperatorPathSmokeError, match="repo root not found"):
+        operator_path_smoke.resolve_repo_root(str(tmp_path / "missing"))
+
+    file_path = tmp_path / "not-a-dir"
+    file_path.write_text("x", encoding="utf-8")
+    with pytest.raises(operator_path_smoke.OperatorPathSmokeError, match="not a directory"):
+        operator_path_smoke.resolve_repo_root(str(file_path))
+
+    with operator_path_smoke.managed_workspace(None, run_id="fixture", keep=False) as temp_ws:
+        assert temp_ws.exists()
+    assert not temp_ws.exists()
+
+    explicit_ws = tmp_path / "explicit-workspace"
+    with operator_path_smoke.managed_workspace(str(explicit_ws), run_id="fixture", keep=False) as ws:
+        assert ws == explicit_ws.resolve()
+        assert ws.exists()
+    assert explicit_ws.exists()
+
+    assert operator_path_smoke.command_text(["python3", "tool.py", "--flag", "value with space"])
+    good = subprocess.CompletedProcess(["python3"], 0, stdout='{"alpha": 1}\n', stderr="")
+    assert operator_path_smoke.parse_json_stdout(good, label="good") == {"alpha": 1}
+    bad = subprocess.CompletedProcess(["python3"], 0, stdout="[]\n", stderr="")
+    with pytest.raises(operator_path_smoke.OperatorPathSmokeError, match="did not emit a JSON object"):
+        operator_path_smoke.parse_json_stdout(bad, label="bad")
+
+    ctx = operator_path_smoke.SmokeContext(
+        repo_root=repo.resolve(),
+        workspace_path=tmp_path / "workspace",
+        dry_run=True,
+        run_id="fixture",
+        timestamp="2026-06-03T00:00:00Z",
+        registry_path=tmp_path / "workspace" / "topic_workspaces.local.json",
+        topic_workspace_root=tmp_path / "workspace" / "topic-workspace",
+    )
+    report = operator_path_smoke.build_report(
+        ctx,
+        [
+            operator_path_smoke.SmokeCheck(
+                name="a",
+                status="passed",
+                surface="surface.a",
+                command="cmd-a",
+                message="ok",
+            ),
+            operator_path_smoke.SmokeCheck(
+                name="b",
+                status="failed",
+                surface="surface.b",
+                error_message="boom",
+            ),
+        ],
+    )
+    assert report["status"] == "failed"
+    rendered = operator_path_smoke.render_text(report)
+    assert "summary.passed=1" in rendered
+    assert "summary.failed=1" in rendered
+    assert "check[1].error_message=boom" in rendered
+
+
+def test_operator_path_smoke_run_smoke_can_use_patched_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    scripts_dir = repo / "tools" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("bootstrap_topic_workspace.py", "build_operator_dashboard.py"):
+        (scripts_dir / name).write_text("# stub\n", encoding="utf-8")
+
+    replacements = {
+        "smoke_help_surfaces": (None, "help ok"),
+        "smoke_bootstrap_dry_run": (None, "bootstrap dry-run ok"),
+        "smoke_bootstrap_apply": (str(tmp_path / "subject.json"), "bootstrap apply ok"),
+        "smoke_resolve_subject_runtime": (None, "runtime ok"),
+        "smoke_resolve_domain_pack": (None, "domain pack ok"),
+        "smoke_workspace_overview": (None, "overview ok"),
+        "smoke_subject_detail": (None, "subject detail ok"),
+        "smoke_source_intake": (None, "source intake ok"),
+        "smoke_init_canonical_store": (str(tmp_path / "canonical.sqlite"), "canonical ok"),
+        "smoke_run_topic_cycle": (str(tmp_path / "topic-cycle.json"), "cycle ok"),
+        "smoke_canonical_family_counts": (str(tmp_path / "canonical.sqlite"), "family counts ok"),
+        "smoke_review_queue": (str(tmp_path / "canonical.sqlite"), "review queue ok"),
+        "smoke_local_doctor": (str(tmp_path / "doctor.json"), "doctor ok"),
+        "smoke_operator_dashboard": (str(tmp_path / "dashboard.html"), "dashboard ok"),
+    }
+    for name, payload in replacements.items():
+        monkeypatch.setattr(
+            operator_path_smoke,
+            name,
+            lambda ctx, payload=payload: payload,
+        )
+
+    report, exit_code = operator_path_smoke.run_smoke(
+        argparse.Namespace(
+            repo_root=str(repo),
+            workspace=str(tmp_path / "workspace"),
+            output=None,
+            dry_run=True,
+            keep=False,
+            run_id="fixture-smoke",
+            timestamp="2026-06-03T12:00:00Z",
+            format="json",
+            json=False,
+        )
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert report["summary"] == {"passed": 14, "failed": 0, "skipped": 0}
+    assert report["checks"][0]["name"] == "operator_script_help"
+    assert report["checks"][-1]["name"] == "build_operator_dashboard"
+
+
+def test_operator_path_smoke_run_smoke_stops_on_first_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    scripts_dir = repo / "tools" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("bootstrap_topic_workspace.py", "build_operator_dashboard.py"):
+        (scripts_dir / name).write_text("# stub\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        operator_path_smoke,
+        "smoke_help_surfaces",
+        lambda ctx: (_ for _ in ()).throw(operator_path_smoke.OperatorPathSmokeError("boom")),
+    )
+    report, exit_code = operator_path_smoke.run_smoke(
+        argparse.Namespace(
+            repo_root=str(repo),
+            workspace=str(tmp_path / "workspace"),
+            output=None,
+            dry_run=True,
+            keep=False,
+            run_id="fixture-smoke",
+            timestamp="2026-06-03T12:00:00Z",
+            format="json",
+            json=False,
+        )
+    )
+
+    assert exit_code == 1
+    assert report["status"] == "failed"
+    assert report["summary"] == {"passed": 0, "failed": 1, "skipped": 0}
+    assert report["checks"][0]["name"] == "operator_script_help"
+    assert report["checks"][0]["status"] == "failed"
+    assert report["checks"][0]["error_message"] == "boom"
