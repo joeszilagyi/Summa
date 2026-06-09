@@ -8,7 +8,6 @@ import heapq
 import json
 import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +38,7 @@ from tools.source_db_tools import canonical_store, cycle_evidence_ledger  # noqa
 from tools.validators.validate_candidate_feedback_plan import (  # noqa: E402
     EXIT_PASS,
     validate_candidate_feedback_plan,
+    validate_candidate_feedback_plan_payload,
 )
 
 SUCCESS_EXTRACTION_STATUSES = frozenset({"completed", "ok", "recorded", "success"})
@@ -1824,6 +1824,15 @@ def validate_emitted_plan(path: Path) -> None:
         )
 
 
+def validate_emitted_plan_payload(payload: dict[str, Any]) -> None:
+    report, exit_code = validate_candidate_feedback_plan_payload(payload)
+    if exit_code != EXIT_PASS:
+        first = report["errors"][0]["message"] if report.get("errors") else "unknown error"
+        raise CandidateFeedbackError(
+            f"generated candidate feedback plan failed validation: {first}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -1852,15 +1861,7 @@ def main() -> int:
             atomic_write_text(output_path, compact_json_text(payload) + "\n")
             validate_emitted_plan(output_path)
         else:
-            with tempfile.NamedTemporaryFile(
-                "w", encoding="utf-8", suffix=".json", delete=False
-            ) as handle:
-                temp_path = Path(handle.name)
-                handle.write(compact_json_text(payload) + "\n")
-            try:
-                validate_emitted_plan(temp_path)
-            finally:
-                temp_path.unlink(missing_ok=True)
+            validate_emitted_plan_payload(payload)
 
         if args.record_selection_ledger:
             record_selection_explanation_ledger(

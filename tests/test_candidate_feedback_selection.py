@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -760,6 +761,21 @@ def test_candidate_feedback_validator_rejects_out_of_range_selection_score(tmp_p
         "next_action.selection_score must be a finite number between" in error["message"]
         for error in report["errors"]
     )
+
+
+def test_candidate_feedback_validator_accepts_payload_in_memory(tmp_path: Path) -> None:
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(tmp_path / "workspace", subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    _result, _output_path, payload = build_plan(tmp_path, db_path, manifest_path)
+
+    report, exit_code = validator.validate_candidate_feedback_plan_payload(payload)
+
+    assert exit_code == validator.EXIT_PASS, report
+    assert report["target"] == "<memory>"
+    assert report["valid"] is True
 
 
 def validate_plan(path: Path) -> dict[str, object]:
@@ -3002,7 +3018,18 @@ def test_candidate_feedback_planner_main_json_text_and_error_paths(
         monkeypatch.setattr(planner, "load_runtime", lambda parsed: (runtime, {"domain_pack": "general.v1"}, {"sources": {"bundle_id": "bundle:sources"}}))
         monkeypatch.setattr(planner, "load_checked_connection", lambda raw_db: (fake_conn, check_result))
         monkeypatch.setattr(planner, "build_plan", lambda **kwargs: payload)
-        monkeypatch.setattr(planner, "validate_emitted_plan", lambda path: None)
+        file_validation_calls: list[Path] = []
+        payload_validation_calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            planner,
+            "validate_emitted_plan",
+            lambda path: file_validation_calls.append(Path(path)),
+        )
+        monkeypatch.setattr(
+            planner,
+            "validate_emitted_plan_payload",
+            lambda emitted_payload: payload_validation_calls.append(emitted_payload),
+        )
         ledger_calls: list[Path] = []
         monkeypatch.setattr(
             planner,
@@ -3011,10 +3038,10 @@ def test_candidate_feedback_planner_main_json_text_and_error_paths(
         )
         exit_code = planner.main()
         captured = capsys.readouterr()
-        return exit_code, captured.out, captured.err, ledger_calls
+        return exit_code, captured.out, captured.err, ledger_calls, file_validation_calls, payload_validation_calls
 
     json_output = tmp_path / "plan.json"
-    exit_code, stdout, stderr, ledger_calls = run_main(
+    exit_code, stdout, stderr, ledger_calls, file_validation_calls, payload_validation_calls = run_main(
         argparse.Namespace(
             subject="subject-1",
             workspace="workspace",
@@ -3035,8 +3062,10 @@ def test_candidate_feedback_planner_main_json_text_and_error_paths(
     assert stdout == compact_json_text(payload) + "\n"
     assert json_output.read_text(encoding="utf-8") == compact_json_text(payload) + "\n"
     assert ledger_calls == []
+    assert file_validation_calls == [json_output]
+    assert payload_validation_calls == []
 
-    exit_code, stdout, stderr, ledger_calls = run_main(
+    exit_code, stdout, stderr, ledger_calls, file_validation_calls, payload_validation_calls = run_main(
         argparse.Namespace(
             subject="subject-1",
             workspace="workspace",
@@ -3056,6 +3085,8 @@ def test_candidate_feedback_planner_main_json_text_and_error_paths(
     assert stderr == ""
     assert "schema_version=candidate-feedback-plan.v1" in stdout
     assert ledger_calls == [tmp_path / "canonical.sqlite"]
+    assert file_validation_calls == []
+    assert payload_validation_calls == [payload]
 
     monkeypatch.setattr(
         planner,

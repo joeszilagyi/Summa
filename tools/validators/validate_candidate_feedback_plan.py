@@ -739,6 +739,17 @@ def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]
             "stats": {"error_count": len(errors), "warning_count": 0},
         }, exit_code
 
+    return validate_candidate_feedback_plan_payload(payload, target=target)
+
+
+def validate_candidate_feedback_plan_payload(
+    payload: dict[str, Any],
+    *,
+    target: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    errors: list[dict[str, Any]] = []
+    target_display = "<memory>" if target is None else display_path(target)
+
     for key in sorted(REQUIRED_KEYS - set(payload)):
         add_error(errors, code="MISSING_REQUIRED_KEY", message=f"missing required key: {key}")
 
@@ -829,7 +840,7 @@ def validate_candidate_feedback_plan(target: Path) -> tuple[dict[str, Any], int]
         "validator": VALIDATOR_NAME,
         "contract_version": CONTRACT_VERSION,
         "schema_path": SCHEMA_PATH,
-        "target": display_path(target),
+        "target": target_display,
         "valid": not errors,
         "errors": errors,
         "warnings": [],
