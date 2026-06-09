@@ -1115,8 +1115,7 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
     def fake_validate_candidate_feedback_plan(path: Path):
-        assert path == output_path
-        return ({"errors": [], "warnings": [], "counts": {}}, module.EXIT_FEEDBACK_PASS)
+        raise AssertionError(f"unexpected validate_candidate_feedback_plan call: {path}")
 
     hashed_paths: list[Path] = []
 
@@ -1157,6 +1156,7 @@ def test_feedback_plan_stage_hashes_output_once_without_rehashing(
     assert hashed_paths == [output_path]
     assert manifest["feedback_plan"]["sha256"] == "feedback-hash"  # type: ignore[index]
     assert manifest["selection_explanations"][0]["sha256"] == "feedback-hash"  # type: ignore[index]
+    assert manifest["stages"][-1]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
 
 
 def test_graph_closure_stage_hashes_report_once_without_rehashing(
