@@ -1443,25 +1443,12 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
         network_safety_report=None,
     )
     load_calls = {"count": 0}
-    validate_calls = {"count": 0}
     ingest_calls = {"count": 0}
 
     def fake_load_execution_artifacts(target: Path):
         load_calls["count"] += 1
         assert target == execution_run_dir
         return fake_receipt
-
-    def fake_validate_execution_artifact_receipt(receipt: object):
-        validate_calls["count"] += 1
-        assert receipt is fake_receipt
-        return (
-            {
-                "counts": {"inspected": 1, "accepted": 1, "rejected": 0, "deferred": 0},
-                "errors": [],
-                "warnings": [],
-            },
-            module.EXIT_EXECUTION_PASS,
-        )
 
     def fake_run_command(*args, **kwargs):
         assert kwargs.get("timeout") == 222.0
@@ -1499,9 +1486,6 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     monkeypatch.setattr(module, "resolve_path", fake_resolve_path)
     monkeypatch.setattr(module, "load_execution_artifacts", fake_load_execution_artifacts)
     monkeypatch.setattr(
-        module, "validate_execution_artifact_receipt", fake_validate_execution_artifact_receipt
-    )
-    monkeypatch.setattr(
         module.canonical_ingest,
         "load_validated_execution_artifacts",
         lambda *_: pytest.fail("unexpected execution reload"),
@@ -1532,7 +1516,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
     assert acquired_run_dir == execution_run_dir
     assert receipt is fake_receipt
     assert load_calls["count"] == 1
-    assert validate_calls["count"] == 1
+    assert manifest["stages"][-1]["validation"] == {"status": "pass", "source": "child"}  # type: ignore[index]
 
     result = module.execution_ingest_stage(
         args=args,

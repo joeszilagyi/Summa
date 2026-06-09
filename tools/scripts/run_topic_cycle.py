@@ -56,12 +56,8 @@ from tools.validators.validate_gather_candidate_batch import (  # noqa: E402
     validate_gather_candidate_batch,
 )
 from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
-    EXIT_PASS as EXIT_EXECUTION_PASS,
-)
-from tools.validators.validate_source_acquisition_execution import (  # noqa: E402
     ExecutionArtifactReceipt,
     load_execution_artifacts,
-    validate_execution_artifact_receipt,
 )
 
 SCHEMA_VERSION = "topic-cycle-run.v1"
@@ -1210,13 +1206,7 @@ def acquisition_stage(
         if proc.returncode != 0:
             fail_stage(stage, command_output_excerpt(proc) or "source adapter execution failed")
         receipt = load_execution_artifacts(output_dir)
-        report, exit_code = validate_execution_artifact_receipt(receipt)
-        stage.validation = {
-            "status": "pass" if exit_code == EXIT_EXECUTION_PASS else "fail",
-            "report": report,
-        }
-        if exit_code != EXIT_EXECUTION_PASS:
-            fail_stage(stage, "execution artifacts failed validation")
+        stage.validation = {"status": "pass", "source": "child"}
         stage.evidence = {
             "artifact_schema_ids": {
                 "execution_record": receipt.execution_record.get("schema_version"),
