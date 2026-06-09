@@ -869,7 +869,7 @@ def summarize_loop_health(
     """Open an initialized canonical store read-only and summarize loop health."""
 
     path = canonical_store.resolve_db_path(db_path)
-    base = {
+    base: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "subject_id": subject_id,
         "workspace_id": workspace_id,
