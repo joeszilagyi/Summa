@@ -145,7 +145,7 @@ def _relative_to_collateral(pdf_path: Path) -> str:
 def extract_pdf_metadata(pdf_path: Path) -> dict:
     meta: dict = {}
     try:
-        import pypdf
+        import pypdf  # type: ignore[import-not-found]
 
         with open(pdf_path, "rb") as fh:
             reader = pypdf.PdfReader(fh)
@@ -176,7 +176,7 @@ def _str(val: object) -> str:
 
 
 def extract_text_layer(pdf_path: Path) -> str:
-    from pdfminer.high_level import extract_text
+    from pdfminer.high_level import extract_text  # type: ignore[import-not-found]
 
     text = extract_text(str(pdf_path))
     return text or ""
@@ -202,8 +202,8 @@ def detect_text_layer(pdf_path: Path, page_count: int) -> tuple[bool, str]:
 def extract_via_ocr(pdf_path: Path, lang: str, page_count: int = 0) -> tuple[str, list[str]]:
     warnings: list[str] = []
     try:
-        import pytesseract
-        from pdf2image import convert_from_path
+        import pytesseract  # type: ignore[import-not-found]
+        from pdf2image import convert_from_path  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
             f"OCR dependencies not available ({exc}). "
