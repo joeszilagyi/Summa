@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "tools" / "scripts"
@@ -1210,6 +1210,11 @@ def load_cached_live_result(
         for section in (prompt, facet_payload, subject_payload, engine_payload, provenance)
     ):
         return None
+    prompt = cast(dict[str, Any], prompt)
+    facet_payload = cast(dict[str, Any], facet_payload)
+    subject_payload = cast(dict[str, Any], subject_payload)
+    engine_payload = cast(dict[str, Any], engine_payload)
+    provenance = cast(dict[str, Any], provenance)
     if prompt.get("rendered_prompt_hash") != rendered_prompt_hash:
         return None
     if subject_payload.get("subject_id") != subject_id:
@@ -1243,7 +1248,10 @@ def load_cached_live_result(
         return None
     if not isinstance(stamp_footer, dict):
         return None
+    stamp_footer = cast(dict[str, Any], stamp_footer)
 
+    raw_engine_output_path = cast(str, raw_engine_output_path)
+    stamped_output_path = cast(str, stamped_output_path)
     raw_output_path = Path(raw_engine_output_path)
     stamped_output_path_obj = Path(stamped_output_path)
     if not raw_output_path.is_file() or not stamped_output_path_obj.is_file():
