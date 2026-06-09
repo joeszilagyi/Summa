@@ -691,6 +691,45 @@
         "rendered_prompt": {
           "type": "string",
           "minLength": 1
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "section_byte_counts",
+            "prompt_total_byte_count",
+            "source_block_count",
+            "metadata_block_count",
+            "section_order"
+          ],
+          "properties": {
+            "section_byte_counts": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "prompt_total_byte_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "source_block_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "metadata_block_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "section_order": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         }
       }
     },

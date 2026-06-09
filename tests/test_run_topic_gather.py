@@ -1393,6 +1393,7 @@ def test_gather_candidate_batch_validator_uses_recorded_prior_state_metadata(
 
     batch_path = batch_path_for(workspace_root, run_id)
     payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    prompt_text = prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8")
     assert payload["prior_state"]["prior_state_rendered_source_ref"] == "metadata:prior-state"
     assert (
         payload["prior_state"]["prior_state_rendered_provenance"] == "prior canonical state context"
@@ -1408,6 +1409,11 @@ def test_gather_candidate_batch_validator_uses_recorded_prior_state_metadata(
     assert payload["prior_state"]["prior_state_rendered_byte_count"] == len(
         expected_prior_state_text.encode("utf-8")
     )
+    assert payload["prompt"]["budget"]["prompt_total_byte_count"] == len(
+        prompt_text.encode("utf-8")
+    )
+    assert payload["prompt"]["budget"]["source_block_count"] == 0
+    assert "source_text_blocks" in payload["prompt"]["budget"]["section_byte_counts"]
 
     real_parse_wrapped_blocks = validator.parse_wrapped_blocks
     parse_calls: list[str] = []

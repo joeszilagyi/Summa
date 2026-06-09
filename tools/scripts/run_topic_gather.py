@@ -780,7 +780,7 @@ def execute_gather_run(
         args=args,
         source_wrapping_blocks=source_wrapping_blocks,
     )
-    rendered_prompt = render_prompt_text(
+    rendered_prompt, prompt_budget = build_prompt_rendering(
         prompt_body=prompt_body,
         subject=gather_inputs["subject"],
         facet=gather_inputs["facet"],
@@ -858,6 +858,7 @@ def execute_gather_run(
         rendered_prompt=rendered_prompt,
         rendered_prompt_path=rendered_prompt_path,
         source_wrapping_blocks=source_wrapping_blocks,
+        prompt_budget=prompt_budget,
         live_result=live_result,
         prior_state=prior_state_context,
         feedback_plan=feedback_plan,
@@ -965,7 +966,7 @@ def render_untrusted_json_block(
     )
 
 
-def render_prompt_text(
+def build_prompt_rendering(
     *,
     prompt_body: str,
     subject: dict[str, Any],
@@ -977,7 +978,7 @@ def render_prompt_text(
     next_action: dict[str, Any] | None = None,
     prior_state: dict[str, Any] | None = None,
     template: WrapperTemplate,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     subject_metadata = {
         "subject_id": subject["subject_id"],
         "display_name": subject["display_name"],
@@ -1014,28 +1015,74 @@ def render_prompt_text(
         if isinstance(prior_state, dict)
         else ""
     )
-    metadata_sections = [
-        f"Untrusted subject metadata:\n{subject_block}\n",
-    ]
-    if next_action_block:
-        metadata_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
-    if prior_state_block:
-        metadata_sections.append(
-            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
-        )
-    return (
-        f"{prompt_body.rstrip()}\n\n"
+    prompt_sections = [
+        f"{prompt_body.rstrip()}\n\n",
         "Subject runtime:\n"
         f"- subject_id: {subject['subject_id']}\n"
         f"- facet: {facet}\n"
         f"- phase: {phase}\n"
         f"- prompt_bundle_id: {bundle['bundle_id']}\n"
         f"- prompt_bundle_key: {bundle['bundle_key']}\n"
-        f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n"
-        + "".join(metadata_sections)
-        + "Wrapped source text blocks:\n"
-        + f"{source_block_section}\n"
+        f"- wrapper_template_id: {bundle['source_text_wrapper_template_id']}\n\n",
+        f"Untrusted subject metadata:\n{subject_block}\n",
+    ]
+    if next_action_block:
+        prompt_sections.append(f"Untrusted feedback-plan metadata:\n{next_action_block}\n")
+    if prior_state_block:
+        prompt_sections.append(
+            f"Untrusted prior canonical state metadata:\n{prior_state_block}\n"
+        )
+    source_text_blocks_section = "Wrapped source text blocks:\n" + f"{source_block_section}\n"
+    prompt_sections.append(source_text_blocks_section)
+    section_byte_counts = {
+        "prompt_body": len(prompt_sections[0].encode("utf-8")),
+        "subject_runtime": len(prompt_sections[1].encode("utf-8")),
+        "subject_metadata": len(prompt_sections[2].encode("utf-8")),
+        "source_text_blocks": len(source_text_blocks_section.encode("utf-8")),
+    }
+    if next_action_block:
+        section_byte_counts["feedback_plan_metadata"] = len(prompt_sections[3].encode("utf-8"))
+    if prior_state_block:
+        prior_state_index = 4 if next_action_block else 3
+        section_byte_counts["prior_state_metadata"] = len(
+            prompt_sections[prior_state_index].encode("utf-8")
+        )
+    prompt_budget = {
+        "section_byte_counts": section_byte_counts,
+        "prompt_total_byte_count": sum(section_byte_counts.values()),
+        "source_block_count": len(wrapped_blocks),
+        "metadata_block_count": 1 + int(bool(next_action_block)) + int(bool(prior_state_block)),
+        "section_order": list(section_byte_counts.keys()),
+    }
+    return "".join(prompt_sections), prompt_budget
+
+
+def render_prompt_text(
+    *,
+    prompt_body: str,
+    subject: dict[str, Any],
+    facet: str,
+    phase: str,
+    cycle_depth: int,
+    bundle: dict[str, Any],
+    wrapped_blocks: list[str],
+    next_action: dict[str, Any] | None = None,
+    prior_state: dict[str, Any] | None = None,
+    template: WrapperTemplate,
+) -> str:
+    rendered_prompt, _ = build_prompt_rendering(
+        prompt_body=prompt_body,
+        subject=subject,
+        facet=facet,
+        phase=phase,
+        cycle_depth=cycle_depth,
+        bundle=bundle,
+        wrapped_blocks=wrapped_blocks,
+        next_action=next_action,
+        prior_state=prior_state,
+        template=template,
     )
+    return rendered_prompt
 
 
 def candidate_type_hint_for_facet(facet: str) -> str:
@@ -1315,6 +1362,7 @@ def build_candidate_batch(
     rendered_prompt: str,
     rendered_prompt_path: Path,
     source_wrapping_blocks: list[dict[str, Any]],
+    prompt_budget: dict[str, Any] | None,
     live_result: dict[str, Any] | None,
     prior_state: dict[str, Any] | None,
     feedback_plan: dict[str, Any] | None,
@@ -1406,6 +1454,7 @@ def build_candidate_batch(
         "prompt": {
             "rendered_prompt_path": str(rendered_prompt_path),
             "rendered_prompt_hash": sha256_text(rendered_prompt),
+            "budget": prompt_budget,
         },
         "source_text_wrapping": {
             "wrapper_template_id": gather_inputs["wrapper_template"].template_id,

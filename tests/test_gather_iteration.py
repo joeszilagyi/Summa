@@ -252,6 +252,10 @@ def test_gather_iteration_empty_prior_state_dry_run_succeeds(tmp_path: Path) -> 
     assert expected_prior_state_text in prompt_text
     assert "PRIOR CANONICAL STATE CONTEXT" not in prompt_text
     assert "No prior canonical records were selected for this subject." not in prompt_text
+    assert payload["prompt"]["budget"]["prompt_total_byte_count"] == len(
+        prompt_text.encode("utf-8")
+    )
+    assert payload["prompt"]["budget"]["source_block_count"] == 0
 
 
 def test_gather_iteration_cycle_two_sees_cycle_one_state(tmp_path: Path) -> None:
@@ -309,6 +313,10 @@ def test_gather_iteration_cycle_two_sees_cycle_one_state(tmp_path: Path) -> None
     assert "needs_review lead" not in prompt_text
     assert "verified truth" not in prompt_text
     assert "This remains a needs-review lead rather than an accepted fact." not in prompt_text
+    assert payload["prompt"]["budget"]["prompt_total_byte_count"] == len(
+        prompt_text.encode("utf-8")
+    )
+    assert payload["prompt"]["budget"]["source_block_count"] == 0
 
 
 def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(tmp_path: Path) -> None:
@@ -361,6 +369,10 @@ def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(tm
     assert "Accepted Alpha Work" not in prompt_text
     assert "Accepted Extra Work 1" not in prompt_text
     assert "Accepted Extra Work 3" not in prompt_text
+    assert payload["prompt"]["budget"]["prompt_total_byte_count"] == len(
+        prompt_text.encode("utf-8")
+    )
+    assert payload["prompt"]["budget"]["source_block_count"] == 0
 
 
 def test_gather_iteration_one_shot_mode_remains_supported(tmp_path: Path) -> None:

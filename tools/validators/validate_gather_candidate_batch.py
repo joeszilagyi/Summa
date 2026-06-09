@@ -751,6 +751,7 @@ def validate_invariants(
     if isinstance(prompt, dict):
         rendered_prompt_hash = prompt.get("rendered_prompt_hash")
         rendered_prompt_path = prompt.get("rendered_prompt_path")
+        prompt_budget = prompt.get("budget")
         path: Path | None = None
         if isinstance(rendered_prompt_path, str):
             try:
@@ -791,6 +792,76 @@ def validate_invariants(
                             message="rendered_prompt_hash does not match rendered_prompt_path content",
                             path="$.prompt.rendered_prompt_path",
                         )
+        if isinstance(prompt_budget, dict):
+            section_byte_counts = prompt_budget.get("section_byte_counts")
+            if not isinstance(section_byte_counts, dict):
+                add_error(
+                    errors,
+                    code="PROMPT_BUDGET_SECTION_COUNTS_REQUIRED",
+                    message="prompt.budget.section_byte_counts must be an object",
+                    path="$.prompt.budget.section_byte_counts",
+                )
+            else:
+                counted_total = 0
+                for section_name, byte_count in section_byte_counts.items():
+                    if not isinstance(section_name, str) or not section_name:
+                        add_error(
+                            errors,
+                            code="PROMPT_BUDGET_SECTION_NAME_INVALID",
+                            message="prompt.budget.section_byte_counts keys must be non-empty strings",
+                            path="$.prompt.budget.section_byte_counts",
+                        )
+                        continue
+                    if not isinstance(byte_count, int) or byte_count < 0:
+                        add_error(
+                            errors,
+                            code="PROMPT_BUDGET_SECTION_BYTE_COUNT_INVALID",
+                            message="prompt.budget.section_byte_counts values must be integers >= 0",
+                            path=f"$.prompt.budget.section_byte_counts.{section_name}",
+                        )
+                        continue
+                    counted_total += byte_count
+                prompt_total_byte_count = prompt_budget.get("prompt_total_byte_count")
+                if not isinstance(prompt_total_byte_count, int) or prompt_total_byte_count < 0:
+                    add_error(
+                        errors,
+                        code="PROMPT_BUDGET_TOTAL_REQUIRED",
+                        message="prompt.budget.prompt_total_byte_count must be an integer >= 0",
+                        path="$.prompt.budget.prompt_total_byte_count",
+                    )
+                else:
+                    if counted_total != prompt_total_byte_count:
+                        add_error(
+                            errors,
+                            code="PROMPT_BUDGET_TOTAL_MISMATCH",
+                            message="prompt.budget.prompt_total_byte_count must equal the sum of prompt section byte counts",
+                            path="$.prompt.budget.prompt_total_byte_count",
+                        )
+                    if prompt_text is not None and len(prompt_text.encode("utf-8")) != prompt_total_byte_count:
+                        add_error(
+                            errors,
+                            code="PROMPT_BUDGET_PROMPT_MISMATCH",
+                            message="prompt.budget.prompt_total_byte_count must match the rendered prompt size",
+                            path="$.prompt.budget.prompt_total_byte_count",
+                        )
+            section_order = prompt_budget.get("section_order")
+            if not isinstance(section_order, list) or any(
+                not isinstance(item, str) or not item for item in section_order
+            ):
+                add_error(
+                    errors,
+                    code="PROMPT_BUDGET_SECTION_ORDER_REQUIRED",
+                    message="prompt.budget.section_order must be an array of non-empty strings",
+                    path="$.prompt.budget.section_order",
+                )
+            source_block_count = prompt_budget.get("source_block_count")
+            if not isinstance(source_block_count, int) or source_block_count < 0:
+                add_error(
+                    errors,
+                    code="PROMPT_BUDGET_SOURCE_BLOCK_COUNT_REQUIRED",
+                    message="prompt.budget.source_block_count must be an integer >= 0",
+                    path="$.prompt.budget.source_block_count",
+                )
 
     iteration_mode = payload.get("iteration_mode")
     cycle_depth = payload.get("cycle_depth")
