@@ -48,7 +48,11 @@ from tools.common.network_safety_gate import (  # noqa: E402
     evaluate_request,
     load_request,
 )
-from tools.common.source_adapter_handoff import infer_handoff_variant, utc_now  # noqa: E402
+from tools.common.source_adapter_handoff import (  # noqa: E402
+    infer_handoff_variant,
+    utc_now,
+    validate_source_adapter_handoff_record,
+)
 from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
     resolve_json_record_path,
@@ -240,23 +244,49 @@ def load_validated_adapter(adapter_path: Path) -> dict[str, Any]:
 
 
 def load_validated_handoff_records(
-    handoff_path: Path, *, adapter_path: Path
+    handoff_path: Path,
+    *,
+    adapter_path: Path,
+    preloaded_records: list[tuple[int | None, dict[str, Any]]] | None = None,
+    adapter_payload: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    report, exit_code = validate_source_adapter_handoff.validate_source_adapter_handoff(
-        handoff_path, adapter_path=adapter_path
+    if preloaded_records is None:
+        loaded_records, errors, load_exit = validate_source_adapter_handoff.load_records(
+            handoff_path
+        )
+        if load_exit != validate_source_adapter_handoff.EXIT_PASS:
+            message = (
+                errors[0]["message"] if errors else "source-adapter handoff could not be loaded"
+            )
+            raise SourceAcquisitionError(message)
+    else:
+        loaded_records = preloaded_records
+    if adapter_payload is None:
+        adapter_payload = load_validated_adapter(adapter_path)
+    records = validate_loaded_handoff_records(
+        loaded_records,
+        adapter_path=adapter_path,
+        adapter_payload=adapter_payload,
     )
-    if exit_code != validate_source_adapter_handoff.EXIT_PASS:
-        errors = report.get("errors", [])
-        message = errors[0]["message"] if errors else "source-adapter handoff validation failed"
-        raise SourceAcquisitionError(message)
-    loaded_records, errors, load_exit = validate_source_adapter_handoff.load_records(handoff_path)
-    if load_exit != validate_source_adapter_handoff.EXIT_PASS:
-        message = errors[0]["message"] if errors else "source-adapter handoff could not be loaded"
-        raise SourceAcquisitionError(message)
-    records = [record for _, record in loaded_records]
-    if not records:
-        raise SourceAcquisitionError("handoff artifact does not contain any records")
     return records, sha256_file(handoff_path)
+
+
+def validate_loaded_handoff_records(
+    records: list[tuple[int | None, dict[str, Any]]],
+    *,
+    adapter_path: Path,
+    adapter_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    record_dicts = [record for _, record in records]
+    if not record_dicts:
+        raise SourceAcquisitionError("handoff artifact does not contain any records")
+    ensure_single_adapter_context(record_dicts, expected_adapter_path=adapter_path)
+    validate_handoff_sequence(record_dicts)
+    for record in record_dicts:
+        errors = validate_source_adapter_handoff_record(record, adapter_payload=adapter_payload)
+        if errors:
+            raise SourceAcquisitionError(errors[0])
+    return record_dicts
 
 
 def ensure_single_adapter_context(
@@ -2823,13 +2853,12 @@ def main() -> int:
                 else "source-adapter handoff could not be loaded"
             )
             raise SourceAcquisitionError(message)
-        ensure_single_adapter_context(
-            [record for _, record in raw_records], expected_adapter_path=adapter_path
-        )
         records, handoff_hash = load_validated_handoff_records(
-            handoff_path, adapter_path=adapter_path
+            handoff_path,
+            adapter_path=adapter_path,
+            preloaded_records=raw_records,
+            adapter_payload=adapter_payload,
         )
-        validate_handoff_sequence(records)
         variant = determine_variant(records, adapter_payload=adapter_payload)
         executor_mode = determine_executor_mode(args.mode, variant=variant)
         planned_actions = planned_actions_for_records(records, variant=variant)

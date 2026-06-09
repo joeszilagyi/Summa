@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -365,6 +366,50 @@ def test_load_validated_handoff_records_streams_handoff_hash(
 
     assert records
     assert len(handoff_hash) == 64
+
+
+def test_execute_local_source_loads_handoff_once_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    handoff, _ = run_planner(tmp_path)
+    output = tmp_path / "local-source-execution-main"
+    original_load_records = source_executor.validate_source_adapter_handoff.load_records
+    load_calls = {"count": 0}
+
+    def wrapped_load_records(path: Path):
+        load_calls["count"] += 1
+        return original_load_records(path)
+
+    monkeypatch.setattr(
+        source_executor.validate_source_adapter_handoff, "load_records", wrapped_load_records
+    )
+    monkeypatch.setattr(
+        source_executor,
+        "parse_args",
+        lambda: argparse.Namespace(
+            handoff=str(handoff),
+            adapter=str(ADAPTER),
+            output=str(output),
+            workspace_root=str(tmp_path),
+            mode="local",
+            dry_run=False,
+            network_safety_request=None,
+            allow_network=False,
+            suppress_execution_record_stdout=True,
+            timeout_seconds=30.0,
+            max_response_bytes=source_executor.DEFAULT_REMOTE_MAX_RESPONSE_BYTES,
+            run_id="local-source-main",
+            created_at="2026-06-03T12:34:56Z",
+        ),
+    )
+
+    exit_code = source_executor.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0, captured.stdout + captured.stderr
+    assert load_calls["count"] == 1
+    assert (output / "execution-record.json").exists()
+    assert (output / "manifest.json").exists()
 
 
 def test_execute_local_source_rejects_handoff_adapter_path_mismatch(tmp_path: Path) -> None:
