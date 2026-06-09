@@ -42,6 +42,10 @@ from tools.common.llm_source_text_wrapper import (  # noqa: E402
     parse_wrapped_blocks,
     render_wrapped_block,
 )
+from tools.common.source_text_profile import (  # noqa: E402
+    build_source_text_profile,
+    source_text_profile_hazard_flags,
+)
 from tools.common.subprocess_capture import (  # noqa: E402
     command_output_excerpt,
     run_streaming_command,
@@ -449,6 +453,14 @@ def resolve_source_text_blocks(
         if source_size <= SOURCE_TEXT_BLOCK_BYTE_CAP:
             source_text = read_text_file(source_path, label="source text file")
             hazard_flags = detect_hazard_flags(source_text)
+            source_profile = build_source_text_profile(
+                source_text, byte_count=source_size
+            )
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             rendered_blocks.append(
                 render_wrapped_block(
                     source_ref=source_ref,
@@ -466,6 +478,7 @@ def resolve_source_text_blocks(
                     "provenance": provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": byte_count,
@@ -486,6 +499,14 @@ def resolve_source_text_blocks(
                 index, chunk_index=chunk_index
             )
             hazard_flags = detect_hazard_flags(hazard_scan_tail + source_text)
+            source_profile = build_source_text_profile(
+                source_text, byte_count=len(chunk_bytes)
+            )
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             hazard_scan_tail = (hazard_scan_tail + source_text)[-SOURCE_TEXT_HAZARD_SCAN_OVERLAP:]
             rendered_blocks.append(
                 render_wrapped_block(
@@ -503,6 +524,7 @@ def resolve_source_text_blocks(
                     "provenance": chunk_provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": len(chunk_bytes),
@@ -513,6 +535,12 @@ def resolve_source_text_blocks(
         if chunk_count == 0:
             source_text = ""
             hazard_flags = detect_hazard_flags(source_text)
+            source_profile = build_source_text_profile(source_text, byte_count=0)
+            hazard_flags.extend(
+                flag
+                for flag in source_text_profile_hazard_flags(source_profile)
+                if flag not in hazard_flags
+            )
             rendered_blocks.append(
                 render_wrapped_block(
                     source_ref=source_ref,
@@ -529,6 +557,7 @@ def resolve_source_text_blocks(
                     "provenance": provenance,
                     "resolved_source_path": str(source_path),
                     "hazard_flags": hazard_flags,
+                    "source_profile": source_profile,
                     "start_offset": rendered_block_cursor,
                     "end_offset": rendered_block_cursor + len(rendered_blocks[-1]),
                     "byte_count": 0,

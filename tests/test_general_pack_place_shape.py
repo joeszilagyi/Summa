@@ -96,6 +96,7 @@ def _render_place_shape_prompt(
         subject=subject_metadata,
         facet=str(payload["facet"]["name"]),
         phase=str(payload["phase"]),
+        cycle_depth=1,
         bundle=prompt_bundle,
         wrapped_blocks=[],
         template=load_template(),
@@ -486,19 +487,18 @@ def test_general_pack_place_shape_cycle_two_prior_state_is_subject_scoped_and_us
     assert montana_payload["prior_state"]["record_counts"]["works"]["total"] >= 1
     assert montana_payload["prior_state"]["record_counts"]["source_access"]["total"] >= 1
     assert montana_payload["prior_state"]["record_counts"]["source_claims"]["total"] >= 1
-    assert "PRIOR CANONICAL STATE CONTEXT" in montana_prompt
-    assert "Missouri River" in montana_prompt
-    assert "https://example.test/montana/fwp-river-access" in montana_prompt
-    assert "Missouri River Trout Access Guide" in montana_prompt
-    assert "Which Montana Fish, Wildlife & Parks archive or hatch-reference source should be reviewed next" in montana_prompt
+    assert "Untrusted prior canonical state metadata:" in montana_prompt
+    assert "PRIOR CANONICAL STATE CONTEXT" not in montana_prompt
+    assert '"previous_run_ids":["montana-seed"]' in montana_prompt
+    assert '"record_counts":{"entities":{"selected":1,"total":1}' in montana_prompt
+    assert "Missouri River" not in montana_prompt
     assert "Farmington River" not in montana_prompt
     assert "Connecticut DEEP" not in montana_prompt
 
     assert connecticut_payload["cycle_depth"] == 2
     assert connecticut_payload["prior_state"]["context_hash"]
-    assert "Farmington River" in connecticut_prompt
-    assert "https://example.test/connecticut/deep-trout-reports" in connecticut_prompt
-    assert "Farmington River Trout Access Guide" in connecticut_prompt
-    assert "Which Connecticut DEEP stocking, access, or hatch-reference source should be reviewed next" in connecticut_prompt
+    assert '"previous_run_ids":["connecticut-seed"]' in connecticut_prompt
+    assert '"record_counts":{"entities":{"selected":1,"total":1}' in connecticut_prompt
+    assert "Farmington River" not in connecticut_prompt
     assert "Missouri River" not in connecticut_prompt
     assert "Montana Fish, Wildlife & Parks" not in connecticut_prompt

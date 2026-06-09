@@ -714,6 +714,31 @@ def test_run_topic_gather_hazard_detection_searches_each_flag_once(
     assert markup_pattern.search_calls == 1
 
 
+def test_run_topic_gather_source_text_profile_classifies_structure() -> None:
+    source_text = (
+        "Intro https://a.example/path https://b.example/path https://c.example/path "
+        "https://d.example/path https://e.example/path\n\n"
+        "Intro https://a.example/path https://b.example/path https://c.example/path "
+        "https://d.example/path https://e.example/path\n"
+    )
+
+    profile = driver.build_source_text_profile(source_text)
+
+    assert profile == {
+        "encoding": "utf-8",
+        "byte_count": len(source_text.encode("utf-8")),
+        "line_count": 3,
+        "url_count": 10,
+        "duplicate_block_count": 1,
+        "likely_boilerplate": True,
+    }
+    assert driver.source_text_profile_hazard_flags(profile) == [
+        "duplicate_blocks",
+        "likely_boilerplate",
+        "url_heavy",
+    ]
+
+
 def test_run_topic_gather_reads_mixed_unicode_source_text(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -896,6 +921,18 @@ def test_run_topic_gather_handles_large_source_text_file(tmp_path: Path) -> None
     )
     assert payload["source_text_wrapping"]["blocks"][0]["start_offset"] == 0
     assert payload["source_text_wrapping"]["blocks"][0]["end_offset"] > 0
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["encoding"] == "utf-8"
+    assert (
+        payload["source_text_wrapping"]["blocks"][0]["source_profile"]["byte_count"]
+        == payload["source_text_wrapping"]["blocks"][0]["byte_count"]
+    )
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["url_count"] == 0
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"][
+        "duplicate_block_count"
+    ] == 0
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["likely_boilerplate"] is True
+    assert "likely_boilerplate" in payload["source_text_wrapping"]["blocks"][0]["hazard_flags"]
     assert (
         payload["source_text_wrapping"]["blocks"][1]["start_offset"]
         > payload["source_text_wrapping"]["blocks"][0]["end_offset"]
@@ -1720,6 +1757,8 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
         "prompt_injection_text",
         "hostile_markup",
     }
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["encoding"] == "utf-8"
+    assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
     assert payload["raw_engine_output"] == fake_output
     candidate_record = json.loads(payload["candidates"][0]["text"])
     assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"

@@ -43,6 +43,9 @@ from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_prior_state_prompt_payload,
 )
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
+from tools.common.source_text_profile import (  # noqa: E402
+    build_source_text_profile,
+)
 from tools.scripts import resolve_subject_runtime  # noqa: E402
 
 VALIDATOR_NAME = "gather_candidate_batch"
@@ -1222,6 +1225,26 @@ def validate_invariants(
                         path=f"$.source_text_wrapping.blocks[{index}].hazard_flags",
                     )
                 actual_source_bytes = actual.source_text.encode("utf-8")
+                expected_profile = expected.get("source_profile")
+                if not isinstance(expected_profile, dict):
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_SOURCE_PROFILE_REQUIRED",
+                        message="recorded source_profile is required",
+                        path=f"$.source_text_wrapping.blocks[{index}].source_profile",
+                    )
+                    continue
+                actual_profile = build_source_text_profile(
+                    actual.source_text,
+                    byte_count=len(actual_source_bytes),
+                )
+                if expected_profile != actual_profile:
+                    add_error(
+                        errors,
+                        code="WRAPPED_BLOCK_SOURCE_PROFILE_MISMATCH",
+                        message="recorded source_profile does not match the rendered prompt block",
+                        path=f"$.source_text_wrapping.blocks[{index}].source_profile",
+                    )
                 actual_hash = hashlib.sha256(actual_source_bytes).hexdigest()
                 if expected.get("sha256") != actual_hash:
                     add_error(

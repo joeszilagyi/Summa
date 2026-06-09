@@ -742,6 +742,7 @@
         "provenance",
         "resolved_source_path",
         "hazard_flags",
+        "source_profile",
         "start_offset",
         "end_offset",
         "byte_count",
@@ -769,6 +770,43 @@
           "items": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "source_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encoding",
+            "byte_count",
+            "line_count",
+            "url_count",
+            "duplicate_block_count",
+            "likely_boilerplate"
+          ],
+          "properties": {
+            "encoding": {
+              "type": "string",
+              "minLength": 1
+            },
+            "byte_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "line_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "url_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "duplicate_block_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "likely_boilerplate": {
+              "type": "boolean"
+            }
           }
         },
         "start_offset": {
