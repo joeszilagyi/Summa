@@ -811,7 +811,9 @@ def db_summary(
     *,
     store_summary: object | None = None,
 ) -> dict[str, Any]:
-    summary = canonical_store.check_canonical_store(db_path) if store_summary is None else store_summary
+    summary = (
+        canonical_store.check_canonical_store(db_path) if store_summary is None else store_summary
+    )
     row_counts = (
         row_count_summary(db_path)
         if store_summary is None
