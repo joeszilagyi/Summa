@@ -62,7 +62,9 @@ def test_live_gather_runtime_reaches_llm_runner_through_bridge() -> None:
 
     assert "LLM_RUNNER_BRIDGE_PATH" in driver_text
     assert "invoke_llm_runner_bridge" in driver_text
+    assert 'readonly RUNTIME_LOG_LIB="$SELF_DIR/runtime_logging.sh"' in bridge_text
     assert 'readonly LLM_RUNNER_LIB="$SELF_DIR/llm_runner.sh"' in bridge_text
+    assert 'source "$RUNTIME_LOG_LIB"' in bridge_text
     assert 'source "$LLM_RUNNER_LIB"' in bridge_text
 
 
@@ -157,6 +159,80 @@ def _run_llm_runner_with_fake_engine(
     return args, stdin, output
 
 
+def _run_llm_runner_bridge_with_fake_engine(
+    tmp_path: Path,
+    *,
+    engine: str,
+    prompt_text: str,
+    exit_code: int = 0,
+    output_file: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+    engine_script: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], list[str], str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / f"{engine}.args"
+    stdin_file = tmp_path / f"{engine}.stdin"
+    fake_engine = bin_dir / engine
+    fake_engine.write_text(
+        textwrap.dedent(
+            engine_script
+            or """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '%s\n' "$@" > "$ARGS_FILE"
+            cat > "$STDIN_FILE"
+            printf 'engine-output\n'
+            exit "$EXIT_CODE"
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_engine.chmod(0o755)
+
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text(prompt_text, encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    output_path = output_file or (tmp_path / "output.txt")
+    output_path.write_text("existing output\n", encoding="utf-8")
+    proc = subprocess.run(
+        [
+            "bash",
+            str(BRIDGE_PATH),
+            "run",
+            "--prompt-file",
+            str(prompt_file),
+            "--tmp-dir",
+            str(work_dir),
+            "--output-file",
+            str(output_path),
+            "--phase",
+            "phase",
+            "--engine",
+            engine,
+            "--tool-name",
+            "pytest",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "ARGS_FILE": str(args_file),
+            "STDIN_FILE": str(stdin_file),
+            "EXIT_CODE": str(exit_code),
+            **(extra_env or {}),
+        },
+    )
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    stdin = stdin_file.read_text(encoding="utf-8")
+    output = output_path.read_text(encoding="utf-8")
+    return proc, args, stdin, output
+
+
 def test_llm_runner_uses_stdin_for_codex_prompt_transport(tmp_path: Path) -> None:
     prompt_text = "x" * 200_000
     args, stdin, _output = _run_llm_runner_with_fake_engine(
@@ -187,6 +263,22 @@ def test_llm_runner_uses_stdin_for_claude_prompt_transport(tmp_path: Path) -> No
 
     assert args == ["-p", "--model", "sonnet", "--effort", "high"]
     assert stdin == prompt_text
+
+
+def test_llm_runner_run_quiet_propagates_exit_code_on_failure(tmp_path: Path) -> None:
+    prompt_text = "quiet failure probe"
+    args, stdin, output = _run_llm_runner_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+        exit_code=2,
+    )
+
+    assert args[0] == "exec"
+    assert "--json" not in args
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+    assert output == "existing output\n"
 
 
 def test_llm_runner_can_forward_codex_output_schema_file(tmp_path: Path) -> None:
@@ -308,6 +400,52 @@ def test_llm_runner_run_to_file_writes_output_on_success(tmp_path: Path) -> None
     assert args[0] == "-p"
     assert stdin == prompt_text
     assert output == "engine-output\n"
+
+
+def test_llm_runner_bridge_reports_runtime_log_events_on_success(
+    tmp_path: Path,
+) -> None:
+    prompt_text = "bridge success probe"
+    proc, args, stdin, output = _run_llm_runner_bridge_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert args[0] == "exec"
+    assert "--json" in args
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+    assert output == "engine-output\n"
+    assert "event=LLM_OK" in proc.stdout
+    assert "engine=codex" in proc.stdout
+    assert "phase=phase" in proc.stdout
+    assert proc.stderr == ""
+
+
+def test_llm_runner_bridge_reports_runtime_log_events_on_failure(
+    tmp_path: Path,
+) -> None:
+    prompt_text = "bridge failure probe"
+    proc, args, stdin, output = _run_llm_runner_bridge_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text=prompt_text,
+        exit_code=2,
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert args[0] == "exec"
+    assert "--json" in args
+    assert args[-1] == "-"
+    assert stdin == prompt_text
+    assert output == "existing output\n"
+    assert "event=LLM_FAIL" in proc.stdout
+    assert "engine=codex" in proc.stdout
+    assert "phase=phase" in proc.stdout
+    assert "exit=2" in proc.stdout
+    assert "LLM (codex) failed in phase: phase" in proc.stderr
 
 
 def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) -> None:

@@ -3,14 +3,11 @@ set -euo pipefail
 
 readonly SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly LLM_RUNNER_LIB="$SELF_DIR/llm_runner.sh"
+readonly RUNTIME_LOG_LIB="$SELF_DIR/runtime_logging.sh"
 
 fail() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
-}
-
-runtime_log_event() {
-  :
 }
 
 usage() {
@@ -25,6 +22,9 @@ EOF_USAGE
 }
 
 [[ -r "$LLM_RUNNER_LIB" ]] || fail "missing llm_runner library: $LLM_RUNNER_LIB"
+[[ -r "$RUNTIME_LOG_LIB" ]] || fail "missing runtime logging library: $RUNTIME_LOG_LIB"
+# shellcheck disable=SC1091
+source "$RUNTIME_LOG_LIB"
 # shellcheck disable=SC1091
 source "$LLM_RUNNER_LIB"
 
