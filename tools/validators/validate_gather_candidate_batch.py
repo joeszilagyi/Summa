@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_next_action_prompt_payload,
     compact_prior_state_prompt_payload,
+    validate_typed_candidate_record,
 )
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
 from tools.common.source_text_profile import (  # noqa: E402
@@ -1652,14 +1653,90 @@ def validate_invariants(
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, dict):
                 continue
-            if candidate.get("candidate_type") == "raw_candidate_text" and isinstance(facet, dict):
+            candidate_path = f"$.candidates[{index}]"
+            if mode == "live" and candidate.get("candidate_type") == "raw_candidate_text":
+                add_error(
+                    errors,
+                    code="LIVE_RAW_CANDIDATE_TEXT_FORBIDDEN",
+                    message=(
+                        "mode=live candidates must use a typed candidate_type, "
+                        "not raw_candidate_text"
+                    ),
+                    path=f"{candidate_path}.candidate_type",
+                )
+            elif mode == "live":
+                candidate_text = candidate.get("text")
+                parsed_candidate: Any = None
+                parsed_candidate_loaded = False
+                if not isinstance(candidate_text, str):
+                    add_error(
+                        errors,
+                        code="LIVE_TYPED_CANDIDATE_JSON_REQUIRED",
+                        message="mode=live candidate text must be a JSON object",
+                        path=f"{candidate_path}.text",
+                    )
+                else:
+                    try:
+                        parsed_candidate = json.loads(
+                            candidate_text,
+                            object_pairs_hook=no_duplicate_object_pairs,
+                            parse_constant=reject_json_constant,
+                        )
+                        parsed_candidate_loaded = True
+                    except (DuplicateJsonKeyError, NonStandardJsonConstantError) as exc:
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_JSON_INVALID",
+                            message=str(exc),
+                            path=f"{candidate_path}.text",
+                        )
+                    except json.JSONDecodeError:
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_JSON_INVALID",
+                            message="mode=live candidate text must be valid JSON",
+                            path=f"{candidate_path}.text",
+                        )
+                if parsed_candidate_loaded:
+                    expected_candidate_type = (
+                        facet.get("candidate_type_hint")
+                        if isinstance(facet, dict)
+                        and isinstance(facet.get("candidate_type_hint"), str)
+                        else None
+                    )
+                    for validation_error in validate_typed_candidate_record(
+                        parsed_candidate,
+                        expected_candidate_type=expected_candidate_type,
+                    ):
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_INVALID",
+                            message=validation_error,
+                            path=f"{candidate_path}.text",
+                        )
+                    if isinstance(parsed_candidate, dict) and parsed_candidate.get(
+                        "candidate_type"
+                    ) != candidate.get("candidate_type"):
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_TYPE_MISMATCH",
+                            message=(
+                                "candidate text candidate_type must match the outer "
+                                "candidate_type"
+                            ),
+                            path=f"{candidate_path}.text.candidate_type",
+                        )
+            elif (
+                candidate.get("candidate_type") == "raw_candidate_text"
+                and isinstance(facet, dict)
+            ):
                 validate_candidate_extraction_record(
                     candidate,
                     expected_candidate_type=facet.get("candidate_type_hint")
                     if isinstance(facet.get("candidate_type_hint"), str)
                     else None,
                     errors=errors,
-                    path=f"$.candidates[{index}]",
+                    path=candidate_path,
                 )
             for key in ("review_status", "persistence_status", "origin"):
                 value = candidate.get(key)

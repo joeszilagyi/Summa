@@ -67,6 +67,47 @@ DEFERRED_NON_RETRYABLE_REASON_CODES = {
     "repeated_low_yield",
 }
 
+TYPED_CANDIDATE_RECORD_FIELDS = frozenset(
+    {"candidate_type", "locator", "claim", "confidence", "reason", "source_span"}
+)
+TYPED_CANDIDATE_TYPES = frozenset(
+    {"source_lead", "timeline_item", "person", "place", "work", "open_question", "unknown"}
+)
+MAX_TYPED_CANDIDATE_RECORDS = 32
+
+
+def validate_typed_candidate_record(
+    record: Any,
+    *,
+    expected_candidate_type: str | None = None,
+) -> list[str]:
+    """Validate one machine-readable candidate record emitted by a gather engine."""
+
+    if not isinstance(record, dict):
+        return ["candidate record must be a JSON object"]
+
+    errors: list[str] = []
+    unknown_fields = sorted(set(record) - TYPED_CANDIDATE_RECORD_FIELDS)
+    if unknown_fields:
+        errors.append(f"candidate record has unexpected field: {unknown_fields[0]}")
+    missing_fields = sorted(TYPED_CANDIDATE_RECORD_FIELDS - set(record))
+    if missing_fields:
+        errors.append(f"candidate record is missing field: {missing_fields[0]}")
+
+    candidate_type = record.get("candidate_type")
+    if candidate_type not in TYPED_CANDIDATE_TYPES:
+        errors.append("candidate record candidate_type is not a supported typed candidate")
+    elif expected_candidate_type is not None and candidate_type != expected_candidate_type:
+        errors.append("candidate record candidate_type does not match the selected facet")
+
+    claim = record.get("claim")
+    if not isinstance(claim, str) or not claim.strip():
+        errors.append("candidate record claim must be a non-blank string")
+    reason = record.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append("candidate record reason must be a non-blank string")
+    return errors
+
 
 def deferred_candidate_retryable(reason: str | None) -> bool:
     reason_code = str(reason or "").strip()

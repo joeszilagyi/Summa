@@ -29,6 +29,20 @@ VALIDATOR_WRAPPER_PATH = SCRIPTS_DIR / "validate_gather_candidate_batch.py"
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "llm_source_text_wrapper.py"
 HOSTILE_SOURCE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "topic_gather" / "hostile_source.txt"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
+FAKE_CANDIDATE_CLAIM = "FAKE CODEX CANDIDATE OUTPUT"
+FAKE_TYPED_CANDIDATE_OUTPUT = json.dumps(
+    [
+        {
+            "candidate_type": "timeline_item",
+            "locator": None,
+            "claim": FAKE_CANDIDATE_CLAIM,
+            "confidence": None,
+            "reason": "llm_proposed",
+            "source_span": None,
+        }
+    ],
+    separators=(",", ":"),
+)
 
 
 def load_module(path: Path, module_name: str):
@@ -1776,7 +1790,7 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "live-fake-codex"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -1833,11 +1847,11 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
         ).hexdigest()
     )
     candidate_record = json.loads(payload["candidates"][0]["text"])
-    assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert payload["candidates"][0]["candidate_type"] == "timeline_item"
     assert candidate_record == {
         "candidate_type": payload["facet"]["candidate_type_hint"],
         "locator": None,
-        "claim": fake_output,
+        "claim": FAKE_CANDIDATE_CLAIM,
         "confidence": None,
         "reason": "llm_proposed",
         "source_span": None,
@@ -1864,6 +1878,54 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
         "STAMPED_OUTPUT_PATH_OUTSIDE_BATCH",
     } <= error_codes
 
+    raw_candidate_payload = json.loads(json.dumps(payload))
+    raw_candidate_payload["candidates"][0]["candidate_type"] = "raw_candidate_text"
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        raw_candidate_payload, target=batch_path
+    )
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert "LIVE_RAW_CANDIDATE_TEXT_FORBIDDEN" in {
+        error["code"] for error in report["errors"]
+    }
+
+
+def test_run_topic_gather_live_mode_rejects_untyped_engine_output(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    run_id = "live-untyped-output"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = "freeform model prose is not a candidate record"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ],
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "must be one JSON array of typed candidate records" in proc.stderr
+    assert not batch_path_for(workspace_root, run_id).exists()
+
 
 def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     tmp_path: Path,
@@ -1875,7 +1937,7 @@ def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "live-fake-codex-json"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -1955,7 +2017,7 @@ def test_run_topic_gather_live_mode_reuses_cached_output_without_reinvoking_engi
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -2099,7 +2161,7 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "hostile-live-allowed"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -2140,11 +2202,11 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
     assert payload["raw_engine_output"] is None
     candidate_record = json.loads(payload["candidates"][0]["text"])
-    assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert payload["candidates"][0]["candidate_type"] == "timeline_item"
     assert candidate_record == {
         "candidate_type": payload["facet"]["candidate_type_hint"],
         "locator": None,
-        "claim": fake_output,
+        "claim": FAKE_CANDIDATE_CLAIM,
         "confidence": None,
         "reason": "llm_proposed",
         "source_span": None,

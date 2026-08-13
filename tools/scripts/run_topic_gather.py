@@ -28,9 +28,11 @@ for candidate in (REPO_ROOT, SCRIPTS_DIR, VALIDATORS_DIR):
         sys.path.insert(0, candidate_text)
 
 from tools.common.candidate_feedback_contract import (  # noqa: E402
+    MAX_TYPED_CANDIDATE_RECORDS,
     compact_candidate_record_payload,
     compact_next_action_prompt_payload,
     compact_prior_state_prompt_payload,
+    validate_typed_candidate_record,
 )
 from tools.common.leak_scanner import scan_text  # noqa: E402
 from tools.common.llm_source_text_wrapper import (  # noqa: E402
@@ -120,6 +122,72 @@ PRIOR_STATE_POLICY = canonical_store.DEFAULT_GATHER_PRIOR_STATE_POLICY
 
 class GatherDriverError(RuntimeError):
     """Raised when the gather driver cannot complete a run."""
+
+
+def parse_typed_candidate_output(
+    raw_output: str,
+    *,
+    expected_candidate_type: str,
+) -> list[dict[str, Any]]:
+    """Parse the engine response before it can become a gather candidate."""
+
+    if not isinstance(raw_output, str):
+        raise GatherDriverError("live engine output must be valid UTF-8 text")
+    try:
+        parsed = json.loads(
+            raw_output,
+            object_pairs_hook=_candidate_json_object_pairs,
+            parse_constant=_reject_candidate_json_constant,
+        )
+    except json.JSONDecodeError as exc:
+        raise GatherDriverError(
+            "live engine output must be one JSON array of typed candidate records"
+        ) from exc
+
+    if not isinstance(parsed, list):
+        raise GatherDriverError(
+            "live engine output must be one JSON array of typed candidate records"
+        )
+    if len(parsed) > MAX_TYPED_CANDIDATE_RECORDS:
+        raise GatherDriverError(
+            f"live engine output contains more than {MAX_TYPED_CANDIDATE_RECORDS} candidate records"
+        )
+
+    records: list[dict[str, Any]] = []
+    for index, record in enumerate(parsed):
+        errors = validate_typed_candidate_record(
+            record,
+            expected_candidate_type=expected_candidate_type,
+        )
+        if errors:
+            raise GatherDriverError(
+                f"live engine output candidate[{index}] failed validation: {errors[0]}"
+            )
+        assert isinstance(record, dict)
+        records.append(
+            compact_candidate_record_payload(
+                candidate_type=record["candidate_type"],
+                raw_output=record["claim"],
+                locator=record["locator"],
+                confidence=record["confidence"],
+                reason=record["reason"],
+                source_span=record["source_span"],
+            )
+        )
+    return records
+
+
+def _candidate_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in record:
+            raise GatherDriverError(f"live engine output contains duplicate JSON key: {key}")
+        record[key] = value
+    return record
+
+
+def _reject_candidate_json_constant(value: str) -> None:
+    raise GatherDriverError(f"live engine output contains non-standard JSON constant: {value}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -1413,7 +1481,7 @@ def load_cached_live_result(
         "invoked": False,
         "cache_hit": True,
         "raw_engine_output_path": raw_engine_output_path,
-        "raw_engine_output": raw_engine_output,
+        "raw_engine_output": cached_raw_engine_output,
         "raw_engine_output_hash": raw_engine_output_hash,
         "stamped_output_path": stamped_output_path,
         "stamped_output_hash": stamped_output_hash,
@@ -1462,20 +1530,21 @@ def build_candidate_batch(
     domain_pack_path = REPO_ROOT / "config" / "domain_packs" / f"{pack['pack_id']}.json"
     selected_template_path = (REPO_ROOT / str(gather_inputs["selected_template_file"])).resolve()
     if live_result is not None:
-        candidate_record = compact_candidate_record_payload(
-            candidate_type=candidate_type_hint,
-            raw_output=live_result["raw_engine_output"],
+        candidate_records = parse_typed_candidate_output(
+            live_result["raw_engine_output"],
+            expected_candidate_type=candidate_type_hint,
         )
-        candidates.append(
+        candidates = [
             {
-                "candidate_id": "cand:0001",
-                "candidate_type": "raw_candidate_text",
+                "candidate_id": f"cand:{index:04d}",
+                "candidate_type": candidate_record["candidate_type"],
                 "review_status": "unverified",
                 "persistence_status": "workspace_run_only",
                 "origin": "llm_proposed",
                 "text": compact_json_text(candidate_record),
             }
-        )
+            for index, candidate_record in enumerate(candidate_records, start=1)
+        ]
 
     batch = {
         "schema_version": SCHEMA_VERSION,

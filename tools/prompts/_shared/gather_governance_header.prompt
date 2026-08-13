@@ -4,3 +4,13 @@ Source handling:
 
 Output policy:
 - Do not write article prose, page copy, or presentation text.
+
+Machine candidate output contract:
+- Return one JSON array only, with no Markdown fences or explanatory prose.
+- Each array item must be an object with exactly these fields:
+  `candidate_type`, `locator`, `claim`, `confidence`, `reason`, and `source_span`.
+- Set `candidate_type` to the type required by the selected facet. Keep `claim`
+  and `reason` concise and non-blank; use `null` when the other fields are not
+  available. Return `[]` when there are no credible candidates.
+- Review decisions belong in the typed `claim` and `reason` fields. Do not
+  return freeform text as a candidate.
