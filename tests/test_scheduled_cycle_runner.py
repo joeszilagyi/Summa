@@ -1167,7 +1167,7 @@ def test_scheduled_runner_maps_child_manifest_status_distinctly(
         assert payload["failed_workspace_count"] == 1
 
 
-def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> None:
+def test_scheduled_runner_omits_child_output_from_failure_records(tmp_path: Path) -> None:
     workspace, manifest = write_workspace(tmp_path, "partial_subject")
     selection = write_selection(
         tmp_path,
@@ -1191,7 +1191,12 @@ def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> 
             ),
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 5, "", "x" * 5000 + " end-marker")
+        return subprocess.CompletedProcess(
+            command,
+            5,
+            "stdout-secret should not be persisted",
+            "stderr-secret should not be persisted",
+        )
 
     args = scheduled_runner.parse_args(
         [
@@ -1211,9 +1216,16 @@ def test_scheduled_runner_truncates_large_child_error_output(tmp_path: Path) -> 
     assert exit_code == scheduled_runner.EXIT_PARTIAL_OUTPUT
     result = payload["workspace_results"][0]
     assert result["failure_reason_code"] == "topic_cycle_partial_output"
-    assert "truncated" in result["failure_reason"]
-    assert len(result["failure_reason"]) < 2100
-    assert result["failure_reason"].endswith("chars omitted)")
+    assert result["failure_reason"] == (
+        "topic cycle failed; child output omitted from failure record"
+    )
+    serialized_payload = json.dumps(payload)
+    assert "stdout-secret" not in serialized_payload
+    assert "stderr-secret" not in serialized_payload
+    ledger = tmp_path / "ledgers" / "partial_subject.runtime-ledger.jsonl"
+    ledger_text = ledger.read_text(encoding="utf-8")
+    assert "stdout-secret" not in ledger_text
+    assert "stderr-secret" not in ledger_text
 
 
 def test_scheduled_runner_uses_child_manifest_file_before_stdout_when_available(

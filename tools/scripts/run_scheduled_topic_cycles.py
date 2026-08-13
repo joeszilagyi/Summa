@@ -29,7 +29,6 @@ from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     summarize_run_outcomes,
 )
 from tools.common.subprocess_capture import (  # noqa: E402
-    command_output_excerpt,
     run_streaming_command,
 )
 from tools.common.topic_workspace_registry import (  # noqa: E402
@@ -54,7 +53,6 @@ EXIT_TRANSIENT_ACQUISITION_FAILURE = EXIT_TRANSIENT_ACQUISITION_FAILED
 EXIT_INTEGRITY_FAILURE = 6
 EXIT_PARTIAL_OUTPUT = 7
 EXIT_INTERNAL_CRASH = 8
-MAX_FAILURE_REASON_LENGTH = 2048
 KNOWN_CHILD_STATUSES = {"completed", "degraded", "dry_run", "failed", "partial"}
 SUCCESS_CHILD_STATUSES = {"completed", "degraded", "dry_run"}
 FAILURE_CHILD_STATUSES = {"failed", "partial"}
@@ -139,16 +137,6 @@ def _format_failure_result(
     result["recoverability"] = recoverability
     if affected_record_id is not None:
         result["affected_record_id"] = affected_record_id
-
-
-def _bounded_failure_message(raw_message: str, *, limit: int = MAX_FAILURE_REASON_LENGTH) -> str:
-    message = (raw_message or "").strip()
-    if len(message) <= limit:
-        return message
-    return (
-        message[: max(limit - 64, 0)].rstrip()
-        + f"... (truncated, {len(message) - limit} chars omitted)"
-    )
 
 
 def _set_failure(
@@ -845,9 +833,7 @@ def run_scheduled_cycles(
                     _set_failure(
                         result=result,
                         reason_code="topic_cycle_failed",
-                        reason=_bounded_failure_message(
-                            command_output_excerpt(proc) or "topic cycle failed"
-                        ),
+                        reason="topic cycle failed; child output omitted from failure record",
                         stage="child_cycle_exec",
                         recoverability="non_retryable",
                     )
@@ -872,9 +858,7 @@ def run_scheduled_cycles(
                     reason_code="topic_cycle_partial_output"
                     if is_partial
                     else "topic_cycle_failed",
-                    reason=_bounded_failure_message(
-                        command_output_excerpt(proc) or "topic cycle failed"
-                    ),
+                    reason="topic cycle failed; child output omitted from failure record",
                     stage="child_cycle_exec",
                     recoverability="retryable" if is_partial else "non_retryable",
                 )
@@ -909,9 +893,7 @@ def run_scheduled_cycles(
                 _set_failure(
                     result=result,
                     reason_code="topic_cycle_failed",
-                    reason=_bounded_failure_message(
-                        command_output_excerpt(proc) or "topic cycle failed"
-                    ),
+                    reason="topic cycle failed; child output omitted from failure record",
                     stage="child_cycle_exec",
                     recoverability="non_retryable",
                 )
