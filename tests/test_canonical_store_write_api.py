@@ -936,6 +936,148 @@ def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(t
     assert count == 1
 
 
+def test_source_claim_default_identity_includes_source_artifact_ids(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-source-artifact-identity",
+            event_type="fixture_ingest",
+            run_id="claim-source-artifact-identity",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-source-artifact-identity",
+        )
+        capture_first = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/claim-source-one",
+            captured_at=FIXED_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="a" * 64,
+            workspace_id="alpha_subject",
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_second = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/claim-source-two",
+            captured_at=FIXED_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="b" * 64,
+            workspace_id="alpha_subject",
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_claim_first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from a captured source.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_claim_second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from a captured source.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_second.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        extraction_first = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="c" * 64,
+            output_hash="d" * 64,
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_second = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="c" * 64,
+            output_hash="e" * 64,
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_claim_first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from an extraction.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            extraction_id=extraction_first.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_claim_second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from an extraction.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            extraction_id=extraction_second.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        conn.commit()
+        capture_claim_rows = conn.execute(
+            """
+            SELECT capture_event_id, extraction_id
+            FROM source_claim
+            WHERE claim_text=?
+            ORDER BY source_claim_id
+            """,
+            ("This claim came from a captured source.",),
+        ).fetchall()
+        extraction_claim_rows = conn.execute(
+            """
+            SELECT capture_event_id, extraction_id
+            FROM source_claim
+            WHERE claim_text=?
+            ORDER BY source_claim_id
+            """,
+            ("This claim came from an extraction.",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert capture_claim_first.created is True
+    assert capture_claim_second.created is True
+    assert capture_claim_first.row_id != capture_claim_second.row_id
+    assert [(row["capture_event_id"], row["extraction_id"]) for row in capture_claim_rows] == [
+        (capture_first.row_id, None),
+        (capture_second.row_id, None),
+    ]
+    assert extraction_claim_first.created is True
+    assert extraction_claim_second.created is True
+    assert extraction_claim_first.row_id != extraction_claim_second.row_id
+    assert [(row["capture_event_id"], row["extraction_id"]) for row in extraction_claim_rows] == [
+        (capture_first.row_id, extraction_first.row_id),
+        (capture_first.row_id, extraction_second.row_id),
+    ]
+
+
 def test_source_claim_default_identity_is_scoped_to_workspace(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

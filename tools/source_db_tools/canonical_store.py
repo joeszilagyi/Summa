@@ -1772,6 +1772,8 @@ def record_source_claim(
         about_object_ref_value or "about:unknown",
         claim_type_value or "claim",
         claim_text_value,
+        capture_event_id,
+        extraction_id,
     )
     is_open_question_value = 1 if _is_open_question_claim(claim_text_value, claim_type_value) else 0
     review_state_value = _normalize_review_state(
