@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 8
-CURRENT_MIGRATION_ID = "0008_source_reconciliation_hot_path_indexes"
+CURRENT_SCHEMA_VERSION = 9
+CURRENT_MIGRATION_ID = "0009_source_claim_anchor_requirement"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -312,9 +312,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=8,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0008_source_reconciliation_hot_path_indexes",
         sql_path=MIGRATIONS_DIR / "0008_source_reconciliation_hot_path_indexes.sql",
         notes="Add remaining source_claim and source_relationship reconciliation indexes.",
+    ),
+    MigrationSpec(
+        version=9,
+        migration_id="0009_source_claim_anchor_requirement",
+        sql_path=MIGRATIONS_DIR / "0009_source_claim_anchor_requirement.sql",
+        notes="Require every source_claim to retain an object or source-artifact anchor.",
     ),
 )
 
@@ -1067,6 +1073,18 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
+def _source_claim_has_anchor(
+    about_object_ref: Any,
+    capture_event_id: Any,
+    extraction_id: Any,
+) -> bool:
+    return bool(
+        (about_object_ref is not None and str(about_object_ref).strip())
+        or capture_event_id is not None
+        or extraction_id is not None
+    )
+
+
 def _timestamp_merge_key(value: str) -> dt.datetime:
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -1783,6 +1801,16 @@ def record_source_claim(
             """,
             (legacy_claim_key, workspace_id_value),
         ).fetchone()
+    if not _source_claim_has_anchor(about_object_ref_value, capture_event_id, extraction_id):
+        existing_has_anchor = existing is not None and _source_claim_has_anchor(
+            existing["about_object_ref"],
+            existing["capture_event_id"],
+            existing["extraction_id"],
+        )
+        if not existing_has_anchor:
+            raise CanonicalStoreError(
+                "source_claim requires an about_object_ref, capture_event_id, or extraction_id anchor"
+            )
     if existing is None:
         cursor = conn.execute(
             """

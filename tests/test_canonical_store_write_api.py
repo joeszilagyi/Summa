@@ -281,6 +281,72 @@ def test_write_api_allows_unscoped_detected_entity_without_workspace(tmp_path: P
     assert entity_row["provenance_event_ref"] == provenance.event_key
 
 
+def test_source_claim_requires_object_or_source_artifact_anchor(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-anchor",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            run_id="fixture-claim-anchor",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-anchor",
+        )
+
+        with pytest.raises(canonical_store.CanonicalStoreError, match="requires .*anchor"):
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                claim_text="An unanchored claim must be rejected.",
+                source_claim_key_v1="claim:unanchored-api",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+        with pytest.raises(sqlite3.IntegrityError, match="source_claim requires"):
+            conn.execute(
+                """
+                INSERT INTO source_claim (
+                  source_claim_key_v1,
+                  claim_text,
+                  created_at,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "claim:unanchored-sql",
+                    "A directly inserted unanchored claim must be rejected.",
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+
+        claim = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            source_claim_key_v1="claim:anchored",
+            about_object_ref="work:fixture-anchor",
+            claim_text="An anchored claim is valid.",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="source_claim requires"):
+            conn.execute(
+                """
+                UPDATE source_claim
+                SET about_object_ref=NULL, capture_event_id=NULL, extraction_id=NULL
+                WHERE source_claim_id=?
+                """,
+                (claim.row_id,),
+            )
+    finally:
+        conn.close()
+
+
 def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

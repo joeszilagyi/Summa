@@ -9,18 +9,33 @@ PRIVATE_SENTINEL = "PRIVATE_SENTINEL_DO_NOT_PUBLISH"
 UNREVIEWED_SENTINEL = "UNREVIEWED_SENTINEL_DO_NOT_PUBLISH"
 
 
-def create_sparse_canonical_store(tmp_path: Path, *, name: str = "canonical.sqlite") -> Path:
+def create_sparse_canonical_store(
+    tmp_path: Path,
+    *,
+    name: str = "canonical.sqlite",
+    target_version: int | None = None,
+) -> Path:
     db_path = tmp_path / name
     canonical_store.init_canonical_store(
         db_path,
+        target_version=target_version,
         applied_at=FIXED_TIMESTAMP,
         applied_by="pytest.publication_fixture",
     )
     return db_path
 
 
-def create_populated_canonical_store(tmp_path: Path, *, name: str = "canonical.sqlite") -> Path:
-    db_path = create_sparse_canonical_store(tmp_path, name=name)
+def create_populated_canonical_store(
+    tmp_path: Path,
+    *,
+    name: str = "canonical.sqlite",
+    target_version: int | None = None,
+) -> Path:
+    db_path = create_sparse_canonical_store(
+        tmp_path,
+        name=name,
+        target_version=target_version,
+    )
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         conn.execute(
