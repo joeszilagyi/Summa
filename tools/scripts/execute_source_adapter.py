@@ -70,6 +70,7 @@ EXECUTOR_NAME = "tools/scripts/execute_source_adapter.py"
 MAX_EXTRACT_TEXT_BYTES = 64 * 1024
 MAX_XML_RECORD_BYTES = 8 * 1024 * 1024
 MAX_XML_RECORD_NODES = 100_000
+DRY_RUN_PATH_REDACTION = "[redacted-path]"
 DEFAULT_REMOTE_TIMEOUT_SECONDS = 10.0
 DEFAULT_REMOTE_MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_REMOTE_REDIRECTS = 3
@@ -540,6 +541,32 @@ def ensure_path_within_root(path: Path, *, root: Path) -> None:
         raise SourceAcquisitionError(
             f"resolved source path escapes the allowed root: {path}"
         ) from exc
+
+
+def validate_dry_run_local_paths(
+    records: list[dict[str, Any]],
+    *,
+    adapter_payload: dict[str, Any],
+    adapter_path: Path,
+) -> None:
+    """Validate local handoff paths before exposing a dry-run summary."""
+
+    root = expected_local_root(adapter_payload, adapter_path=adapter_path)
+    input_family = adapter_payload.get("input_family")
+    for record in records:
+        source_path = Path(record["resolved_source_path"]).expanduser().resolve()
+        if input_family in {"local_file", "local_git_repo"}:
+            if source_path != root:
+                raise SourceAcquisitionError(
+                    "dry-run local source path does not match the trusted adapter root"
+                )
+            continue
+        try:
+            source_path.relative_to(root)
+        except ValueError as exc:
+            raise SourceAcquisitionError(
+                "dry-run local source path escapes the trusted adapter root"
+            ) from exc
 
 
 def expected_local_root(adapter_payload: dict[str, Any], *, adapter_path: Path) -> Path:
@@ -1168,7 +1195,7 @@ def dry_run_execution_record(
         "adapter_id": adapter_payload["adapter_id"],
         "workspace_id": adapter_payload["workspace_id"],
         "adapter_type": adapter_type,
-        "handoff_path": str(handoff_path),
+        "handoff_path": DRY_RUN_PATH_REDACTION,
         "input_handoff_hash": handoff_hash,
         "dry_run": True,
         "status": "dry_run",
@@ -1180,8 +1207,16 @@ def dry_run_execution_record(
         "network_safety_gate": summarize_gate_report(gate_report)
         if gate_report is not None
         else None,
-        "local_input_paths_processed": local_input_paths,
-        "planned_actions": planned_actions,
+        "local_input_paths_processed": [DRY_RUN_PATH_REDACTION] * len(local_input_paths),
+        "planned_actions": [
+            {
+                **action,
+                "resolved_source_path": DRY_RUN_PATH_REDACTION,
+            }
+            if "resolved_source_path" in action
+            else action
+            for action in planned_actions
+        ],
         "capture_event_count": 0,
         "extraction_record_count": 0,
         "output_artifacts": output_artifacts,
@@ -2993,6 +3028,11 @@ def main() -> int:
                     sys.stdout.write(compact_json_text(remote_execution_record) + "\n")
                 return 0 if remote_execution_record["status"] == "dry_run" else EXIT_STATE_UNSAFE
 
+            validate_dry_run_local_paths(
+                records,
+                adapter_payload=adapter_payload,
+                adapter_path=adapter_path,
+            )
             dry_run_local_input_paths = sorted(
                 {str(record["resolved_source_path"]) for record in records}
             )

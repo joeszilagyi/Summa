@@ -82,6 +82,7 @@ def run_executor(
     *,
     handoff: Path,
     suppress_execution_record_stdout: bool = False,
+    dry_run: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     output = tmp_path / "local-source-execution"
     args = [
@@ -102,6 +103,8 @@ def run_executor(
         "--created-at",
         "2026-06-03T12:34:56Z",
     ]
+    if dry_run:
+        args.append("--dry-run")
     if suppress_execution_record_stdout:
         args.append("--suppress-execution-record-stdout")
     return subprocess.run(
@@ -608,6 +611,47 @@ def test_execute_local_source_dry_run_suppresses_execution_record_stdout_when_re
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout == ""
     assert not output.exists()
+
+
+def test_execute_local_source_dry_run_validates_and_redacts_local_paths(
+    tmp_path: Path,
+) -> None:
+    handoff, _ = run_planner(tmp_path)
+
+    proc = run_executor(tmp_path, handoff=handoff, dry_run=True)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    execution = json.loads(proc.stdout)
+    assert execution["handoff_path"] == "[redacted-path]"
+    assert execution["local_input_paths_processed"] == [
+        "[redacted-path]",
+        "[redacted-path]",
+    ]
+    assert all(
+        action["resolved_source_path"] == "[redacted-path]"
+        for action in execution["planned_actions"]
+    )
+    assert str(tmp_path) not in proc.stdout
+    assert str(FIXTURE_ROOT) not in proc.stdout
+
+    records = [
+        json.loads(line)
+        for line in handoff.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    forged_path = tmp_path / "outside-secret" / "private.txt"
+    records[0]["resolved_source_path"] = str(forged_path)
+    records[0]["preserved"]["original_locator"]["resolved_source_path"] = str(forged_path)
+    forged_handoff = tmp_path / "forged-local-source-handoff.jsonl"
+    forged_handoff.write_text(json.dumps(records[0]) + "\n", encoding="utf-8")
+
+    forged_proc = run_executor(tmp_path, handoff=forged_handoff, dry_run=True)
+
+    assert forged_proc.returncode != 0
+    assert "dry-run local source path escapes the trusted adapter root" in (
+        forged_proc.stdout + forged_proc.stderr
+    )
+    assert str(forged_path) not in (forged_proc.stdout + forged_proc.stderr)
 
 
 def test_publish_output_dir_swaps_staged_tree_into_place(tmp_path: Path) -> None:
