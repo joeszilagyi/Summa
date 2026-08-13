@@ -198,6 +198,29 @@ def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_user
     ) is False
 
 
+def test_allowlisted_enforces_prefix_path_scheme_and_port_boundaries() -> None:
+    assert gate.allowlisted(
+        "https://example.com/apiary/results",
+        hosts=[],
+        prefixes=["https://example.com/api"],
+    ) is False
+    assert gate.allowlisted(
+        "https://example.com/api/v1/results",
+        hosts=[],
+        prefixes=["https://example.com/api"],
+    ) is True
+    assert gate.allowlisted(
+        "http://example.com:8443/api/v1",
+        hosts=[],
+        prefixes=["https://example.com:8443/api"],
+    ) is False
+    assert gate.allowlisted(
+        "https://example.com:8444/api/v1",
+        hosts=[],
+        prefixes=["https://example.com:8443/api"],
+    ) is False
+
+
 def test_git_worktree_is_clean_uses_timeout_and_optional_locks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()

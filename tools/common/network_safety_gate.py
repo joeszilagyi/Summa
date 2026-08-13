@@ -83,10 +83,10 @@ def normalized_allowlist_url(value: str) -> str | None:
 
 
 def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
-    parsed = urlparse(url)
     normalized_url = normalized_allowlist_url(url)
     if normalized_url is None:
         return False
+    parsed = urlparse(normalized_url)
     host = normalize_host(parsed.hostname or "")
     for allowed_host in hosts:
         normalized_host = normalize_host(allowed_host)
@@ -96,7 +96,17 @@ def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
         normalized_prefix = normalized_allowlist_url(prefix)
         if normalized_prefix is None:
             continue
-        if normalized_url.startswith(normalized_prefix):
+        parsed_prefix = urlparse(normalized_prefix)
+        if (
+            parsed.scheme != parsed_prefix.scheme
+            or normalize_host(parsed.hostname or "")
+            != normalize_host(parsed_prefix.hostname or "")
+            or parsed.port != parsed_prefix.port
+        ):
+            continue
+        prefix_path = (parsed_prefix.path or "/").rstrip("/")
+        url_path = parsed.path or "/"
+        if not prefix_path or url_path == prefix_path or url_path.startswith(prefix_path + "/"):
             return True
     return False
 
