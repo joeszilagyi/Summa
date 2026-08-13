@@ -90,7 +90,7 @@ def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
     host = normalize_host(parsed.hostname or "")
     for allowed_host in hosts:
         normalized_host = normalize_host(allowed_host)
-        if host == normalized_host or host.endswith("." + normalized_host):
+        if host == normalized_host:
             return True
     for prefix in prefixes:
         normalized_prefix = normalized_allowlist_url(prefix)

@@ -180,6 +180,19 @@ def test_allowlisted_rejects_subdomain_forgery_for_bare_host_prefix() -> None:
     ) is True
 
 
+def test_allowlisted_host_entries_match_exact_hosts_only() -> None:
+    assert gate.allowlisted(
+        "https://example.com/status",
+        hosts=["example.com"],
+        prefixes=[],
+    ) is True
+    assert gate.allowlisted(
+        "https://api.example.com/status",
+        hosts=["example.com"],
+        prefixes=[],
+    ) is False
+
+
 def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_userinfo() -> None:
     assert gate.allowlisted(
         "https://xn--bcher-kva.example/alpha",
