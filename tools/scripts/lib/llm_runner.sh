@@ -55,6 +55,7 @@ LLM_RUNNER_CLAUDE_JSON_SCHEMA="${CLAUDE_JSON_SCHEMA:-$LLM_RUNNER_CLAUDE_JSON_SCH
 
 readonly LLM_RUNNER_SUPPORTED_ENGINES="codex|claude"
 readonly LLM_RUNNER_REQUIRED_RUNTIME_LOGGER="runtime_log_event"
+readonly LLM_RUNNER_FOOTER_TOKEN_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # ---------------------------------------------------------------------------
 # Internal state
@@ -99,6 +100,15 @@ _llm_runner_require_output_dir() {
   fi
   if [[ ! -w "$output_dir" ]]; then
     printf 'llm_runner: output directory "%s" is not writable\n' "$output_dir" >&2
+    return 1
+  fi
+}
+
+_llm_runner_validate_footer_token() {
+  local field_name="$1" value="$2"
+
+  if [[ ! "$value" =~ $LLM_RUNNER_FOOTER_TOKEN_REGEX ]]; then
+    printf 'llm_runner: %s must be a single ASCII footer token\n' "$field_name" >&2
     return 1
   fi
 }
@@ -728,6 +738,17 @@ llm_runner_stamp_output() {
   local model_str tmp_file output_dir
   local footer_schema_version="run-body-footer.v1"
 
+  _llm_runner_validate_footer_token "place" "$place" || return 1
+  _llm_runner_validate_footer_token "facet" "$facet" || return 1
+  _llm_runner_validate_footer_token "phase" "$phase" || return 1
+  case "$LLM_RUNNER_ENGINE" in
+    codex|claude) ;;
+    *)
+      printf 'llm_runner: unsupported footer engine\n' >&2
+      return 1
+      ;;
+  esac
+
   _llm_runner_require_output_dir "$file" || return 1
   _llm_runner_has_stamp_footer "$file" && return 0
 
@@ -756,6 +777,8 @@ llm_runner_stamp_output() {
       model_str="unknown"
       ;;
   esac
+
+  _llm_runner_validate_footer_token "model" "$model_str" || return 1
 
   if ! printf '\n---\nRUN_META_VERSION: %s\nGENERATED_BY: %s\nMODEL: %s\nPLACE: %s\nFACET: %s\nPHASE: %s\nRUN_TS: %s\n' \
       "$footer_schema_version" "$LLM_RUNNER_ENGINE" "$model_str" "$place" "$facet" "$phase" \

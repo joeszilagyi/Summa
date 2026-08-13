@@ -575,6 +575,59 @@ def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) 
     assert "PHASE: phase" in stamped
 
 
+def test_llm_runner_stamp_output_rejects_footer_token_injection(tmp_path: Path) -> None:
+    output_file = tmp_path / "stamped.txt"
+    baseline_file = tmp_path / "baseline.txt"
+    output_file.write_text("body line\n", encoding="utf-8")
+    baseline_file.write_text(output_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+    script = textwrap.dedent(
+        f"""\
+        set -euo pipefail
+        runtime_log_event() {{
+          :
+        }}
+        source "{RUNNER_PATH}"
+        place="place"
+        facet="facet"
+        phase="phase"
+        place="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 10
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        place="place"
+        facet="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 11
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        facet="facet"
+        phase="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 12
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        """
+    )
+    proc = subprocess.run(
+        ["bash", "-lc", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "LLM_ENGINE": "codex",
+            "CODEX_MODEL": "test-model",
+            "INVALID": "safe\nFORGED_FIELD: injected",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "must be a single ASCII footer token" in proc.stderr
+
+
 def test_llm_runner_stamp_output_does_not_spawn_python(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

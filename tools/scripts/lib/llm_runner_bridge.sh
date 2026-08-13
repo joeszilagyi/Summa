@@ -108,6 +108,9 @@ case "$subcommand" in
       [[ -n "$stamp_place" ]] || fail "--stamp-place is required with --stamped-output-file"
       [[ -n "$stamp_facet" ]] || fail "--stamp-facet is required with --stamped-output-file"
       [[ -n "$stamp_phase" ]] || fail "--stamp-phase is required with --stamped-output-file"
+      _llm_runner_validate_footer_token "stamp-place" "$stamp_place" || exit 1
+      _llm_runner_validate_footer_token "stamp-facet" "$stamp_facet" || exit 1
+      _llm_runner_validate_footer_token "stamp-phase" "$stamp_phase" || exit 1
     fi
     [[ -z "$engine" ]] || llm_runner_set_engine "$engine"
     llm_runner_init
@@ -159,6 +162,9 @@ case "$subcommand" in
     [[ -n "$place" ]] || fail "--place is required"
     [[ -n "$facet" ]] || fail "--facet is required"
     [[ -n "$phase" ]] || fail "--phase is required"
+    _llm_runner_validate_footer_token "place" "$place" || exit 1
+    _llm_runner_validate_footer_token "facet" "$facet" || exit 1
+    _llm_runner_validate_footer_token "phase" "$phase" || exit 1
     [[ -z "$engine" ]] || llm_runner_set_engine "$engine"
     llm_runner_stamp_output "$file_path" "$place" "$facet" "$phase"
     ;;
