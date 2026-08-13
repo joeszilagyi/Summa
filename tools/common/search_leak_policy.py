@@ -73,7 +73,9 @@ def _looks_high_entropy(token: str) -> bool:
     has_lowercase = any(char.islower() for char in token)
     has_uppercase = any(char.isupper() for char in token)
     has_digit = any(char.isdigit() for char in token)
-    has_symbol = any(char in "+/_=-" for char in token)
+    # Treat identifier separators as structure rather than entropy. Otherwise
+    # long snake_case values such as schema keys can look like opaque secrets.
+    has_symbol = any(char in "+/=" for char in token)
     if not has_digit or not (has_uppercase or has_symbol):
         return False
     character_classes = sum(

@@ -34,3 +34,4 @@ def test_contains_secret_marker_checks_sensitive_structured_fields() -> None:
 
 def test_contains_secret_marker_ignores_ordinary_public_text() -> None:
     assert not contains_secret_marker("This is ordinary public documentation.")
+    assert not contains_secret_marker("0009_source_claim_anchor_requirement")
