@@ -230,6 +230,87 @@ def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Pat
     assert suppressed["allowlist_approved_by"] == "operator.alex"
 
 
+def test_allowlist_fingerprint_does_not_suppress_other_matching_markers(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=approved-example token=unapproved-example\n", encoding="utf-8")
+
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    assert len(raw_report["findings"]) == 2
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "allow-first-token-marker",
+                "finding_fingerprint": raw_report["findings"][0]["finding_fingerprint"],
+                "reason": "The first documentation marker is an intentional example.",
+                "approved_by": "operator.alex",
+                "expires_at": "2099-12-31T23:59:59Z",
+            }
+        ],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["counts"]["suppressed_findings"] == 1
+    assert report["findings"][0]["line"] == 1
+    assert report["findings"][0]["column"] > report["suppressed_findings"][0]["column"]
+
+
+def test_allowlist_fingerprint_changes_when_source_context_changes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    source = root / "index.html"
+    source.write_text("token=approved-example\n", encoding="utf-8")
+    approved_finding = scanner.scan_directory(root, profile="public_bundle")["findings"][0]
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "allow-original-token-context",
+                "finding_fingerprint": approved_finding["finding_fingerprint"],
+                "reason": "The original documentation marker is an intentional example.",
+                "approved_by": "operator.alex",
+                "expires_at": "2099-12-31T23:59:59Z",
+            }
+        ],
+    }
+    source.write_text("token=changed-example\n", encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["findings"]
+    assert report["suppressed_findings"] == []
+
+
+def test_expired_allowlist_fingerprint_does_not_suppress_finding(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=expired-example\n", encoding="utf-8")
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    finding = raw_report["findings"][0]
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "expired-token-marker",
+                "finding_fingerprint": finding["finding_fingerprint"],
+                "reason": "This approval is no longer current.",
+                "approved_by": "operator.alex",
+                "expires_at": "2020-01-01T00:00:00Z",
+            }
+        ],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["findings"] == [finding]
+    assert report["suppressed_findings"] == []
+
+
 def test_leak_scanner_cli_writes_reports(tmp_path: Path) -> None:
     root = stage_fixture(tmp_path, "public_bundle_clean")
     report_json = tmp_path / "report.json"

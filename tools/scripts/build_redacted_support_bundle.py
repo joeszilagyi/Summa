@@ -33,19 +33,17 @@ SUPPORT_BUNDLE_SCAN_ALLOWLIST = {
     "entries": [
         {
             "entry_id": "support-doctor-redacted-private-note-field",
-            "finding_code": "PRIVATE_NOTE_MARKER",
-            "path_glob": "doctor-report.json",
-            "match_substring": "private_note",
+            "finding_fingerprint": "sha256:0f8368335621b57dd98b1acc77689b300730d84cc078827d0a8a768b7a31b200",
             "reason": "The doctor report retains this field name while redacting its value.",
             "approved_by": "support-bundle-builder",
+            "expires_at": "2099-12-31T23:59:59Z",
         },
         {
             "entry_id": "support-manifest-excluded-full-text-label",
-            "finding_code": "RAW_PAYLOAD_MARKER",
-            "path_glob": "manifest.json",
-            "match_substring": "full_extracted_text",
+            "finding_fingerprint": "sha256:282d092ca23a77fccbb2e79ca24df185f153870fc5f1f48ecdfa205947e18ba7",
             "reason": "The manifest names an excluded family without including its content.",
             "approved_by": "support-bundle-builder",
+            "expires_at": "2099-12-31T23:59:59Z",
         },
     ],
 }

@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", help="Directory path to scan.")
     parser.add_argument("--profile", choices=tuple(sorted(PROFILES)), default="public_bundle")
-    parser.add_argument("--allowlist-json", help="Optional leak-scan-allowlist.v1 JSON path.")
+    parser.add_argument("--allowlist-json", help="Optional leak-scan-allowlist.v2 JSON path.")
     parser.add_argument("--format", choices=("json", "text"), default="json")
     add_report_args(parser)
     return parser.parse_args()

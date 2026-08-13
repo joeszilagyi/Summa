@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/summa/leak_scan_allowlist.schema.json",
-  "title": "leak-scan-allowlist.v1",
+  "title": "leak-scan-allowlist.v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "leak-scan-allowlist.v1"
+      "const": "leak-scan-allowlist.v2"
     },
     "entries": {
       "type": "array",
@@ -25,28 +25,19 @@
       "additionalProperties": false,
       "required": [
         "entry_id",
-        "finding_code",
-        "path_glob",
-        "match_substring",
+        "finding_fingerprint",
         "reason",
-        "approved_by"
+        "approved_by",
+        "expires_at"
       ],
       "properties": {
         "entry_id": {
           "type": "string",
           "minLength": 1
         },
-        "finding_code": {
+        "finding_fingerprint": {
           "type": "string",
-          "minLength": 1
-        },
-        "path_glob": {
-          "type": "string",
-          "minLength": 1
-        },
-        "match_substring": {
-          "type": "string",
-          "minLength": 1
+          "pattern": "^sha256:[0-9a-f]{64}$"
         },
         "reason": {
           "type": "string",
@@ -54,7 +45,11 @@
         },
         "approved_by": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:+-]{1,127}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     }

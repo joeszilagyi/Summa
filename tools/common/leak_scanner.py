@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import re
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
 from tools.common.search_leak_policy import contains_private_path, find_secret_marker_spans
 
-ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v1"
+ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v2"
 REPORT_SCHEMA_VERSION = "leak-scan-report.v1"
+FINDING_FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+REVIEWER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:+-]{1,127}$")
 BINARY_SUFFIXES = {
     ".7z",
     ".avi",
@@ -94,6 +98,30 @@ class LeakScannerError(RuntimeError):
     """Raised when scanner inputs are malformed or unreadable."""
 
 
+def finding_fingerprint(finding: dict[str, Any]) -> str:
+    """Return a stable identifier for the complete finding context."""
+    identity = {
+        key: finding.get(key)
+        for key in (
+            "path",
+            "code",
+            "message",
+            "line",
+            "column",
+            "excerpt",
+            "context_fingerprint",
+        )
+    }
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _is_text_file(path: Path) -> bool:
     """Return whether a file is safe to pass through the line-oriented scanner."""
     if path.suffix.lower() in BINARY_SUFFIXES:
@@ -139,17 +167,49 @@ def validate_allowlist(payload: dict[str, Any]) -> list[dict[str, str]]:
     if not isinstance(entries, list):
         errors.append({"code": "INVALID_ENTRIES", "message": "entries must be an array"})
         return errors
-    required = ("entry_id", "finding_code", "path_glob", "match_substring", "reason", "approved_by")
+    required = ("entry_id", "finding_fingerprint", "reason", "approved_by", "expires_at")
+    allowed = set(required)
     seen_ids: set[str] = set()
     for index, entry in enumerate(entries):
         label = f"entries[{index}]"
         if not isinstance(entry, dict):
             errors.append({"code": "INVALID_ENTRY", "message": f"{label} must be an object"})
             continue
+        for key in sorted(set(entry) - allowed):
+            errors.append({"code": "UNKNOWN_ENTRY_FIELD", "message": f"{label}.{key} is not supported"})
         for key in required:
             value = entry.get(key)
             if not isinstance(value, str) or not value.strip():
                 errors.append({"code": "INVALID_ENTRY_FIELD", "message": f"{label}.{key} must be a non-blank string"})
+        fingerprint = entry.get("finding_fingerprint")
+        if isinstance(fingerprint, str) and not FINDING_FINGERPRINT_RE.fullmatch(fingerprint):
+            errors.append(
+                {
+                    "code": "INVALID_FINDING_FINGERPRINT",
+                    "message": f"{label}.finding_fingerprint must be a sha256 fingerprint",
+                }
+            )
+        expires_at = entry.get("expires_at")
+        if isinstance(expires_at, str):
+            try:
+                parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                parsed_expiry = None
+            if parsed_expiry is None or parsed_expiry.tzinfo is None:
+                errors.append(
+                    {
+                        "code": "INVALID_EXPIRY",
+                        "message": f"{label}.expires_at must be an ISO-8601 timestamp with timezone",
+                    }
+                )
+        approved_by = entry.get("approved_by")
+        if isinstance(approved_by, str) and not REVIEWER_ID_RE.fullmatch(approved_by):
+            errors.append(
+                {
+                    "code": "INVALID_REVIEWER_ID",
+                    "message": f"{label}.approved_by must be a bounded reviewer identity token",
+                }
+            )
         entry_id = entry.get("entry_id")
         if isinstance(entry_id, str) and entry_id.strip():
             if entry_id in seen_ids:
@@ -162,7 +222,20 @@ def _line_number_for_offset(body: str, offset: int) -> int:
     return body.count("\n", 0, offset) + 1
 
 
-def _finding(*, path: str, code: str, message: str, line: int | None = None, excerpt: str | None = None) -> dict[str, Any]:
+def _column_number_for_offset(body: str, offset: int) -> int:
+    return offset - body.rfind("\n", 0, offset)
+
+
+def _finding(
+    *,
+    path: str,
+    code: str,
+    message: str,
+    line: int | None = None,
+    column: int | None = None,
+    excerpt: str | None = None,
+    context: str | None = None,
+) -> dict[str, Any]:
     finding: dict[str, Any] = {
         "path": path,
         "code": code,
@@ -170,8 +243,15 @@ def _finding(*, path: str, code: str, message: str, line: int | None = None, exc
     }
     if line is not None:
         finding["line"] = line
+    if column is not None:
+        finding["column"] = column
     if excerpt is not None:
         finding["excerpt"] = excerpt
+    if context is not None:
+        finding["context_fingerprint"] = (
+            "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
+        )
+    finding["finding_fingerprint"] = finding_fingerprint(finding)
     return finding
 
 
@@ -184,7 +264,9 @@ def _regex_findings(body: str, *, rel_path: str, pattern: re.Pattern[str], code:
                 code=code,
                 message=message,
                 line=_line_number_for_offset(body, match.start()),
+                column=_column_number_for_offset(body, match.start()),
                 excerpt=match.group(0),
+                context=body,
             )
         )
     return findings
@@ -207,7 +289,9 @@ def _regex_findings_for_line(
                 code=code,
                 message=message,
                 line=line_number,
+                column=match.start() + 1,
                 excerpt=match.group(0),
+                context=line,
             )
         )
     return findings
@@ -223,7 +307,9 @@ def _scan_line(line: str, *, rel_path: str, profile: str, line_number: int) -> l
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
                 line=line_number,
+                column=start + 1,
                 excerpt=line[start:end],
+                context=line,
             )
             for start, end in find_secret_marker_spans(line)
         )
@@ -297,7 +383,9 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
                 line=_line_number_for_offset(body, start),
+                column=_column_number_for_offset(body, start),
                 excerpt=body[start:end],
+                context=body,
             )
             for start, end in find_secret_marker_spans(body)
         )
@@ -356,14 +444,18 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
 
 
 def _entry_matches(finding: dict[str, Any], entry: dict[str, Any]) -> bool:
-    excerpt = finding.get("excerpt")
-    if not isinstance(excerpt, str):
+    expires_at = entry.get("expires_at")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
         return False
     return (
-        finding.get("code") == entry.get("finding_code")
-        and isinstance(finding.get("path"), str)
-        and fnmatch(finding["path"], entry["path_glob"])
-        and entry["match_substring"] in excerpt
+        isinstance(finding.get("finding_fingerprint"), str)
+        and finding["finding_fingerprint"] == entry.get("finding_fingerprint")
     )
 
 
