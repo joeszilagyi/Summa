@@ -357,7 +357,7 @@ def validate_local_search_results_payload(payload: dict[str, Any]) -> list[dict[
                             message=f"{snippet_label}.field must not expose restricted evidence fields in public search results",
                             path=f"{snippet_label}.field",
                         )
-                    if text is not None and contains_secret_marker(text):
+                    if text is not None and contains_secret_marker(text, field_name=field_name):
                         add_error(
                             errors,
                             code="SECRET_MARKER_EXPOSED",

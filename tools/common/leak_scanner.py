@@ -9,7 +9,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from tools.common.search_leak_policy import contains_private_path, contains_secret_marker
+from tools.common.search_leak_policy import contains_private_path, find_secret_marker_spans
 
 ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v1"
 REPORT_SCHEMA_VERSION = "leak-scan-report.v1"
@@ -216,16 +216,16 @@ def _regex_findings_for_line(
 def _scan_line(line: str, *, rel_path: str, profile: str, line_number: int) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     profile_config = PROFILES[profile]
-    if profile_config["scan_secret_markers"] and contains_secret_marker(line):
+    if profile_config["scan_secret_markers"]:
         findings.extend(
-            _regex_findings_for_line(
-                line,
-                rel_path=rel_path,
-                pattern=re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"),
+            _finding(
+                path=rel_path,
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
-                line_number=line_number,
+                line=line_number,
+                excerpt=line[start:end],
             )
+            for start, end in find_secret_marker_spans(line)
         )
     if profile_config["scan_private_path_markers"] and contains_private_path(line):
         findings.extend(
@@ -290,15 +290,16 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
     findings: list[dict[str, Any]] = []
     profile_config = PROFILES[profile]
-    if profile_config["scan_secret_markers"] and contains_secret_marker(body):
+    if profile_config["scan_secret_markers"]:
         findings.extend(
-            _regex_findings(
-                body,
-                rel_path=rel_path,
-                pattern=re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"),
+            _finding(
+                path=rel_path,
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
+                line=_line_number_for_offset(body, start),
+                excerpt=body[start:end],
             )
+            for start, end in find_secret_marker_spans(body)
         )
     if profile_config["scan_private_path_markers"] and contains_private_path(body):
         findings.extend(

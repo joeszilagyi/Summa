@@ -157,6 +157,25 @@ def test_scan_directory_scans_common_text_files_without_known_suffixes(tmp_path:
     assert {finding["path"] for finding in report["findings"]} == set(leak_by_name)
 
 
+def test_scan_directory_reports_provider_and_opaque_secret_shapes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    secrets = [
+        "ghp_1234567890abcdefghijkl",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        "AKIAIOSFODNN7EXAMPLE",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature-value-123456789",
+        "opaque=aB3dE7gH9jK2mN5pQ8rT4vW6xY1zC0f",
+    ]
+    (root / "secrets.txt").write_text("\n".join(secrets) + "\n", encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    assert len(report["findings"]) == len(secrets)
+    assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
+
+
 def test_scan_directory_skips_binary_files_after_text_sniff(tmp_path: Path) -> None:
     root = tmp_path / "bundle"
     root.mkdir()
