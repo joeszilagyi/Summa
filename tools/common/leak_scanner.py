@@ -462,6 +462,8 @@ def _entry_matches(finding: dict[str, Any], entry: dict[str, Any]) -> bool:
 def apply_allowlist(
     findings: list[dict[str, Any]],
     allowlist_payload: dict[str, Any],
+    *,
+    include_allowlist_audit: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     entries = allowlist_payload.get("entries", [])
     active: list[dict[str, Any]] = []
@@ -475,14 +477,18 @@ def apply_allowlist(
         if matched_entry is None:
             active.append(finding)
             continue
-        suppressed.append(
-            {
-                **finding,
-                "allowlist_entry_id": matched_entry["entry_id"],
-                "allowlist_reason": matched_entry["reason"],
-                "allowlist_approved_by": matched_entry["approved_by"],
-            }
-        )
+        suppressed_finding = {
+            **finding,
+            "allowlist_entry_id": matched_entry["entry_id"],
+        }
+        if include_allowlist_audit:
+            suppressed_finding.update(
+                {
+                    "allowlist_reason": matched_entry["reason"],
+                    "allowlist_approved_by": matched_entry["approved_by"],
+                }
+            )
+        suppressed.append(suppressed_finding)
     return active, suppressed
 
 
@@ -492,6 +498,7 @@ def scan_directory(
     profile: str,
     allowlist_payload: dict[str, Any] | None = None,
     exclude_globs: tuple[str, ...] | list[str] | None = None,
+    include_allowlist_audit: bool = False,
 ) -> dict[str, Any]:
     if profile not in PROFILES:
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
@@ -534,7 +541,22 @@ def scan_directory(
         except (OSError, UnicodeDecodeError):
             continue
 
-    findings, suppressed = apply_allowlist(raw_findings, normalized_allowlist)
+    findings, suppressed = apply_allowlist(
+        raw_findings,
+        normalized_allowlist,
+        include_allowlist_audit=include_allowlist_audit,
+    )
+    allowlist_entries = normalized_allowlist.get("entries", [])
+    allowlist_audit: dict[str, Any] = {
+        "schema_version": normalized_allowlist.get("schema_version"),
+        "entry_ids": [
+            entry["entry_id"]
+            for entry in allowlist_entries
+            if isinstance(entry, dict) and isinstance(entry.get("entry_id"), str)
+        ],
+    }
+    if include_allowlist_audit:
+        allowlist_audit["entries"] = allowlist_entries
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "profile": profile,
@@ -547,8 +569,5 @@ def scan_directory(
         },
         "findings": findings,
         "suppressed_findings": suppressed,
-        "allowlist_audit": {
-            "schema_version": normalized_allowlist.get("schema_version"),
-            "entries": normalized_allowlist.get("entries", []),
-        },
+        "allowlist_audit": allowlist_audit,
     }

@@ -39,4 +39,7 @@ without re-disclosing a secret.
 Allowlist entries match only that exact finding fingerprint; broad path or
 substring suppressions are rejected. Expired entries no longer suppress
 findings. Suppressed findings stay visible in the machine-readable report with
-the allowlist entry that matched them.
+only the allowlist entry ID that matched them by default. The report's
+`allowlist_audit` also emits only `entry_ids` by default;
+`--debug-allowlist-audit` is a private/debug-only opt-in for including full
+allowlist entries and their audit metadata.

@@ -215,7 +215,7 @@ def test_support_bundle_profile_scans_all_leak_categories(tmp_path: Path) -> Non
     } <= codes
 
 
-def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Path) -> None:
+def test_allowlist_suppresses_known_false_positive_and_keeps_entry_id(tmp_path: Path) -> None:
     root = stage_fixture(tmp_path, "public_bundle_allowlisted")
     allowlist = root / "allowlist.json"
 
@@ -227,7 +227,8 @@ def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Pat
     assert report["counts"]["suppressed_findings"] == 1
     suppressed = report["suppressed_findings"][0]
     assert suppressed["allowlist_entry_id"] == "allow-doc-literal-token"
-    assert suppressed["allowlist_approved_by"] == "operator.alex"
+    assert "allowlist_reason" not in suppressed
+    assert "allowlist_approved_by" not in suppressed
 
 
 def test_allowlist_fingerprint_does_not_suppress_other_matching_markers(tmp_path: Path) -> None:
@@ -309,6 +310,51 @@ def test_expired_allowlist_fingerprint_does_not_suppress_finding(tmp_path: Path)
     assert report["status"] == "fail"
     assert report["findings"] == [finding]
     assert report["suppressed_findings"] == []
+
+
+def test_allowlist_audit_redacts_entries_by_default_and_supports_private_debug(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=approved-example\n", encoding="utf-8")
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    allowlist_entry = {
+        "entry_id": "private-audit-entry",
+        "finding_fingerprint": raw_report["findings"][0]["finding_fingerprint"],
+        "reason": "private reviewer context must not be emitted by normal reports",
+        "approved_by": "reviewer.private@example",
+        "expires_at": "2099-12-31T23:59:59Z",
+    }
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [allowlist_entry],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["allowlist_audit"] == {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entry_ids": ["private-audit-entry"],
+    }
+    serialized_report = json.dumps(report)
+    assert allowlist_entry["reason"] not in serialized_report
+    assert allowlist_entry["approved_by"] not in serialized_report
+
+    debug_report = scanner.scan_directory(
+        root,
+        profile="public_bundle",
+        allowlist_payload=allowlist,
+        include_allowlist_audit=True,
+    )
+
+    assert debug_report["allowlist_audit"]["entries"] == [allowlist_entry]
+    assert (
+        debug_report["suppressed_findings"][0]["allowlist_reason"]
+        == allowlist_entry["reason"]
+    )
+    assert (
+        debug_report["suppressed_findings"][0]["allowlist_approved_by"]
+        == allowlist_entry["approved_by"]
+    )
 
 
 def test_leak_scanner_cli_writes_reports(tmp_path: Path) -> None:

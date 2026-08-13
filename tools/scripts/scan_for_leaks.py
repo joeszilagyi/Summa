@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("target", help="Directory path to scan.")
     parser.add_argument("--profile", choices=tuple(sorted(PROFILES)), default="public_bundle")
     parser.add_argument("--allowlist-json", help="Optional leak-scan-allowlist.v2 JSON path.")
+    parser.add_argument(
+        "--debug-allowlist-audit",
+        action="store_true",
+        help="Private/debug only: include full allowlist entries in the JSON report.",
+    )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     add_report_args(parser)
     return parser.parse_args()
@@ -81,7 +86,12 @@ def main() -> int:
     report_root = resolve_report_root(target, report_root=args.report_root)
     try:
         allowlist_payload = load_allowlist(Path(args.allowlist_json)) if args.allowlist_json else None
-        report = scan_directory(target, profile=args.profile, allowlist_payload=allowlist_payload)
+        report = scan_directory(
+            target,
+            profile=args.profile,
+            allowlist_payload=allowlist_payload,
+            include_allowlist_audit=args.debug_allowlist_audit,
+        )
     except LeakScannerError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_INPUT_UNAVAILABLE
