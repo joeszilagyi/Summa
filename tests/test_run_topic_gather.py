@@ -529,6 +529,57 @@ def test_run_topic_gather_is_cwd_independent_for_absolute_paths(tmp_path: Path) 
     assert exit_code == validator.EXIT_PASS, report
 
 
+def test_gather_candidate_batch_validator_rejects_external_payload_paths(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "external-payload-paths"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    payload["subject"]["manifest_path"] = "/etc/passwd"
+    payload["domain_pack"]["path"] = "/etc/passwd"
+    payload["prompt_bundle"]["selected_template_file"] = "/etc/passwd"
+    payload["source_text_wrapping"]["wrapper_template_path"] = "/etc/passwd"
+    payload["engine"]["runner_path"] = "/etc/passwd"
+    payload["engine"]["bridge_path"] = "/etc/passwd"
+
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        payload, target=batch_path
+    )
+
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    error_codes = {error["code"] for error in report["errors"]}
+    assert {
+        "SUBJECT_MANIFEST_PATH_OUTSIDE_WORKSPACE",
+        "DOMAIN_PACK_PATH_OUTSIDE_REPO",
+        "PROMPT_BUNDLE_TEMPLATE_PATH_OUTSIDE_REPO",
+        "WRAPPER_TEMPLATE_PATH_OUTSIDE_REPO",
+        "RUNNER_PATH_OUTSIDE_REPO",
+        "BRIDGE_PATH_OUTSIDE_REPO",
+    } <= error_codes
+
+
 def test_resolve_prior_state_context_reuses_validated_store_connection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1763,6 +1814,19 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     assert "--json" in log_text
     assert "--skip-git-repo-check" in log_text
     assert "workspace-write" in log_text
+
+    external_payload = json.loads(json.dumps(payload))
+    external_payload["engine_output_ref"] = "/etc/passwd"
+    external_payload["provenance"]["stamped_output_path"] = "/etc/passwd"
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        external_payload, target=batch_path
+    )
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    error_codes = {error["code"] for error in report["errors"]}
+    assert {
+        "ENGINE_OUTPUT_PATH_OUTSIDE_BATCH",
+        "STAMPED_OUTPUT_PATH_OUTSIDE_BATCH",
+    } <= error_codes
 
 
 def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
