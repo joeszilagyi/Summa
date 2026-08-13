@@ -229,6 +229,7 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
         errors.append({"code": "INVALID_PLANNED_ACTIONS", "message": "planned_actions must be a non-empty array"})
     else:
         seen_ids: set[str] = set()
+        seen_urls: dict[str, tuple[Any, ...]] = {}
         for index, action in enumerate(actions):
             if not isinstance(action, dict):
                 errors.append({"code": "INVALID_PLANNED_ACTION", "message": f"planned_actions[{index}] must be an object"})
@@ -250,6 +251,26 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
             units = action.get("side_effect_units")
             if not isinstance(units, int) or isinstance(units, bool) or units < 0:
                 errors.append({"code": "INVALID_SIDE_EFFECT_UNITS", "message": f"planned_actions[{index}].side_effect_units must be an integer >= 0"})
+            if isinstance(url, str) and url.strip():
+                action_tuple = (
+                    action.get("action_kind"),
+                    url,
+                    action.get("method"),
+                    units,
+                )
+                previous_tuple = seen_urls.get(url)
+                if previous_tuple is not None and previous_tuple != action_tuple:
+                    errors.append(
+                        {
+                            "code": "DUPLICATE_ACTION_URL",
+                            "message": (
+                                f"planned_actions[{index}].url duplicates an earlier URL "
+                                "with a different action tuple"
+                            ),
+                        }
+                    )
+                else:
+                    seen_urls[url] = action_tuple
 
     return errors
 

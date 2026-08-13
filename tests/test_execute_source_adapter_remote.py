@@ -985,6 +985,33 @@ def test_execute_remote_fetches_deduplicates_duplicate_urls_and_sleeps_once(
     assert payload_path.exists()
 
 
+def test_gate_action_by_url_rejects_conflicting_duplicate_urls() -> None:
+    gate_report = {
+        "planned_actions": [
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "HEAD",
+            },
+        ]
+    }
+
+    with pytest.raises(
+        source_executor.SourceAcquisitionError,
+        match="contains conflicting actions for URL",
+    ):
+        source_executor.gate_action_by_url(gate_report)
+
+
 def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_independently(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

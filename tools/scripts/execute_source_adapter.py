@@ -1996,7 +1996,33 @@ def gate_action_by_url(gate_report: dict[str, Any]) -> dict[str, dict[str, Any]]
     actions: dict[str, dict[str, Any]] = {}
     for action in gate_report.get("planned_actions", []):
         if isinstance(action, dict) and isinstance(action.get("url"), str):
-            actions[action["url"]] = action
+            url = action["url"]
+            existing = actions.get(url)
+            if existing is not None:
+                existing_tuple = (
+                    existing.get("action_kind"),
+                    existing.get("method"),
+                    existing.get("side_effect_units"),
+                    existing.get("status"),
+                    tuple(existing.get("errors", []))
+                    if isinstance(existing.get("errors"), list)
+                    else existing.get("errors"),
+                )
+                action_tuple = (
+                    action.get("action_kind"),
+                    action.get("method"),
+                    action.get("side_effect_units"),
+                    action.get("status"),
+                    tuple(action.get("errors", []))
+                    if isinstance(action.get("errors"), list)
+                    else action.get("errors"),
+                )
+                if existing_tuple != action_tuple:
+                    raise SourceAcquisitionError(
+                        f"network safety gate contains conflicting actions for URL: {url}"
+                    )
+                continue
+            actions[url] = action
     return actions
 
 

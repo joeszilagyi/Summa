@@ -121,6 +121,31 @@ def test_network_safety_gate_refuses_exceeded_budget() -> None:
     assert "SIDE_EFFECT_BUDGET_EXCEEDED" in codes
 
 
+def test_network_safety_gate_rejects_conflicting_duplicate_urls() -> None:
+    request = base_request()
+    duplicate = dict(request["planned_actions"][0])
+    duplicate["action_id"] = "fetch-duplicate"
+    duplicate["method"] = "HEAD"
+    request["planned_actions"].append(duplicate)
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "refuse"
+    assert any(error["code"] == "DUPLICATE_ACTION_URL" for error in payload["errors"])
+
+
+def test_network_safety_gate_allows_identical_duplicate_url_actions() -> None:
+    request = base_request()
+    duplicate = dict(request["planned_actions"][0])
+    duplicate["action_id"] = "fetch-duplicate"
+    request["planned_actions"].append(duplicate)
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "dry_run"
+    assert not any(error["code"] == "DUPLICATE_ACTION_URL" for error in payload["errors"])
+
+
 def test_network_safety_gate_refuses_actions_that_exceed_min_interval_cadence() -> None:
     request = base_request()
     request["rate_limits"] = {
