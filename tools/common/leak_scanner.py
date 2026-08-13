@@ -30,13 +30,13 @@ PROFILES: dict[str, dict[str, bool]] = {
         "scan_restricted_evidence_markers": True,
     },
     "support_bundle": {
-        "scan_secret_markers": False,
-        "scan_private_path_markers": False,
-        "scan_runtime_log_paths": False,
-        "scan_prompt_output_markers": False,
-        "scan_raw_payload_markers": False,
-        "scan_private_note_markers": False,
-        "scan_restricted_evidence_markers": False,
+        "scan_secret_markers": True,
+        "scan_private_path_markers": True,
+        "scan_runtime_log_paths": True,
+        "scan_prompt_output_markers": True,
+        "scan_raw_payload_markers": True,
+        "scan_private_note_markers": True,
+        "scan_restricted_evidence_markers": True,
     },
 }
 

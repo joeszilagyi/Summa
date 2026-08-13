@@ -133,19 +133,31 @@ def test_scan_directory_streams_text_files_without_read_text(
     assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
 
 
-def test_support_bundle_profile_disables_secret_and_private_path_scans(tmp_path: Path) -> None:
+def test_support_bundle_profile_scans_all_leak_categories(tmp_path: Path) -> None:
     root = tmp_path / "support-bundle"
     root.mkdir()
+    (root / "logs").mkdir()
     (root / "notes.txt").write_text(
-        "authorization: bearer token-123\n/private/path/should-not-flag\n",
+        "authorization: bearer token-123\n"
+        "/home/joe/private/path\n"
+        "prompt_output raw_text private_note operator_excerpt_text\n",
         encoding="utf-8",
     )
+    (root / "logs" / "runtime.log").write_text("safe log content\n", encoding="utf-8")
 
     report = scanner.scan_directory(root, profile="support_bundle")
 
-    assert report["status"] == "pass"
-    assert report["findings"] == []
-    assert report["counts"]["findings"] == 0
+    assert report["status"] == "fail"
+    codes = {item["code"] for item in report["findings"]}
+    assert {
+        "SECRET_MARKER",
+        "PRIVATE_PATH",
+        "RUNTIME_LOG_PATH",
+        "PROMPT_OUTPUT_MARKER",
+        "RAW_PAYLOAD_MARKER",
+        "PRIVATE_NOTE_MARKER",
+        "RESTRICTED_EVIDENCE_MARKER",
+    } <= codes
 
 
 def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Path) -> None:

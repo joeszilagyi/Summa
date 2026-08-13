@@ -22,12 +22,33 @@ if str(REPO_ROOT) not in sys.path:
 
 import local_doctor  # noqa: E402
 from tools.common.atomic_write import stable_json_text  # noqa: E402
-from tools.common.leak_scanner import scan_directory  # noqa: E402
+from tools.common.leak_scanner import ALLOWLIST_SCHEMA_VERSION, scan_directory  # noqa: E402
 
 
 MANIFEST_SCHEMA_VERSION = "redacted-support-bundle.v1"
 MAX_LOG_LINES = 200
 TAIL_READ_CHUNK_SIZE = 8192
+SUPPORT_BUNDLE_SCAN_ALLOWLIST = {
+    "schema_version": ALLOWLIST_SCHEMA_VERSION,
+    "entries": [
+        {
+            "entry_id": "support-doctor-redacted-private-note-field",
+            "finding_code": "PRIVATE_NOTE_MARKER",
+            "path_glob": "doctor-report.json",
+            "match_substring": "private_note",
+            "reason": "The doctor report retains this field name while redacting its value.",
+            "approved_by": "support-bundle-builder",
+        },
+        {
+            "entry_id": "support-manifest-excluded-full-text-label",
+            "finding_code": "RAW_PAYLOAD_MARKER",
+            "path_glob": "manifest.json",
+            "match_substring": "full_extracted_text",
+            "reason": "The manifest names an excluded family without including its content.",
+            "approved_by": "support-bundle-builder",
+        },
+    ],
+}
 
 
 class SupportBundleError(RuntimeError):
@@ -196,7 +217,11 @@ def redacted_recent_log(repo_root: Path) -> str | None:
 
 
 def scan_bundle_for_leaks(bundle_root: Path) -> list[dict[str, str]]:
-    report = scan_directory(bundle_root, profile="support_bundle")
+    report = scan_directory(
+        bundle_root,
+        profile="support_bundle",
+        allowlist_payload=SUPPORT_BUNDLE_SCAN_ALLOWLIST,
+    )
     return report["findings"]
 
 
