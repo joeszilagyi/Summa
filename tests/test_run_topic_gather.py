@@ -122,6 +122,42 @@ def batch_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "gather-candidate-batch.json"
 
 
+def test_invoke_llm_runner_bridge_does_not_include_child_output_in_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_output = "prompt-secret /home/joe/private/token=abc123"
+
+    class FailedProcess:
+        returncode = 7
+
+        def stderr_tail(self, *, line_count: int) -> str:
+            del line_count
+            return sensitive_output
+
+        def stdout_tail(self, *, line_count: int) -> str:
+            del line_count
+            return "runtime event containing diagnostics"
+
+    monkeypatch.setattr(
+        driver,
+        "run_streaming_command",
+        lambda *args, **kwargs: FailedProcess(),
+    )
+
+    with pytest.raises(driver.GatherDriverError) as exc_info:
+        driver.invoke_llm_runner_bridge(
+            ["bash", "llm_runner_bridge.sh"],
+            label="fixture gather",
+            timeout_seconds=10.0,
+        )
+
+    message = str(exc_info.value)
+    assert "exit 7" in message
+    assert "diagnostics retained privately" in message
+    assert sensitive_output not in message
+    assert "runtime event containing diagnostics" not in message
+
+
 def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "rendered-prompt.txt"
 

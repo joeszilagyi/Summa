@@ -391,6 +391,15 @@ raise SystemExit(0)
 PY
 }
 
+# Keep engine diagnostics in the mode-600 temporary stderr artifact. Never
+# copy untrusted engine output into operator-facing stderr or runtime logs.
+_llm_runner_report_failure() {
+  local phase="$1" rc="$2"
+  printf 'LLM (%s) failed in phase: %s (exit=%s); stderr retained in private run artifact\n' \
+    "$LLM_RUNNER_ENGINE" "$phase" "$rc" >&2
+  return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # llm_runner_run_quiet <tmp_dir> <prompt_text> <phase> <tool_name>
 #   Run the selected engine in <tmp_dir> with <prompt_text>.
@@ -428,11 +437,8 @@ llm_runner_run_quiet() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -473,11 +479,8 @@ llm_runner_run_quiet_from_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -569,11 +572,8 @@ llm_runner_run_to_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -668,11 +668,8 @@ llm_runner_run_to_file_from_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
