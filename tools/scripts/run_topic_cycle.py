@@ -1472,9 +1472,15 @@ def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_
 
 
 def graph_closure_report_path(args: argparse.Namespace, run_dir: Path) -> Path:
-    if args.graph_closure_report:
-        return resolve_path(args.graph_closure_report)
-    return run_dir / "graph-closure-report.json"
+    run_root = run_dir.resolve()
+    report_path = (
+        resolve_path(args.graph_closure_report)
+        if args.graph_closure_report
+        else run_root / "graph-closure-report.json"
+    )
+    if not report_path.is_relative_to(run_root):
+        raise TopicCycleError("--graph-closure-report must be inside --run-dir")
+    return report_path
 
 
 def graph_closure_stage(
@@ -1757,6 +1763,8 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     run_dir = resolve_path(args.run_dir)
     # Validate the optional spool destination before creating any cycle artifacts.
     spool_dir_for(args, run_dir)
+    # Validate the optional graph-closure report destination before creating any cycle artifacts.
+    graph_closure_report_path(args, run_dir)
     run_id = args.run_id or run_dir.name
     if args.cycle_depth < 1:
         raise TopicCycleError("--cycle-depth must be at least 1")
