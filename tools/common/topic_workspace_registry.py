@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,6 +15,7 @@ LOCAL_REGISTRY_ROOT = REPO_ROOT / "runtime" / "config"
 DEFAULT_REGISTRY_ENV = "INDEXER_TOPIC_WORKSPACE_REGISTRY"
 DEFAULT_REGISTRY_PATH = LOCAL_REGISTRY_ROOT / "topic_workspaces.local.json"
 REGISTRY_SCHEMA_VERSION = "topic-workspace-registry.v1"
+WORKSPACE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 try:
     from tools.common.atomic_write import atomic_write_json
@@ -223,6 +225,10 @@ def _normalize_workspace_id(
     if normalized_workspace_id != raw_value:
         raise TopicWorkspaceRegistryError(
             f"{source_label} has leading/trailing whitespace in topic workspace registry: {raw_value!r}"
+        )
+    if not WORKSPACE_ID_PATTERN.fullmatch(normalized_workspace_id):
+        raise TopicWorkspaceRegistryError(
+            f"{source_label} must match the workspace identifier pattern: {raw_value!r}"
         )
     return normalized_workspace_id
 
