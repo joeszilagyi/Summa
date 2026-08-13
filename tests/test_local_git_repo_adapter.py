@@ -332,10 +332,21 @@ def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path
 def test_local_git_repo_reports_dirty_state_clearly(tmp_path: Path) -> None:
     scenario_dir = init_fixture_repo(tmp_path, dirty=True)
     adapter_path = write_adapter(scenario_dir)
+    handoff_jsonl = tmp_path / "blocked-handoff.jsonl"
 
-    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_jsonl),
+            "--format",
+            "json",
+        ]
+    )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not handoff_jsonl.exists()
     payload = json.loads(proc.stdout)
     assert payload["repo_state"] == "dirty"
     assert payload["blockers"] == ["git working tree has local modifications or untracked files"]

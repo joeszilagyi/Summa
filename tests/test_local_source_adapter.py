@@ -315,9 +315,20 @@ def test_local_directory_adapter_reports_blockers_for_missing_or_unmatched_roots
         encoding="utf-8",
     )
 
-    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+    handoff_jsonl = tmp_path / "blocked-handoff.jsonl"
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_jsonl),
+            "--format",
+            "json",
+        ]
+    )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not handoff_jsonl.exists()
     payload = json.loads(proc.stdout)
     assert payload["candidate_count"] == 0
     assert payload["blocker_count"] == 1

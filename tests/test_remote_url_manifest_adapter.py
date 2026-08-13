@@ -77,6 +77,7 @@ def test_remote_url_manifest_plans_entries_without_network_access(tmp_path: Path
 def test_remote_url_manifest_rejects_invalid_row_urls_and_reports_blockers(tmp_path: Path) -> None:
     adapter_path = FIXTURE_ROOT / "source_adapter.json"
     manifest_jsonl = tmp_path / "invalid.jsonl"
+    handoff_jsonl = tmp_path / "blocked-handoff.jsonl"
     manifest_jsonl.write_text(
         '{"url":"ftp://bad.example.org/file.pdf"}\n'
         '{"title":"missing url"}\n',
@@ -89,12 +90,15 @@ def test_remote_url_manifest_rejects_invalid_row_urls_and_reports_blockers(tmp_p
             str(adapter_path),
             "--manifest-jsonl",
             str(manifest_jsonl),
+            "--handoff-jsonl",
+            str(handoff_jsonl),
             "--format",
             "json",
         ]
     )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not handoff_jsonl.exists()
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entry_count"] == 2

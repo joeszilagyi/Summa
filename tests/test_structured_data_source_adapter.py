@@ -189,10 +189,21 @@ def test_structured_data_directory_rejects_symlink_root(tmp_path: Path) -> None:
     symlink_root = tmp_path / "symlink-root"
     symlink_root.symlink_to(source_root, target_is_directory=True)
     adapter_path = write_adapter(tmp_path, input_family="local_directory", local_path=str(symlink_root))
+    handoff_jsonl = tmp_path / "blocked-handoff.jsonl"
 
-    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_jsonl),
+            "--format",
+            "json",
+        ]
+    )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not handoff_jsonl.exists()
     payload = json.loads(proc.stdout)
     assert payload["blocker_count"] == 1
     assert payload["blockers"][0].startswith("local directory root is a symlink")

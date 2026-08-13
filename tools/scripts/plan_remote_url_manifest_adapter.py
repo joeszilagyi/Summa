@@ -261,7 +261,11 @@ def main() -> int:
     try:
         adapter_payload = load_adapter(adapter_path)
         payload = build_plan(adapter_path, manifest_path, adapter_payload)
-        if args.handoff_jsonl is not None:
+        if (
+            args.handoff_jsonl is not None
+            and payload["blocker_count"] == 0
+            and payload["handoff_validation"]["ok"]
+        ):
             atomic_write_jsonl(args.handoff_jsonl, payload["handoff_records"])
     except RemoteUrlManifestAdapterError as exc:
         print(f"Error: {exc}", file=sys.stderr)
