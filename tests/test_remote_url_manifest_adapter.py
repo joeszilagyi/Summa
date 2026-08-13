@@ -203,6 +203,36 @@ def test_remote_url_manifest_rejects_entry_urls_with_invalid_hostnames(tmp_path:
     ]
 
 
+def test_remote_url_manifest_rejects_unsafe_entry_urls(tmp_path: Path) -> None:
+    adapter_path = FIXTURE_ROOT / "source_adapter.json"
+    manifest_jsonl = tmp_path / "unsafe.jsonl"
+    manifest_jsonl.write_text(
+        '{"url":"http://localhost/metadata"}\n'
+        '{"url":"https://user:secret@archives.example.gov/manifest.jsonl"}\n'
+        '{"url":"https://archives.example.gov:8443/manifest.jsonl"}\n'
+        '{"url":"https://archives.example.gov/manifest.jsonl#fragment"}\n'
+        '{"url":"https://archives.example.gov/a/%2e%2e/secret"}\n',
+        encoding="utf-8",
+    )
+
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--manifest-jsonl",
+            str(manifest_jsonl),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["accepted_entry_count"] == 0
+    assert payload["rejected_entry_count"] == 5
+    assert payload["blockers"] == ["no valid URL manifest entries were accepted"]
+
+
 def test_remote_url_manifest_rejects_duplicate_manifest_entry_keys(tmp_path: Path) -> None:
     adapter_path = FIXTURE_ROOT / "source_adapter.json"
     manifest_jsonl = tmp_path / "invalid.jsonl"
