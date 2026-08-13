@@ -285,10 +285,72 @@ def test_network_safety_gate_refuses_dirty_worktree_when_required(tmp_path: Path
         "repo_root": str(repo_root),
     }
 
-    payload = gate.evaluate_request(request)
+    payload = gate.evaluate_request(request, execution_repo_root=repo_root)
 
     assert payload["decision"] == "refuse"
     assert any(error["code"] == "DIRTY_WORKTREE_REFUSED" for error in payload["errors"])
+
+
+def test_network_safety_gate_rejects_forged_worktree_repo_root(tmp_path: Path) -> None:
+    actual_repo = tmp_path / "actual-repo"
+    actual_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(actual_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (actual_repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    forged_repo = tmp_path / "forged-repo"
+    forged_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(forged_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    request = base_request()
+    request["dirty_worktree_policy"] = {
+        "require_clean_worktree": True,
+        "repo_root": str(forged_repo),
+    }
+
+    payload = gate.evaluate_request(request, execution_repo_root=actual_repo)
+
+    assert payload["decision"] == "refuse"
+    assert any(error["code"] == "DIRTY_WORKTREE_REPO_MISMATCH" for error in payload["errors"])
+
+
+def test_network_safety_gate_cli_rejects_forged_worktree_repo_root(tmp_path: Path) -> None:
+    forged_repo = tmp_path / "forged-repo"
+    forged_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(forged_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    request = base_request()
+    request["dirty_worktree_policy"] = {
+        "require_clean_worktree": True,
+        "repo_root": str(forged_repo),
+    }
+    request_path = write_request(tmp_path, request)
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(request_path)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads(proc.stdout)
+    assert any(error["code"] == "DIRTY_WORKTREE_REPO_MISMATCH" for error in report["errors"])
 
 
 def test_network_safety_gate_cli_writes_machine_readable_reports(tmp_path: Path) -> None:

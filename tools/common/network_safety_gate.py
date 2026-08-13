@@ -257,6 +257,7 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def evaluate_request(
     payload: dict[str, Any],
     *,
+    execution_repo_root: Path | None = None,
     git_status_provider: Callable[[Path], tuple[bool | None, str | None]] = git_worktree_is_clean,
 ) -> dict[str, Any]:
     errors = validate_request_shape(payload)
@@ -337,12 +338,29 @@ def evaluate_request(
         repo_root_value = dirty_policy.get("repo_root")
         if not isinstance(repo_root_value, str) or not repo_root_value.strip():
             errors.append({"code": "DIRTY_WORKTREE_POLICY_INVALID", "message": "repo_root is required when require_clean_worktree is true"})
+        elif execution_repo_root is None:
+            errors.append(
+                {
+                    "code": "DIRTY_WORKTREE_CONTEXT_UNAVAILABLE",
+                    "message": "trusted executor repository root is required when require_clean_worktree is true",
+                }
+            )
         else:
-            clean, detail = git_status_provider(Path(repo_root_value))
-            if clean is None:
-                errors.append({"code": "DIRTY_WORKTREE_STATUS_UNKNOWN", "message": detail or "could not inspect git worktree status"})
-            elif clean is False:
-                errors.append({"code": "DIRTY_WORKTREE_REFUSED", "message": "network operation refused because the git worktree is dirty"})
+            trusted_repo_root = execution_repo_root.expanduser().resolve()
+            requested_repo_root = Path(repo_root_value).expanduser().resolve()
+            if requested_repo_root != trusted_repo_root:
+                errors.append(
+                    {
+                        "code": "DIRTY_WORKTREE_REPO_MISMATCH",
+                        "message": "dirty_worktree_policy.repo_root must match the trusted executor repository root",
+                    }
+                )
+            else:
+                clean, detail = git_status_provider(trusted_repo_root)
+                if clean is None:
+                    errors.append({"code": "DIRTY_WORKTREE_STATUS_UNKNOWN", "message": detail or "could not inspect git worktree status"})
+                elif clean is False:
+                    errors.append({"code": "DIRTY_WORKTREE_REFUSED", "message": "network operation refused because the git worktree is dirty"})
 
     dry_run = payload.get("dry_run") is True
     if not errors and dry_run:

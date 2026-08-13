@@ -80,7 +80,7 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_INPUT_UNAVAILABLE
 
-    report = evaluate_request(payload)
+    report = evaluate_request(payload, execution_repo_root=REPO_ROOT)
     text_report = render_text(report)
     write_json(args.report_json, report, root=report_root)
     write_text(args.report_text, text_report, root=report_root)

@@ -658,7 +658,7 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(
     gate_request_path = tmp_path / "gate-request.json"
     gate_request_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: gate_report)
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload, **_: gate_report)
 
     (
         execution_record,
@@ -758,7 +758,7 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             },
         ],
     }
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: wrong_method_report)
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload, **_: wrong_method_report)
 
     with pytest.raises(
         source_executor.SourceAcquisitionError,
@@ -805,7 +805,7 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             },
         ],
     }
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: extra_action_report)
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload, **_: extra_action_report)
 
     with pytest.raises(
         source_executor.SourceAcquisitionError,

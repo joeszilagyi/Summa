@@ -2740,7 +2740,7 @@ def execute_remote_url_manifest(
         gate_request = load_request(gate_request_path)
     except NetworkSafetyGateError as exc:
         raise SourceAcquisitionError(str(exc)) from exc
-    gate_report = evaluate_request(gate_request)
+    gate_report = evaluate_request(gate_request, execution_repo_root=REPO_ROOT)
     expected_urls = extract_remote_urls(records)
     ensure_gate_request_matches_handoff(gate_report, expected_urls=expected_urls)
     planned_actions = planned_actions_for_records(records, variant="remote_url_manifest")
