@@ -111,39 +111,13 @@ def write_selection(tmp_path: Path, records: list[dict[str, object]]) -> Path:
     return selection
 
 
-def write_fake_cycle_runner(tmp_path: Path, *, exit_code: int = 0) -> Path:
-    script = tmp_path / "fake_cycle.py"
-    script.write_text(
-        "\n".join(
-            [
-                "from __future__ import annotations",
-                "import argparse, json, pathlib, sys",
-                "parser = argparse.ArgumentParser()",
-                "parser.add_argument('--run-dir', required=True)",
-                "parser.add_argument('--run-id', required=True)",
-                "parser.add_argument('--workspace')",
-                "parser.add_argument('--subject')",
-                "parser.add_argument('--db')",
-                "parser.add_argument('--timestamp')",
-                "parser.add_argument('--mode')",
-                "parser.add_argument('--format')",
-                "parser.add_argument('--candidate-batch-fixture')",
-                "parser.add_argument('--execution-run-fixture')",
-                "parser.add_argument('--build-next-feedback-plan', action='store_true')",
-                "parser.add_argument('--skip-workspace-lock', action='store_true')",
-                "args = parser.parse_args()",
-                "run_dir = pathlib.Path(args.run_dir)",
-                "run_dir.mkdir(parents=True, exist_ok=True)",
-                "payload = {'schema_version': 'topic-cycle-run.v1', 'run_id': args.run_id, 'cycle_event_id': 'cycle:' + args.run_id, 'status': 'completed'}",
-                "(run_dir / 'topic-cycle-run.json').write_text(json.dumps(payload) + '\\n', encoding='utf-8')",
-                "print(json.dumps(payload))",
-                f"raise SystemExit({exit_code})",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+def write_fake_cycle_runner(_tmp_path: Path, *, exit_code: int = 0) -> Path:
+    fixture_name = (
+        "scheduled_cycle_runner.py"
+        if exit_code == 0
+        else "scheduled_cycle_runner_failure.py"
     )
-    return script
+    return REPO_ROOT / "tests" / "fixtures" / fixture_name
 
 
 def run_scheduled(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -430,6 +404,41 @@ def test_scheduled_runner_rejects_workspace_id_path_traversal(tmp_path: Path) ->
 
     assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
     assert "workspace_id must match the workspace identifier pattern" in proc.stderr
+
+
+def test_scheduled_runner_rejects_cycle_runner_outside_repository(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "trusted_subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="trusted_subject", workspace=workspace, manifest=manifest)],
+    )
+    marker = tmp_path / "runner-executed"
+    runner = tmp_path / "untrusted_cycle.py"
+    runner.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    run_dir = tmp_path / "scheduled-run"
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--cycle-runner",
+            str(runner),
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "cycle runner must resolve within the repository root" in proc.stderr
+    assert not marker.exists()
+    assert not run_dir.exists()
 
 
 @pytest.mark.parametrize("field", ["resolved_workspace_root", "resolved_default_subject_manifest"])

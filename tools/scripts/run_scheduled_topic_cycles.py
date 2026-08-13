@@ -176,6 +176,24 @@ def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
     return ((base or Path.cwd()) / path).resolve()
 
 
+def resolve_cycle_runner(raw_path: str | None) -> Path:
+    """Resolve a cycle runner from the trusted repository tree only."""
+    runner = (
+        REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
+        if raw_path is None
+        else resolve_path(raw_path)
+    )
+    try:
+        runner.relative_to(REPO_ROOT)
+    except ValueError as exc:
+        raise ScheduledCycleError(
+            "cycle runner must resolve within the repository root"
+        ) from exc
+    if not runner.is_file():
+        raise ScheduledCycleError(f"cycle runner is not a regular file: {runner}")
+    return runner
+
+
 def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     required_fields = (
@@ -398,7 +416,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timestamp", help="RFC3339 timestamp override.")
     parser.add_argument("--mode", choices=("dry-run", "local"), default="dry-run")
     parser.add_argument(
-        "--cycle-runner", help="Optional alternate cycle runner script for deterministic tests."
+        "--cycle-runner",
+        help=(
+            "Optional alternate cycle runner script for deterministic tests; it must resolve "
+            "within the repository root."
+        ),
     )
     parser.add_argument(
         "--candidate-batch-fixture", help="Optional fixture passed through to each child cycle."
@@ -538,6 +560,7 @@ def run_scheduled_cycles(
     db_path = resolve_path(args.db)
     selection_path = resolve_path(args.selection)
     records = load_selection_records(selection_path)
+    runner = resolve_cycle_runner(args.cycle_runner)
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -566,11 +589,6 @@ def run_scheduled_cycles(
         "errors": [],
         "remote_fetch_enabled": False,
     }
-    runner = (
-        resolve_path(args.cycle_runner)
-        if args.cycle_runner
-        else REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
-    )
     exit_code = EXIT_SUCCESS
 
     def _update_global_exit_code(code: int) -> None:
