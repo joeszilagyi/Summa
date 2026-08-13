@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import fnmatch
+import hashlib
+import io
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -41,6 +42,9 @@ FORMAT_SUFFIXES = {
     ".jsonl": "jsonl",
     ".xml": "xml",
 }
+MAX_XML_RECORD_BYTES = 8 * 1024 * 1024
+MAX_XML_RECORD_NODES = 100_000
+MAX_XML_RECORD_DEPTH = 256
 
 
 class StructuredDataAdapterError(RuntimeError):
@@ -316,14 +320,41 @@ def parse_jsonl_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str
 def parse_xml_records(path: Path, *, record_path: str | None) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     records: list[dict[str, str]] = []
     try:
-        tree = ET.parse(path)
+        if path.stat().st_size > MAX_XML_RECORD_BYTES:
+            return records, [{"context": "file", "reason": "xml payload exceeds maximum byte size"}]
+        payload = path.read_bytes()
+        if len(payload) > MAX_XML_RECORD_BYTES:
+            return records, [{"context": "file", "reason": "xml payload exceeds maximum byte size"}]
+        compact_payload = payload.replace(b"\x00", b"").upper()
+        if b"<!DOCTYPE" in compact_payload or b"<!ENTITY" in compact_payload:
+            return records, [{"context": "file", "reason": "xml DTD and entity declarations are not supported"}]
+
+        context = ET.iterparse(io.BytesIO(payload), events=("start", "end"))
+        root: ET.Element | None = None
+        node_count = 0
+        depth = 0
+        for event, element in context:
+            if event == "start":
+                node_count += 1
+                depth += 1
+                if node_count > MAX_XML_RECORD_NODES:
+                    return records, [{"context": "file", "reason": "xml tree exceeds maximum element count"}]
+                if depth > MAX_XML_RECORD_DEPTH:
+                    return records, [{"context": "file", "reason": "xml tree exceeds maximum depth"}]
+                if root is None:
+                    root = element
+            else:
+                depth -= 1
+        if root is None:
+            return records, [{"context": "file", "reason": "file contained no XML elements"}]
     except UnicodeDecodeError:
         return records, [{"context": "file", "reason": "file is not valid UTF-8"}]
+    except OSError as exc:
+        return records, [{"context": "file", "reason": f"XML source could not be read: {exc}"}]
     except ET.ParseError as exc:
         line_number, column = getattr(exc, "position", (1, 1))
         return records, [{"context": f"line:{line_number},column:{column}", "reason": str(exc)}]
 
-    root = tree.getroot()
     path_map = build_xml_path_map(root)
     if record_path:
         matches = root.findall(record_path)

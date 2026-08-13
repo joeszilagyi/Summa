@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.scripts import plan_structured_data_source_adapter as planner
 
 
@@ -321,6 +323,49 @@ def test_structured_data_xml_namespaces_and_repeated_children_are_selected(tmp_p
     assert payload["handoff_validation"]["ok"] is True
     assert [record["source_specific"]["record_kind"] for record in payload["handoff_records"]] == ["element", "element"]
     assert all(record["source_specific"]["record_locator"].startswith("/{urn:test}root[1]") for record in payload["handoff_records"])
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "expected_reason"),
+    [
+        (
+            "oversized.xml",
+            b"x" * (planner.MAX_XML_RECORD_BYTES + 1),
+            "xml payload exceeds maximum byte size",
+        ),
+        (
+            "too-many-elements.xml",
+            ("<root>" + "<entry/>" * planner.MAX_XML_RECORD_NODES + "</root>").encode(),
+            "xml tree exceeds maximum element count",
+        ),
+        (
+            "too-deep.xml",
+            (
+                "<root>"
+                + "<entry>" * planner.MAX_XML_RECORD_DEPTH
+                + "value"
+                + "</entry>" * planner.MAX_XML_RECORD_DEPTH
+                + "</root>"
+            ).encode(),
+            "xml tree exceeds maximum depth",
+        ),
+        (
+            "entity.xml",
+            b'<!DOCTYPE root [<!ENTITY secret "secret-value">]><root>&secret;</root>',
+            "xml DTD and entity declarations are not supported",
+        ),
+    ],
+)
+def test_structured_data_xml_parser_rejects_hostile_input_shapes(
+    tmp_path: Path, filename: str, payload: bytes, expected_reason: str
+) -> None:
+    xml_path = tmp_path / filename
+    xml_path.write_bytes(payload)
+
+    records, errors = planner.parse_xml_records(xml_path, record_path=None)
+
+    assert records == []
+    assert errors == [{"context": "file", "reason": expected_reason}]
 
 
 def test_structured_data_local_file_honors_record_path_hint(tmp_path: Path) -> None:
