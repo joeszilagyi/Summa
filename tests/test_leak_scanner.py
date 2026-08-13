@@ -133,6 +133,42 @@ def test_scan_directory_streams_text_files_without_read_text(
     assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
 
 
+def test_scan_directory_scans_common_text_files_without_known_suffixes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    leak_by_name = {
+        "data.jsonl": "Authorization: Bearer jsonl-leak\n",
+        "config.yaml": "token=yaml-leak\n",
+        "config.yml": "secret=yml-leak\n",
+        "rows.csv": "private key csv-leak\n",
+        "data.xml": "<note>private_note</note>\n",
+        ".env": "api_key=env-leak\n",
+        "README": "/home/joe/private/extensionless.txt\n",
+        "run.sh": "raw_payload shell-leak\n",
+        "key.pem": "Authorization: Bearer pem-leak\n",
+        "drawing.svg": "<text>Authorization: Bearer svg-leak</text>\n",
+    }
+    for name, body in leak_by_name.items():
+        (root / name).write_text(body, encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    assert {finding["path"] for finding in report["findings"]} == set(leak_by_name)
+
+
+def test_scan_directory_skips_binary_files_after_text_sniff(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00Authorization: Bearer binary-leak")
+    (root / "unknown.data").write_bytes(b"\xff\xfe\xfd\x00binary")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "pass"
+    assert report["findings"] == []
+
+
 def test_support_bundle_profile_scans_all_leak_categories(tmp_path: Path) -> None:
     root = tmp_path / "support-bundle"
     root.mkdir()

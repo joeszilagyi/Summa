@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 from fnmatch import fnmatch
 from pathlib import Path
@@ -12,7 +13,55 @@ from tools.common.search_leak_policy import contains_private_path, contains_secr
 
 ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v1"
 REPORT_SCHEMA_VERSION = "leak-scan-report.v1"
-TEXT_SUFFIXES = {".css", ".html", ".json", ".log", ".md", ".txt"}
+BINARY_SUFFIXES = {
+    ".7z",
+    ".avi",
+    ".avif",
+    ".bin",
+    ".bmp",
+    ".class",
+    ".deb",
+    ".dll",
+    ".dmg",
+    ".doc",
+    ".docx",
+    ".eot",
+    ".exe",
+    ".gif",
+    ".ico",
+    ".jar",
+    ".jpeg",
+    ".jpg",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".odt",
+    ".ogg",
+    ".otf",
+    ".pdf",
+    ".png",
+    ".pyc",
+    ".so",
+    ".sqlite",
+    ".sqlite3",
+    ".tar",
+    ".tif",
+    ".tiff",
+    ".ttf",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".xls",
+    ".xlsx",
+    ".xz",
+    ".zip",
+}
+BINARY_MIME_PREFIXES = ("audio/", "font/", "image/", "video/")
+TEXT_MIME_TYPES = {"image/svg+xml"}
+TEXT_SNIFF_BYTES = 8192
 RUNTIME_LOG_PATH_RE = re.compile(r"(?i)(?:^|/)(?:logs?|runtime-logs?|index-actions\.log)(?:/|$)")
 PROMPT_OUTPUT_BODY_RE = re.compile(r"(?i)\b(prompt_output|raw_prompt_output|01a_prompt|01r_prompt|prompt_bundle_id)\b")
 RAW_PAYLOAD_BODY_RE = re.compile(r"(?i)\b(full_extracted_text|raw_payload|raw_text|full_text)\b")
@@ -43,6 +92,31 @@ PROFILES: dict[str, dict[str, bool]] = {
 
 class LeakScannerError(RuntimeError):
     """Raised when scanner inputs are malformed or unreadable."""
+
+
+def _is_text_file(path: Path) -> bool:
+    """Return whether a file is safe to pass through the line-oriented scanner."""
+    if path.suffix.lower() in BINARY_SUFFIXES:
+        return False
+    mime_type, _ = mimetypes.guess_type(path.name, strict=False)
+    if (
+        mime_type is not None
+        and mime_type.startswith(BINARY_MIME_PREFIXES)
+        and mime_type not in TEXT_MIME_TYPES
+    ):
+        return False
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(TEXT_SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def load_allowlist(path: Path | None) -> dict[str, Any]:
@@ -356,7 +430,7 @@ def scan_directory(
                     message="runtime log path is not allowed in this profile",
                 )
             )
-        if path.suffix.lower() not in TEXT_SUFFIXES:
+        if not _is_text_file(path):
             continue
         try:
             with path.open("r", encoding="utf-8") as handle:
