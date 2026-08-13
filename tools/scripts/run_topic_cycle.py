@@ -294,7 +294,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--spool-dir",
-        help="Directory for degraded canonical-write spool records. Defaults to <run-dir>/spool.",
+        help=(
+            "Directory for degraded canonical-write spool records. Must be inside <run-dir>; "
+            "defaults to <run-dir>/spool."
+        ),
     )
     parser.add_argument(
         "--graph-closure",
@@ -660,7 +663,15 @@ def resolve_domain_pack_stage(
 
 
 def spool_dir_for(args: argparse.Namespace, run_dir: Path) -> Path:
-    return resolve_path(args.spool_dir) if args.spool_dir else run_dir / "spool"
+    run_root = run_dir.resolve()
+    spool_dir = (
+        resolve_path(args.spool_dir)
+        if getattr(args, "spool_dir", None)
+        else run_root / "spool"
+    )
+    if not spool_dir.is_relative_to(run_root):
+        raise TopicCycleError("--spool-dir must be inside --run-dir")
+    return spool_dir
 
 
 def add_spool_record_to_manifest(
@@ -1744,6 +1755,8 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     workspace = resolve_path(args.workspace)
     db_path = resolve_path(args.db)
     run_dir = resolve_path(args.run_dir)
+    # Validate the optional spool destination before creating any cycle artifacts.
+    spool_dir_for(args, run_dir)
     run_id = args.run_id or run_dir.name
     if args.cycle_depth < 1:
         raise TopicCycleError("--cycle-depth must be at least 1")

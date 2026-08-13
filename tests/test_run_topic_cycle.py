@@ -383,6 +383,38 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     assert not any(path.suffix == ".lock" for path in workspace.rglob("*"))
 
 
+def test_topic_cycle_rejects_spool_dir_outside_run_dir(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-spool-containment"
+    outside_spool_dir = tmp_path / "outside-spool"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-spool-containment",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--spool-dir",
+            str(outside_spool_dir),
+            "--degraded-spool",
+            "--dry-run",
+        ]
+    )
+
+    assert proc.returncode == 1
+    assert "--spool-dir must be inside --run-dir" in proc.stderr
+    assert not outside_spool_dir.exists()
+    assert not run_dir.exists()
+
+
 def test_topic_cycle_acquires_workspace_lock_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
