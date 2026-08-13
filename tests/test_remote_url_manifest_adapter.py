@@ -6,10 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "plan_remote_url_manifest_adapter.py"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "source_adapter_runtime" / "remote_url_manifest"
+
+from tools.scripts import plan_remote_url_manifest_adapter as planner  # noqa: E402, I001
 
 
 def run_planner(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -297,6 +301,58 @@ def test_remote_url_manifest_rejects_manifest_entry_infinity_constants(tmp_path:
     payload = json.loads(proc.stdout)
     assert payload["accepted_entry_count"] == 0
     assert payload["rejected_entries"] == [{"line_number": 1, "reason": "non-standard JSON constant: Infinity"}]
+
+
+def test_remote_url_manifest_rejects_oversized_manifest_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(planner, "MAX_MANIFEST_FILE_BYTES", 32)
+    manifest_jsonl = tmp_path / "oversized.jsonl"
+    manifest_jsonl.write_text('{"url":"https://example.com/entry"}\n', encoding="utf-8")
+
+    accepted, rejected, blockers = planner.load_manifest_entries(manifest_jsonl)
+
+    assert accepted == []
+    assert rejected == []
+    assert blockers == ["manifest JSONL exceeds maximum size of 32 bytes"]
+
+
+def test_remote_url_manifest_rejects_oversized_manifest_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(planner, "MAX_MANIFEST_FILE_BYTES", 1024)
+    monkeypatch.setattr(planner, "MAX_MANIFEST_LINE_BYTES", 32)
+    manifest_jsonl = tmp_path / "oversized-line.jsonl"
+    manifest_jsonl.write_text(
+        '{"url":"https://example.com/entry","notes":"line is too long"}\n',
+        encoding="utf-8",
+    )
+
+    accepted, rejected, blockers = planner.load_manifest_entries(manifest_jsonl)
+
+    assert accepted == []
+    assert rejected == []
+    assert blockers == ["manifest JSONL line exceeds maximum size of 32 bytes"]
+
+
+def test_remote_url_manifest_rejects_entries_after_acceptance_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(planner, "MAX_MANIFEST_FILE_BYTES", 1024)
+    monkeypatch.setattr(planner, "MAX_MANIFEST_LINE_BYTES", 1024)
+    monkeypatch.setattr(planner, "MAX_MANIFEST_ACCEPTED_ENTRIES", 1)
+    manifest_jsonl = tmp_path / "too-many-entries.jsonl"
+    manifest_jsonl.write_text(
+        '{"url":"https://example.com/one"}\n'
+        '{"url":"https://example.com/two"}\n',
+        encoding="utf-8",
+    )
+
+    accepted, rejected, blockers = planner.load_manifest_entries(manifest_jsonl)
+
+    assert [item["line_number"] for item in accepted] == [1]
+    assert rejected == []
+    assert blockers == ["manifest JSONL contains more than 1 accepted entries"]
 
 
 def test_remote_url_manifest_planner_rejects_duplicate_keys_in_adapter_manifest(tmp_path: Path) -> None:
