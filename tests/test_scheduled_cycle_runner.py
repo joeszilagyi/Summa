@@ -41,6 +41,30 @@ def write_workspace(tmp_path: Path, workspace_id: str) -> tuple[Path, Path]:
         + "\n",
         encoding="utf-8",
     )
+    registry_path = workspace.parent / "registry.json"
+    if registry_path.exists():
+        registry_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    else:
+        registry_payload = {
+            "schema_version": "topic-workspace-registry.v1",
+            "workspaces": [],
+        }
+    registry_payload["workspaces"] = [
+        entry
+        for entry in registry_payload["workspaces"]
+        if entry.get("workspace_id") != workspace_id
+    ]
+    registry_payload["workspaces"].append(
+        {
+            "workspace_id": workspace_id,
+            "workspace_root": str(workspace),
+            "default_subject_manifest": str(manifest),
+        }
+    )
+    registry_path.write_text(
+        json.dumps(registry_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return workspace, manifest
 
 
@@ -406,6 +430,36 @@ def test_scheduled_runner_rejects_workspace_id_path_traversal(tmp_path: Path) ->
 
     assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
     assert "workspace_id must match the workspace identifier pattern" in proc.stderr
+
+
+@pytest.mark.parametrize("field", ["resolved_workspace_root", "resolved_default_subject_manifest"])
+def test_scheduled_runner_rejects_forged_planned_run_execution_paths(
+    tmp_path: Path, field: str
+) -> None:
+    workspace, manifest = write_workspace(tmp_path, "trusted_subject")
+    record = planned_record(
+        workspace_id="trusted_subject",
+        workspace=workspace,
+        manifest=manifest,
+    )
+    record[field] = str(tmp_path / "forged" / Path(record[field]).name)
+    selection = write_selection(tmp_path, [record])
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "execution paths do not match the trusted workspace registry" in proc.stderr
 
 
 def test_normalize_timestamp_preserves_utc_and_rejects_invalid_values() -> None:

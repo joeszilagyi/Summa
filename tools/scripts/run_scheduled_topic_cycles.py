@@ -32,6 +32,10 @@ from tools.common.subprocess_capture import (  # noqa: E402
     command_output_excerpt,
     run_streaming_command,
 )
+from tools.common.topic_workspace_registry import (  # noqa: E402
+    TopicWorkspaceRegistryError,
+    resolve_workspace,
+)
 from tools.common.workspace_lock import (  # noqa: E402
     DEFAULT_LOCK_ROOT,
     WorkspaceLockError,
@@ -252,6 +256,49 @@ def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
     return errors
 
 
+def bind_planned_run_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Bind execution paths to the registry entry named by a planned record."""
+    registry_path = Path(record["registry_path"]).expanduser().resolve()
+    workspace_id = record["workspace_id"]
+    try:
+        trusted_workspace = resolve_workspace(
+            registry_path=registry_path,
+            workspace_id=workspace_id,
+        )
+    except TopicWorkspaceRegistryError as exc:
+        raise ScheduledCycleError(
+            f"planned-run record could not be bound to workspace registry: {workspace_id}"
+        ) from exc
+
+    trusted_root = trusted_workspace.get("resolved_workspace_root")
+    trusted_manifest = trusted_workspace.get("resolved_default_subject_manifest")
+    if not isinstance(trusted_root, Path) or not isinstance(trusted_manifest, Path):
+        raise ScheduledCycleError(
+            f"planned-run record has no resolved workspace paths in registry: {workspace_id}"
+        )
+
+    try:
+        recorded_root = Path(record["resolved_workspace_root"]).expanduser().resolve()
+        recorded_manifest = (
+            Path(record["resolved_default_subject_manifest"]).expanduser().resolve()
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ScheduledCycleError(
+            f"planned-run record has invalid resolved workspace paths: {workspace_id}"
+        ) from exc
+
+    if recorded_root != trusted_root or recorded_manifest != trusted_manifest:
+        raise ScheduledCycleError(
+            "planned-run record execution paths do not match the trusted workspace registry: "
+            f"{workspace_id}"
+        )
+
+    bound_record = dict(record)
+    bound_record["resolved_workspace_root"] = str(trusted_root)
+    bound_record["resolved_default_subject_manifest"] = str(trusted_manifest)
+    return bound_record
+
+
 def hash_file(path: Path) -> str:
     digest = __import__("hashlib").sha256()
     with path.open("rb") as handle:
@@ -400,11 +447,13 @@ def load_selection_records(selection_path: Path) -> list[dict[str, Any]]:
             if not isinstance(value, dict):
                 raise ScheduledCycleError(f"selection JSONL line {line_number} must be an object")
             records.append(value)
+    bound_records: list[dict[str, Any]] = []
     for record in records:
         errors = validate_planned_run_record(record)
         if errors:
             raise ScheduledCycleError(errors[0])
-    return records
+        bound_records.append(bind_planned_run_record(record))
+    return bound_records
 
 
 def terminal_attempt_count(ledger_path: Path, *, workspace_id: str) -> int:
