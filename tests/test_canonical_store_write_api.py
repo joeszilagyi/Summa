@@ -870,6 +870,129 @@ def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(t
     assert count == 1
 
 
+def test_source_claim_default_identity_is_scoped_to_workspace(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-workspace-alpha",
+            event_type="fixture_ingest",
+            run_id="claim-workspace-alpha",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-workspace-alpha",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-workspace-beta",
+            event_type="fixture_ingest",
+            run_id="claim-workspace-beta",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-workspace-beta",
+        )
+        second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="beta_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE claim_text=?",
+            ("This work was authored in 2026.",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is True
+    assert first.row_id != second.row_id
+    assert count == 2
+
+
+def test_source_claim_default_identity_replays_legacy_key_with_matching_workspace(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        claim_text = "This work was authored in 2026."
+        legacy_key = canonical_store.stable_write_key(
+            "claim",
+            "work:fixture-alpha",
+            "candidate_work",
+            claim_text,
+        )
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-legacy-key",
+            event_type="fixture_ingest",
+            run_id="claim-legacy-key",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-legacy-key",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            source_claim_key_v1=legacy_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text=claim_text,
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-legacy-replay",
+            event_type="fixture_ingest",
+            run_id="claim-legacy-replay",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-legacy-replay",
+        )
+        replay = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text=claim_text,
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE source_claim_key_v1=?",
+            (legacy_key,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.row_id == first.row_id
+    assert replay.key == legacy_key
+    assert count == 1
+
+
 def test_write_api_rolls_back_transaction_on_invalid_review_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)

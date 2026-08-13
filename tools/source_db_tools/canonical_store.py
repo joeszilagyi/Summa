@@ -1746,9 +1746,12 @@ def record_source_claim(
     _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_type_value = _optional_nonblank(claim_type, "claim_type")
+    about_object_ref_value = _optional_nonblank(about_object_ref, "about_object_ref")
+    workspace_id_value = _optional_nonblank(workspace_id, "workspace_id")
     claim_key = source_claim_key_v1 or stable_write_key(
         "claim",
-        _optional_nonblank(about_object_ref, "about_object_ref") or "about:unknown",
+        workspace_id_value or "workspace:global",
+        about_object_ref_value or "about:unknown",
         claim_type_value or "claim",
         claim_text_value,
     )
@@ -1765,6 +1768,21 @@ def record_source_claim(
         "SELECT * FROM source_claim WHERE source_claim_key_v1=?",
         (claim_key,),
     ).fetchone()
+    if existing is None and source_claim_key_v1 is None:
+        legacy_claim_key = stable_write_key(
+            "claim",
+            about_object_ref_value or "about:unknown",
+            claim_type_value or "claim",
+            claim_text_value,
+        )
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM source_claim
+            WHERE source_claim_key_v1=? AND workspace_id IS ?
+            """,
+            (legacy_claim_key, workspace_id_value),
+        ).fetchone()
     if existing is None:
         cursor = conn.execute(
             """
@@ -1791,7 +1809,7 @@ def record_source_claim(
             """,
             (
                 claim_key,
-                _optional_nonblank(about_object_ref, "about_object_ref"),
+                about_object_ref_value,
                 claim_text_value,
                 _optional_nonblank(public_summary, "public_summary"),
                 _optional_nonblank(claim_type, "claim_type"),
@@ -1799,7 +1817,7 @@ def record_source_claim(
                 _optional_nonblank(publication_state, "publication_state"),
                 _optional_nonblank(authority_level, "authority_level"),
                 _optional_nonblank(public_blocker, "public_blocker"),
-                _optional_nonblank(workspace_id, "workspace_id"),
+                workspace_id_value,
                 is_open_question_value,
                 score,
                 provenance_event_ref,
@@ -1871,7 +1889,7 @@ def record_source_claim(
         int(existing["source_claim_id"]),
         {
             "about_object_ref": _first_present(
-                _optional_nonblank(about_object_ref, "about_object_ref"),
+                about_object_ref_value,
                 existing["about_object_ref"],
             ),
             "claim_text": claim_text_update_value,
@@ -1887,7 +1905,7 @@ def record_source_claim(
             "authority_level": claim_authority_level_value,
             "public_blocker": claim_public_blocker_value,
             "workspace_id": _first_present(
-                _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
+                workspace_id_value, existing["workspace_id"]
             ),
             "is_open_question": max(int(existing["is_open_question"] or 0), is_open_question_value),
             "confidence_score": claim_confidence_value,
@@ -1902,7 +1920,10 @@ def record_source_claim(
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
-    return CanonicalWriteResult("source_claim", int(existing["source_claim_id"]), claim_key, False)
+    existing_key = existing["source_claim_key_v1"] or claim_key
+    return CanonicalWriteResult(
+        "source_claim", int(existing["source_claim_id"]), existing_key, False
+    )
 
 
 def record_capture_event(
