@@ -26,6 +26,7 @@ from tools.common.leak_scanner import ALLOWLIST_SCHEMA_VERSION, scan_directory  
 
 
 MANIFEST_SCHEMA_VERSION = "redacted-support-bundle.v1"
+DEFAULT_SUPPORT_BUNDLE_EXPORT_ROOT = Path("runtime") / "support-bundles"
 MAX_LOG_LINES = 200
 TAIL_READ_CHUNK_SIZE = 8192
 SUPPORT_BUNDLE_SCAN_ALLOWLIST = {
@@ -56,7 +57,17 @@ class SupportBundleError(RuntimeError):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Output directory; it must be within the trusted export root.",
+    )
+    parser.add_argument(
+        "--export-root",
+        type=Path,
+        help="Trusted export root (defaults to <repo-root>/runtime/support-bundles).",
+    )
     parser.add_argument("--doctor-report", type=Path, help="Optional existing local-doctor JSON report.")
     parser.add_argument("--registry", help="Optional registry path forwarded to local_doctor.")
     parser.add_argument("--overwrite", action="store_true")
@@ -237,9 +248,49 @@ def manifest_payload(included: list[dict[str, Any]], excluded: list[dict[str, st
     }
 
 
-def build_bundle(repo_root: Path, output_dir: Path, *, doctor_report: Path | None = None, registry: str | None = None, overwrite: bool = False) -> dict[str, Any]:
+def _resolve_export_root(repo_root: Path, export_root: Path | None) -> Path:
+    configured_root = export_root or DEFAULT_SUPPORT_BUNDLE_EXPORT_ROOT
+    if not configured_root.is_absolute():
+        configured_root = repo_root / configured_root
+    configured_root = configured_root.expanduser().resolve()
+    if export_root is None:
+        try:
+            configured_root.relative_to(repo_root)
+        except ValueError as exc:
+            raise SupportBundleError(
+                f"default support bundle export root escapes repository root: {configured_root}"
+            ) from exc
+    return configured_root
+
+
+def _resolve_output_dir(repo_root: Path, output_dir: Path, export_root: Path | None) -> Path:
+    trusted_root = _resolve_export_root(repo_root, export_root)
+    resolved_output = output_dir.expanduser().resolve()
+    try:
+        relative_output = resolved_output.relative_to(trusted_root)
+    except ValueError as exc:
+        raise SupportBundleError(
+            f"output directory must be within trusted support bundle export root "
+            f"{trusted_root}: {resolved_output}"
+        ) from exc
+    if not relative_output.parts:
+        raise SupportBundleError(
+            f"output directory must be a child of the trusted support bundle export root: {trusted_root}"
+        )
+    return resolved_output
+
+
+def build_bundle(
+    repo_root: Path,
+    output_dir: Path,
+    *,
+    doctor_report: Path | None = None,
+    registry: str | None = None,
+    overwrite: bool = False,
+    export_root: Path | None = None,
+) -> dict[str, Any]:
     repo_root = repo_root.resolve()
-    output_dir = output_dir.resolve()
+    output_dir = _resolve_output_dir(repo_root, output_dir, export_root)
     if output_dir.exists() and not overwrite:
         raise SupportBundleError(f"output directory already exists: {output_dir}")
     if output_dir.exists() and not output_dir.is_dir():
@@ -324,6 +375,7 @@ def main() -> int:
             doctor_report=args.doctor_report,
             registry=args.registry,
             overwrite=args.overwrite,
+            export_root=args.export_root,
         )
     except SupportBundleError as exc:
         print(f"Error: {exc}", file=sys.stderr)
