@@ -53,7 +53,10 @@ from tools.common.source_adapter_handoff import (  # noqa: E402
     utc_now,
     validate_source_adapter_handoff_record,
 )
-from tools.scripts.plan_local_git_repo_adapter import git as git_command  # noqa: E402
+from tools.scripts.plan_local_git_repo_adapter import (  # noqa: E402
+    git as git_command,
+    matches_any_glob,
+)
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
     resolve_json_record_path,
 )
@@ -1744,10 +1747,32 @@ def inspect_git_repo_for_execution(
     return resolved_commit, repo_state
 
 
+def trusted_git_candidate_paths(
+    repo_path: Path, *, include_globs: list[str], exclude_globs: list[str]
+) -> list[str]:
+    """Rebuild the planner's candidate list from the trusted adapter settings."""
+
+    tracked_proc = git_command(repo_path, "ls-files")
+    if tracked_proc.returncode != 0:
+        raise SourceAcquisitionError(
+            f"git ls-files failed for local checkout: {repo_path}"
+        )
+
+    candidate_paths: list[str] = []
+    for relative_path in tracked_proc.stdout.splitlines():
+        if include_globs and not matches_any_glob(relative_path, include_globs):
+            continue
+        if exclude_globs and matches_any_glob(relative_path, exclude_globs):
+            continue
+        candidate_paths.append(relative_path)
+    return candidate_paths
+
+
 def execute_local_git_repo(
     *,
     records: list[dict[str, Any]],
     adapter_payload: dict[str, Any],
+    adapter_path: Path,
     run_id: str,
     created_at: str,
     handoff_hash: str,
@@ -1764,6 +1789,11 @@ def execute_local_git_repo(
         )
     record = records[0]
     repo_path = Path(record["resolved_source_path"]).expanduser().resolve()
+    trusted_repo_path = expected_local_root(adapter_payload, adapter_path=adapter_path)
+    if repo_path != trusted_repo_path:
+        raise SourceAcquisitionError(
+            "local git repository path does not match the trusted adapter manifest"
+        )
     if not repo_path.exists() or not repo_path.is_dir():
         raise SourceAcquisitionError(f"local git repository path not found: {repo_path}")
     if repo_path.is_symlink():
@@ -1773,9 +1803,30 @@ def execute_local_git_repo(
     resolved_commit, repo_state = inspect_git_repo_for_execution(
         repo_path, git_ref=git_ref, git_commit=git_commit
     )
-    candidate_paths = list(
-        record["preserved"].get("source_metadata", {}).get("candidate_paths", [])
+    source_metadata = record["preserved"].get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        raise SourceAcquisitionError("local_git_repo handoff source_metadata must be an object")
+    candidate_paths = source_metadata.get("candidate_paths")
+    if not isinstance(candidate_paths, list) or any(
+        not isinstance(path, str) or not path.strip() for path in candidate_paths
+    ):
+        raise SourceAcquisitionError(
+            "local_git_repo handoff candidate_paths must be a list of non-blank strings"
+        )
+    locator = adapter_payload.get("locator")
+    if not isinstance(locator, dict):
+        raise SourceAcquisitionError("source adapter manifest locator must be an object")
+    include_globs = locator.get("include_globs", [])
+    exclude_globs = locator.get("exclude_globs", [])
+    if not isinstance(include_globs, list) or not isinstance(exclude_globs, list):
+        raise SourceAcquisitionError("source adapter manifest glob settings must be arrays")
+    trusted_candidate_paths = trusted_git_candidate_paths(
+        repo_path, include_globs=include_globs, exclude_globs=exclude_globs
     )
+    if candidate_paths != trusted_candidate_paths:
+        raise SourceAcquisitionError(
+            "local_git_repo handoff candidate_paths do not match the trusted adapter selection"
+        )
     file_entries: list[dict[str, Any]] = []
     file_payloads_by_path: dict[str, tuple[str, int, list[str], str, str | None, str]] = {}
     extraction_records: list[dict[str, Any]] = []
@@ -3013,6 +3064,7 @@ def main() -> int:
                 execute_local_git_repo(
                     records=records,
                     adapter_payload=adapter_payload,
+                    adapter_path=adapter_path,
                     run_id=run_id,
                     created_at=created_at,
                     handoff_hash=handoff_hash,
