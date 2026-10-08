@@ -884,6 +884,96 @@ def test_source_relationship_replay_does_not_replace_authority_envelope_fields(t
     assert row["public_blocker"] == "trusted"
 
 
+@pytest.mark.parametrize("replay_state", ["proposed", "accepted"])
+def test_accepted_relationship_replay_preserves_evidence_and_authority(
+    tmp_path: Path, replay_state: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="accepted-relationship",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:accepted-relationship",
+        )
+        baseline = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=accepted_provenance.event_key,
+            from_object_ref="work:relationship",
+            predicate="mentions",
+            to_object_ref="entity:relationship",
+            target_label="Reviewed target",
+            evidence_note="Reviewed evidence",
+            evidence_locator_ref="evidence:accepted",
+            workspace_id="relationship_workspace",
+            review_state="accepted",
+            confidence_score=0.95,
+            authority_level="high",
+            publication_state="published",
+            public_blocker="trusted",
+        )
+        replay_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="replayed-relationship",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:replayed-relationship",
+        )
+        replay = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=replay_provenance.event_key,
+            from_object_ref="work:relationship",
+            predicate="mentions",
+            to_object_ref="entity:relationship",
+            target_label="Reviewed target",
+            evidence_note="Reviewed evidence",
+            evidence_locator_ref="evidence:untrusted",
+            workspace_id="relationship_workspace",
+            review_state=replay_state,
+            confidence_score=0.10,
+            authority_level="low",
+            publication_state="draft",
+            public_blocker="untrusted",
+        )
+        distinct_evidence_text = canonical_store.record_source_relationship(
+            conn,
+            provenance_event_ref=replay_provenance.event_key,
+            from_object_ref="work:relationship",
+            predicate="mentions",
+            to_object_ref="entity:relationship",
+            target_label="Reviewed target",
+            evidence_note="Different evidence text",
+            workspace_id="relationship_workspace",
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score, authority_level, publication_state, "
+            "public_blocker, provenance_event_ref, evidence_locator_ref, evidence_note "
+            "FROM source_relationship WHERE source_relationship_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert distinct_evidence_text.created is True
+    assert distinct_evidence_text.row_id != baseline.row_id
+    assert row["review_state"] == "accepted"
+    assert row["confidence_score"] == 0.95
+    assert row["authority_level"] == "high"
+    assert row["publication_state"] == "published"
+    assert row["public_blocker"] == "trusted"
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["evidence_locator_ref"] == "evidence:accepted"
+    assert row["evidence_note"] == "Reviewed evidence"
+
+
 def test_work_replay_preserves_monotonic_seen_timestamps(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
