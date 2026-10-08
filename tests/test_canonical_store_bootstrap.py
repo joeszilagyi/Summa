@@ -108,6 +108,99 @@ def test_empty_db_bootstrap_creates_required_tables_and_metadata(tmp_path: Path)
         conn.close()
 
 
+def test_authority_merge_self_guard_rejects_direct_sql_writes(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, created_at, record_last_updated
+                ) VALUES (?, ?, 'person', 'Authority', ?, ?)
+                """,
+                (
+                    (1, "authority:first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, "authority:second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="cannot merge into itself"):
+            conn.execute(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, merged_into_authority_record_id,
+                    created_at, record_last_updated
+                ) VALUES (3, 'authority:self', 'person', 'Authority', 3, ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="cannot merge into itself"):
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=1 WHERE authority_record_id=1"
+            )
+        conn.execute(
+            "UPDATE authority_record SET merged_into_authority_record_id=2 WHERE authority_record_id=1"
+        )
+        assert conn.execute(
+            "SELECT merged_into_authority_record_id FROM authority_record WHERE authority_record_id=1"
+        ).fetchone()[0] == 2
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="cannot merge into itself"):
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=2 WHERE authority_record_id=2"
+            )
+    finally:
+        conn.close()
+
+
+def test_authority_merge_self_guard_preserves_legacy_rows_on_upgrade(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        target_version=16,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, merged_into_authority_record_id,
+                    created_at, record_last_updated
+                ) VALUES (1, 'authority:legacy-self', 'person', 'Authority', 1, ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(
+        db_path, applied_at=FIXED_TIMESTAMP, applied_by="pytest"
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert conn.execute(
+            "SELECT merged_into_authority_record_id FROM authority_record WHERE authority_record_id=1"
+        ).fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError, match="cannot merge into itself"):
+            conn.execute(
+                "UPDATE authority_record SET preferred_label='Updated' WHERE authority_record_id=1"
+            )
+        conn.execute(
+            "UPDATE authority_record SET merged_into_authority_record_id=NULL WHERE authority_record_id=1"
+        )
+        conn.execute(
+            "UPDATE authority_record SET preferred_label='Updated' WHERE authority_record_id=1"
+        )
+    finally:
+        conn.close()
+
+
 def test_connect_canonical_store_can_opt_into_rollback_journal_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "rollback.sqlite"
     conn = canonical_store.connect_canonical_store(db_path, journal_mode="DELETE")
@@ -283,6 +376,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0014_ingested_gather_candidate_selection",
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
+        "0017_authority_merge_self_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -344,6 +438,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0014_ingested_gather_candidate_selection",
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
+        "0017_authority_merge_self_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -465,6 +560,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0014_ingested_gather_candidate_selection",
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
+        "0017_authority_merge_self_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)

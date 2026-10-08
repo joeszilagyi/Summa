@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 16
-CURRENT_MIGRATION_ID = "0016_cycle_error_counts"
+CURRENT_SCHEMA_VERSION = 17
+CURRENT_MIGRATION_ID = "0017_authority_merge_self_guard"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -413,6 +413,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         migration_id="0016_cycle_error_counts",
         sql_path=MIGRATIONS_DIR / "0016_cycle_error_counts.sql",
         notes="Backfill cycle error counts from recorded stage failures and validation results.",
+    ),
+    MigrationSpec(
+        version=17,
+        migration_id="0017_authority_merge_self_guard",
+        sql_path=MIGRATIONS_DIR / "0017_authority_merge_self_guard.sql",
+        notes="Reject authority records whose merge target is the same record.",
     ),
 )
 
