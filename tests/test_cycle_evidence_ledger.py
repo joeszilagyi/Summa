@@ -91,6 +91,91 @@ def test_cycle_attempt_migration_preserves_existing_evidence(tmp_path: Path) -> 
         conn.close()
 
 
+def test_cycle_status_migration_preserves_rows_and_enforces_checks(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(db_path, target_version=12)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn, run_id="checked-cycle", started_at=FIXED_TIMESTAMP, status="failed"
+            )
+            stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+                conn,
+                cycle_event_id=event_id,
+                run_id="checked-cycle",
+                stage_name="run_gather",
+                stage_order=1,
+                status="not_reached",
+                skipped_reason="blocked_by:cycle_setup",
+            )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT status FROM cycle_event WHERE cycle_event_id=?", (event_id,)
+        ).fetchone()[0] == "failed"
+        assert conn.execute(
+            "SELECT status FROM cycle_stage_event WHERE stage_event_id=?", (stage_id,)
+        ).fetchone()[0] == "not_reached"
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            conn.execute(
+                "UPDATE cycle_event SET status='nonsense' WHERE cycle_event_id=?", (event_id,)
+            )
+        conn.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            conn.execute(
+                "UPDATE cycle_stage_event SET status='nonsense' WHERE stage_event_id=?",
+                (stage_id,),
+            )
+        conn.rollback()
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="invalid cycle_event status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn, run_id="invalid-cycle", status="nonsense"
+            )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="invalid cycle_stage_event status"):
+            cycle_evidence_ledger.record_cycle_stage_start(
+                conn,
+                cycle_event_id=event_id,
+                run_id="checked-cycle",
+                stage_name="invalid",
+                stage_order=2,
+                status="nonsense",
+            )
+    finally:
+        conn.close()
+
+
+def test_cycle_status_migration_rolls_back_on_unknown_legacy_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(db_path, target_version=12)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO cycle_event (cycle_event_id, run_id, started_at, status, record_last_updated) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("cycle:legacy-invalid", "legacy-invalid", FIXED_TIMESTAMP, "nonsense", FIXED_TIMESTAMP),
+            )
+    finally:
+        conn.close()
+
+    with pytest.raises(canonical_store.CanonicalStoreError, match="CHECK constraint"):
+        canonical_store.init_canonical_store(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert canonical_store.get_schema_version(conn).schema_version == 12
+        assert conn.execute(
+            "SELECT status FROM cycle_event WHERE cycle_event_id='cycle:legacy-invalid'"
+        ).fetchone()[0] == "nonsense"
+    finally:
+        conn.close()
+
+
 def test_cycle_evidence_write_and_read_helpers_are_deterministic(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
