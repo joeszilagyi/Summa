@@ -20,6 +20,9 @@ concrete tracked surfaces or tools rather than only the changelog itself.
 - Updated remote executor test fixtures to build validated loopback handoffs
   directly, leaving the production remote manifest planner's loopback refusal
   intact.
+- Kept high-confidence pending works and entities as explicitly marked open
+  leads in prior-state context; only reviewed rows now carry established-context
+  status in gather prompts.
 
 ### Added
 
