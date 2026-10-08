@@ -135,6 +135,62 @@ def test_detected_entity_sql_triggers_reject_invalid_insert_and_update(tmp_path:
         conn.close()
 
 
+def test_provenance_replay_rejects_conflicting_payload(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    original = {
+        "object_namespace": "work",
+        "object_id": "fixture-001",
+        "event_type": "fixture_ingest",
+        "actor_type": "human",
+        "actor_id": "reviewer",
+        "actor_label": "Reviewer",
+        "tool_name": "pytest",
+        "tool_version": "1.0",
+        "model_name": "fixture-model",
+        "prompt_id": "prompt-1",
+        "run_id": "run-1",
+        "source_object_namespace": "source_claim",
+        "source_object_id": "1",
+        "event_timestamp": FIXED_TIMESTAMP,
+        "confidence_score": 0.5,
+        "note_text": "original note",
+        "provenance_event_key_v1": "prov:replay-check",
+    }
+    try:
+        first = canonical_store.record_provenance_event(conn, **original)
+        assert canonical_store.record_provenance_event(conn, **original) == first
+        changes = {
+            "object_namespace": "source_claim",
+            "object_id": "fixture-002",
+            "event_type": "different_event",
+            "actor_type": "tool",
+            "actor_id": "another-reviewer",
+            "actor_label": "Another Reviewer",
+            "tool_name": "another-tool",
+            "tool_version": "2.0",
+            "model_name": "another-model",
+            "prompt_id": "prompt-2",
+            "run_id": "run-2",
+            "source_object_namespace": "work",
+            "source_object_id": "2",
+            "event_timestamp": "2026-06-04T08:00:00Z",
+            "confidence_score": 0.75,
+            "note_text": "different note",
+        }
+        for field, changed in changes.items():
+            conflicting = {**original, field: changed}
+            if field in {"source_object_namespace", "source_object_id"}:
+                conflicting["source_object_namespace"] = "work"
+                conflicting["source_object_id"] = "2"
+            with pytest.raises(
+                canonical_store.CanonicalStoreError, match="provenance event replay conflict"
+            ):
+                canonical_store.record_provenance_event(conn, **conflicting)
+        assert conn.execute("SELECT COUNT(*) FROM provenance_event").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -911,7 +967,9 @@ def test_accepted_claim_replay_preserves_identity_and_evidence(
     assert row["extraction_id"] == accepted_extraction.row_id
 
 
-def test_source_relationship_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
+def test_source_relationship_replay_does_not_replace_authority_envelope_fields(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -1196,7 +1254,9 @@ def test_source_relationship_is_deduplicated_by_logical_identity(tmp_path: Path)
     assert count == 1
 
 
-def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(tmp_path: Path) -> None:
+def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -2432,7 +2492,9 @@ def test_review_history_replay_rejects_conflicting_transition_evidence(
     try:
         first = canonical_store.record_review_state_history(conn, **transition)
         replay = canonical_store.record_review_state_history(conn, **transition)
-        with pytest.raises(canonical_store.CanonicalStoreError, match="different transition evidence"):
+        with pytest.raises(
+            canonical_store.CanonicalStoreError, match="different transition evidence"
+        ):
             canonical_store.record_review_state_history(
                 conn, **{**transition, changed_field: new_value}
             )
@@ -2447,9 +2509,7 @@ def test_review_history_replay_rejects_conflicting_transition_evidence(
 
 
 @pytest.mark.parametrize("previous_state", ["wat", "acccepted", " "])
-def test_review_history_rejects_invalid_previous_state(
-    tmp_path: Path, previous_state: str
-) -> None:
+def test_review_history_rejects_invalid_previous_state(tmp_path: Path, previous_state: str) -> None:
     conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
     try:
         with pytest.raises(canonical_store.CanonicalStoreError, match="previous_state"):
