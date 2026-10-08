@@ -24,9 +24,14 @@ tools/scripts/Index_Select_Scheduled_Workspaces.sh \
 tools/scripts/Index_Run_Scheduled_Topic_Cycles.sh \
   --selection runtime/planned-runs.jsonl \
   --db /path/to/canonical.sqlite \
-  --run-dir runs/scheduled-topic-cycles/scheduled-001 \
+  --run-dir runtime/scheduled-topic-cycles/scheduled-001 \
   --mode dry-run
 ```
+
+Scheduled output must be a child of the trusted scheduled-run root. The default
+root is `runtime/scheduled-topic-cycles` under the repository; operators using
+another workspace-owned output location must provide it explicitly with
+`--run-root`.
 
 Budget behavior:
 
@@ -48,6 +53,8 @@ policy, so the scheduler should stop spending expansion cycles for now.
 Safety model:
 
 - this is not a daemon and does not loop indefinitely
+- scheduled manifests and child cycles stay beneath the trusted `--run-root`
+  (defaulting to the repository's `runtime/scheduled-topic-cycles` root)
 - remote fetch is not enabled
 - no network access is performed by default
 - review decisions and authority merges are not applied

@@ -43,6 +43,7 @@ from tools.common.workspace_lock import (  # noqa: E402
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
 PLANNED_RUN_SCHEMA_VERSION = "planned-run.v1"
+DEFAULT_SCHEDULED_RUN_ROOT = Path("runtime") / "scheduled-topic-cycles"
 WORKSPACE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 EXIT_SUCCESS = 0
 EXIT_USAGE_ERROR = 2
@@ -164,6 +165,39 @@ def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
     return ((base or Path.cwd()) / path).resolve()
 
 
+def resolve_scheduled_run_root(raw_path: Path | None) -> Path:
+    configured_root = (
+        resolve_path(raw_path)
+        if raw_path is not None
+        else (REPO_ROOT / DEFAULT_SCHEDULED_RUN_ROOT).resolve()
+    )
+    if raw_path is None:
+        try:
+            configured_root.relative_to(REPO_ROOT.resolve())
+        except ValueError as exc:
+            raise ScheduledCycleError(
+                f"default scheduled run root escapes repository root: {configured_root}"
+            ) from exc
+    if configured_root.exists() and not configured_root.is_dir():
+        raise ScheduledCycleError(f"scheduled run root is not a directory: {configured_root}")
+    return configured_root
+
+
+def resolve_scheduled_run_dir(raw_path: str | Path, *, run_root: Path) -> Path:
+    run_dir = resolve_path(raw_path)
+    try:
+        relative_run_dir = run_dir.relative_to(run_root)
+    except ValueError as exc:
+        raise ScheduledCycleError(
+            f"scheduled run directory must be within trusted run root {run_root}: {run_dir}"
+        ) from exc
+    if not relative_run_dir.parts:
+        raise ScheduledCycleError(
+            f"scheduled run directory must be a child of trusted run root: {run_root}"
+        )
+    return run_dir
+
+
 def resolve_cycle_runner(raw_path: str | None) -> Path:
     """Resolve a cycle runner from the trusted repository tree only."""
     runner = (
@@ -174,9 +208,7 @@ def resolve_cycle_runner(raw_path: str | None) -> Path:
     try:
         runner.relative_to(REPO_ROOT)
     except ValueError as exc:
-        raise ScheduledCycleError(
-            "cycle runner must resolve within the repository root"
-        ) from exc
+        raise ScheduledCycleError("cycle runner must resolve within the repository root") from exc
     if not runner.is_file():
         raise ScheduledCycleError(f"cycle runner is not a regular file: {runner}")
     return runner
@@ -285,9 +317,7 @@ def bind_planned_run_record(record: dict[str, Any]) -> dict[str, Any]:
 
     try:
         recorded_root = Path(record["resolved_workspace_root"]).expanduser().resolve()
-        recorded_manifest = (
-            Path(record["resolved_default_subject_manifest"]).expanduser().resolve()
-        )
+        recorded_manifest = Path(record["resolved_default_subject_manifest"]).expanduser().resolve()
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise ScheduledCycleError(
             f"planned-run record has invalid resolved workspace paths: {workspace_id}"
@@ -399,6 +429,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--run-dir",
         required=True,
         help="Output directory for the scheduled run manifest and child cycles.",
+    )
+    parser.add_argument(
+        "--run-root",
+        type=Path,
+        help=(
+            "Trusted root for --run-dir (defaults to <repo-root>/runtime/scheduled-topic-cycles)."
+        ),
     )
     parser.add_argument("--run-id", help="Stable scheduled run id. Defaults to run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override.")
@@ -543,7 +580,8 @@ def run_scheduled_cycles(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], int]:
     started_at = normalize_timestamp(args.timestamp)
-    run_dir = resolve_path(args.run_dir)
+    run_root = resolve_scheduled_run_root(args.run_root)
+    run_dir = resolve_scheduled_run_dir(args.run_dir, run_root=run_root)
     run_id = args.run_id or run_dir.name
     db_path = resolve_path(args.db)
     selection_path = resolve_path(args.selection)

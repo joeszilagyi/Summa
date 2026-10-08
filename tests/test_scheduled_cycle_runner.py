@@ -113,16 +113,21 @@ def write_selection(tmp_path: Path, records: list[dict[str, object]]) -> Path:
 
 def write_fake_cycle_runner(_tmp_path: Path, *, exit_code: int = 0) -> Path:
     fixture_name = (
-        "scheduled_cycle_runner.py"
-        if exit_code == 0
-        else "scheduled_cycle_runner_failure.py"
+        "scheduled_cycle_runner.py" if exit_code == 0 else "scheduled_cycle_runner_failure.py"
     )
     return REPO_ROOT / "tests" / "fixtures" / fixture_name
 
 
+def with_test_run_root(args: list[str]) -> list[str]:
+    if "--run-dir" not in args or "--run-root" in args:
+        return args
+    run_dir = Path(args[args.index("--run-dir") + 1])
+    return [*args, "--run-root", str(run_dir.parent)]
+
+
 def run_scheduled(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
+        [sys.executable, str(SCRIPT), *with_test_run_root(args)],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -148,7 +153,7 @@ def test_scheduled_runner_python_and_wrapper_help() -> None:
 
 def run_scheduled_in_dir(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
+        [sys.executable, str(SCRIPT), *with_test_run_root(args)],
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -312,20 +317,22 @@ def test_scheduled_runner_uses_fresh_timestamp_per_child_cycle(tmp_path: Path, m
     )
     monkeypatch.setattr(scheduled_runner, "utc_now", lambda: next(timestamps))
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(run_dir),
-            "--run-id",
-            "scheduled-run",
-            "--cycle-runner",
-            str(runner),
-            "--ledger-root",
-            str(ledger_root),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(run_dir),
+                "--run-id",
+                "scheduled-run",
+                "--cycle-runner",
+                str(runner),
+                "--ledger-root",
+                str(ledger_root),
+            ]
+        )
     )
     captured_commands: list[list[str]] = []
 
@@ -439,6 +446,40 @@ def test_scheduled_runner_rejects_cycle_runner_outside_repository(tmp_path: Path
     assert "cycle runner must resolve within the repository root" in proc.stderr
     assert not marker.exists()
     assert not run_dir.exists()
+
+
+def test_scheduled_runner_rejects_run_dir_outside_default_trusted_run_root(
+    tmp_path: Path,
+) -> None:
+    workspace, manifest = write_workspace(tmp_path, "trusted_subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="trusted_subject", workspace=workspace, manifest=manifest)],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    outside_run_dir = tmp_path / "outside-run"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(outside_run_dir),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "scheduled run directory must be within trusted run root" in proc.stderr
+    assert not outside_run_dir.exists()
 
 
 @pytest.mark.parametrize("field", ["resolved_workspace_root", "resolved_default_subject_manifest"])
@@ -662,18 +703,20 @@ def test_scheduled_runner_enforces_max_runtime_seconds_with_injected_clock(tmp_p
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--cycle-runner",
-            str(runner),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--cycle-runner",
+                str(runner),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     clock_values = iter([10.0, 12.5])
@@ -711,16 +754,18 @@ def test_scheduled_runner_passes_runtime_budget_to_child_invoker(tmp_path: Path)
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     observed_timeouts: list[float | None] = []
@@ -876,18 +921,20 @@ def test_scheduled_runner_generates_collision_safe_child_run_ids(
         return subprocess.CompletedProcess(command, 0, "{}", "")
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--cycle-runner",
-            str(runner),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--cycle-runner",
+                str(runner),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
@@ -960,16 +1007,18 @@ def test_scheduled_runner_does_not_double_run_locked_workspace(
     monkeypatch.setattr(scheduled_runner, "_next_workspace_token", lambda: "token-a")
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
@@ -1052,16 +1101,18 @@ def test_scheduled_runner_partial_child_output_exit_code(tmp_path: Path) -> None
         return subprocess.CompletedProcess(command, 5, "", "partial failure")
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
@@ -1125,18 +1176,20 @@ def test_scheduled_runner_maps_child_manifest_status_distinctly(
         )
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-            "--mode",
-            "dry-run" if child_status == "dry_run" else "local",
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+                "--mode",
+                "dry-run" if child_status == "dry_run" else "local",
+            ]
+        )
     )
 
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
@@ -1199,16 +1252,18 @@ def test_scheduled_runner_omits_child_output_from_failure_records(tmp_path: Path
         )
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
 
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
@@ -1256,16 +1311,18 @@ def test_scheduled_runner_uses_child_manifest_file_before_stdout_when_available(
         return subprocess.CompletedProcess(command, 0, "not-json", "")
 
     args = scheduled_runner.parse_args(
-        [
-            "--selection",
-            str(selection),
-            "--db",
-            str(db_path),
-            "--run-dir",
-            str(tmp_path / "scheduled-run"),
-            "--ledger-root",
-            str(tmp_path / "ledgers"),
-        ]
+        with_test_run_root(
+            [
+                "--selection",
+                str(selection),
+                "--db",
+                str(db_path),
+                "--run-dir",
+                str(tmp_path / "scheduled-run"),
+                "--ledger-root",
+                str(tmp_path / "ledgers"),
+            ]
+        )
     )
     payload, exit_code = scheduled_runner.run_scheduled_cycles(args, cycle_invoker=invoker)
 
