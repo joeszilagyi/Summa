@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from tools.common.topic_workspace_registry import (
+    DEFAULT_REGISTRY_ENV,
     TopicWorkspaceRegistryError,
+    discover_registry_path,
     resolve_workspace,
 )
 
@@ -23,6 +25,14 @@ def workspace_registry_payload(
             }
         ],
     }
+
+
+def test_discover_registry_path_rejects_untrusted_environment_path(tmp_path: Path) -> None:
+    with pytest.raises(TopicWorkspaceRegistryError, match="trusted registry root"):
+        discover_registry_path(
+            env={DEFAULT_REGISTRY_ENV: str(tmp_path / "attacker-controlled.json")},
+            cwd=tmp_path,
+        )
 
 
 @pytest.mark.parametrize("workspace_id", ["../escape", "team/one", "/absolute"])
