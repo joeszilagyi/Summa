@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -189,8 +190,10 @@ def build_spool_record(
 def spool_record_path(spool_dir: Path, record: Mapping[str, Any]) -> Path:
     run_id = record.get("originating_run_id")
     safe_run = (
-        str(run_id).replace("/", "_") if isinstance(run_id, str) and run_id else "unknown-run"
-    )
+        re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._-")[:80]
+        if isinstance(run_id, str)
+        else ""
+    ) or "unknown-run"
     record_id = str(record["spool_record_id"]).replace("/", "_").replace(":", "_")
     return spool_dir / "canonical-unavailable" / safe_run / f"{record_id}.json"
 
