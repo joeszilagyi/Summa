@@ -277,7 +277,8 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
-        "0011_cycle_event_attempts",
+        "0011_detected_entity_span_bounds",
+        "0012_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -333,7 +334,8 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
-        "0011_cycle_event_attempts",
+        "0011_detected_entity_span_bounds",
+        "0012_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -449,7 +451,8 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
-        "0011_cycle_event_attempts",
+        "0011_detected_entity_span_bounds",
+        "0012_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -773,7 +776,7 @@ def test_migration_sql_contains_no_destructive_statements() -> None:
             for line in migration.sql_path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("--")
         ).upper()
-        if migration.migration_id == "0011_cycle_event_attempts":
+        if migration.migration_id == "0012_cycle_event_attempts":
             assert "INSERT INTO CYCLE_EVENT_NEXT SELECT * FROM CYCLE_EVENT;" in sql_text
             assert "ALTER TABLE CYCLE_EVENT_NEXT RENAME TO CYCLE_EVENT;" in sql_text
             sql_text = sql_text.replace("DROP TABLE CYCLE_EVENT;", "")

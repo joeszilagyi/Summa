@@ -48,7 +48,7 @@ def test_bootstrap_includes_cycle_evidence_ledger_tables(tmp_path: Path) -> None
 
 def test_cycle_attempt_migration_preserves_existing_evidence(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    canonical_store.init_canonical_store(db_path, target_version=10)
+    canonical_store.init_canonical_store(db_path, target_version=11)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:

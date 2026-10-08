@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 11
-CURRENT_MIGRATION_ID = "0011_cycle_event_attempts"
+CURRENT_SCHEMA_VERSION = 12
+CURRENT_MIGRATION_ID = "0012_cycle_event_attempts"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -360,8 +360,14 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=11,
-        migration_id="0011_cycle_event_attempts",
-        sql_path=MIGRATIONS_DIR / "0011_cycle_event_attempts.sql",
+        migration_id="0011_detected_entity_span_bounds",
+        sql_path=MIGRATIONS_DIR / "0011_detected_entity_span_bounds.sql",
+        notes="Reject negative, non-integer, and inverted detected-entity source spans.",
+    ),
+    MigrationSpec(
+        version=12,
+        migration_id="0012_cycle_event_attempts",
+        sql_path=MIGRATIONS_DIR / "0012_cycle_event_attempts.sql",
         notes="Allow multiple cycle ledger attempts for one run id.",
         rebuilds_foreign_key_parent=True,
     ),
@@ -2351,6 +2357,20 @@ def record_extraction_detected_entity(
 ) -> CanonicalWriteResult:
     _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     entity_label_value = _require_nonblank(entity_label, "entity_label")
+    for field_name, value in (
+        ("character_start", character_start),
+        ("character_end", character_end),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise CanonicalStoreError(f"{field_name} must be a non-negative integer or None")
+    if (
+        character_start is not None
+        and character_end is not None
+        and character_start > character_end
+    ):
+        raise CanonicalStoreError("character_start must not exceed character_end")
     review_state_value = _normalize_review_state(
         review_state, default=DEFAULT_DETECTED_ENTITY_REVIEW_STATE
     )

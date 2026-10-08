@@ -51,7 +51,8 @@ def test_migration_backfills_existing_rows_once(tmp_path: Path) -> None:
         result = canonical_store.apply_migrations(conn, applied_at=STAMP, applied_by="pytest")
         assert result.applied_migration_ids == (
             "0010_canonical_row_revisions",
-            "0011_cycle_event_attempts",
+            "0011_detected_entity_span_bounds",
+            "0012_cycle_event_attempts",
         )
         history = _revisions(conn, "work", 1)
         assert len(history) == 1
