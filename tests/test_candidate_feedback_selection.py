@@ -659,6 +659,40 @@ def test_tied_candidate_scores_use_deterministic_facet_and_id_ordering() -> None
     assert [item["candidate_id"] for item in lead_scores] == ["lead:a", "lead:z", "lead:b"]
 
 
+def test_bootstrap_bias_applies_to_each_untried_facet() -> None:
+    weights = {name: 0.0 for name in planner.DEFAULT_SCORING_WEIGHTS}
+    weights["bootstrap_bias"] = 2.0
+    facets = ["sources", "open_questions", "works"]
+    scores = planner.aggregate_facet_scores(
+        enabled_facets=facets,
+        bundles={facet: {"bundle_id": f"bundle:{facet}"} for facet in facets},
+        history=[
+            {
+                "facet": "sources",
+                "run_id": "sources-run",
+                "total_yield": 1,
+                "yields": {
+                    "work": 1,
+                    "source_claim": 0,
+                    "extraction_detected_entity": 0,
+                    "source_relationship": 0,
+                },
+            }
+        ],
+        lead_candidates=[],
+        weights=weights,
+    )
+
+    by_facet = {item["facet"]: item for item in scores}
+    assert by_facet["sources"]["score"] == 0.0
+    assert by_facet["sources"]["reason_codes"] == ["productive_history"]
+    assert by_facet["open_questions"]["score"] == 4.0
+    assert by_facet["works"]["score"] == 2.0
+    assert by_facet["open_questions"]["reason_codes"] == ["bootstrap_no_prior_productivity"]
+    assert by_facet["works"]["reason_codes"] == ["bootstrap_no_prior_productivity"]
+    assert [item["facet"] for item in scores] == ["open_questions", "works", "sources"]
+
+
 def test_aggregate_lead_scores_uses_bounded_top_n_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2918,7 +2952,7 @@ def test_candidate_feedback_planner_scoring_selection_and_deferred_branches() ->
     assert "repeated_zero_yield" in sources["reason_codes"]
     assert "repeated_zero_yield" in open_questions["reason_codes"]
     assert "recent_low_yield_penalty" in open_questions["reason_codes"]
-    assert works["reason_codes"] == ["fallback_facet"]
+    assert works["reason_codes"] == ["bootstrap_no_prior_productivity"]
     assert [item["rank"] for item in facet_scores] == [1, 2, 3]
 
     selected_action = planner.select_next_action(

@@ -14,6 +14,8 @@ from tools.common.candidate_feedback_contract import deferred_candidate_retryabl
 
 SCHEMA_VERSION = "cycle-evidence-ledger.v1"
 DEFAULT_PRIVACY_CLASSIFICATION = "local_operator"
+CYCLE_OPEN_STATUSES = frozenset({"planned", "running"})
+STAGE_OPEN_STATUSES = frozenset({"planned", "running"})
 PENDING_REVIEW_STATES = frozenset(
     {
         "",
@@ -560,14 +562,41 @@ def record_cycle_event_finish(
     error_count: int | None = None,
 ) -> None:
     now = now_rfc3339()
+    final_status = _require_nonblank(status, "status")
+    if final_status in CYCLE_OPEN_STATUSES:
+        raise CycleEvidenceLedgerError("cycle_event finish requires a terminal status")
     existing_row = conn.execute(
-        "SELECT started_at FROM cycle_event WHERE cycle_event_id=?",
+        "SELECT * FROM cycle_event WHERE cycle_event_id=?",
         (_require_nonblank(cycle_event_id, "cycle_event_id"),),
     ).fetchone()
     if existing_row is None:
         raise CycleEvidenceLedgerError(
             f"cycle_event finish target not found: cycle_event_id={cycle_event_id}"
         )
+    current_status = str(existing_row["status"])
+    if current_status not in CYCLE_OPEN_STATUSES and current_status != final_status:
+        raise CycleEvidenceLedgerError(
+            f"cycle_event terminal status cannot change from {current_status} to {final_status}"
+        )
+    if existing_row["ended_at"] is not None:
+        updates = {
+            "ended_at": ended_at,
+            "topic_cycle_manifest_path": topic_cycle_manifest_path,
+            "topic_cycle_manifest_hash": topic_cycle_manifest_hash,
+            "final_feedback_plan_ref": final_feedback_plan_ref,
+            "row_count_delta_json": None
+            if row_count_delta is None
+            else _json_mapping(row_count_delta),
+            "warning_count": warning_count,
+            "error_count": error_count,
+        }
+        if current_status != final_status or any(
+            value is not None and existing_row[field] != value for field, value in updates.items()
+        ):
+            raise CycleEvidenceLedgerError(
+                f"cycle_event terminal replay mismatch for cycle_event_id={cycle_event_id}"
+            )
+        return
     started = _parse_rfc3339_timestamp(existing_row["started_at"], "started_at")
     finished = _parse_rfc3339_timestamp(ended_at or now, "ended_at")
     if finished < started:
@@ -589,7 +618,7 @@ def record_cycle_event_finish(
         WHERE cycle_event_id=?
         """,
         (
-            _require_nonblank(status, "status"),
+            final_status,
             ended_at or now,
             topic_cycle_manifest_path,
             topic_cycle_manifest_hash,
@@ -690,14 +719,35 @@ def record_cycle_stage_finish(
     error_summary: str | None = None,
 ) -> None:
     now = now_rfc3339()
+    final_status = _require_nonblank(status, "status")
+    if final_status in STAGE_OPEN_STATUSES:
+        raise CycleEvidenceLedgerError("cycle_stage_event finish requires a terminal status")
     existing_row = conn.execute(
-        "SELECT started_at FROM cycle_stage_event WHERE stage_event_id=?",
+        "SELECT * FROM cycle_stage_event WHERE stage_event_id=?",
         (_require_nonblank(stage_event_id, "stage_event_id"),),
     ).fetchone()
     if existing_row is None:
         raise CycleEvidenceLedgerError(
             f"cycle_stage_event finish target not found: stage_event_id={stage_event_id}"
         )
+    current_status = str(existing_row["status"])
+    if current_status not in STAGE_OPEN_STATUSES and current_status != final_status:
+        raise CycleEvidenceLedgerError(
+            f"cycle_stage_event terminal status cannot change from {current_status} to {final_status}"
+        )
+    if existing_row["ended_at"] is not None or current_status in {"skipped", "not_reached"}:
+        updates = {
+            "ended_at": ended_at,
+            "validation_status": validation_status,
+            "error_summary": error_summary,
+        }
+        if current_status != final_status or any(
+            value is not None and existing_row[field] != value for field, value in updates.items()
+        ):
+            raise CycleEvidenceLedgerError(
+                f"cycle_stage_event terminal replay mismatch for stage_event_id={stage_event_id}"
+            )
+        return
     started_at_value = _optional_text(existing_row["started_at"])
     finished_at_value = (
         ended_at if ended_at is not None or status in {"skipped", "not_reached"} else now
@@ -720,7 +770,7 @@ def record_cycle_stage_finish(
         WHERE stage_event_id=?
         """,
         (
-            _require_nonblank(status, "status"),
+            final_status,
             finished_at_value,
             validation_status,
             error_summary,
@@ -1142,6 +1192,52 @@ def load_cycle_event(conn: sqlite3.Connection, cycle_event_id: str) -> dict[str,
         (_require_nonblank(cycle_event_id, "cycle_event_id"),),
     ).fetchone()
     return None if row is None else _row_to_dict(row)
+
+
+def relocate_cycle_manifest_artifact(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    old_path: str,
+    new_path: str,
+    artifact_hash: str,
+) -> None:
+    """Preserve a legacy manifest reference before replacing its mutable path."""
+    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
+    old = _require_nonblank(old_path, "old_path")
+    new = _require_nonblank(new_path, "new_path")
+    digest = _require_nonblank(artifact_hash, "artifact_hash")
+    now = now_rfc3339()
+    event = conn.execute(
+        "SELECT topic_cycle_manifest_path, topic_cycle_manifest_hash "
+        "FROM cycle_event WHERE cycle_event_id=?",
+        (event_id,),
+    ).fetchone()
+    artifact = conn.execute(
+        "SELECT artifact_path, artifact_hash FROM cycle_artifact_ref "
+        "WHERE cycle_event_id=? AND artifact_type='topic_cycle_manifest' AND artifact_path=?",
+        (event_id, old),
+    ).fetchone()
+    if (
+        event is None
+        or event["topic_cycle_manifest_path"] != old
+        or event["topic_cycle_manifest_hash"] != digest
+        or artifact is None
+        or artifact["artifact_hash"] != digest
+    ):
+        raise CycleEvidenceLedgerError(
+            f"legacy cycle manifest reference does not match for cycle_event_id={event_id}"
+        )
+    conn.execute(
+        "UPDATE cycle_event SET topic_cycle_manifest_path=?, record_last_updated=? "
+        "WHERE cycle_event_id=?",
+        (new, now, event_id),
+    )
+    conn.execute(
+        "UPDATE cycle_artifact_ref SET artifact_path=?, record_last_updated=? "
+        "WHERE cycle_event_id=? AND artifact_type='topic_cycle_manifest' AND artifact_path=?",
+        (new, now, event_id, old),
+    )
 
 
 def list_cycle_events_for_subject(
