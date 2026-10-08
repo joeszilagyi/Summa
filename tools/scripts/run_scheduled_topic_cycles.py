@@ -545,6 +545,7 @@ def append_ledger_event(
     run_id: str,
     event_type: str,
     occurred_at: str,
+    command: str = "run_topic_cycle",
     status: str | None = None,
     artifact_refs: list[dict[str, Any]] | None = None,
     failure: dict[str, Any] | None = None,
@@ -553,7 +554,7 @@ def append_ledger_event(
         workspace_id=workspace_id,
         run_id=run_id,
         event_type=event_type,
-        command="run_topic_cycle",
+        command=command,
         status=status,
         artifact_refs=artifact_refs,
         failure=failure,
@@ -1034,6 +1035,24 @@ def run_scheduled_cycles(
                     reason=record.get("skipped_reason") or "planned-run decision was not selected",
                     stage="selection_filter",
                     recoverability="non_retryable",
+                )
+                ledger_path = (
+                    resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                )
+                result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=str(record["planned_run_id"]),
+                    event_type="command_deferred",
+                    command="run_scheduled_topic_cycles",
+                    occurred_at=str(record["planned_at"]),
+                    status="deferred",
+                    failure={
+                        "reason_code": "selection_not_selected",
+                        "message": result["failure_reason"],
+                        "reasons": record.get("skipped_reasons", []),
+                    },
                 )
                 manifest["deferred_workspace_count"] += 1
                 workspace_results[record_index] = result
