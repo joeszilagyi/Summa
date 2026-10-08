@@ -339,7 +339,7 @@ def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
 
 def test_authority_records_report_broken_provenance_and_merge_targets(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=16)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
@@ -370,7 +370,12 @@ def test_authority_records_report_broken_provenance_and_merge_targets(tmp_path: 
                 """,
                 [(*row, FIXED_TIMESTAMP, FIXED_TIMESTAMP) for row in rows],
             )
-        conn.execute("PRAGMA foreign_keys=ON")
+    finally:
+        conn.close()
+
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
         issues = canonical_graph_closure.audit_authority_record(conn)
         collected_authorities = [
             issue
