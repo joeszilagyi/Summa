@@ -309,6 +309,11 @@ def create_local_authority(
 ) -> int:
     timestamp = created_at or now_iso()
     key = "auth:local:" + stable_key(authority_type, preferred_label, source_namespace, source_id)
+    provenance_key = canonical_store.stable_write_key("prov", "local_authority", key)
+    original_event = conn.execute(
+        "SELECT event_timestamp FROM provenance_event WHERE provenance_event_key_v1=?",
+        (provenance_key,),
+    ).fetchone()
     provenance = canonical_store.record_provenance_event(
         conn,
         object_namespace="authority_record",
@@ -319,8 +324,8 @@ def create_local_authority(
         tool_name="authority_reconciliation.create_local_authority",
         source_object_namespace=source_namespace if source_namespace and source_id else None,
         source_object_id=source_id if source_namespace and source_id else None,
-        event_timestamp=timestamp,
-        provenance_event_key_v1=canonical_store.stable_write_key("prov", "local_authority", key),
+        event_timestamp=str(original_event["event_timestamp"]) if original_event else timestamp,
+        provenance_event_key_v1=provenance_key,
     )
     conn.execute(
         """
