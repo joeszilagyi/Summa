@@ -258,11 +258,12 @@ def test_high_confidence_pending_prior_state_stays_an_open_lead(tmp_path: Path) 
     entities = {record["entity_label"]: record for record in prior_state["records"]["entities"]}
     assert works["Accepted Alpha Work"]["epistemic_role"] == "established_context"
     assert works["Pending High Work"]["epistemic_role"] == "open_lead"
+    assert works["Ambiguous High Work"]["epistemic_role"] == "open_lead"
     assert entities["Pending High Entity"]["epistemic_role"] == "open_lead"
     assert "Pending Low Work" not in works
-    assert "Ambiguous High Work" not in works
     assert "Rejected High Work" not in works
     assert "[proposed lead, conf=0.99] Pending High Work" in prior_state["context_text"]
+    assert "[ambiguous lead, conf=0.99] Ambiguous High Work" in prior_state["context_text"]
     assert "[needs_review lead, conf=0.99] Pending High Entity" in prior_state["context_text"]
     assert "high-confidence context" not in prior_state["context_text"]
 

@@ -54,6 +54,12 @@ class SourceAccessIntegrityProxy:
         return self._conn.execute(sql, params)
 
 
+def test_ambiguous_review_state_remains_pending() -> None:
+    assert canonical_store._pending_review_state("ambiguous")
+    assert canonical_store._merged_review_state("ambiguous", "needs_review") == "needs_review"
+    assert not canonical_store._preserve_authority_envelope("ambiguous", "needs_review")
+
+
 def test_generic_lookup_chooses_lowest_id_when_criteria_match_multiple_rows() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
