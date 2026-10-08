@@ -344,6 +344,9 @@ def update_review_state(
     source_namespace: str,
     source_id: str,
     source_run_id: str | None = None,
+    allow_established_transition: bool = False,
+    changed_by: str = "canonical_reconciliation",
+    source_tool: str = RECONCILIATION_TOOL,
 ) -> bool:
     new_state_value = _normalize_review_state(new_state, field_name="new_state")
     table_name, pk_column, row = _review_target_row(
@@ -353,7 +356,10 @@ def update_review_state(
     )
     previous_state = None if row["review_state"] is None else str(row["review_state"])
     previous_state_value = str(previous_state or "").strip().lower()
-    if previous_state_value in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES:
+    if (
+        previous_state_value in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+        and not allow_established_transition
+    ):
         return False
     if previous_state == new_state_value:
         return False
@@ -367,13 +373,13 @@ def update_review_state(
         target_id=str(target_id),
         previous_state=previous_state,
         new_state=new_state_value,
-        changed_by="canonical_reconciliation",
+        changed_by=changed_by,
         changed_at=changed_at,
         reason=reason,
         note=note,
         source_namespace=source_namespace,
         source_id=source_id,
-        source_tool=RECONCILIATION_TOOL,
+        source_tool=source_tool,
         source_run_id=source_run_id,
     )
     return True

@@ -23,6 +23,9 @@ concrete tracked surfaces or tools rather than only the changelog itself.
 - Kept high-confidence pending works and entities as explicitly marked open
   leads in prior-state context; only reviewed rows now carry established-context
   status in gather prompts.
+- Allowed explicit reviewer decisions to reject or reopen established claims
+  and relationships with human-attributed review history, while automatic
+  contradiction reconciliation still cannot silently demote established rows.
 
 ### Added
 
