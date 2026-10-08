@@ -22,6 +22,57 @@ def bootstrap_db(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("initial_state", "replay_state", "expected_state", "expected_score"),
+    [
+        ("accepted", "proposed", "accepted", 0.95),
+        ("accepted", "accepted", "accepted", 0.95),
+        ("curated", "needs_review", "curated", 0.95),
+        ("proposed", "accepted", "accepted", 0.10),
+    ],
+)
+def test_local_authority_replay_preserves_reviewed_state_and_score(
+    tmp_path,
+    initial_state: str,
+    replay_state: str,
+    expected_state: str,
+    expected_score: float,
+) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        first_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="local-authority-replay",
+            review_state=initial_state,
+            confidence_score=0.95,
+            created_at=FIXED_TIMESTAMP,
+        )
+        replay_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="local-authority-replay",
+            review_state=replay_state,
+            confidence_score=0.10,
+            created_at="2026-06-06T10:20:30Z",
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score FROM authority_record "
+            "WHERE authority_record_id=?",
+            (first_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert replay_id == first_id
+    assert row["review_state"] == expected_state
+    assert row["confidence_score"] == expected_score
+
+
+@pytest.mark.parametrize(
     "initial_state",
     ["machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"],
 )
