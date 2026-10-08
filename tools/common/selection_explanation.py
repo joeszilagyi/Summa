@@ -385,7 +385,7 @@ def build_scheduler_selection_explanation(
             source="select_scheduled_workspaces",
         )
         considered.append(selected_candidate)
-    return build_selection_explanation(
+    explanation = build_selection_explanation(
         selection_kind="scheduled_workspace",
         run_id=planner_run_id,
         created_at=planned_at,
@@ -408,6 +408,10 @@ def build_scheduler_selection_explanation(
             "default subject manifest resolved",
         ],
     )
+    explanation["selected_candidates"] = [
+        dict(item) for item in considered if item["selected"] and item["candidate_type"] == "workspace"
+    ]
+    return explanation
 
 
 def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
@@ -471,6 +475,19 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
         errors.append(
             "selected candidate must appear in considered_candidates unless operator_overrides is non-empty"
         )
+    if payload.get("selection_kind") == "scheduled_workspace" and "selected_candidates" in payload:
+        selected_candidates = payload.get("selected_candidates")
+        expected_selected = [
+            dict(item)
+            for item in considered or []
+            if isinstance(item, Mapping)
+            and item.get("selected") is True
+            and item.get("candidate_type") == "workspace"
+        ]
+        if not isinstance(selected_candidates, list):
+            errors.append("scheduled_workspace.selected_candidates must be an array")
+        elif selected_candidates != expected_selected:
+            errors.append("scheduled_workspace.selected_candidates must match selected workspaces")
     excluded = payload.get("excluded_candidates")
     if not isinstance(excluded, list):
         errors.append("excluded_candidates must be an array")
