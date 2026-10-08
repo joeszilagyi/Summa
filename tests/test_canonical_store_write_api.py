@@ -2444,3 +2444,46 @@ def test_review_history_replay_rejects_conflicting_transition_evidence(
     assert replay.created is False
     assert replay.row_id == first.row_id
     assert count == 1
+
+
+@pytest.mark.parametrize("previous_state", ["wat", "acccepted", " "])
+def test_review_history_rejects_invalid_previous_state(
+    tmp_path: Path, previous_state: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with pytest.raises(canonical_store.CanonicalStoreError, match="previous_state"):
+            canonical_store.record_review_state_history(
+                conn,
+                target_namespace="source_claim",
+                target_id="claim:1",
+                previous_state=previous_state,
+                new_state="accepted",
+                changed_by="pytest",
+                changed_at=FIXED_TIMESTAMP,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_review_history_allows_no_previous_state_for_first_transition(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        result = canonical_store.record_review_state_history(
+            conn,
+            target_namespace="source_claim",
+            target_id="claim:1",
+            previous_state=None,
+            new_state="proposed",
+            changed_by="pytest",
+            changed_at=FIXED_TIMESTAMP,
+        )
+        previous_state = conn.execute(
+            "SELECT previous_state FROM review_state_history WHERE rowid=?",
+            (result.row_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert previous_state is None

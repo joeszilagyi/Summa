@@ -2772,6 +2772,13 @@ def record_review_state_history(
     new_state_value = _normalize_review_state(
         new_state, default="needs_review", field_name="new_state"
     )
+    previous_state_value = (
+        None
+        if previous_state is None
+        else _normalize_review_state(
+            previous_state, default="needs_review", field_name="previous_state"
+        )
+    )
     changed_at_value = _normalize_timestamp(
         changed_at, field_name="changed_at", default=now_rfc3339()
     )
@@ -2779,7 +2786,7 @@ def record_review_state_history(
         "review",
         target_namespace,
         target_id,
-        previous_state,
+        previous_state_value,
         new_state_value,
         changed_by,
         changed_at_value,
@@ -2787,7 +2794,7 @@ def record_review_state_history(
     proposed_values = {
         "target_namespace": _require_nonblank(target_namespace, "target_namespace"),
         "target_id": _require_nonblank(target_id, "target_id"),
-        "previous_state": _optional_nonblank(previous_state, "previous_state"),
+        "previous_state": previous_state_value,
         "new_state": new_state_value,
         "changed_by": _require_nonblank(changed_by, "changed_by"),
         "changed_at": changed_at_value,

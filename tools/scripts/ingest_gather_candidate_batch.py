@@ -75,6 +75,7 @@ def _spool_candidate_batch(
     args: argparse.Namespace,
     db_path: Path,
     batch_path: Path,
+    batch: dict[str, object],
     batch_hash: str,
     failure: BaseException,
     expected_schema_version: int | None,
@@ -85,6 +86,8 @@ def _spool_candidate_batch(
         raise canonical_write_spool.CanonicalWriteSpoolError(
             "--spool-dir is required with --degraded-spool"
         ) from failure
+    run_id = batch.get("run_id")
+    originating_run_id = run_id if isinstance(run_id, str) and run_id.strip() else batch_hash
     record = canonical_write_spool.build_spool_record(
         operation_kind="candidate_batch_ingest",
         operation_input={
@@ -107,7 +110,7 @@ def _spool_candidate_batch(
         spool_dir=Path(args.spool_dir),
         originating_tool="tools/scripts/ingest_gather_candidate_batch.py",
         originating_command="ingest_gather_candidate_batch.py",
-        originating_run_id=None,
+        originating_run_id=originating_run_id,
         stage_name="ingest_candidate_batch",
         expected_schema_version=expected_schema_version,
     )
@@ -192,6 +195,7 @@ def main() -> int:
                     args=args,
                     db_path=db_path,
                     batch_path=batch_path,
+                    batch=batch,
                     batch_hash=batch_hash,
                     failure=exc,
                     expected_schema_version=expected_schema_version,
@@ -209,6 +213,7 @@ def main() -> int:
                     args=args,
                     db_path=db_path,
                     batch_path=batch_path,
+                    batch=batch,
                     batch_hash=batch_hash,
                     failure=exc,
                     expected_schema_version=expected_schema_version,
