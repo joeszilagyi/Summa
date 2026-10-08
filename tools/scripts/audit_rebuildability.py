@@ -516,7 +516,9 @@ def _inventory_discovered_artifacts(runs_dir: Path) -> list[DiscoveryCandidate]:
                 )
             )
             continue
-        if name in {"topic-cycle-run.json", "topic-cycle-manifest.json"}:
+        if name in {"topic-cycle-run.json", "topic-cycle-manifest.json"} or (
+            name.startswith("topic-cycle-run.") and name.endswith(".json")
+        ):
             payload = read_json(path)
             candidates.append(
                 DiscoveryCandidate(

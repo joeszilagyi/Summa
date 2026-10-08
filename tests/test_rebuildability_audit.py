@@ -779,6 +779,20 @@ def test_find_missing_artifacts_reuses_discovered_manifest_payload_without_rerea
     assert missing == []
 
 
+def test_discover_artifacts_includes_immutable_cycle_manifest_snapshots(tmp_path: Path) -> None:
+    runs_dir = stage_runs_dir(tmp_path)
+    cycle_dir = runs_dir / "topic-cycle" / "cycle-001"
+    snapshot_path = cycle_dir / "topic-cycle-run.attempt123.json"
+    snapshot_path.write_bytes((cycle_dir / "topic-cycle-run.json").read_bytes())
+
+    artifacts = audit.discover_artifacts(runs_dir)
+
+    assert any(
+        artifact.artifact_type == "topic_cycle_manifest" and artifact.path == snapshot_path
+        for artifact in artifacts
+    )
+
+
 def test_discover_artifacts_validates_replayable_artifacts_in_parallel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

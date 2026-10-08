@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -19,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common.atomic_write import atomic_write_json  # noqa: E402
+from tools.common.atomic_write import atomic_write_json, atomic_write_path  # noqa: E402
 from tools.common.subprocess_capture import (  # noqa: E402
     command_output_excerpt,
     run_streaming_command,
@@ -187,6 +188,56 @@ def read_json(path: Path, *, label: str) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_json(path, payload)
+
+
+def cycle_manifest_snapshot_path(run_dir: Path, cycle_event_id: str) -> Path:
+    digest = hashlib.sha256(cycle_event_id.encode("utf-8")).hexdigest()[:24]
+    return run_dir / f"topic-cycle-run.{digest}.json"
+
+
+def preserve_legacy_cycle_manifest_refs(manifest_path: Path, db_path: Path) -> None:
+    """Move existing ledger references off the mutable latest-manifest path."""
+    if not manifest_path.is_file():
+        return
+    if not db_path.is_file():
+        raise TopicCycleError(
+            f"cannot preserve existing cycle manifest while canonical DB is unavailable: {db_path}"
+        )
+    current_hash = hash_file(manifest_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT cycle_event_id, topic_cycle_manifest_hash FROM cycle_event "
+            "WHERE topic_cycle_manifest_path=?",
+            (str(manifest_path),),
+        ).fetchall()
+        snapshots: list[tuple[str, Path]] = []
+        for row in rows:
+            event_id = str(row["cycle_event_id"])
+            if row["topic_cycle_manifest_hash"] != current_hash:
+                raise TopicCycleError(
+                    f"cannot preserve legacy cycle manifest for {event_id}: ledger hash does not match {manifest_path}"
+                )
+            snapshot_path = cycle_manifest_snapshot_path(manifest_path.parent, event_id)
+            if snapshot_path.exists():
+                if hash_file(snapshot_path) != current_hash:
+                    raise TopicCycleError(
+                        f"immutable cycle manifest already differs: {snapshot_path}"
+                    )
+            else:
+                atomic_write_path(snapshot_path, manifest_path)
+            snapshots.append((event_id, snapshot_path))
+        with conn:
+            for event_id, snapshot_path in snapshots:
+                cycle_evidence_ledger.relocate_cycle_manifest_artifact(
+                    conn,
+                    cycle_event_id=event_id,
+                    old_path=str(manifest_path),
+                    new_path=str(snapshot_path),
+                    artifact_hash=current_hash,
+                )
+    finally:
+        conn.close()
 
 
 def canonical_store_check_result_path(manifest: dict[str, Any]) -> Path | None:
@@ -1654,6 +1705,7 @@ def record_cycle_evidence_from_manifest(
     ledger = manifest.get("cycle_evidence_ledger")
     if not isinstance(ledger, dict):
         return
+    latest_manifest_path = Path(str(manifest["run_dir"])) / "topic-cycle-run.json"
     if manifest.get("dry_run") is True:
         ledger["status"] = "skipped"
         return
@@ -1703,7 +1755,7 @@ def record_cycle_evidence_from_manifest(
                 manifest.setdefault("warnings", []).append(
                     "cycle evidence ledger write was spooled: DB missing"
                 )
-                write_json(manifest_path, manifest)
+                write_json(latest_manifest_path, manifest)
                 return
             except Exception as spool_exc:
                 manifest.setdefault("warnings", []).append(
@@ -1714,7 +1766,7 @@ def record_cycle_evidence_from_manifest(
         manifest.setdefault("warnings", []).append(
             "cycle evidence ledger was not recorded: DB missing"
         )
-        write_json(manifest_path, manifest)
+        write_json(latest_manifest_path, manifest)
         return
     try:
         current_manifest_hash = hash_file(manifest_path)
@@ -1769,7 +1821,7 @@ def record_cycle_evidence_from_manifest(
                 manifest.setdefault("warnings", []).append(
                     f"cycle evidence ledger write was spooled: {exc}"
                 )
-                write_json(manifest_path, manifest)
+                write_json(latest_manifest_path, manifest)
                 return
             except Exception as spool_exc:
                 manifest.setdefault("warnings", []).append(
@@ -1778,13 +1830,12 @@ def record_cycle_evidence_from_manifest(
         ledger["status"] = "failed"
         ledger["error"] = str(exc)
         manifest.setdefault("warnings", []).append(f"cycle evidence ledger was not recorded: {exc}")
-        write_json(manifest_path, manifest)
+        write_json(latest_manifest_path, manifest)
         return
     ledger["status"] = "recorded"
     ledger["cycle_event_id"] = cycle_event_id
-    # Keep the manifest as the durable cycle artifact. The ledger row references
-    # the pre-recording manifest hash; the in-memory status is returned to CLI
-    # callers without rewriting the artifact and changing that hash.
+    # The ledger references the immutable attempt snapshot. The latest-manifest
+    # alias may be rewritten with the final recording status without hash drift.
 
 
 def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
@@ -1805,6 +1856,8 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if not workspace.is_dir():
         raise TopicCycleError(f"workspace root not found: {workspace}")
     validate_existing_run_dir(run_dir, force=args.force, resume=args.resume)
+    if args.force and args.mode != "dry-run":
+        preserve_legacy_cycle_manifest_refs(run_dir / "topic-cycle-run.json", db_path)
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = build_manifest(
         args=args,
@@ -1969,15 +2022,20 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         ledger = manifest.get("cycle_evidence_ledger")
         if isinstance(ledger, dict):
             ledger["status"] = "skipped" if args.mode == "dry-run" else "recorded"
-        # Write the finalized manifest before recording evidence so the ledger hash
-        # and manifest artifact metadata both reflect the durable on-disk state.
-        write_json(manifest_path, manifest)
-        record_cycle_evidence_from_manifest(
-            args=args,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            db_path=db_path,
-        )
+        if args.mode == "dry-run":
+            write_json(manifest_path, manifest)
+        else:
+            snapshot_path = cycle_manifest_snapshot_path(run_dir, str(manifest["cycle_event_id"]))
+            if snapshot_path.exists():
+                raise TopicCycleError(f"immutable cycle manifest already exists: {snapshot_path}")
+            write_json(snapshot_path, manifest)
+            record_cycle_evidence_from_manifest(
+                args=args,
+                manifest=manifest,
+                manifest_path=snapshot_path,
+                db_path=db_path,
+            )
+            write_json(manifest_path, manifest)
     return manifest, return_code
 
 

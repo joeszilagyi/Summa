@@ -2160,7 +2160,10 @@ def test_topic_cycle_existing_retryable_run_requires_force(
     cycle.validate_existing_run_dir(run_dir, force=True, resume=False)
 
 
-def test_topic_cycle_force_records_distinct_ledger_attempts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_ref", ["immutable", "legacy", "legacy_corrupt"])
+def test_topic_cycle_force_records_distinct_ledger_attempts(
+    tmp_path: Path, legacy_ref: str
+) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
@@ -2184,8 +2187,41 @@ def test_topic_cycle_force_records_distinct_ledger_attempts(tmp_path: Path) -> N
     first = run_cycle(args)
     assert first.returncode == 0, first.stdout + first.stderr
     first_id = load_manifest(run_dir)["cycle_event_id"]
+    if legacy_ref != "immutable":
+        latest_path = run_dir / "topic-cycle-run.json"
+        latest_hash = hashlib.sha256(latest_path.read_bytes()).hexdigest()
+        conn = sqlite3.connect(db_path)
+        try:
+            original_path = conn.execute(
+                "SELECT topic_cycle_manifest_path FROM cycle_event WHERE cycle_event_id=?",
+                (first_id,),
+            ).fetchone()[0]
+            Path(original_path).unlink()
+            with conn:
+                conn.execute(
+                    "UPDATE cycle_event SET topic_cycle_manifest_path=?, topic_cycle_manifest_hash=? "
+                    "WHERE cycle_event_id=?",
+                    (
+                        str(latest_path),
+                        latest_hash if legacy_ref == "legacy" else "0" * 64,
+                        first_id,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE cycle_artifact_ref SET artifact_path=?, artifact_hash=? "
+                    "WHERE cycle_event_id=? AND artifact_type='topic_cycle_manifest'",
+                    (str(latest_path), latest_hash, first_id),
+                )
+        finally:
+            conn.close()
 
+    latest_bytes = (run_dir / "topic-cycle-run.json").read_bytes()
     second = run_cycle([*args, "--force"])
+    if legacy_ref == "legacy_corrupt":
+        assert second.returncode == 1
+        assert "ledger hash does not match" in second.stderr
+        assert (run_dir / "topic-cycle-run.json").read_bytes() == latest_bytes
+        return
     assert second.returncode == 0, second.stdout + second.stderr
     second_id = load_manifest(run_dir)["cycle_event_id"]
     assert first_id != second_id
@@ -2193,10 +2229,17 @@ def test_topic_cycle_force_records_distinct_ledger_attempts(tmp_path: Path) -> N
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT cycle_event_id FROM cycle_event WHERE run_id=? ORDER BY rowid",
+            "SELECT cycle_event_id, topic_cycle_manifest_path, topic_cycle_manifest_hash "
+            "FROM cycle_event WHERE run_id=? ORDER BY rowid",
             ("cycle-repeat",),
         ).fetchall()
         assert [row[0] for row in rows] == [first_id, second_id]
+        assert rows[0][1] != rows[1][1]
+        for _, artifact_path, artifact_hash in rows:
+            assert artifact_path is not None
+            path = Path(artifact_path)
+            assert path.is_file()
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == artifact_hash
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
