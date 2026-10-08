@@ -694,6 +694,67 @@ def test_cycle_event_terminal_state_is_idempotent_but_not_rewritable(tmp_path: P
         conn.close()
 
 
+def test_cycle_start_rejects_divergent_status_replay(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn, run_id="start-status-replay", started_at=FIXED_TIMESTAMP, status="running"
+        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="start-status-replay",
+                started_at=FIXED_TIMESTAMP,
+                status="failed",
+                cycle_event_id=event_id,
+            )
+        cycle_evidence_ledger.record_cycle_event_finish(
+            conn, cycle_event_id=event_id, status="failed", ended_at=FIXED_TIMESTAMP
+        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="start-status-replay",
+                started_at=FIXED_TIMESTAMP,
+                status="completed",
+                cycle_event_id=event_id,
+            )
+    finally:
+        conn.close()
+
+
+def test_manifest_finalization_accepts_existing_open_cycle(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    manifest_path = tmp_path / "topic-cycle-run.json"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="finalize-open-cycle",
+            started_at=FIXED_TIMESTAMP,
+            status="running",
+            topic_cycle_manifest_path=str(manifest_path),
+            error_count=1,
+            metadata={"schema_version": None},
+        )
+        manifest = {
+            "run_id": "finalize-open-cycle",
+            "started_at": FIXED_TIMESTAMP,
+            "ended_at": FIXED_TIMESTAMP,
+            "status": "failed",
+            "stages": [],
+            "cycle_evidence_ledger": {"cycle_event_id": event_id},
+        }
+        with conn:
+            assert cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn, manifest=manifest, manifest_path=manifest_path
+            ) == event_id
+        assert cycle_evidence_ledger.load_cycle_event(conn, event_id)["status"] == "failed"
+    finally:
+        conn.close()
+
+
 def test_cycle_stage_terminal_state_is_idempotent_but_not_rewritable(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -750,7 +811,7 @@ def test_cycle_stage_terminal_state_is_idempotent_but_not_rewritable(tmp_path: P
         conn.close()
 
 
-def test_cycle_event_start_replay_ignores_status_transition(
+def test_cycle_event_start_replay_rejects_terminal_status_mismatch(
     tmp_path: Path,
 ) -> None:
     db_path = init_db(tmp_path)
@@ -768,22 +829,23 @@ def test_cycle_event_start_replay_ignores_status_transition(
             started_at="2026-06-01T00:00:00Z",
             status="completed",
         )
-        second_id = cycle_evidence_ledger.record_cycle_event_start(
-            conn,
-            run_id="run-force-rerun",
-            workspace_id="fixture_workspace",
-            workspace_ref=str(tmp_path / "workspace"),
-            subject_key="fixture_subject",
-            domain_pack_id="general.v1",
-            cycle_depth=1,
-            mode="local",
-            started_at="2026-06-01T00:00:00Z",
-            status="failed",
-        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-force-rerun",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at="2026-06-01T00:00:00Z",
+                status="failed",
+            )
     finally:
         conn.close()
 
-    assert first_id == second_id
+    assert first_id is not None
 
 
 def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Path) -> None:

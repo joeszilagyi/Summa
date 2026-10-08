@@ -513,6 +513,7 @@ def record_cycle_event_start(
     error_count: int = 0,
     metadata: Mapping[str, object] | None = None,
     cycle_event_id: str | None = None,
+    _allow_terminal_transition: bool = False,
 ) -> str:
     run_id_text = _require_nonblank(run_id, "run_id")
     started = started_at or now_rfc3339()
@@ -562,12 +563,22 @@ def record_cycle_event_start(
             "SELECT * FROM cycle_event WHERE cycle_event_id=?",
             (event_id,),
         ).fetchone()
+        # Manifest finalization may find the still-open event it is about to finish.
+        allow_status_difference = (
+            _allow_terminal_transition
+            and existing_row is not None
+            and existing_row["status"] in CYCLE_OPEN_STATUSES
+            and expected["status"] not in CYCLE_OPEN_STATUSES
+        )
         _assert_append_only_replay_compatible(
             "cycle_event",
             f"cycle_event_id={event_id}",
             existing_row,
             expected,
-            ignore=frozenset({"record_last_updated", "status", "row_count_delta_json"}),
+            ignore=frozenset(
+                {"record_last_updated", "row_count_delta_json"}
+                | ({"status"} if allow_status_difference else set())
+            ),
         )
         return str(existing_row["cycle_event_id"])
     return str(row[0])
@@ -1812,6 +1823,7 @@ def record_topic_cycle_manifest(
         error_count=error_count,
         metadata={"schema_version": manifest.get("schema_version")},
         cycle_event_id=cycle_event_id,
+        _allow_terminal_transition=True,
     )
     artifact_schema_ids = _collect_artifact_schema_ids(stages)
     stage_ids: dict[str, str] = {}
