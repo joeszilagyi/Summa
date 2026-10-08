@@ -1626,9 +1626,8 @@ def evaluate_temporal_relation_constraint(
                         object_role="subject",
                     )
     elif predicate == "met":
-        comparable_pairs = (
-            bool(subject_facts.birth_years and object_facts.death_years)
-            or bool(object_facts.birth_years and subject_facts.death_years)
+        comparable_pairs = bool(subject_facts.birth_years and object_facts.death_years) or bool(
+            object_facts.birth_years and subject_facts.death_years
         )
         seen_death_claim_ids: set[int] = set()
         for births, deaths, birth_role, death_role in (
