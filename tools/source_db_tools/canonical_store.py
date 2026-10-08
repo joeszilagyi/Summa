@@ -1174,7 +1174,7 @@ def _lookup_row(
         else:
             clauses.append(f"{column}=?")
             params.append(value)
-    query = f"SELECT * FROM {table} WHERE {' AND '.join(clauses)} LIMIT 1"
+    query = f"SELECT * FROM {table} WHERE {' AND '.join(clauses)} ORDER BY {pk_column} LIMIT 1"
     return conn.execute(query, tuple(params)).fetchone()
 
 
