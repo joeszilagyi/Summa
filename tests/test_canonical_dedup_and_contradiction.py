@@ -1462,6 +1462,52 @@ def test_authority_reconciliation_replay_preserves_monotonic_timestamps(tmp_path
     assert row["review_state"] == "approved"
 
 
+def test_null_workspace_claims_do_not_compare_against_other_workspaces(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="pytest",
+                object_id="null-workspace-contradictions",
+                event_type="fixture_ingest",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            claim_ids = []
+            for workspace_id, year in ((None, 1940), ("workspace-a", 1950), ("workspace-b", 1930)):
+                claim = canonical_store.record_source_claim(
+                    conn,
+                    claim_text=json.dumps({"year": year}),
+                    provenance_event_ref=provenance.event_key,
+                    about_object_ref="authority:shared-person",
+                    claim_type="birth_year",
+                    workspace_id=workspace_id,
+                    created_at=FIXED_TIMESTAMP,
+                )
+                claim_ids.append(claim.row_id)
+            for claim_id in claim_ids:
+                results = canonical_reconciliation.detect_structured_contradictions_for_claim(
+                    conn,
+                    source_claim_id=claim_id,
+                    provenance_event_ref=provenance.event_key,
+                    changed_at=FIXED_TIMESTAMP,
+                )
+                assert results == []
+            endpoint_facts = canonical_reconciliation.load_relationship_endpoint_facts(
+                conn, object_ref="authority:shared-person", workspace_id=None
+            )
+            assert [fact.year for fact in endpoint_facts.birth_years] == [1940]
+        contradiction_count = conn.execute(
+            "SELECT COUNT(*) FROM source_relationship WHERE predicate='contradicts'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert contradiction_count == 0
+
+
 def test_structured_taught_by_impossibility_creates_contradiction_and_review_history(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     contradiction_batch = build_batch(

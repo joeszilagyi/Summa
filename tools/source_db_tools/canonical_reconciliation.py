@@ -1234,27 +1234,16 @@ def _claims_for_ref_and_type(
         placeholders = ", ".join("?" for _ in excluded_review_states)
         exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({placeholders})"
         params.extend([canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE, *excluded_review_states])
-    if workspace_id is None:
-        rows = conn.execute(
-            f"""
-            SELECT *
-            FROM source_claim
-            WHERE about_object_ref=? AND claim_type=?{exclusion_clause}
-            ORDER BY source_claim_id
-            """,
-            tuple(params),
-        ).fetchall()
-    else:
-        params.append(workspace_id)
-        rows = conn.execute(
-            f"""
-            SELECT *
-            FROM source_claim
-            WHERE about_object_ref=? AND claim_type=?{exclusion_clause} AND workspace_id=?
-            ORDER BY source_claim_id
-            """,
-            tuple(params),
-        ).fetchall()
+    params.append(workspace_id)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM source_claim
+        WHERE about_object_ref=? AND claim_type=?{exclusion_clause} AND workspace_id IS ?
+        ORDER BY source_claim_id
+        """,
+        tuple(params),
+    ).fetchall()
     return list(rows)
 
 
@@ -1279,9 +1268,8 @@ def _claim_rows_for_work_items(
             "claim_type=?",
         ]
         params: list[Any] = [provenance_event_ref, about_object_ref, claim_type]
-        if workspace_id is not None:
-            clauses.append("workspace_id=?")
-            params.append(workspace_id)
+        clauses.append("workspace_id IS ?")
+        params.append(workspace_id)
         rows.extend(
             conn.execute(
                 f"""
@@ -1322,9 +1310,8 @@ def _relationship_rows_for_work_items(
         else:
             clauses.append("to_object_ref=?")
             params.append(to_object_ref)
-        if workspace_id is not None:
-            clauses.append("workspace_id=?")
-            params.append(workspace_id)
+        clauses.append("workspace_id IS ?")
+        params.append(workspace_id)
         rows.extend(
             conn.execute(
                 f"""
@@ -1387,16 +1374,13 @@ def _claims_for_ref_and_types(
         exclusion_clause = f" AND COALESCE(review_state, ?) NOT IN ({exclusion_placeholders})"
         params.append(canonical_store.DEFAULT_SOURCE_CLAIM_REVIEW_STATE)
         params.extend(excluded_review_states)
-    workspace_clause = ""
-    if workspace_id is not None:
-        workspace_clause = " AND workspace_id=?"
-        params.append(workspace_id)
+    params.append(workspace_id)
     return list(
         conn.execute(
             f"""
             SELECT *
             FROM source_claim
-            WHERE about_object_ref=? AND claim_type IN ({placeholders}){exclusion_clause}{workspace_clause}
+            WHERE about_object_ref=? AND claim_type IN ({placeholders}){exclusion_clause} AND workspace_id IS ?
             ORDER BY source_claim_id
             """,
             tuple(params),
