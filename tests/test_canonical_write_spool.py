@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.common import atomic_write
 from tools.scripts import ingest_gather_candidate_batch as ingest_batch_script
 from tools.scripts import replay_canonical_write_spool as replay_script
 from tools.source_db_tools import canonical_store, canonical_write_spool
@@ -134,6 +135,32 @@ def test_spool_record_validation() -> None:
         canonical_write_spool.CanonicalWriteSpoolError, match="invalid replay status"
     ):
         canonical_write_spool.validate_spool_record(invalid_status)
+
+
+def test_spool_write_fsyncs_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool_dir = tmp_path / "spool"
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={"artifact_refs": []},
+        replay_recipe={},
+        failure="database is locked",
+        canonical_db_path=tmp_path / "canonical.sqlite",
+        spool_dir=spool_dir,
+        originating_tool="pytest",
+        created_at=FIXED_TIMESTAMP,
+    )
+    fsynced: list[Path] = []
+    monkeypatch.setattr(atomic_write, "_fsync_directory", fsynced.append)
+
+    path = canonical_write_spool.write_spool_record(spool_dir, record)
+
+    assert fsynced == [path.parent]
+    assert (
+        canonical_write_spool.load_spool_record(path)["spool_record_id"]
+        == record["spool_record_id"]
+    )
 
 
 def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
@@ -351,24 +378,11 @@ def test_replay_candidate_batch_from_single_record_file(tmp_path: Path) -> None:
         ],
     )
     assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
-    record_path, record = first_spool_record(tmp_path / "spool")
+    record_path, _record = first_spool_record(tmp_path / "spool")
 
     single_record = nested / "single-spool-record.json"
-    single_record.write_text(
-        json.dumps(
-            {**record, "spool_path": str(single_record), "spool_record_checksum": ""},
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    single_payload = json.loads(single_record.read_text(encoding="utf-8"))
-    single_payload["spool_record_checksum"] = canonical_write_spool.record_checksum(single_payload)
-    single_record.write_text(
-        json.dumps(single_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    record_path.unlink()
+    record_path.replace(single_record)
+    assert canonical_write_spool.load_spool_record(single_record)["spool_path"] == str(record_path)
 
     db_path = bootstrap_db(tmp_path)
     replay_proc = run_script(
