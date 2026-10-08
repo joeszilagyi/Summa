@@ -353,6 +353,105 @@ def test_authority_merge_pair_guard_preserves_legacy_duplicates_on_upgrade(
         conn.close()
 
 
+def test_authority_candidate_ref_guard_rejects_dangling_direct_sql(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, created_at, record_last_updated
+                ) VALUES (1, 'authority:first', 'person', 'Authority', ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_id, created_at, updated_at,
+                    record_last_updated
+                ) VALUES ('reconciliation:valid', 'authority_record', '1', 'Authority',
+                          1, ?, ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="candidate_authority_id does not resolve"):
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_id, created_at, updated_at,
+                    record_last_updated
+                ) VALUES ('reconciliation:bad', 'authority_record', '999', 'Authority',
+                          999, ?, ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="candidate_authority_id does not resolve"):
+            conn.execute(
+                "UPDATE authority_reconciliation SET candidate_authority_id=999 "
+                "WHERE reconciliation_key_v1='reconciliation:valid'"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="referenced by candidate_authority_id"):
+            conn.execute("DELETE FROM authority_record WHERE authority_record_id=1")
+        with pytest.raises(sqlite3.IntegrityError, match="referenced by candidate_authority_id"):
+            conn.execute(
+                "UPDATE authority_record SET authority_record_id=2 WHERE authority_record_id=1"
+            )
+    finally:
+        conn.close()
+
+
+def test_authority_candidate_ref_guard_preserves_legacy_dangling_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        target_version=19,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_id, created_at, updated_at,
+                    record_last_updated
+                ) VALUES ('reconciliation:legacy', 'authority_record', '999',
+                          'Authority', 999, ?, ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(
+        db_path, applied_at=FIXED_TIMESTAMP, applied_by="pytest"
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert conn.execute(
+            "SELECT candidate_authority_id FROM authority_reconciliation "
+            "WHERE reconciliation_key_v1='reconciliation:legacy'"
+        ).fetchone()[0] == 999
+        with pytest.raises(sqlite3.IntegrityError, match="candidate_authority_id does not resolve"):
+            conn.execute(
+                "UPDATE authority_reconciliation SET candidate_authority_id=999 "
+                "WHERE reconciliation_key_v1='reconciliation:legacy'"
+            )
+        conn.execute(
+            "UPDATE authority_reconciliation SET candidate_authority_id=NULL "
+            "WHERE reconciliation_key_v1='reconciliation:legacy'"
+        )
+    finally:
+        conn.close()
+
+
 def test_connect_canonical_store_can_opt_into_rollback_journal_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "rollback.sqlite"
     conn = canonical_store.connect_canonical_store(db_path, journal_mode="DELETE")
@@ -531,6 +630,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
         "0019_authority_merge_pair_guard",
+        "0020_authority_candidate_ref_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -595,6 +695,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
         "0019_authority_merge_pair_guard",
+        "0020_authority_candidate_ref_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -719,6 +820,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
         "0019_authority_merge_pair_guard",
+        "0020_authority_candidate_ref_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
