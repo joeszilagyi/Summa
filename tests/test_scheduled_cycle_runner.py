@@ -546,7 +546,7 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
                 "run_id": "prior-run",
                 "workspace_id": "blocked_subject",
                 "event_type": "command_failure",
-                "occurred_at": "2026-06-03T11:00:00Z",
+                "occurred_at": "2026-06-03T12:00:15Z",
                 "failure": {"message": "prior failure"},
             },
             sort_keys=True,
@@ -579,6 +579,96 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     assert payload["deferred_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "deferred"
     assert "max_attempts" in payload["workspace_results"][0]["failure_reason"]
+
+
+def test_scheduled_runner_does_not_charge_historical_attempts_to_new_plan(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "new_plan_subject")
+    selection = write_selection(
+        tmp_path,
+        [
+            planned_record(
+                workspace_id="new_plan_subject",
+                workspace=workspace,
+                manifest=manifest,
+                max_attempts=1,
+            )
+        ],
+    )
+    ledger_root = tmp_path / "ledgers"
+    ledger = ledger_root / "new_plan_subject.runtime-ledger.jsonl"
+    scheduled_runner.runtime_ledger.append_event(
+        ledger,
+        scheduled_runner.runtime_ledger.build_event(
+            workspace_id="new_plan_subject",
+            run_id="old-run",
+            event_type="command_failure",
+            occurred_at="2026-06-03T11:00:00Z",
+            failure={"message": "old failure"},
+        ),
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--cycle-runner",
+            str(write_fake_cycle_runner(tmp_path)),
+            "--ledger-root",
+            str(ledger_root),
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)["workspace_results"][0]
+    assert result["outcome"] == "completed"
+    assert result["attempt_number"] == 1
+    assert [
+        event["event_type"] for event in scheduled_runner.runtime_ledger.load_events(ledger)
+    ] == ["command_failure", "command_start", "command_end"]
+
+
+def test_terminal_attempt_count_uses_start_time_when_run_crosses_plan_boundary(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    for run_id, started_at, ended_at in (
+        ("old-run", "2026-06-03T11:59:00Z", "2026-06-03T12:01:00Z"),
+        ("current-run", "2026-06-03T12:02:00Z", "2026-06-03T12:03:00Z"),
+    ):
+        scheduled_runner.runtime_ledger.append_event(
+            ledger,
+            scheduled_runner.runtime_ledger.build_event(
+                workspace_id="subject",
+                run_id=run_id,
+                event_type="command_start",
+                occurred_at=started_at,
+            ),
+        )
+        scheduled_runner.runtime_ledger.append_event(
+            ledger,
+            scheduled_runner.runtime_ledger.build_event(
+                workspace_id="subject",
+                run_id=run_id,
+                event_type="command_end",
+                status="pass",
+                occurred_at=ended_at,
+            ),
+        )
+
+    assert (
+        scheduled_runner.terminal_attempt_count(
+            ledger, workspace_id="subject", planned_at="2026-06-03T12:00:00Z"
+        )
+        == 1
+    )
 
 
 def test_read_runtime_ledger_rejects_truncated_final_line(tmp_path: Path) -> None:
