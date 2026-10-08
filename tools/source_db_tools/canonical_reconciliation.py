@@ -2053,7 +2053,6 @@ def _structured_contradictions_for_claim_group(
                                 source_run_id=source_run_id,
                             )
                         results.append(result)
-                        return results
     return results
 
 
