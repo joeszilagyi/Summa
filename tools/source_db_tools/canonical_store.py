@@ -283,7 +283,7 @@ DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE = 0.8
 GATHER_PRIOR_STATE_SOURCE_NAMESPACE = "topic_subject"
 PRIOR_STATE_ESTABLISHED_REVIEW_STATES = frozenset({"accepted", "approved", "curated", "reviewed"})
 PRIOR_STATE_LEAD_REVIEW_STATES = frozenset(
-    {"machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
+    {"ambiguous", "machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
 )
 PRIOR_STATE_EXCLUDED_REVIEW_STATES = frozenset({"demoted", "deprecated", "rejected"})
 RECOGNIZED_INGEST_EVENT_TYPES = frozenset(
@@ -1195,6 +1195,7 @@ def _is_open_question_claim(claim_text: str, claim_type: str | None) -> bool:
 def _pending_review_state(state: str | None) -> bool:
     return (state or "") in {
         "",
+        "ambiguous",
         "machine_extracted",
         "needs_review",
         "proposed",
