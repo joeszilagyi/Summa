@@ -699,7 +699,9 @@ def record_cycle_stage_finish(
             f"cycle_stage_event finish target not found: stage_event_id={stage_event_id}"
         )
     started_at_value = _optional_text(existing_row["started_at"])
-    finished_at_value = ended_at if ended_at is not None or status == "skipped" else now
+    finished_at_value = (
+        ended_at if ended_at is not None or status in {"skipped", "not_reached"} else now
+    )
     if started_at_value is not None and finished_at_value is not None:
         started = _parse_rfc3339_timestamp(started_at_value, "started_at")
         finished = _parse_rfc3339_timestamp(finished_at_value, "ended_at")

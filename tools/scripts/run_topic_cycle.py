@@ -458,6 +458,33 @@ def build_stage_plan(
     return stages
 
 
+def materialize_unreached_stages(manifest: dict[str, Any]) -> None:
+    """Retain planned obligations after an upstream cycle failure."""
+    if manifest.get("status") != "failed":
+        return
+    blocker = str(manifest.get("failure_stage") or "cycle_setup")
+    reason = f"blocked_by:{blocker}"
+    recorded_names = {stage["name"] for stage in manifest["stages"]}
+    for name in manifest["stage_plan"]:
+        if name in recorded_names:
+            continue
+        required = name not in {"feedback_plan_pre", "feedback_plan_post", "graph_closure_audit"}
+        if manifest.get("mode") == "dry-run" and name in {
+            "ingest_candidate_batch",
+            "ingest_execution_artifacts",
+            "build_feedback_plan_post",
+        }:
+            required = False
+        add_stage(
+            manifest,
+            StageRecord(name=name, required=required, status="not_reached", skipped_reason=reason),
+        )
+    graph = manifest.get("graph_closure")
+    if isinstance(graph, dict) and graph.get("status") == "pending":
+        graph["status"] = "not_reached"
+        graph["blocked_reason"] = reason
+
+
 def attach_feedback_selection_explanation(
     manifest: dict[str, Any],
     *,
@@ -1938,6 +1965,7 @@ def run_topic_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 manifest["status"] = "degraded"
             else:
                 manifest["status"] = "completed"
+        materialize_unreached_stages(manifest)
         ledger = manifest.get("cycle_evidence_ledger")
         if isinstance(ledger, dict):
             ledger["status"] = "skipped" if args.mode == "dry-run" else "recorded"
