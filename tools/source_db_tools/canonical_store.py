@@ -1989,32 +1989,61 @@ def record_source_claim(
         "source_claim_id",
         int(existing["source_claim_id"]),
         {
-            "about_object_ref": _first_present(
-                about_object_ref_value,
-                existing["about_object_ref"],
+            "about_object_ref": (
+                existing["about_object_ref"]
+                if preserve_established_envelope
+                else _first_present(about_object_ref_value, existing["about_object_ref"])
             ),
             "claim_text": claim_text_update_value,
-            "public_summary": _first_present(
-                _optional_nonblank(public_summary, "public_summary"),
-                existing["public_summary"],
+            "public_summary": (
+                existing["public_summary"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(public_summary, "public_summary"),
+                    existing["public_summary"],
+                )
             ),
-            "claim_type": _first_present(
-                _optional_nonblank(claim_type, "claim_type"), existing["claim_type"]
+            "claim_type": (
+                existing["claim_type"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(claim_type, "claim_type"), existing["claim_type"]
+                )
             ),
             "review_state": merged_review_state,
             "publication_state": claim_publication_state_value,
             "authority_level": claim_authority_level_value,
             "public_blocker": claim_public_blocker_value,
-            "workspace_id": _first_present(workspace_id_value, existing["workspace_id"]),
-            "is_open_question": max(int(existing["is_open_question"] or 0), is_open_question_value),
+            "workspace_id": (
+                existing["workspace_id"]
+                if preserve_established_envelope
+                else _first_present(workspace_id_value, existing["workspace_id"])
+            ),
+            "is_open_question": (
+                existing["is_open_question"]
+                if preserve_established_envelope
+                else max(int(existing["is_open_question"] or 0), is_open_question_value)
+            ),
             "confidence_score": claim_confidence_value,
             "provenance_event_ref": claim_provenance_value,
-            "evidence_locator_ref": _first_present(
-                _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
-                existing["evidence_locator_ref"],
+            "evidence_locator_ref": (
+                existing["evidence_locator_ref"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
+                    existing["evidence_locator_ref"],
+                )
             ),
-            "capture_event_id": _first_present(capture_event_id, existing["capture_event_id"]),
-            "extraction_id": _first_present(extraction_id, existing["extraction_id"]),
+            "capture_event_id": (
+                existing["capture_event_id"]
+                if preserve_established_envelope
+                else _first_present(capture_event_id, existing["capture_event_id"])
+            ),
+            "extraction_id": (
+                existing["extraction_id"]
+                if preserve_established_envelope
+                else _first_present(extraction_id, existing["extraction_id"])
+            ),
             "created_at": _first_present(existing["created_at"], created_at_value),
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
