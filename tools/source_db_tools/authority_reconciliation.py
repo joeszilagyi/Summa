@@ -274,8 +274,22 @@ def create_local_authority(
           review_state, confidence_score, created_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(authority_key_v1) DO UPDATE SET
-          review_state=excluded.review_state,
-          confidence_score=COALESCE(excluded.confidence_score, authority_record.confidence_score),
+          review_state=CASE
+            WHEN authority_record.review_state IN ('accepted', 'approved', 'curated', 'reviewed')
+             AND excluded.review_state IN (
+               'accepted', 'approved', 'curated', 'reviewed', 'machine_extracted',
+               'needs_review', 'proposed', 'recorded', 'unreviewed'
+             ) THEN authority_record.review_state
+            ELSE excluded.review_state
+          END,
+          confidence_score=CASE
+            WHEN authority_record.review_state IN ('accepted', 'approved', 'curated', 'reviewed')
+             AND excluded.review_state IN (
+               'accepted', 'approved', 'curated', 'reviewed', 'machine_extracted',
+               'needs_review', 'proposed', 'recorded', 'unreviewed'
+             ) THEN authority_record.confidence_score
+            ELSE COALESCE(excluded.confidence_score, authority_record.confidence_score)
+          END,
           record_last_updated=excluded.record_last_updated
         """,
         (
