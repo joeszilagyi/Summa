@@ -284,6 +284,59 @@ def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> N
     assert any(issue["status"] == "unresolved_tracked" for issue in report["issues"])
 
 
+def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="reconciliation-authority-ref",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:reconciliation-authority-ref",
+            )
+            work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:reconciliation-target",
+                provenance_event_ref=provenance.event_key,
+                title="Valid target",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_record_id, candidate_authority_id,
+                    accepted_authority_id, created_at, updated_at, record_last_updated
+                ) VALUES (?, 'work', ?, 'Candidate', 999, 998, 997, ?, ?, ?)
+                """,
+                (
+                    "authrec:missing-authority-refs",
+                    str(work.row_id),
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+        conn.execute("PRAGMA foreign_keys=ON")
+        issues = canonical_graph_closure.audit_authority_reconciliation(conn)
+    finally:
+        conn.close()
+
+    assert len(issues) == 1
+    assert issues[0]["status"] == "true_orphan_error"
+    assert "candidate_authority_record_id" in issues[0]["message"]
+    assert "candidate_authority_id" in issues[0]["message"]
+    assert "accepted_authority_id" in issues[0]["message"]
+
+
 def test_targetless_relationship_is_not_treated_as_closed(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
