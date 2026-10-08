@@ -606,6 +606,15 @@ def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
                 merged_by="operator",
                 merged_at="2026-06-07T00:00:00Z",
             )
+            changed_reason = canonical_reconciliation.record_authority_merge_event(
+                conn,
+                from_authority_record_id=loser_id,
+                into_authority_record_id=winner_id,
+                merge_reason="duplicate_merge_attempt",
+                evidence_note="same pair with another reason",
+                merged_by="operator",
+                merged_at="2026-06-08T00:00:00Z",
+            )
             loser = conn.execute(
                 """
                 SELECT merged_into_authority_record_id, reconciliation_status, record_last_updated
@@ -629,6 +638,9 @@ def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
     assert first.created is True
     assert second.created is False
     assert first.row_id == second.row_id
+    assert changed_reason.created is False
+    assert changed_reason.row_id == first.row_id
+    assert changed_reason.key == first.key
     assert loser["merged_into_authority_record_id"] == winner_id
     assert loser["reconciliation_status"] == "merged"
     assert loser["record_last_updated"] == FIXED_TIMESTAMP
