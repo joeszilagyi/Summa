@@ -337,8 +337,22 @@ def add_authority_identifier(
           validity_status=excluded.validity_status,
           validation_warning=excluded.validation_warning,
           is_primary=excluded.is_primary,
-          confidence_score=COALESCE(excluded.confidence_score, authority_identifier.confidence_score),
-          review_state=COALESCE(excluded.review_state, authority_identifier.review_state),
+          confidence_score=CASE
+            WHEN authority_identifier.review_state IN ('accepted', 'approved', 'curated', 'reviewed')
+             AND excluded.review_state IN (
+               'accepted', 'approved', 'curated', 'reviewed', 'machine_extracted',
+               'needs_review', 'proposed', 'recorded', 'unreviewed'
+             ) THEN authority_identifier.confidence_score
+            ELSE COALESCE(excluded.confidence_score, authority_identifier.confidence_score)
+          END,
+          review_state=CASE
+            WHEN authority_identifier.review_state IN ('accepted', 'approved', 'curated', 'reviewed')
+             AND excluded.review_state IN (
+               'accepted', 'approved', 'curated', 'reviewed', 'machine_extracted',
+               'needs_review', 'proposed', 'recorded', 'unreviewed'
+             ) THEN authority_identifier.review_state
+            ELSE COALESCE(excluded.review_state, authority_identifier.review_state)
+          END,
           last_verified_at=excluded.last_verified_at,
           record_last_updated=excluded.record_last_updated
         """,
