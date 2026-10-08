@@ -61,6 +61,15 @@ def ledger_metadata_path(ledger_path: Path) -> Path:
     return ledger_path.with_name(ledger_path.name + ".meta.json")
 
 
+def has_terminated_final_line(ledger_path: Path) -> bool:
+    """A nonempty JSONL file must end at a record boundary before appending."""
+    if not ledger_path.exists() or ledger_path.stat().st_size == 0:
+        return True
+    with ledger_path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        return handle.read(1) == b"\n"
+
+
 def build_event(
     *,
     workspace_id: str,
@@ -128,8 +137,17 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
         )
     except ValueError as exc:
         raise RuntimeLedgerError("runtime-ledger event contains non-standard JSON") from exc
+    separator = ""
+    if not has_terminated_final_line(ledger_path):
+        try:
+            load_events(ledger_path)
+        except RuntimeLedgerError as exc:
+            raise RuntimeLedgerError(
+                f"runtime ledger {ledger_path} has a torn final line; refusing to append: {exc}"
+            ) from exc
+        separator = "\n"
     with ledger_path.open("a", encoding="utf-8") as handle:
-        handle.write(line)
+        handle.write(separator + line)
         handle.flush()
     metadata_path = ledger_metadata_path(ledger_path)
     if metadata_path.is_file():
@@ -157,22 +175,31 @@ def append_event(ledger_path: Path, event: dict[str, Any]) -> None:
 
 
 def load_events(ledger_path: Path) -> list[dict[str, Any]]:
-    has_trailing_newline = False
-    if ledger_path.exists() and ledger_path.stat().st_size > 0:
-        with ledger_path.open("rb") as handle:
-            handle.seek(-1, os.SEEK_END)
-            has_trailing_newline = handle.read(1) == b"\n"
     events: list[dict[str, Any]] = []
-    with ledger_path.open("r", encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
+    with ledger_path.open("rb") as handle:
+        for line_number, raw_bytes in enumerate(handle, start=1):
+            try:
+                raw_line = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                if not raw_bytes.endswith(b"\n"):
+                    raise RuntimeLedgerError(
+                        f"runtime ledger {ledger_path} contains incomplete final UTF-8 on line "
+                        f"{line_number}; {len(events)} earlier valid event(s) remain on disk"
+                    ) from exc
+                raise RuntimeLedgerError(
+                    f"runtime ledger {ledger_path} contains invalid UTF-8 on line {line_number}"
+                ) from exc
             line = raw_line.strip()
             if not line:
                 continue
             try:
                 payload = json.loads(line, parse_constant=reject_json_constant)
             except json.JSONDecodeError as exc:
-                if (not has_trailing_newline) and not raw_line.endswith("\n"):
-                    break
+                if not raw_bytes.endswith(b"\n"):
+                    raise RuntimeLedgerError(
+                        f"runtime ledger {ledger_path} contains incomplete final JSON on line "
+                        f"{line_number}; {len(events)} earlier valid event(s) remain on disk"
+                    ) from exc
                 raise RuntimeLedgerError(
                     f"runtime ledger {ledger_path} contains invalid JSON on line {line_number}"
                 ) from exc

@@ -581,7 +581,7 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     assert "max_attempts" in payload["workspace_results"][0]["failure_reason"]
 
 
-def test_read_runtime_ledger_ignores_truncated_final_line(tmp_path: Path) -> None:
+def test_read_runtime_ledger_rejects_truncated_final_line(tmp_path: Path) -> None:
     ledger = tmp_path / "ledgers" / "workspace.runtime-ledger.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(
@@ -605,9 +605,60 @@ def test_read_runtime_ledger_ignores_truncated_final_line(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    events = scheduler_failure_reconciliation.read_runtime_ledger(ledger, workspace_id="workspace")
+    with pytest.raises(
+        scheduler_failure_reconciliation.SchedulerFailureReconciliationError,
+        match="incomplete final JSON on line 2",
+    ):
+        scheduler_failure_reconciliation.read_runtime_ledger(ledger, workspace_id="workspace")
 
-    assert [event["event_id"] for event in events] == ["event-1"]
+
+def test_scheduled_runner_reports_torn_ledger_before_running_cycle(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "subject")
+    selection = write_selection(
+        tmp_path,
+        [planned_record(workspace_id="subject", workspace=workspace, manifest=manifest)],
+    )
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    ledger_root = tmp_path / "ledgers"
+    ledger_root.mkdir()
+    ledger_path = ledger_root / "subject.runtime-ledger.jsonl"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime-ledger.v1",
+                "event_id": "event-1",
+                "run_id": "run-1",
+                "workspace_id": "subject",
+                "event_type": "command_end",
+                "occurred_at": "2026-06-03T12:00:00Z",
+                "status": "ok",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+        + '{"event_id": "torn"',
+        encoding="utf-8",
+    )
+    original_bytes = ledger_path.read_bytes()
+
+    proc = run_scheduled(
+        [
+            "--selection",
+            str(selection),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(tmp_path / "scheduled-run"),
+            "--ledger-root",
+            str(ledger_root),
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "incomplete final JSON on line 2" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert ledger_path.read_bytes() == original_bytes
 
 
 def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Path) -> None:

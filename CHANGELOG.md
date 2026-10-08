@@ -32,6 +32,9 @@ concrete tracked surfaces or tools rather than only the changelog itself.
   capture, extraction, relationship, and provenance projections. Migration
   0010 backfills existing rows and trigger-captures subsequent field changes,
   including direct SQL updates, without disturbing stable IDs.
+- Made runtime-ledger reads fail visibly on an incomplete final JSONL event,
+  preserving the valid prefix on disk and refusing further appends until the
+  torn tail is inspected. Scheduler errors now report the affected line.
 
 ### Added
 

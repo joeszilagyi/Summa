@@ -55,7 +55,9 @@ def read_runtime_ledger(path: Path, *, workspace_id: str) -> list[dict[str, Any]
     try:
         loaded_events = load_runtime_events(path)
     except (OSError, RuntimeLedgerError) as exc:
-        raise SchedulerFailureReconciliationError(f"could not read runtime ledger {path}") from exc
+        raise SchedulerFailureReconciliationError(
+            f"could not read runtime ledger {path}: {exc}"
+        ) from exc
 
     events: list[dict[str, Any]] = []
     for line_number, payload in enumerate(loaded_events, start=1):
