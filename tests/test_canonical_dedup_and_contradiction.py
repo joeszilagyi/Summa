@@ -1540,6 +1540,69 @@ def test_structured_taught_by_impossibility_creates_contradiction_and_review_his
     assert {"accepted", "verified"} & {row["review_state"] for row in claims} == set()
 
 
+def test_structured_taught_by_records_every_impossible_death_claim(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:birth",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:student",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.one",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:teacher",
+                    "year": 1930,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.two",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:teacher",
+                    "year": 1938,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:taught-by",
+                payload={
+                    "claim_type": "taught_by",
+                    "about_object_ref": "authority:student",
+                    "from_object_ref": "authority:student",
+                    "to_object_ref": "authority:teacher",
+                    "predicate": "taught_by",
+                },
+            ),
+        ],
+        run_id="gather-all-taught-by-contradictions",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="multiple-deaths.json", db_path=db_path)
+        rows = conn.execute(
+            """
+            SELECT to_object_ref, evidence_note FROM source_relationship
+            WHERE predicate='contradicts'
+              AND target_label='structured_taught_by_impossible_life_overlap'
+            ORDER BY to_object_ref
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 2
+    assert len({row["to_object_ref"] for row in rows}) == 2
+    assert any("death year 1930" in row["evidence_note"] for row in rows)
+    assert any("death year 1938" in row["evidence_note"] for row in rows)
+
+
 def test_relational_taught_by_lifespan_impossibility_flags_relationship_without_deleting_facts(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(
