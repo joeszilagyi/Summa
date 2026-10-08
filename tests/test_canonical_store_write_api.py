@@ -54,6 +54,24 @@ class SourceAccessIntegrityProxy:
         return self._conn.execute(sql, params)
 
 
+def test_generic_lookup_chooses_lowest_id_when_criteria_match_multiple_rows() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("CREATE TABLE lookup_fixture (id TEXT, criterion TEXT)")
+        conn.executemany(
+            "INSERT INTO lookup_fixture (id, criterion) VALUES (?, ?)",
+            [("z-later", "same"), ("a-earlier", "same")],
+        )
+        row = canonical_store._lookup_row(  # type: ignore[attr-defined]
+            conn, "lookup_fixture", "id", {"criterion": "same"}
+        )
+        assert row is not None
+        assert row["id"] == "a-earlier"
+    finally:
+        conn.close()
+
+
 def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
