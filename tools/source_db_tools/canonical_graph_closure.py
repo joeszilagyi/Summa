@@ -128,16 +128,16 @@ class GraphClosureLookup:
         self._provenance_keys: set[str] | None = None
 
     def provenance_exists(self, key: Any) -> bool:
-        text = _text(key)
-        if text is None:
+        provenance_key = _text(key)
+        if provenance_key is None:
             return False
         if self._provenance_keys is None:
             self._provenance_keys = {
-                text
+                loaded_key
                 for row in self.conn.execute("SELECT provenance_event_key_v1 FROM provenance_event")
-                if (text := _text(row[0])) is not None
+                if (loaded_key := _text(row[0])) is not None
             }
-        return text in self._provenance_keys
+        return provenance_key in self._provenance_keys
 
     def object_ref_exists(self, object_ref: str | None) -> bool:
         text = _text(object_ref)
@@ -292,6 +292,13 @@ def audit_source_access(
     lookup = lookup or GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM source_access ORDER BY source_access_id"):
+        if row["provenance_event_ref"] is not None:
+            _provenance_key, invalid = _provenance_issue(
+                lookup, row, "source_access", "source_access_id"
+            )
+            if invalid is not None:
+                issues.append(invalid)
+                continue
         if row["work_id"] is not None and not lookup.object_ref_exists(f"work:{row['work_id']}"):
             issues.append(
                 orphan_issue(
