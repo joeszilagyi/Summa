@@ -435,6 +435,85 @@ def test_record_authority_reconciliation_preserves_established_review_state_on_r
     assert row["evidence_context"] == "before"
 
 
+def test_reconciliation_separates_match_methods_without_duplicating_legacy_replay(
+    tmp_path,
+) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="authority-reconciliation-tests",
+                object_id="match-method-identity",
+                event_type="authority_reconciliation",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:match-method-identity",
+            )
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="match-method-identity",
+                created_at=FIXED_TIMESTAMP,
+            )
+            entity = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                entity_label="Jane Smith",
+                entity_type="person",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+            def record(match_method: str):
+                return canonical_reconciliation.record_authority_reconciliation(
+                    conn,
+                    detected_entity_id=entity.row_id,
+                    raw_label="Jane Smith",
+                    entity_type="person",
+                    candidate_authority_record_id=authority_id,
+                    method="candidate_match",
+                    match_method=match_method,
+                    confidence_score=0.8,
+                    evidence_context=f"Evidence for {match_method}",
+                    review_state="proposed",
+                    created_at=FIXED_TIMESTAMP,
+                )
+
+            baseline = record("exact_name")
+            legacy_key = canonical_store.stable_write_key(
+                "authrec", entity.row_id, authority_id, "candidate_match"
+            )
+            conn.execute(
+                "UPDATE authority_reconciliation SET reconciliation_key_v1=? "
+                "WHERE authority_reconciliation_id=?",
+                (legacy_key, baseline.row_id),
+            )
+            legacy_replay = record("exact_name")
+            different_method = record("authority_identifier")
+            different_replay = record("authority_identifier")
+            rows = conn.execute(
+                "SELECT reconciliation_key_v1, match_method FROM authority_reconciliation "
+                "ORDER BY authority_reconciliation_id"
+            ).fetchall()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert legacy_replay.created is False
+    assert legacy_replay.row_id == baseline.row_id
+    assert legacy_replay.key == legacy_key
+    assert different_method.created is True
+    assert different_method.row_id != baseline.row_id
+    assert different_replay.created is False
+    assert different_replay.row_id == different_method.row_id
+    assert [(row["reconciliation_key_v1"], row["match_method"]) for row in rows] == [
+        (legacy_key, "exact_name"),
+        (different_method.key, "authority_identifier"),
+    ]
+
+
 def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
     tmp_path,
 ) -> None:
