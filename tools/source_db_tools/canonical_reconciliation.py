@@ -870,16 +870,33 @@ def record_authority_reconciliation(
         detected_entity_id,
         candidate_authority_record_id,
         method,
+        match_method,
+    )
+    legacy_key = canonical_store.stable_write_key(
+        "authrec", detected_entity_id, candidate_authority_record_id, method
     )
     existing = conn.execute(
         """
         SELECT authority_reconciliation_id, review_state, confidence_score, match_score,
-               evidence_context, updated_at, record_last_updated
+               match_method, evidence_context, updated_at, record_last_updated
         FROM authority_reconciliation
         WHERE reconciliation_key_v1=?
         """,
         (reconciliation_key,),
     ).fetchone()
+    if existing is None:
+        legacy = conn.execute(
+            """
+            SELECT authority_reconciliation_id, review_state, confidence_score, match_score,
+                   match_method, evidence_context, updated_at, record_last_updated
+            FROM authority_reconciliation
+            WHERE reconciliation_key_v1=?
+            """,
+            (legacy_key,),
+        ).fetchone()
+        if legacy is not None and legacy["match_method"] == match_method:
+            existing = legacy
+            reconciliation_key = legacy_key
     if existing is None:
         cursor = conn.execute(
             """
