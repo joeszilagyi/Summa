@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "source_db_tools" / "sqlite_safety.py"
 
@@ -33,6 +35,48 @@ def read_marker(path: Path) -> str:
         return "" if row is None else str(row[0])
     finally:
         conn.close()
+
+
+def make_orphan_database(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))"
+        )
+        conn.execute("INSERT INTO child(id, parent_id) VALUES (1, 999)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("quick", [False, True])
+def test_integrity_check_rejects_foreign_key_orphans(tmp_path: Path, quick: bool) -> None:
+    db_path = tmp_path / "orphan.sqlite"
+    make_orphan_database(db_path)
+
+    result = sqlite_safety.run_check(db_path, quick=quick)
+
+    assert result["status"] == "fail"
+    assert any(
+        "foreign_key_check: table=child rowid=1 parent=parent" in message
+        for message in result["messages"]
+    )
+
+
+def test_backup_restore_and_profile_reject_foreign_key_orphans(tmp_path: Path) -> None:
+    db_path = tmp_path / "orphan.sqlite"
+    destination = tmp_path / "backup.sqlite"
+    make_orphan_database(db_path)
+
+    with pytest.raises(sqlite_safety.SQLiteSafetyError, match="foreign_key_check"):
+        sqlite_safety.backup_database(db_path, destination)
+
+    assert not destination.exists()
+    assert sqlite_safety.restore_verify(db_path)["status"] == "fail"
+    profile = sqlite_safety.profile(db_path)
+    assert profile["status"] == "fail"
+    assert profile["integrity"]["status"] == "fail"
 
 
 def test_backup_database_rejects_existing_destination_by_default(tmp_path: Path) -> None:
@@ -78,9 +122,7 @@ def test_backup_database_rejects_same_path(tmp_path: Path) -> None:
         raise AssertionError("expected same-path safety guard")
 
 
-def test_backup_database_uses_lock_context_manager_on_failure(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_backup_database_uses_lock_context_manager_on_failure(monkeypatch, tmp_path: Path) -> None:
     source_db = tmp_path / "source.sqlite"
     destination_db = tmp_path / "destination.sqlite"
     make_database(source_db, marker="source")

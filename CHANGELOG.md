@@ -26,6 +26,8 @@ concrete tracked surfaces or tools rather than only the changelog itself.
 - Allowed explicit reviewer decisions to reject or reopen established claims
   and relationships with human-attributed review history, while automatic
   contradiction reconciliation still cannot silently demote established rows.
+- Made SQLite integrity, backup, restore verification, and profile checks fail
+  on foreign-key orphans as well as physical database corruption.
 
 ### Added
 
