@@ -1403,6 +1403,7 @@ def _record_stage_artifacts(
     stage_event_id: str,
     stage: Mapping[str, Any],
     artifact_schema_ids: Mapping[str, str] | None = None,
+    manifest_dir: Path | None = None,
 ) -> None:
     artifacts = stage.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -1411,8 +1412,11 @@ def _record_stage_artifacts(
         if key.endswith("_sha256") or key == "mutated":
             continue
         artifact_hash: str | None = None
+        path: Path | None = None
         if isinstance(value, str) and value:
             path = Path(value)
+            if not path.is_absolute() and manifest_dir is not None:
+                path = manifest_dir / path
             hash_value = artifacts.get(f"{key}_sha256")
             artifact_hash = str(hash_value) if isinstance(hash_value, str) else None
             if artifact_hash is None:
@@ -1433,7 +1437,7 @@ def _record_stage_artifacts(
             artifact_type=key,
             artifact_path=value if isinstance(value, str) else json.dumps(value, sort_keys=True),
             artifact_hash=artifact_hash,
-            byte_count=_file_size(Path(value)) if isinstance(value, str) else None,
+            byte_count=_file_size(path) if path is not None else None,
             public_safe=False,
             schema_id=schema_id,
             validation_status=_optional_text((stage.get("validation") or {}).get("status"))
@@ -1695,6 +1699,7 @@ def record_topic_cycle_manifest(
             stage_event_id=stage_id,
             stage=raw_stage,
             artifact_schema_ids=artifact_schema_ids,
+            manifest_dir=manifest_path.parent,
         )
         candidate_batch_payload = _stage_evidence_payload(raw_stage, "candidate_batch")
         if candidate_batch_payload is not None:
