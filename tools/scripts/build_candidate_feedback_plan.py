@@ -811,9 +811,7 @@ def load_source_access_leads(
     seen_work_refs: set[str] = set()
     source_access_requests: list[dict[str, Any]] = []
     for row in rows:
-        provenance = history_by_event_key.get(
-            str(row["source_access_provenance_event_ref"] or "")
-        )
+        provenance = history_by_event_key.get(str(row["source_access_provenance_event_ref"] or ""))
         facet = provenance["facet"] if provenance is not None else "sources"
         work_ref_value: str | None = None
         if row["work_id"] is not None:
