@@ -863,11 +863,25 @@ def validate_existing_store(
         raise CanonicalStoreError(
             "canonical store migration history is not contiguous from version 1"
         )
+    for row in history_rows:
+        migration = MIGRATIONS[int(row["schema_version"]) - 1]
+        if str(row["migration_id"]) != migration.migration_id:
+            raise CanonicalStoreError(
+                f"canonical store migration history ID does not match migration file for version {migration.version}"
+            )
+        if str(row["ddl_hash"]) != migration_ddl_hash(migration):
+            raise CanonicalStoreError(
+                f"canonical store migration history DDL hash does not match migration file for version {migration.version}"
+            )
     if history_rows:
         latest_history = history_rows[-1]
         if str(latest_history["migration_id"]) != version_row.current_migration_id:
             raise CanonicalStoreError(
                 "canonical store schema_version current_migration_id does not match migration history"
+            )
+        if str(latest_history["ddl_hash"]) != version_row.ddl_hash:
+            raise CanonicalStoreError(
+                "canonical store schema_version DDL hash does not match migration history"
             )
 
     expected_tables = expected_bootstrap_tables_from_outline(outline_payload)

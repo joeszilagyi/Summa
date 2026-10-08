@@ -632,6 +632,38 @@ def test_migration_runner_refuses_downgrade_and_unknown_future_version(tmp_path:
         canonical_store.check_canonical_store(future_path)
 
 
+@pytest.mark.parametrize(
+    "column,table,version,expected",
+    [
+        ("ddl_hash", "schema_migration_history", 1, "migration history DDL hash"),
+        ("ddl_hash", "schema_version", None, "schema_version DDL hash"),
+        ("migration_id", "schema_migration_history", 1, "migration history ID"),
+    ],
+)
+def test_store_validation_rejects_migration_metadata_drift(
+    tmp_path: Path, column: str, table: str, version: int | None, expected: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        if version is None:
+            conn.execute(
+                f"UPDATE {table} SET {column}='tampered' WHERE schema_namespace=?",
+                (canonical_store.SCHEMA_NAMESPACE,),
+            )
+        else:
+            conn.execute(
+                f"UPDATE {table} SET {column}='tampered' WHERE schema_namespace=? AND schema_version=?",
+                (canonical_store.SCHEMA_NAMESPACE, version),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(canonical_store.CanonicalStoreError, match=expected):
+        canonical_store.check_canonical_store(db_path)
+
+
 def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event_ref(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical-v2.sqlite"
     conn = canonical_store.connect_canonical_store(db_path)
