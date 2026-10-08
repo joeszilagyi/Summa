@@ -1103,6 +1103,7 @@ def load_entity_leads(
               ON capture.capture_event_id = entity.capture_event_id
             WHERE entity.workspace_id=?
               AND entity.review_state IN ({placeholders})
+              AND entity.authority_record_id IS NULL
         )
         SELECT detected_entity_id, entity_label, entity_type, review_state,
                provenance_event_ref, extraction_status
