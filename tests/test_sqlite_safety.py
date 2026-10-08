@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -108,6 +110,34 @@ def test_backup_database_allows_explicit_overwrite(tmp_path: Path) -> None:
     assert report["status"] == "pass"
     assert report["backup_path"] == str(destination_db)
     assert read_marker(destination_db) == "source"
+
+
+def test_backup_database_syncs_replaced_file_and_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_db = tmp_path / "source.sqlite"
+    destination_db = tmp_path / "destination.sqlite"
+    make_database(source_db, marker="source")
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def track_fsync(fd: int) -> None:
+        file_stat = os.fstat(fd)
+        if stat.S_ISREG(file_stat.st_mode):
+            assert destination_db.exists()
+            assert file_stat.st_ino == destination_db.stat().st_ino
+            synced.append("destination")
+        elif stat.S_ISDIR(file_stat.st_mode):
+            assert file_stat.st_ino == tmp_path.stat().st_ino
+            synced.append("directory")
+        real_fsync(fd)
+
+    monkeypatch.setattr(sqlite_safety.os, "fsync", track_fsync)
+
+    report = sqlite_safety.backup_database(source_db, destination_db)
+
+    assert report["status"] == "pass"
+    assert synced == ["destination", "directory"]
 
 
 def test_backup_database_rejects_same_path(tmp_path: Path) -> None:

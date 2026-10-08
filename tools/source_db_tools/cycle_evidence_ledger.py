@@ -1468,12 +1468,25 @@ def summarize_cycle_evidence(conn: sqlite3.Connection, cycle_event_id: str) -> d
         "operator_overrides": int(counts_row["operator_overrides"]),
     }
     stages, artifacts = _load_cycle_evidence_details(conn, event_id)
+    decision_rows = {}
+    for key, table, row_id in (
+        ("candidates_considered", "cycle_candidate_considered", "candidate_considered_id"),
+        ("candidates_excluded", "cycle_candidate_excluded", "candidate_excluded_id"),
+        ("tool_failures", "cycle_tool_failure", "tool_failure_id"),
+        ("operator_overrides", "cycle_operator_override", "operator_override_id"),
+    ):
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE cycle_event_id=? ORDER BY created_at, {row_id}",
+            (event_id,),
+        ).fetchall()
+        decision_rows[key] = [_row_to_dict(row) for row in rows]
     return {
         "schema_version": SCHEMA_VERSION,
         "cycle_event": event,
         "counts": counts,
         "stages": stages,
         "artifacts": artifacts,
+        **decision_rows,
     }
 
 

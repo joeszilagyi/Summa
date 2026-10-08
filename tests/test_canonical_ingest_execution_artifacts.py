@@ -207,16 +207,9 @@ def test_execution_artifact_validation_happens_before_write(tmp_path: Path) -> N
 
     conn = canonical_store.connect_canonical_store(db_path)
     try:
-        assert canonical_store.canonical_family_counts(conn) == {
-            "provenance_event": 0,
-            "work": 0,
-            "source_access": 0,
-            "source_claim": 0,
-            "capture_event": 0,
-            "extraction_record": 0,
-            "extraction_detected_entity": 0,
-            "source_relationship": 0,
-        }
+        counts = canonical_store.canonical_family_counts(conn)
+        assert set(counts) == set(canonical_store.COUNTED_CANONICAL_TABLES)
+        assert all(count == 0 for count in counts.values())
     finally:
         conn.close()
 
