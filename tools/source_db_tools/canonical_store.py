@@ -2199,7 +2199,6 @@ def record_extraction_record(
             "extraction_method": extraction_method_value,
             "input_hash": _optional_nonblank(input_hash, "input_hash"),
             "output_hash": _optional_nonblank(output_hash, "output_hash"),
-            "created_at": created_at_value,
         },
     )
     if existing is None:
