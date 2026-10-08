@@ -240,6 +240,119 @@ def test_authority_merge_cycle_guard_rejects_direct_sql_chain(tmp_path: Path) ->
         conn.close()
 
 
+def test_authority_merge_pair_guard_rejects_duplicate_direct_sql(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, created_at, record_last_updated
+                ) VALUES (?, ?, 'person', 'Authority', ?, ?)
+                """,
+                (
+                    (1, "authority:first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, "authority:second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (3, "authority:third", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO authority_merge_event (
+                    authority_merge_event_id, from_authority_record_id,
+                    into_authority_record_id, merge_reason, merged_at,
+                    record_last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (1, 1, 2, "first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, 2, 3, "second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="merge pair already recorded"):
+            conn.execute(
+                """
+                INSERT INTO authority_merge_event (
+                    from_authority_record_id, into_authority_record_id,
+                    merge_reason, merged_at, record_last_updated
+                ) VALUES (1, 2, 'different reason', ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="merge pair already recorded"):
+            conn.execute(
+                """
+                UPDATE authority_merge_event
+                SET from_authority_record_id=1, into_authority_record_id=2
+                WHERE authority_merge_event_id=2
+                """
+            )
+        assert conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_authority_merge_pair_guard_preserves_legacy_duplicates_on_upgrade(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(
+        db_path,
+        target_version=18,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, created_at, record_last_updated
+                ) VALUES (?, ?, 'person', 'Authority', ?, ?)
+                """,
+                (
+                    (1, "authority:first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, "authority:second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO authority_merge_event (
+                    from_authority_record_id, into_authority_record_id,
+                    merge_reason, merged_at, record_last_updated
+                ) VALUES (1, 2, ?, ?, ?)
+                """,
+                (
+                    ("first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    ("second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(
+        db_path, applied_at=FIXED_TIMESTAMP, applied_by="pytest"
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0] == 2
+        with pytest.raises(sqlite3.IntegrityError, match="merge pair already recorded"):
+            conn.execute(
+                """
+                INSERT INTO authority_merge_event (
+                    from_authority_record_id, into_authority_record_id,
+                    merge_reason, merged_at, record_last_updated
+                ) VALUES (1, 2, 'third', ?, ?)
+                """,
+                (FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+    finally:
+        conn.close()
+
+
 def test_connect_canonical_store_can_opt_into_rollback_journal_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "rollback.sqlite"
     conn = canonical_store.connect_canonical_store(db_path, journal_mode="DELETE")
@@ -417,6 +530,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
+        "0019_authority_merge_pair_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -480,6 +594,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
+        "0019_authority_merge_pair_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -603,6 +718,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
         "0018_authority_merge_cycle_guard",
+        "0019_authority_merge_pair_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)

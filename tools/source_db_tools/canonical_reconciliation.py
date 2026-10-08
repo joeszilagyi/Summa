@@ -1047,11 +1047,13 @@ def record_authority_merge_event(
         )
     existing = conn.execute(
         """
-        SELECT authority_merge_event_id
+        SELECT authority_merge_event_id, merge_reason
         FROM authority_merge_event
-        WHERE from_authority_record_id=? AND into_authority_record_id=? AND merge_reason=?
+        WHERE from_authority_record_id=? AND into_authority_record_id=?
+        ORDER BY authority_merge_event_id
+        LIMIT 1
         """,
-        (from_authority_record_id, into_authority_record_id, merge_reason),
+        (from_authority_record_id, into_authority_record_id),
     ).fetchone()
     if existing is not None:
         return canonical_store.CanonicalWriteResult(
@@ -1061,7 +1063,7 @@ def record_authority_merge_event(
                 "authority-merge",
                 from_authority_record_id,
                 into_authority_record_id,
-                merge_reason,
+                existing["merge_reason"],
             ),
             False,
         )
