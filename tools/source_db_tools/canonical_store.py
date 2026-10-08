@@ -1680,25 +1680,7 @@ def record_source_access(
             existing = _lookup_row(conn, "source_access", "source_access_id", criteria)
             if existing is None:
                 raise
-            _update_row(
-                conn,
-                "source_access",
-                "source_access_id",
-                int(existing["source_access_id"]),
-                {
-                    "review_state": _merged_review_state(
-                        existing["review_state"], review_state_value
-                    ),
-                    "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
-                    "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
-                    "record_last_updated": _max_nonnull_iso(
-                        existing["record_last_updated"], timestamp
-                    ),
-                },
-            )
-            return CanonicalWriteResult(
-                "source_access", int(existing["source_access_id"]), None, False
-            )
+            # A concurrent insert follows the same metadata merge as an ordinary replay.
 
     _update_row(
         conn,

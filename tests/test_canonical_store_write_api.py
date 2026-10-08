@@ -1339,7 +1339,7 @@ def test_source_access_without_work_or_lead_replays_by_locator_without_duplicate
     assert row["last_seen_at"] == NEWER_TIMESTAMP
 
 
-def test_source_access_integrity_fallback_handles_null_work_id(tmp_path: Path) -> None:
+def test_source_access_integrity_fallback_merges_metadata_with_null_work_id(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -1362,13 +1362,24 @@ def test_source_access_integrity_fallback_handles_null_work_id(tmp_path: Path) -
             last_seen_at=NEWER_TIMESTAMP,
             record_last_updated=NEWER_TIMESTAMP,
         )
+        replay_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-004-null-work-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-source-access-null-work-replay",
+        )
         proxied = SourceAccessIntegrityProxy(conn)
         replay = canonical_store.record_source_access(
             proxied,
-            provenance_event_ref=provenance.event_key,
+            provenance_event_ref=replay_provenance.event_key,
             original_locator="https://example.test/source-access-null-work",
             canonical_url="https://example.test/source-access-null-work",
             citation_hint="Fixture null-work source access updated",
+            refetchability_status="replay_verified",
+            rights_posture="public",
             first_seen_at=OLDER_TIMESTAMP,
             last_seen_at=OLDER_TIMESTAMP,
             record_last_updated=OLDER_TIMESTAMP,
@@ -1376,7 +1387,8 @@ def test_source_access_integrity_fallback_handles_null_work_id(tmp_path: Path) -
         conn.commit()
         row = conn.execute(
             """
-            SELECT citation_hint, first_seen_at, last_seen_at, record_last_updated
+            SELECT citation_hint, refetchability_status, rights_posture,
+                   provenance_event_ref, first_seen_at, last_seen_at, record_last_updated
             FROM source_access
             WHERE source_access_id=?
             """,
@@ -1399,7 +1411,10 @@ def test_source_access_integrity_fallback_handles_null_work_id(tmp_path: Path) -
     assert replay.row_id == baseline.row_id
     assert row_count is not None
     assert int(row_count["row_count"]) == 1
-    assert row["citation_hint"] == "Fixture null-work source access"
+    assert row["citation_hint"] == "Fixture null-work source access updated"
+    assert row["refetchability_status"] == "replay_verified"
+    assert row["rights_posture"] == "public"
+    assert row["provenance_event_ref"] == replay_provenance.event_key
     assert row["first_seen_at"] == OLDER_TIMESTAMP
     assert row["last_seen_at"] == NEWER_TIMESTAMP
     assert row["record_last_updated"] == NEWER_TIMESTAMP
