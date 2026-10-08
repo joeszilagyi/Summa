@@ -1144,6 +1144,52 @@ def load_cycle_event(conn: sqlite3.Connection, cycle_event_id: str) -> dict[str,
     return None if row is None else _row_to_dict(row)
 
 
+def relocate_cycle_manifest_artifact(
+    conn: sqlite3.Connection,
+    *,
+    cycle_event_id: str,
+    old_path: str,
+    new_path: str,
+    artifact_hash: str,
+) -> None:
+    """Preserve a legacy manifest reference before replacing its mutable path."""
+    event_id = _require_nonblank(cycle_event_id, "cycle_event_id")
+    old = _require_nonblank(old_path, "old_path")
+    new = _require_nonblank(new_path, "new_path")
+    digest = _require_nonblank(artifact_hash, "artifact_hash")
+    now = now_rfc3339()
+    event = conn.execute(
+        "SELECT topic_cycle_manifest_path, topic_cycle_manifest_hash "
+        "FROM cycle_event WHERE cycle_event_id=?",
+        (event_id,),
+    ).fetchone()
+    artifact = conn.execute(
+        "SELECT artifact_path, artifact_hash FROM cycle_artifact_ref "
+        "WHERE cycle_event_id=? AND artifact_type='topic_cycle_manifest' AND artifact_path=?",
+        (event_id, old),
+    ).fetchone()
+    if (
+        event is None
+        or event["topic_cycle_manifest_path"] != old
+        or event["topic_cycle_manifest_hash"] != digest
+        or artifact is None
+        or artifact["artifact_hash"] != digest
+    ):
+        raise CycleEvidenceLedgerError(
+            f"legacy cycle manifest reference does not match for cycle_event_id={event_id}"
+        )
+    conn.execute(
+        "UPDATE cycle_event SET topic_cycle_manifest_path=?, record_last_updated=? "
+        "WHERE cycle_event_id=?",
+        (new, now, event_id),
+    )
+    conn.execute(
+        "UPDATE cycle_artifact_ref SET artifact_path=?, record_last_updated=? "
+        "WHERE cycle_event_id=? AND artifact_type='topic_cycle_manifest' AND artifact_path=?",
+        (new, now, event_id, old),
+    )
+
+
 def list_cycle_events_for_subject(
     conn: sqlite3.Connection, subject_key: str, *, limit: int | None = None
 ) -> list[dict[str, Any]]:
