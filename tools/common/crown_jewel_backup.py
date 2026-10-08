@@ -6,11 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from functools import lru_cache
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATORS_DIR = REPO_ROOT / "tools" / "validators"
@@ -92,8 +91,8 @@ def validate_manifest_payload_or_raise(manifest: dict[str, Any]) -> None:
 def repo_relative_path(path: Path, repo_root: Path) -> str:
     try:
         return path.resolve().relative_to(repo_root.resolve()).as_posix()
-    except ValueError:
-        return str(path.resolve())
+    except ValueError as exc:
+        raise BackupPlanError(f"path resolves outside repository root: {path}") from exc
 
 
 @lru_cache(maxsize=1024)
