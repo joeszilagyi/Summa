@@ -161,6 +161,23 @@ def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None
     assert record["operation_kind"] == "candidate_batch_ingest"
     assert record["replay_status"] == "pending"
     assert record["operation_input"]["artifact_refs"][0]["artifact_hash"]
+    assert record["originating_run_id"] == json.loads(
+        CANDIDATE_BATCH.read_text(encoding="utf-8")
+    )["run_id"]
+
+
+def test_spool_run_directory_cannot_escape_spool_root(tmp_path: Path) -> None:
+    spool_dir = tmp_path / "spool"
+    record_path = canonical_write_spool.spool_record_path(
+        spool_dir,
+        {
+            "originating_run_id": "../outside/..",
+            "spool_record_id": "canonical-write-spool:test:123",
+        },
+    )
+
+    assert record_path.resolve().is_relative_to((spool_dir / "canonical-unavailable").resolve())
+    assert ".." not in record_path.parts
 
 
 def test_execution_artifact_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
