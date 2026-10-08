@@ -1036,7 +1036,9 @@ def run_scheduled_cycles(
                     stage="selection_filter",
                     recoverability="non_retryable",
                 )
-                ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                ledger_path = (
+                    resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                )
                 result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
                 append_ledger_event(
                     ledger_path=ledger_path,
@@ -1087,6 +1089,24 @@ def run_scheduled_cycles(
                     stage="saturation_check",
                     recoverability="retryable",
                 )
+                ledger_path = (
+                    resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                )
+                result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=str(record["planned_run_id"]),
+                    event_type="saturation_deferred",
+                    command="run_scheduled_topic_cycles",
+                    occurred_at=str(record["planned_at"]),
+                    status="deferred",
+                    failure={
+                        "reason_code": "selection_saturated",
+                        "message": result["failure_reason"],
+                        "saturation": saturation,
+                    },
+                )
                 manifest["deferred_workspace_count"] += 1
                 workspace_results[record_index] = result
                 continue
@@ -1105,6 +1125,21 @@ def run_scheduled_cycles(
                     reason=attempt_refusal,
                     stage="attempt_budget_check",
                     recoverability="retryable",
+                )
+                append_ledger_event(
+                    ledger_path=ledger_path,
+                    workspace_id=workspace_id,
+                    run_id=str(record["planned_run_id"]),
+                    event_type="attempt_refused",
+                    command="run_scheduled_topic_cycles",
+                    occurred_at=str(record["planned_at"]),
+                    status="deferred",
+                    failure={
+                        "reason_code": "selection_run_budget_exceeded",
+                        "message": result["failure_reason"],
+                        "prior_attempts": prior_attempts,
+                        "max_attempts": result["max_attempts"],
+                    },
                 )
                 manifest["deferred_workspace_count"] += 1
                 workspace_results[record_index] = result

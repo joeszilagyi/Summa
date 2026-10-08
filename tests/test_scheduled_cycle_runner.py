@@ -626,6 +626,12 @@ def test_scheduled_runner_enforces_max_attempts(tmp_path: Path) -> None:
     assert payload["deferred_workspace_count"] == 1
     assert payload["workspace_results"][0]["outcome"] == "deferred"
     assert "max_attempts" in payload["workspace_results"][0]["failure_reason"]
+    assert payload["workspace_results"][0]["ledger_path"]
+    events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [event["event_type"] for event in events] == ["command_failure", "attempt_refused"]
+    assert events[1]["run_id"] == "planner-test:blocked_subject"
+    assert events[1]["failure"]["prior_attempts"] == 1
+    assert events[1]["failure"]["max_attempts"] == 1
 
 
 def test_scheduled_runner_does_not_charge_historical_attempts_to_new_plan(tmp_path: Path) -> None:
@@ -828,6 +834,8 @@ def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Pa
             str(tmp_path / "scheduled-run"),
             "--cycle-runner",
             str(runner),
+            "--ledger-root",
+            str(tmp_path / "ledgers"),
         ]
     )
 
@@ -838,6 +846,13 @@ def test_scheduled_runner_defers_saturated_workspace_from_selection(tmp_path: Pa
     result = payload["workspace_results"][0]
     assert result["outcome"] == "deferred"
     assert "saturation policy deferred workspace" in result["failure_reason"]
+    assert result["ledger_path"]
+    ledger_path = tmp_path / "ledgers" / "saturated_subject.runtime-ledger.jsonl"
+    events = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 1
+    assert events[0]["event_type"] == "saturation_deferred"
+    assert events[0]["run_id"] == "planner-test:saturated_subject"
+    assert events[0]["failure"]["saturation"]["scheduler_action"] == "halt"
 
 
 def test_scheduled_runner_records_cycle_failure_through_runtime_ledger(tmp_path: Path) -> None:
