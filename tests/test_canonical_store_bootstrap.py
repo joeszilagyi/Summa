@@ -281,7 +281,8 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0012_cycle_event_attempts",
         "0013_cycle_ledger_status_constraints",
         "0014_ingested_gather_candidate_selection",
-        "0015_cycle_error_counts",
+        "0015_authority_reconciliation_evidence_history",
+        "0016_cycle_error_counts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -341,7 +342,8 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0012_cycle_event_attempts",
         "0013_cycle_ledger_status_constraints",
         "0014_ingested_gather_candidate_selection",
-        "0015_cycle_error_counts",
+        "0015_authority_reconciliation_evidence_history",
+        "0016_cycle_error_counts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -461,7 +463,8 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0012_cycle_event_attempts",
         "0013_cycle_ledger_status_constraints",
         "0014_ingested_gather_candidate_selection",
-        "0015_cycle_error_counts",
+        "0015_authority_reconciliation_evidence_history",
+        "0016_cycle_error_counts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
