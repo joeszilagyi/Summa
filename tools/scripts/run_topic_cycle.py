@@ -568,10 +568,11 @@ def run_command(command: list[str], *, cwd: Path, timeout: float | None = None) 
     return run_streaming_command(command, cwd=cwd, timeout=timeout)
 
 
-def fail_stage(stage: StageRecord, message: str) -> NoReturn:
+def fail_stage(manifest: dict[str, Any], stage: StageRecord, message: str) -> NoReturn:
     stage.status = "failed"
     stage.error_message = message
     stage.ended_at = utc_now()
+    add_stage(manifest, stage)
     raise TopicCycleError(f"{stage.name}: {message}", stage_name=stage.name)
 
 
@@ -644,7 +645,7 @@ def resolve_runtime_stage(
         add_stage(manifest, stage)
         return runtime
     except Exception as exc:
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def resolve_domain_pack_stage(
@@ -661,7 +662,7 @@ def resolve_domain_pack_stage(
         add_stage(manifest, stage)
         return summary
     except Exception as exc:
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def spool_dir_for(args: argparse.Namespace, run_dir: Path) -> Path:
@@ -744,7 +745,7 @@ def validate_store_stage(
         if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
             exc
         ):
-            fail_stage(stage, str(exc))
+            fail_stage(manifest, stage, str(exc))
         if args.degraded_spool:
             stage.validation = {"status": "degraded", "error": str(exc)}
             manifest.setdefault("warnings", []).append(
@@ -753,7 +754,7 @@ def validate_store_stage(
             finish_stage(stage, status="degraded")
             add_stage(manifest, stage)
             return
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def build_feedback_plan_stage(
@@ -798,7 +799,7 @@ def build_feedback_plan_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, command_output_excerpt(proc) or "feedback planner failed")
+            fail_stage(manifest, stage, command_output_excerpt(proc) or "feedback planner failed")
         payload = read_json(output, label="candidate feedback plan")
         stage.validation = {"status": "pass", "source": "child"}
         feedback_hash = hash_file(output)
@@ -835,7 +836,7 @@ def build_feedback_plan_stage(
     except TopicCycleError:
         raise
     except Exception as exc:
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def resolve_feedback_plan(
@@ -870,7 +871,7 @@ def resolve_feedback_plan(
             "report": report,
         }
         if exit_code != EXIT_FEEDBACK_PASS:
-            fail_stage(stage, "feedback plan failed validation")
+            fail_stage(manifest, stage, "feedback plan failed validation")
         stage.evidence = {
             "artifact_schema_ids": {
                 "feedback_plan": payload.get("schema_version"),
@@ -966,7 +967,7 @@ def gather_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, command_output_excerpt(proc) or "gather failed")
+            fail_stage(manifest, stage, command_output_excerpt(proc) or "gather failed")
         payload = json.loads(proc.stdout)
         batch_path = resolve_path(payload["candidate_batch_path"], base=REPO_ROOT)
         prompt_path = resolve_path(payload["rendered_prompt_path"], base=REPO_ROOT)
@@ -1023,7 +1024,7 @@ def gather_stage(
     except TopicCycleError:
         raise
     except Exception as exc:
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def candidate_ingest_stage(
@@ -1094,7 +1095,11 @@ def candidate_ingest_stage(
             or receipt_validator_version != gather_candidate_batch_validator.CONTRACT_VERSION
             or not isinstance(receipt_result, dict)
         ):
-            fail_stage(stage, "candidate batch validation receipt does not match the ingest batch")
+            fail_stage(
+                manifest,
+                stage,
+                "candidate batch validation receipt does not match the ingest batch",
+            )
     if args.mode == "dry-run":
         conn = canonical_store.connect_canonical_store(db_path)
         try:
@@ -1173,7 +1178,7 @@ def candidate_ingest_stage(
         if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
             exc
         ):
-            fail_stage(stage, str(exc))
+            fail_stage(manifest, stage, str(exc))
         if args.degraded_spool:
             record = canonical_write_spool.build_spool_record(
                 operation_kind="candidate_batch_ingest",
@@ -1226,7 +1231,7 @@ def candidate_ingest_stage(
                 "status": "spooled",
                 "spool_record_path": str(spool_path),
             }
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def acquisition_stage(
@@ -1270,7 +1275,9 @@ def acquisition_stage(
     try:
         proc = run_command(command, cwd=REPO_ROOT, timeout=resolve_command_timeout_seconds(args))
         if proc.returncode != 0:
-            fail_stage(stage, command_output_excerpt(proc) or "source adapter execution failed")
+            fail_stage(
+                manifest, stage, command_output_excerpt(proc) or "source adapter execution failed"
+            )
         receipt = load_execution_artifacts(output_dir)
         stage.validation = {"status": "pass", "source": "child"}
         stage.evidence = {
@@ -1292,7 +1299,7 @@ def acquisition_stage(
     except TopicCycleError:
         raise
     except Exception as exc:
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def execution_ingest_stage(
@@ -1389,10 +1396,10 @@ def execution_ingest_stage(
         if isinstance(exc, canonical_ingest.CanonicalIngestError) and "validation failed" in str(
             exc
         ):
-            fail_stage(stage, str(exc))
+            fail_stage(manifest, stage, str(exc))
         if args.degraded_spool:
             if loaded_paths is None or loaded_hashes is None:
-                fail_stage(stage, str(exc))
+                fail_stage(manifest, stage, str(exc))
             artifact_refs = [
                 {
                     "artifact_type": key,
@@ -1444,7 +1451,7 @@ def execution_ingest_stage(
                 "status": "spooled",
                 "spool_record_path": str(spool_path),
             }
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_path: Path) -> None:
@@ -1468,7 +1475,7 @@ def final_store_stage(*, args: argparse.Namespace, manifest: dict[str, Any], db_
             finish_stage(stage, status="degraded")
             add_stage(manifest, stage)
             return
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
 
 def graph_closure_report_path(args: argparse.Namespace, run_dir: Path) -> Path:
@@ -1540,7 +1547,7 @@ def graph_closure_stage(
             finish_stage(stage, status="degraded")
             add_stage(manifest, stage)
             return
-        fail_stage(stage, str(exc))
+        fail_stage(manifest, stage, str(exc))
 
     summary = report.get("summary", {})
     report_sha256 = hash_file(report_path)

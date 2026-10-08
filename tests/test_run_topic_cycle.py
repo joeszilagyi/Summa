@@ -638,6 +638,10 @@ def test_topic_cycle_degraded_spool_reports_retry_exception(
     assert calls["count"] == 2
     assert "retry load failure" in str(excinfo.value)
     assert "outer load failure" not in str(excinfo.value)
+    assert len(manifest["stages"]) == 1
+    assert manifest["stages"][0]["name"] == "ingest_execution_artifacts"
+    assert manifest["stages"][0]["status"] == "failed"
+    assert manifest["stages"][0]["error_message"] == "retry load failure"
 
 
 def test_topic_cycle_unexpected_exception_writes_failed_manifest(
@@ -2075,6 +2079,8 @@ def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path:
             "cycle-subject-fail",
             "--timestamp",
             "2026-06-03T12:00:00Z",
+            "--mode",
+            "local",
         ]
     )
 
@@ -2082,6 +2088,19 @@ def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path:
     manifest = load_manifest(run_dir)
     assert manifest["status"] == "failed"
     assert manifest["failure_stage"] == "resolve_subject_runtime"
+    failed_stage = stages_by_name(manifest)["resolve_subject_runtime"]
+    assert failed_stage["status"] == "failed"
+    assert failed_stage["error_message"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, error_summary FROM cycle_stage_event WHERE run_id=? AND stage_name=?",
+            ("cycle-subject-fail", "resolve_subject_runtime"),
+        ).fetchone()
+        assert row == ("failed", failed_stage["error_message"])
+    finally:
+        conn.close()
 
 
 def test_topic_cycle_refuses_completed_run_without_force(tmp_path: Path) -> None:
