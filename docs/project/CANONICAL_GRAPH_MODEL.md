@@ -57,8 +57,9 @@ The current runtime already holds graph-shaped material in several places:
 - `review_state_history` and `authority_reconciliation` provide review-oriented
   annotations.
 - `authority_identifier`, `work_identifier`, `source_access`, `work_metadata`,
-  `work_url`, and `authority_merge_event` remain supporting durable tables that
-  the canonical store bootstrap preserves for current local tools.
+  `work_url`, `authority_merge_event`, and `canonical_row_revision` remain
+  supporting durable tables that the canonical store bootstrap preserves for
+  current local tools.
 - `source_locus`, `source_query_plan`, `source_query_execution_simulation`, and
   `simulated_source_lead_candidate` remain explicitly noncanonical staging or
   simulation tables rather than canonical graph rows.
@@ -66,6 +67,17 @@ The current runtime already holds graph-shaped material in several places:
 This document does not require an immediate table rewrite. The first goal is to
 make the canonical ownership model explicit so later runtime work stops
 building directly on importer-specific or presentation-specific row shapes.
+
+Since migration 0010, `canonical_row_revision` retains an immutable full-row
+snapshot for each inserted or migrated work, source-access, claim, capture,
+extraction, detected-entity, relationship, and provenance row. Each changed
+stable-ID projection appends a new revision linked to its predecessor through
+`supersedes_revision_id`; identical updates add no revision. Database triggers
+also capture direct SQL updates, block revision edits and deletes, and prohibit
+deleting the tracked projection rows. Provenance events themselves cannot be
+updated. The stable-ID tables remain current-state projections for existing
+foreign keys and readers; migrating their write API to physically append-only
+canonical rows remains separate work.
 
 ## Deterministic Curation
 

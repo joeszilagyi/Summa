@@ -28,6 +28,10 @@ concrete tracked surfaces or tools rather than only the changelog itself.
   contradiction reconciliation still cannot silently demote established rows.
 - Made SQLite integrity, backup, restore verification, and profile checks fail
   on foreign-key orphans as well as physical database corruption.
+- Added immutable, linked full-row revisions for canonical work, source,
+  capture, extraction, relationship, and provenance projections. Migration
+  0010 backfills existing rows and trigger-captures subsequent field changes,
+  including direct SQL updates, without disturbing stable IDs.
 
 ### Added
 

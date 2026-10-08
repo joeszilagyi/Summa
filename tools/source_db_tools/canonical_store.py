@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 9
-CURRENT_MIGRATION_ID = "0009_source_claim_anchor_requirement"
+CURRENT_SCHEMA_VERSION = 10
+CURRENT_MIGRATION_ID = "0010_canonical_row_revisions"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -39,6 +39,8 @@ DEFAULT_SQLITE_WAL_SYNCHRONOUS = "NORMAL"
 DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS = "FULL"
 
 REQUIRED_INDEXES = {
+    "ix_canonical_row_revision_target",
+    "ux_canonical_row_revision_predecessor",
     "ix_authority_identifier_record",
     "ix_authority_merge_event_from_into",
     "ix_authority_record_label",
@@ -92,6 +94,33 @@ OPTIONAL_COMPATIBILITY_TABLES = {
     "lead",
     "source_query_plan",
 }
+
+REVISION_TRACKED_TABLES = frozenset(
+    {
+        "provenance_event",
+        "work",
+        "source_access",
+        "source_claim",
+        "capture_event",
+        "extraction_record",
+        "extraction_detected_entity",
+        "source_relationship",
+    }
+)
+REQUIRED_REVISION_TRIGGERS = (
+    {
+        "canonical_row_revision_no_update",
+        "canonical_row_revision_no_delete",
+        "canonical_row_revision_linear_chain",
+    }
+    | {f"canonical_row_revision_{table}_insert" for table in REVISION_TRACKED_TABLES}
+    | {f"canonical_row_revision_{table}_no_delete" for table in REVISION_TRACKED_TABLES}
+    | {
+        f"canonical_row_revision_{table}_update"
+        for table in REVISION_TRACKED_TABLES - {"provenance_event"}
+    }
+    | {"canonical_row_revision_provenance_event_immutable"}
+)
 
 
 class CanonicalStoreError(RuntimeError):
@@ -322,6 +351,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         sql_path=MIGRATIONS_DIR / "0009_source_claim_anchor_requirement.sql",
         notes="Require every source_claim to retain an object or source-artifact anchor.",
     ),
+    MigrationSpec(
+        version=10,
+        migration_id="0010_canonical_row_revisions",
+        sql_path=MIGRATIONS_DIR / "0010_canonical_row_revisions.sql",
+        notes="Retain immutable full-row revisions for stable-ID canonical projections.",
+    ),
 )
 
 
@@ -453,6 +488,13 @@ def actual_tables(conn: sqlite3.Connection) -> set[str]:
 def actual_indexes(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def actual_triggers(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name"
     ).fetchall()
     return {str(row["name"]) for row in rows}
 
@@ -748,16 +790,31 @@ def validate_existing_store(
             )
 
     expected_tables = expected_bootstrap_tables_from_outline(outline_payload)
+    required_indexes = REQUIRED_INDEXES
+    if version_row.schema_version < 10:
+        # The current outline includes tables introduced after older target versions.
+        expected_tables = expected_tables - {"canonical_row_revision"}
+        required_indexes = REQUIRED_INDEXES - {
+            "ix_canonical_row_revision_target",
+            "ux_canonical_row_revision_predecessor",
+        }
     missing_tables = expected_tables - table_set
     if missing_tables:
         raise CanonicalStoreError(
             "canonical store is missing required tables: " + ", ".join(sorted(missing_tables))
         )
-    missing_indexes = REQUIRED_INDEXES - actual_indexes(conn)
+    missing_indexes = required_indexes - actual_indexes(conn)
     if missing_indexes:
         raise CanonicalStoreError(
             "canonical store is missing required indexes: " + ", ".join(sorted(missing_indexes))
         )
+    if version_row.schema_version >= 10:
+        missing_triggers = REQUIRED_REVISION_TRIGGERS - actual_triggers(conn)
+        if missing_triggers:
+            raise CanonicalStoreError(
+                "canonical store is missing required revision triggers: "
+                + ", ".join(sorted(missing_triggers))
+            )
     foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
     if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
         raise CanonicalStoreError("canonical store connection does not have PRAGMA foreign_keys=ON")
@@ -2743,7 +2800,9 @@ def summarize_canonical_store_population(
         family_mapping = family_table_mapping(outline)
         expected_tables = expected_tables_from_outline(outline)
         supporting_tables = supporting_tables_from_outline(outline)
-        substantive_tables = expected_tables | supporting_tables
+        # Revision snapshots mirror existing rows; they are not additional
+        # substantive records and must not inflate population totals.
+        substantive_tables = (expected_tables | supporting_tables) - {"canonical_row_revision"}
         metadata_tables = schema_metadata_tables_from_outline(outline)
 
         if validation is None:

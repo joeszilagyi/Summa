@@ -12,8 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.source_db_tools import canonical_store
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Run_Topic_Cycle.sh"
@@ -1774,7 +1772,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
+    init_db(db_path, target_version=8)  # Before the claim-anchor migration.
     insert_orphan_source_claim(db_path)
     run_dir = tmp_path / "cycle-closure-fail"
 

@@ -111,6 +111,7 @@
   "supporting_sqlite_tables": [
     "authority_identifier",
     "authority_merge_event",
+    "canonical_row_revision",
     "cycle_artifact_ref",
     "cycle_candidate_considered",
     "cycle_candidate_excluded",

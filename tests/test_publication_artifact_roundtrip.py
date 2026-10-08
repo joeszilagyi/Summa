@@ -13,7 +13,6 @@ from tests.publication_fixture_store import (
     create_populated_canonical_store,
 )
 from tools.scripts.build_publication_artifacts import scan_public_site_for_leaks
-from tools.source_db_tools import canonical_store
 from tools.validators.validate_knowledge_tree_export import EXIT_PASS as EXIT_EXPORT_PASS
 from tools.validators.validate_knowledge_tree_export import validate_knowledge_tree_export
 from tools.validators.validate_public_knowledge_tree_presentation import (
@@ -165,7 +164,7 @@ def test_publication_artifact_roundtrip_builds_valid_outputs(tmp_path: Path) -> 
 def test_publication_strict_graph_closure_preflight_fails_on_orphan(tmp_path: Path) -> None:
     db_path = create_populated_canonical_store(
         tmp_path,
-        target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1,
+        target_version=8,  # Before the claim-anchor migration.
     )
     insert_orphan_source_claim(db_path)
     output_dir = tmp_path / "site-build"

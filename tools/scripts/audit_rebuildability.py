@@ -731,9 +731,12 @@ def find_missing_artifacts(artifacts: list[Artifact], runs_dir: Path) -> list[di
 def row_count_summary(db_path: Path) -> dict[str, int]:
     conn = canonical_store.connect_existing_read_only(db_path)
     try:
+        # Revision events depend on the path of writes, not just final canonical state.
+        # Compare current-state rows here; historical replay is reported separately.
         return {
             table: int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
             for table in sorted(canonical_store.actual_tables(conn))
+            if table != "canonical_row_revision"
         }
     finally:
         conn.close()
@@ -748,6 +751,7 @@ def table_content_hash_summary(db_path: Path) -> dict[str, str]:
             "provenance_event",
         }
         ignored_tables = {
+            "canonical_row_revision",
             "schema_migration_history",
             "schema_version",
         }
