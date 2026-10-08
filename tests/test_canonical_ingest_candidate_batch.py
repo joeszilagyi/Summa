@@ -444,12 +444,14 @@ def test_candidate_batch_ingest_skips_reconciliation_when_no_work_items(
                 batch_hash=batch_hash(payload),
                 db_path=db_path,
             )
+            assert conn.in_transaction
+            assert report["transaction_status"] == "writes_applied_pending_caller_commit"
     finally:
         conn.close()
 
     assert report["status"] == "completed"
     assert called is False
-    assert report["transaction_status"] == "committed"
+    assert report["transaction_status"] == "writes_applied_pending_caller_commit"
     assert report["counts"]["reconciled"] == {}
     assert report["counts"]["contradicted"] == {}
     assert report["counts"]["deduped"] == {}
