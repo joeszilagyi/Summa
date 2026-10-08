@@ -117,6 +117,8 @@ def test_execution_artifact_ingest_writes_capture_and_extraction_rows(tmp_path: 
                 extraction_records=None,
                 db_path=db_path,
             )
+            assert conn.in_transaction
+            assert report["transaction_status"] == "writes_applied_pending_caller_commit"
         counts = canonical_store.canonical_family_counts(conn)
         capture_row = conn.execute(
             "SELECT capture_event_id, provenance_event_ref FROM capture_event"
@@ -185,7 +187,7 @@ def test_execution_artifact_ingest_skips_reconciliation_when_no_work_items(
 
     assert report["status"] == "completed"
     assert called is False
-    assert report["transaction_status"] == "committed"
+    assert report["transaction_status"] == "writes_applied_pending_caller_commit"
     assert report["counts"]["reconciled"] == {}
     assert report["counts"]["contradicted"] == {}
     assert report["counts"]["deduped"] == {}

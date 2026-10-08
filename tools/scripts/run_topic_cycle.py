@@ -1226,6 +1226,7 @@ def candidate_ingest_stage(
                     dry_run=False,
                     db_path=db_path,
                 )
+            report["transaction_status"] = "committed"
         finally:
             conn.close()
         report_path = run_dir / "candidate-ingest" / "canonical-ingest-report.json"
@@ -1441,6 +1442,7 @@ def execution_ingest_stage(
                         dry_run=False,
                         db_path=db_path,
                     )
+                report["transaction_status"] = "committed"
         finally:
             conn.close()
         stage.evidence = {
