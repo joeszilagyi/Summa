@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 13
-CURRENT_MIGRATION_ID = "0013_cycle_ledger_status_constraints"
+CURRENT_SCHEMA_VERSION = 14
+CURRENT_MIGRATION_ID = "0014_authority_reconciliation_evidence_history"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -39,6 +39,7 @@ DEFAULT_SQLITE_WAL_SYNCHRONOUS = "NORMAL"
 DEFAULT_SQLITE_ROLLBACK_SYNCHRONOUS = "FULL"
 
 REQUIRED_INDEXES = {
+    "ix_authority_reconciliation_evidence_history_row",
     "ix_canonical_row_revision_target",
     "ux_canonical_row_revision_predecessor",
     "ix_authority_identifier_record",
@@ -121,6 +122,13 @@ REQUIRED_REVISION_TRIGGERS = (
     }
     | {"canonical_row_revision_provenance_event_immutable"}
 )
+REQUIRED_AUTHORITY_EVIDENCE_HISTORY_TRIGGERS = {
+    "authority_reconciliation_evidence_history_insert",
+    "authority_reconciliation_evidence_history_update",
+    "authority_reconciliation_evidence_history_no_update",
+    "authority_reconciliation_evidence_history_no_delete",
+    "authority_reconciliation_evidence_history_parent_no_delete",
+}
 
 
 class CanonicalStoreError(RuntimeError):
@@ -377,6 +385,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         sql_path=MIGRATIONS_DIR / "0013_cycle_ledger_status_constraints.sql",
         notes="Constrain cycle and stage lifecycle statuses at the SQLite boundary.",
         rebuilds_foreign_key_parent=True,
+    ),
+    MigrationSpec(
+        version=14,
+        migration_id="0014_authority_reconciliation_evidence_history",
+        sql_path=MIGRATIONS_DIR / "0014_authority_reconciliation_evidence_history.sql",
+        notes="Retain immutable evidence snapshots for authority reconciliation rows.",
     ),
 )
 
@@ -815,10 +829,13 @@ def validate_existing_store(
     if version_row.schema_version < 10:
         # The current outline includes tables introduced after older target versions.
         expected_tables = expected_tables - {"canonical_row_revision"}
-        required_indexes = REQUIRED_INDEXES - {
+        required_indexes = required_indexes - {
             "ix_canonical_row_revision_target",
             "ux_canonical_row_revision_predecessor",
         }
+    if version_row.schema_version < 14:
+        expected_tables = expected_tables - {"authority_reconciliation_evidence_history"}
+        required_indexes = required_indexes - {"ix_authority_reconciliation_evidence_history_row"}
     missing_tables = expected_tables - table_set
     if missing_tables:
         raise CanonicalStoreError(
@@ -834,6 +851,13 @@ def validate_existing_store(
         if missing_triggers:
             raise CanonicalStoreError(
                 "canonical store is missing required revision triggers: "
+                + ", ".join(sorted(missing_triggers))
+            )
+    if version_row.schema_version >= 14:
+        missing_triggers = REQUIRED_AUTHORITY_EVIDENCE_HISTORY_TRIGGERS - actual_triggers(conn)
+        if missing_triggers:
+            raise CanonicalStoreError(
+                "canonical store is missing required authority evidence history triggers: "
                 + ", ".join(sorted(missing_triggers))
             )
     foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()

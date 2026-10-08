@@ -37,6 +37,7 @@ REQUIRED_SQLITE_TABLE_MAPPINGS = {
 REQUIRED_SUPPORTING_SQLITE_TABLES = {
     "authority_identifier",
     "authority_merge_event",
+    "authority_reconciliation_evidence_history",
     "canonical_row_revision",
     "cycle_artifact_ref",
     "cycle_candidate_considered",
