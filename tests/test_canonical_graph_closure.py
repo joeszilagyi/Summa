@@ -284,6 +284,59 @@ def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> N
     assert any(issue["status"] == "unresolved_tracked" for issue in report["issues"])
 
 
+def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="reconciliation-authority-ref",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:reconciliation-authority-ref",
+            )
+            work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:reconciliation-target",
+                provenance_event_ref=provenance.event_key,
+                title="Valid target",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_record_id, candidate_authority_id,
+                    accepted_authority_id, created_at, updated_at, record_last_updated
+                ) VALUES (?, 'work', ?, 'Candidate', 999, 998, 997, ?, ?, ?)
+                """,
+                (
+                    "authrec:missing-authority-refs",
+                    str(work.row_id),
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+        conn.execute("PRAGMA foreign_keys=ON")
+        issues = canonical_graph_closure.audit_authority_reconciliation(conn)
+    finally:
+        conn.close()
+
+    assert len(issues) == 1
+    assert issues[0]["status"] == "true_orphan_error"
+    assert "candidate_authority_record_id" in issues[0]["message"]
+    assert "candidate_authority_id" in issues[0]["message"]
+    assert "accepted_authority_id" in issues[0]["message"]
+
+
 def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
@@ -300,7 +353,9 @@ def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     assert report["status"] == "fail"
 
 
-def test_graph_closure_batches_existence_lookups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_graph_closure_batches_existence_lookups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -361,14 +416,21 @@ def test_graph_closure_batches_existence_lookups(tmp_path: Path, monkeypatch: py
     )
 
     assert report["status"] == "pass"
-    assert sum(
-        sql == "SELECT provenance_event_key_v1 FROM provenance_event"
-        for sql in proxy.executed_sql
-    ) == 1
-    assert sum(
-        sql == "SELECT CAST(work_id AS TEXT), CAST(work_key_v1 AS TEXT) FROM work WHERE work_id IS NOT NULL OR work_key_v1 IS NOT NULL"
-        for sql in proxy.executed_sql
-    ) == 1
+    assert (
+        sum(
+            sql == "SELECT provenance_event_key_v1 FROM provenance_event"
+            for sql in proxy.executed_sql
+        )
+        == 1
+    )
+    assert (
+        sum(
+            sql
+            == "SELECT CAST(work_id AS TEXT), CAST(work_key_v1 AS TEXT) FROM work WHERE work_id IS NOT NULL OR work_key_v1 IS NOT NULL"
+            for sql in proxy.executed_sql
+        )
+        == 1
+    )
     assert not any(
         "SELECT 1 FROM provenance_event WHERE provenance_event_key_v1=?" in sql
         for sql in proxy.executed_sql

@@ -522,6 +522,26 @@ def audit_authority_reconciliation(
     for row in conn.execute(
         "SELECT * FROM authority_reconciliation ORDER BY authority_reconciliation_id"
     ):
+        missing_authority_refs = [
+            column
+            for column in (
+                "candidate_authority_record_id",
+                "candidate_authority_id",
+                "accepted_authority_id",
+            )
+            if row[column] is not None
+            and not lookup.object_ref_exists(f"authority_record:{row[column]}")
+        ]
+        if missing_authority_refs:
+            issues.append(
+                orphan_issue(
+                    "authority_reconciliation",
+                    row["authority_reconciliation_id"],
+                    "authority reconciliation has missing authority refs: "
+                    + ", ".join(missing_authority_refs),
+                )
+            )
+            continue
         detected_ok = row["detected_entity_id"] is not None and lookup.object_ref_exists(
             f"extraction_detected_entity:{row['detected_entity_id']}"
         )
