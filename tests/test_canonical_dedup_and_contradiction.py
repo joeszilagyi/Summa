@@ -646,6 +646,43 @@ def test_null_confidence_authority_identifier_does_not_auto_merge(tmp_path: Path
     assert matches == []
 
 
+def test_duplicate_trusted_authority_identifier_requires_ambiguous_review() -> None:
+    # Model a damaged or partially restored store where the normal unique constraint is absent.
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE authority_record (
+                authority_record_id INTEGER, review_state TEXT,
+                merged_into_authority_record_id INTEGER,
+                label_norm TEXT, authority_type TEXT
+            );
+            CREATE TABLE authority_identifier (
+                authority_record_id INTEGER, scheme TEXT, value TEXT,
+                validity_status TEXT, review_state TEXT, confidence_score REAL
+            );
+            INSERT INTO authority_record VALUES (7, 'accepted', NULL, 'first', 'person');
+            INSERT INTO authority_record VALUES (3, 'accepted', NULL, 'second', 'person');
+            INSERT INTO authority_identifier VALUES
+                (7, 'orcid', '0000-0002-1825-0097', 'valid', 'accepted', 1.0),
+                (3, 'orcid', '0000-0002-1825-0097', 'valid', 'accepted', 1.0);
+            """
+        )
+        matches = canonical_reconciliation.find_existing_authority_match(
+            conn,
+            entity_label="Different Person",
+            entity_type="person",
+            structured={"identifiers": [{"scheme": "orcid", "value": "0000-0002-1825-0097"}]},
+        )
+    finally:
+        conn.close()
+
+    assert [match.authority_record_id for match in matches] == [3, 7]
+    assert {match.method for match in matches} == {"ambiguous_exact_authority_identifier"}
+    assert all(not match.automatic_merge for match in matches)
+
+
 def test_candidate_identifiers_collapses_equivalent_identifier_forms() -> None:
     identifiers = canonical_reconciliation.candidate_identifiers(
         {
