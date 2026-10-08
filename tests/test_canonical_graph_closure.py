@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.source_db_tools import canonical_graph_closure, canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -252,7 +254,7 @@ def test_populated_store_has_no_true_orphan_errors(tmp_path: Path) -> None:
 
 def test_true_orphan_claim_fails_strict_audit(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
+    init_db(db_path, target_version=8)  # Before the claim-anchor migration.
     insert_orphan_claim(db_path)
 
     report = canonical_graph_closure.audit_canonical_graph_closure(
@@ -268,7 +270,7 @@ def test_true_orphan_claim_fails_strict_audit(tmp_path: Path) -> None:
 
 def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
+    init_db(db_path, target_version=8)  # Before the claim-anchor migration.
     insert_unresolved_tracked_claim(db_path)
 
     report = canonical_graph_closure.audit_canonical_graph_closure(
@@ -379,7 +381,7 @@ def test_graph_closure_batches_existence_lookups(tmp_path: Path, monkeypatch: py
 
 def test_graph_closure_preserves_audit_order_without_global_sort(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
+    init_db(db_path, target_version=8)  # Before the claim-anchor migration.
     insert_work_orphan(db_path)
     insert_orphan_claim(db_path)
 

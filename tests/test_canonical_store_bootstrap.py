@@ -276,6 +276,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0007_source_claim_open_question_status",
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
+        "0010_canonical_row_revisions",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -330,6 +331,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0007_source_claim_open_question_status",
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
+        "0010_canonical_row_revisions",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -444,6 +446,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0007_source_claim_open_question_status",
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
+        "0010_canonical_row_revisions",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
