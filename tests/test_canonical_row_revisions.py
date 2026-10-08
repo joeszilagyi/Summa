@@ -52,6 +52,7 @@ def test_migration_backfills_existing_rows_once(tmp_path: Path) -> None:
         assert result.applied_migration_ids == (
             "0010_canonical_row_revisions",
             "0011_detected_entity_span_bounds",
+            "0012_cycle_event_attempts",
         )
         history = _revisions(conn, "work", 1)
         assert len(history) == 1

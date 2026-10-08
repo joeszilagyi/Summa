@@ -134,7 +134,7 @@ def _load_cycle_events_from_ledger(
                    started_at, ended_at, status, row_count_delta_json, metadata_json
             FROM cycle_event
             WHERE workspace_id=? OR (workspace_id IS NULL AND subject_key=?)
-            ORDER BY started_at DESC, cycle_event_id DESC
+            ORDER BY started_at DESC, rowid DESC
             LIMIT ?
             """,
             (workspace_id, workspace_id, lookback_cycles),
@@ -146,7 +146,7 @@ def _load_cycle_events_from_ledger(
                    started_at, ended_at, status, row_count_delta_json, metadata_json
             FROM cycle_event
             WHERE subject_key=?
-            ORDER BY started_at DESC, cycle_event_id DESC
+            ORDER BY started_at DESC, rowid DESC
             LIMIT ?
             """,
             (subject_id, lookback_cycles),
