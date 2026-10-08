@@ -251,10 +251,27 @@ def database_fingerprint(payload: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+def _unique_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, ValueError) as exc:
         raise PublicationBuildError(f"failed to load {label}: {path}") from exc
     if not isinstance(payload, dict):
         raise PublicationBuildError(f"{label} must be a JSON object: {path}")
