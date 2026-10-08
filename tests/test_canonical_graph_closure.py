@@ -390,6 +390,47 @@ def test_authority_records_report_broken_provenance_and_merge_targets(tmp_path: 
     assert by_id["5"]["status"] == "true_orphan_error"
 
 
+def test_topic_extensions_are_audited_for_provenance_and_topic_identity(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="topic-audit",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:topic-audit",
+            )
+            conn.executemany(
+                """
+                INSERT INTO topic_extension (
+                    topic_extension_id, topic_id, extension_type, provenance_event_ref,
+                    created_at, record_last_updated
+                ) VALUES (?, ?, 'collection', ?, ?, ?)
+                """,
+                (
+                    (1, "alpha_topic", "prov:missing", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, " ", provenance.event_key, FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (3, "alpha_topic", provenance.event_key, FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+        issues = [
+            issue
+            for issue in canonical_graph_closure.collect_issues(conn)
+            if issue["table"] == "topic_extension"
+        ]
+    finally:
+        conn.close()
+
+    assert {issue["primary_key"] for issue in issues} == {"1", "2"}
+    assert all(issue["status"] == "true_orphan_error" for issue in issues)
+    assert "provenance" in issues[0]["message"]
+    assert "topic_id" in issues[1]["message"]
+
+
 def test_targetless_relationship_is_not_treated_as_closed(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)

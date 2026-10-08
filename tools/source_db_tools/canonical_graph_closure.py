@@ -340,6 +340,29 @@ def audit_authority_record(
     return issues
 
 
+def audit_topic_extension(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
+    issues: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT * FROM topic_extension ORDER BY topic_extension_id"):
+        _provenance_key, invalid = _provenance_issue(
+            lookup, row, "topic_extension", "topic_extension_id"
+        )
+        if invalid is not None:
+            issues.append(invalid)
+        elif _text(row["topic_id"]) is None:
+            issues.append(
+                orphan_issue(
+                    "topic_extension",
+                    row["topic_extension_id"],
+                    "topic_extension.topic_id is blank",
+                    policy="topic_extension_must_name_a_topic",
+                )
+            )
+    return issues
+
+
 def audit_source_access(
     conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
 ) -> list[dict[str, Any]]:
@@ -746,6 +769,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     issues.extend(audit_provenance_event(conn, lookup=lookup))
     issues.extend(audit_authority_record(conn, lookup=lookup))
     issues.extend(audit_work(conn, lookup=lookup))
+    issues.extend(audit_topic_extension(conn, lookup=lookup))
     issues.extend(audit_source_access(conn, lookup=lookup))
     issues.extend(audit_capture_event(conn, lookup=lookup))
     issues.extend(audit_extraction_record(conn, lookup=lookup))
