@@ -1720,6 +1720,19 @@ def record_source_access(
                 raise
             # A concurrent insert follows the same metadata merge as an ordinary replay.
 
+    preserve_established_envelope = _preserve_authority_envelope(
+        existing["review_state"], review_state_value
+    )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    if existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES and (
+        proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+        or _pending_review_state(review_state_value)
+    ):
+        preserve_established_envelope = True
+
     _update_row(
         conn,
         "source_access",
@@ -1793,21 +1806,38 @@ def record_source_access(
                 existing["rights_posture"],
             ),
             "review_state": _merged_review_state(existing["review_state"], review_state_value),
-            "publication_state": _first_present(
-                _optional_nonblank(publication_state, "publication_state"),
-                existing["publication_state"],
+            "publication_state": (
+                existing["publication_state"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(publication_state, "publication_state"),
+                    existing["publication_state"],
+                )
             ),
-            "authority_level": _first_present(
-                _optional_nonblank(authority_level, "authority_level"),
-                existing["authority_level"],
+            "authority_level": (
+                existing["authority_level"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(authority_level, "authority_level"),
+                    existing["authority_level"],
+                )
             ),
-            "public_blocker": _first_present(
-                _optional_nonblank(public_blocker, "public_blocker"), existing["public_blocker"]
+            "public_blocker": (
+                existing["public_blocker"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(public_blocker, "public_blocker"),
+                    existing["public_blocker"],
+                )
             ),
             "workspace_id": _first_present(
                 _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
             ),
-            "provenance_event_ref": provenance_event_ref,
+            "provenance_event_ref": (
+                existing["provenance_event_ref"]
+                if preserve_established_envelope
+                else provenance_event_ref
+            ),
             "first_seen_at": _min_nonnull_iso(existing["first_seen_at"], first_seen_value),
             "last_seen_at": _max_nonnull_iso(existing["last_seen_at"], last_seen_value),
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
