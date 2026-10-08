@@ -25,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.common import runtime_ledger  # noqa: E402
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
+    SchedulerFailureReconciliationError,
     read_runtime_ledger,
     summarize_run_outcomes,
 )
@@ -1155,7 +1156,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE_ERROR if exc.code != 0 else EXIT_SUCCESS
     try:
         payload, exit_code = run_scheduled_cycles(args)
-    except (ScheduledCycleError, runtime_ledger.RuntimeLedgerError) as exc:
+    except (
+        ScheduledCycleError,
+        runtime_ledger.RuntimeLedgerError,
+        SchedulerFailureReconciliationError,
+    ) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_FAILED
     except WorkspaceLockError as exc:

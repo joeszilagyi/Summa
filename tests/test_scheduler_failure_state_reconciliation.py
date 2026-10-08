@@ -413,7 +413,7 @@ def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failu
         scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
 
 
-def test_runtime_ledger_load_events_tolerates_truncated_terminal_json_without_newline(
+def test_runtime_ledger_load_events_reports_truncated_terminal_json_without_newline(
     tmp_path: Path,
 ) -> None:
     ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
@@ -430,8 +430,86 @@ def test_runtime_ledger_load_events_tolerates_truncated_terminal_json_without_ne
         encoding="utf-8",
     )
 
-    events = runtime_ledger.load_events(ledger_path)
-    assert events == [first_event]
+    original_bytes = ledger_path.read_bytes()
+    with pytest.raises(
+        runtime_ledger.RuntimeLedgerError,
+        match=r"incomplete final JSON on line 2; 1 earlier valid event\(s\) remain on disk",
+    ):
+        runtime_ledger.load_events(ledger_path)
+    with pytest.raises(
+        scheduler_reconciliation.SchedulerFailureReconciliationError,
+        match="incomplete final JSON on line 2",
+    ):
+        scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
+    assert ledger_path.read_bytes() == original_bytes
+
+
+def test_runtime_ledger_refuses_append_to_unterminated_final_line(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    first = build_success_event(
+        workspace_id="workspace-a",
+        run_id="success-run-1",
+        occurred_at="2026-06-01T01:00:00Z",
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps(first) + "\n" + '{"broken":', encoding="utf-8")
+    original_bytes = ledger_path.read_bytes()
+    with pytest.raises(runtime_ledger.RuntimeLedgerError, match="refusing to append"):
+        runtime_ledger.append_event(
+            ledger_path,
+            build_success_event(
+                workspace_id="workspace-a",
+                run_id="success-run-2",
+                occurred_at="2026-06-01T02:00:00Z",
+            ),
+        )
+    assert ledger_path.read_bytes() == original_bytes
+    assert not runtime_ledger.ledger_metadata_path(ledger_path).exists()
+
+
+def test_runtime_ledger_appends_separator_after_valid_final_line_without_newline(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    first = build_success_event(
+        workspace_id="workspace-a",
+        run_id="success-run-1",
+        occurred_at="2026-06-01T01:00:00Z",
+    )
+    second = build_success_event(
+        workspace_id="workspace-a",
+        run_id="success-run-2",
+        occurred_at="2026-06-01T02:00:00Z",
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps(first), encoding="utf-8")
+
+    runtime_ledger.append_event(ledger_path, second)
+
+    assert runtime_ledger.load_events(ledger_path) == [first, second]
+    assert len(ledger_path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_runtime_ledger_reports_torn_final_utf8_with_line_number(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "runtime" / "ledgers" / "workspace-a.runtime-ledger.jsonl"
+    first = build_success_event(
+        workspace_id="workspace-a",
+        run_id="success-run-1",
+        occurred_at="2026-06-01T01:00:00Z",
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_bytes(json.dumps(first).encode("utf-8") + b'\n{"note":"\xe2\x82')
+
+    with pytest.raises(
+        runtime_ledger.RuntimeLedgerError,
+        match="incomplete final UTF-8 on line 2; 1 earlier valid event",
+    ):
+        runtime_ledger.load_events(ledger_path)
+    with pytest.raises(
+        scheduler_reconciliation.SchedulerFailureReconciliationError,
+        match="incomplete final UTF-8 on line 2",
+    ):
+        scheduler_reconciliation.read_runtime_ledger(ledger_path, workspace_id="workspace-a")
 
 
 def test_runtime_ledger_append_event_does_not_call_fsync(tmp_path: Path, monkeypatch) -> None:

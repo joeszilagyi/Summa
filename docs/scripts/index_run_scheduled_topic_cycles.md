@@ -46,6 +46,13 @@ Budget behavior:
 - failures are appended as `command_failure` runtime-ledger events
 - successes are appended as `command_end` runtime-ledger events
 
+An invalid, incomplete final JSONL record is an integrity error, not a missing attempt.
+The reader reports its line number and the scheduler refuses to count attempts
+or append another event to that ledger. Preserve a copy of the ledger and
+inspect the torn tail before an explicit repair; earlier complete records stay
+on disk and are not silently discarded. A valid final record without a newline
+can be read; the writer appends a separator before the next record.
+
 Saturation is a convergence budget, not a truth decision. It means recent
 cycles produced too little accepted or reviewable yield under the configured
 policy, so the scheduler should stop spending expansion cycles for now.
