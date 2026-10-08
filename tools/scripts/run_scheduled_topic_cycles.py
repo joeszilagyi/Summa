@@ -26,6 +26,7 @@ from tools.common import runtime_ledger  # noqa: E402
 from tools.common.atomic_write import atomic_write_json  # noqa: E402
 from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     SchedulerFailureReconciliationError,
+    parse_timestamp,
     read_runtime_ledger,
     summarize_run_outcomes,
 )
@@ -504,10 +505,30 @@ def load_selection_records(selection_path: Path) -> list[dict[str, Any]]:
     return bound_records
 
 
-def terminal_attempt_count(ledger_path: Path, *, workspace_id: str) -> int:
+def terminal_attempt_count(ledger_path: Path, *, workspace_id: str, planned_at: str) -> int:
+    """Count completed attempts started during the current planned-run epoch."""
+    plan_time = parse_timestamp(normalize_timestamp(planned_at), label="planned_at")
     events = read_runtime_ledger(ledger_path, workspace_id=workspace_id)
     outcomes = summarize_run_outcomes(events)
-    return len(outcomes)
+    first_start_by_run: dict[str, datetime] = {}
+    for event in events:
+        if event.get("event_type") != "command_start":
+            continue
+        run_id = str(event["run_id"])
+        start_time = parse_timestamp(str(event["occurred_at"]), label="command_start occurred_at")
+        first_start = first_start_by_run.get(run_id)
+        if first_start is None or start_time < first_start:
+            first_start_by_run[run_id] = start_time
+    attempt_count = 0
+    for outcome in outcomes:
+        attempt_time = first_start_by_run.get(outcome.run_id)
+        if attempt_time is None:
+            attempt_time = parse_timestamp(
+                outcome.occurred_at, label="terminal outcome occurred_at"
+            )
+        if attempt_time >= plan_time:
+            attempt_count += 1
+    return attempt_count
 
 
 def append_ledger_event(
@@ -1047,7 +1068,9 @@ def run_scheduled_cycles(
                 continue
             ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
             result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
-            prior_attempts = terminal_attempt_count(ledger_path, workspace_id=workspace_id)
+            prior_attempts = terminal_attempt_count(
+                ledger_path, workspace_id=workspace_id, planned_at=str(record["planned_at"])
+            )
             result["attempt_number"] = prior_attempts + 1
             attempt_refusal = max_attempts_exceeded(record, prior_attempts=prior_attempts)
             if attempt_refusal is not None:
