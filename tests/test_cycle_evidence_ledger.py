@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -773,6 +774,52 @@ def test_record_stage_artifacts_streams_hash_without_read_bytes(
 
     assert str(seen["artifact_hash"]).startswith("sha256:")
     assert seen["schema_id"] is None
+
+
+def test_manifest_relative_stage_artifact_uses_manifest_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_dir = tmp_path / "run"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "topic-cycle-run.json"
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    artifact_content = b"correct manifest-relative artifact\n"
+    (manifest_dir / "candidate-batch.json").write_bytes(artifact_content)
+    other_dir = tmp_path / "other-working-directory"
+    other_dir.mkdir()
+    (other_dir / "candidate-batch.json").write_bytes(b"wrong cwd artifact\n")
+    monkeypatch.chdir(other_dir)
+
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn,
+                manifest_path=manifest_path,
+                manifest={
+                    "run_id": "relative-artifact-test",
+                    "status": "completed",
+                    "stages": [
+                        {
+                            "name": "gather",
+                            "status": "completed",
+                            "artifacts": {"candidate_batch": "candidate-batch.json"},
+                        }
+                    ],
+                },
+            )
+        row = conn.execute(
+            "SELECT artifact_path, artifact_hash, byte_count FROM cycle_artifact_ref "
+            "WHERE artifact_type='candidate_batch'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["artifact_path"] == "candidate-batch.json"
+    assert row["artifact_hash"] == "sha256:" + hashlib.sha256(artifact_content).hexdigest()
+    assert row["byte_count"] == len(artifact_content)
 
 
 def test_record_stage_artifacts_hashes_embedded_dicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
