@@ -580,10 +580,10 @@ def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_pat
     assert unrelated.exists()
 
 
-@pytest.mark.parametrize("expected_schema_version", [999, canonical_store.CURRENT_SCHEMA_VERSION - 1])
-def test_replay_schema_mismatch_fails_clearly(
-    tmp_path: Path, expected_schema_version: int
-) -> None:
+@pytest.mark.parametrize(
+    "expected_schema_version", [999, canonical_store.CURRENT_SCHEMA_VERSION - 1]
+)
+def test_replay_schema_mismatch_fails_clearly(tmp_path: Path, expected_schema_version: int) -> None:
     spool_dir = tmp_path / "spool"
     batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
     record = canonical_write_spool.build_spool_record(
