@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 15
-CURRENT_MIGRATION_ID = "0015_authority_reconciliation_evidence_history"
+CURRENT_SCHEMA_VERSION = 16
+CURRENT_MIGRATION_ID = "0016_cycle_error_counts"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -407,6 +407,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         migration_id="0015_authority_reconciliation_evidence_history",
         sql_path=MIGRATIONS_DIR / "0015_authority_reconciliation_evidence_history.sql",
         notes="Retain immutable evidence snapshots for authority reconciliation rows.",
+    ),
+    MigrationSpec(
+        version=16,
+        migration_id="0016_cycle_error_counts",
+        sql_path=MIGRATIONS_DIR / "0016_cycle_error_counts.sql",
+        notes="Backfill cycle error counts from recorded stage failures and validation results.",
     ),
 )
 
