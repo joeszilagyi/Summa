@@ -1939,6 +1939,73 @@ def test_source_access_replay_preserves_monotonic_seen_timestamps(tmp_path: Path
     assert row["citation_hint"] == "Fixture source access replayed"
 
 
+@pytest.mark.parametrize("replay_state", ["needs_review", "accepted"])
+def test_source_access_replay_preserves_established_authority_envelope(
+    tmp_path: Path, replay_state: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        accepted_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="source-access-accepted",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:source-access-accepted",
+        )
+        baseline = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=accepted_provenance.event_key,
+            original_locator="https://example.test/accepted-source-access",
+            canonical_url="https://example.test/accepted-source-access",
+            workspace_id="source_access_subject",
+            review_state="accepted",
+            publication_state="published",
+            authority_level="high",
+            public_blocker="trusted",
+            citation_hint="Original citation",
+        )
+        replay_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="source-access-replay",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:source-access-replay",
+        )
+        replay = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=replay_provenance.event_key,
+            original_locator="https://example.test/accepted-source-access",
+            canonical_url="https://example.test/accepted-source-access",
+            workspace_id="source_access_subject",
+            review_state=replay_state,
+            publication_state="draft",
+            authority_level="low",
+            public_blocker="untrusted",
+            citation_hint="Updated citation",
+        )
+        row = conn.execute(
+            "SELECT review_state, publication_state, authority_level, public_blocker, "
+            "provenance_event_ref, citation_hint FROM source_access WHERE source_access_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert row["review_state"] == "accepted"
+    assert row["publication_state"] == "published"
+    assert row["authority_level"] == "high"
+    assert row["public_blocker"] == "trusted"
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["citation_hint"] == "Updated citation"
+
+
 def test_source_access_lead_identity_includes_workspace_and_locator(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
