@@ -39,6 +39,8 @@ from tools.common.local_search_contract import (  # noqa: E402
 from tools.validators.validate_correction_ledger import EXIT_PASS as EXIT_LEDGER_PASS  # noqa: E402
 from tools.validators.validate_correction_ledger import validate_correction_ledger  # noqa: E402
 from tools.validators.validate_local_search_projection import (  # noqa: E402
+    no_duplicate_object_pairs,
+    reject_json_constant,
     validate_local_search_projection_payload,  # noqa: E402
 )
 
@@ -494,6 +496,17 @@ def projection_records_digest(records: list[dict[str, Any]]) -> str:
     return projection_records_digest_from_iter(iter(records))[0]
 
 
+def strict_projection_field_json(raw: str, *, field_name: str) -> Any:
+    try:
+        return json.loads(
+            raw,
+            object_pairs_hook=no_duplicate_object_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except ValueError as exc:
+        raise SearchProjectionError(f"invalid {field_name} JSON in projection index") from exc
+
+
 def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, int]:
     hasher = hashlib.sha256()
     hasher.update(b"[")
@@ -503,7 +516,9 @@ def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, in
         record = {
             "authority_level": row["authority_level"],
             "confidence_score": row["confidence_score"],
-            "indexed_fields": json.loads(row["indexed_fields_json"]),
+            "indexed_fields": strict_projection_field_json(
+                row["indexed_fields_json"], field_name="indexed_fields_json"
+            ),
             "lineage_state": row["lineage_state"],
             "object_pk": int(row["object_pk"]),
             "object_ref": row["object_ref"],
@@ -513,9 +528,13 @@ def projection_records_digest_from_cursor(rows: sqlite3.Cursor) -> tuple[str, in
             "publication_state": row["publication_state"],
             "review_state": row["review_state"],
             "subtitle": row["subtitle"],
-            "suppressed_fields": json.loads(row["suppressed_fields_json"]),
+            "suppressed_fields": strict_projection_field_json(
+                row["suppressed_fields_json"], field_name="suppressed_fields_json"
+            ),
             "title": row["title"],
-            "visible_profiles": json.loads(row["visible_profiles_json"]),
+            "visible_profiles": strict_projection_field_json(
+                row["visible_profiles_json"], field_name="visible_profiles_json"
+            ),
         }
         if seen_record:
             hasher.update(b",")

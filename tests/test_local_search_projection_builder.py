@@ -32,6 +32,12 @@ sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
 
 
+@pytest.mark.parametrize("raw", ['{"field":"title","field":"title"}', '{"score":NaN}'])
+def test_projection_index_json_fields_require_strict_json(raw: str) -> None:
+    with pytest.raises(builder.SearchProjectionError, match="invalid indexed_fields_json JSON"):
+        builder.strict_projection_field_json(raw, field_name="indexed_fields_json")
+
+
 def test_projection_field_json_rejects_non_finite_values() -> None:
     with pytest.raises(ValueError, match="Out of range float values"):
         builder.projection_field_json({"score": float("nan")})
@@ -771,6 +777,40 @@ def test_builder_detects_tampered_projection_rows(tmp_path: Path) -> None:
         conn.close()
 
     with pytest.raises(builder.SearchProjectionError, match="projection records digest mismatch"):
+        builder.validate_projection_index_file(index_db, payload)
+
+
+def test_builder_rejects_duplicate_keys_in_projection_index_json(tmp_path: Path) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    payload = builder.build_projection_payload(
+        SimpleNamespace(
+            db=str(db),
+            profile="local",
+            correction_ledger=None,
+            generated_at="2026-06-02T00:00:00Z",
+        )
+    )
+    builder.write_index(index_db, payload)
+
+    conn = sqlite3.connect(index_db)
+    try:
+        row = conn.execute(
+            "SELECT indexed_fields_json FROM search_projection WHERE object_ref='work:1'"
+        ).fetchone()
+        assert row is not None
+        original = row[0]
+        tampered = original.replace('"field":', '"field":"ignored","field":', 1)
+        assert tampered != original
+        conn.execute(
+            "UPDATE search_projection SET indexed_fields_json=? WHERE object_ref='work:1'",
+            (tampered,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(builder.SearchProjectionError, match="invalid indexed_fields_json JSON"):
         builder.validate_projection_index_file(index_db, payload)
 
 
