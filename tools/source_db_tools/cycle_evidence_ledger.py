@@ -1752,6 +1752,24 @@ def _skipped_stage_retryable(reason: str) -> bool:
     return reason.strip().casefold() not in _DELIBERATE_STAGE_SKIP_REASONS
 
 
+def _manifest_error_count(status: str, stages: Iterable[Mapping[str, Any]]) -> int:
+    """Count problematic stage evidence once; warnings have their own counter."""
+    problem_stages = 0
+    for stage in stages:
+        stage_status = stage.get("status")
+        validation_status = _dict_or_empty(stage.get("validation")).get("status")
+        if (
+            stage_status in {"failed", "degraded", "spooled", "partial"}
+            or (
+                stage_status == "not_reached"
+                and (stage.get("required", True) or stage.get("name") == "graph_closure_audit")
+            )
+            or validation_status in {"fail", "failed", "error", "invalid"}
+        ):
+            problem_stages += 1
+    return max(problem_stages, int(status in {"failed", "degraded", "partial"}))
+
+
 def record_topic_cycle_manifest(
     conn: sqlite3.Connection,
     *,
@@ -1787,7 +1805,7 @@ def record_topic_cycle_manifest(
     status = _require_nonblank(manifest.get("status"), "manifest.status")
     warnings = manifest.get("warnings")
     warning_count = len(warnings) if isinstance(warnings, list) else 0
-    error_count = 1 if status == "failed" else 0
+    error_count = _manifest_error_count(status, stages)
     event_id = record_cycle_event_start(
         conn,
         run_id=run_id,
