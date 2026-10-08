@@ -18,6 +18,7 @@ EVENT_TYPES = {
     "command_start",
     "command_end",
     "command_failure",
+    "command_deferred",
     "lock_acquired",
     "lock_released",
     "validation",
