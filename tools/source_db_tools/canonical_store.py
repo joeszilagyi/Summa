@@ -11,6 +11,7 @@ import sys
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -573,6 +574,25 @@ def actual_indexes(conn: sqlite3.Connection) -> set[str]:
     return {str(row["name"]) for row in rows}
 
 
+def index_definitions(conn: sqlite3.Connection) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return {str(row["name"]): str(row["sql"]) for row in rows if row["sql"] is not None}
+
+
+@lru_cache(maxsize=32)
+def expected_index_definitions(schema_version: int) -> dict[str, str]:
+    reference = sqlite3.connect(":memory:")
+    reference.row_factory = sqlite3.Row
+    reference.execute("PRAGMA foreign_keys=ON")
+    try:
+        apply_migrations(reference, target_version=schema_version)
+        return index_definitions(reference)
+    finally:
+        reference.close()
+
+
 def actual_triggers(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name"
@@ -893,10 +913,26 @@ def validate_existing_store(
         raise CanonicalStoreError(
             "canonical store is missing required tables: " + ", ".join(sorted(missing_tables))
         )
-    missing_indexes = required_indexes - actual_indexes(conn)
+    actual_definitions = index_definitions(conn)
+    missing_indexes = required_indexes - actual_definitions.keys()
     if missing_indexes:
         raise CanonicalStoreError(
             "canonical store is missing required indexes: " + ", ".join(sorted(missing_indexes))
+        )
+    reference_definitions = expected_index_definitions(version_row.schema_version)
+    missing_reference = required_indexes - reference_definitions.keys()
+    if missing_reference:
+        raise CanonicalStoreError(
+            "canonical migration files do not define required indexes: "
+            + ", ".join(sorted(missing_reference))
+        )
+    mismatched_indexes = sorted(
+        name for name in required_indexes if actual_definitions.get(name) != reference_definitions[name]
+    )
+    if mismatched_indexes:
+        raise CanonicalStoreError(
+            "canonical store required index definitions do not match migration files: "
+            + ", ".join(mismatched_indexes)
         )
     if version_row.schema_version >= 10:
         missing_triggers = REQUIRED_REVISION_TRIGGERS - actual_triggers(conn)

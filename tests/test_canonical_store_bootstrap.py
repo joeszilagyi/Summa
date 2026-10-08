@@ -582,6 +582,34 @@ def test_check_mode_succeeds_for_valid_store_and_fails_for_missing_table(tmp_pat
         canonical_store.check_canonical_store(broken_path)
 
 
+@pytest.mark.parametrize(
+    "index_name,replacement",
+    [
+        ("ix_work_title", "CREATE INDEX ix_work_title ON work(work_type, title)"),
+        (
+            "ux_source_access_lead_identity_global",
+            "CREATE INDEX ux_source_access_lead_identity_global "
+            "ON source_access(source_lead_id, original_locator)",
+        ),
+        ("ix_work_review", "CREATE INDEX ix_work_review ON work(review_state DESC)"),
+    ],
+)
+def test_check_mode_rejects_wrong_required_index_definition(
+    tmp_path: Path, index_name: str, replacement: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(f"DROP INDEX {index_name}")
+        conn.execute(replacement)
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(canonical_store.CanonicalStoreError, match=f"definitions.*{index_name}"):
+        canonical_store.check_canonical_store(db_path)
+
+
 def test_outline_and_bootstrap_tables_do_not_drift(tmp_path: Path) -> None:
     outline = canonical_store.load_canonical_outline()
     classified = canonical_store.classified_outline_tables(outline)
