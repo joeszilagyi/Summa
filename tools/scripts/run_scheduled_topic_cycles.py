@@ -1036,7 +1036,9 @@ def run_scheduled_cycles(
                     stage="selection_filter",
                     recoverability="non_retryable",
                 )
-                ledger_path = resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                ledger_path = (
+                    resolve_path(args.ledger_root) / f"{workspace_id}.runtime-ledger.jsonl"
+                )
                 result["ledger_path"] = manifest_relative_path(ledger_path, run_dir=run_dir)
                 append_ledger_event(
                     ledger_path=ledger_path,
