@@ -94,7 +94,7 @@ def propose_candidate(
     )
     conn.execute(
         """
-        INSERT OR IGNORE INTO authority_reconciliation (
+        INSERT INTO authority_reconciliation (
           reconciliation_key_v1, target_namespace, target_id,
           detected_entity_id, raw_label, entity_type, candidate_label,
           candidate_authority_record_id, candidate_authority_id,
@@ -103,6 +103,7 @@ def propose_candidate(
           confidence_score, review_state, reviewer_note, created_at,
           updated_at, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(reconciliation_key_v1) DO NOTHING
         """,
         (
             reconciliation_key,
@@ -131,14 +132,56 @@ def propose_candidate(
         ),
     )
     row = conn.execute(
-        "SELECT authority_reconciliation_id FROM authority_reconciliation WHERE reconciliation_key_v1=?",
+        """
+        SELECT authority_reconciliation_id, match_score, match_method,
+               confidence_score, evidence_context, reviewer_note, updated_at
+        FROM authority_reconciliation WHERE reconciliation_key_v1=?
+        """,
         (reconciliation_key,),
     ).fetchone()
     if row is None:
         raise RuntimeError(
             f"failed to insert or fetch authority reconciliation key: {reconciliation_key}"
         )
-    return int(row[0])
+    previous_score = row["match_score"]
+    score_improved = match_score is not None and (
+        previous_score is None or match_score > previous_score
+    )
+    incoming_note = reviewer_note.strip() if reviewer_note is not None else None
+    stored_note = row["reviewer_note"]
+    if incoming_note and stored_note and incoming_note != stored_note:
+        raise ValueError("conflicting reviewer_note on authority reconciliation replay")
+    next_evidence = (
+        evidence_context
+        if evidence_context is not None and evidence_context.strip()
+        else row["evidence_context"]
+    )
+    next_note = incoming_note or stored_note
+    next_method = match_method if score_improved and match_method else row["match_method"]
+    if (
+        score_improved
+        or next_evidence != row["evidence_context"]
+        or next_note != row["reviewer_note"]
+    ):
+        conn.execute(
+            """
+            UPDATE authority_reconciliation
+            SET match_score=?, confidence_score=?, match_method=?,
+                evidence_context=?, reviewer_note=?, updated_at=?, record_last_updated=?
+            WHERE authority_reconciliation_id=?
+            """,
+            (
+                match_score if score_improved else row["match_score"],
+                match_score if score_improved else row["confidence_score"],
+                next_method,
+                next_evidence,
+                next_note,
+                max(str(row["updated_at"]), timestamp),
+                max(str(row["updated_at"]), timestamp),
+                int(row["authority_reconciliation_id"]),
+            ),
+        )
+    return int(row["authority_reconciliation_id"])
 
 
 def reject_candidate(

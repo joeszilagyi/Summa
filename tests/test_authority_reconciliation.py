@@ -65,6 +65,112 @@ def test_local_authority_creation_records_stable_provenance(tmp_path) -> None:
     assert events[0]["source_object_id"] == "local-authority-provenance"
 
 
+def test_proposal_replay_retains_changed_evidence_without_overwriting_review(tmp_path) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        with conn:
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Jane Smith",
+                source_namespace="pytest",
+                source_id="proposal-replay",
+                created_at=FIXED_TIMESTAMP,
+            )
+            proposal_id = authority_reconciliation.propose_candidate(
+                conn,
+                detected_entity_id=None,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_id=authority_id,
+                match_method="name",
+                match_score=0.55,
+                evidence_context="name match",
+                reviewer_note="first note",
+                created_at=FIXED_TIMESTAMP,
+            )
+            conn.execute(
+                "UPDATE authority_reconciliation SET review_state='accepted' "
+                "WHERE authority_reconciliation_id=?",
+                (proposal_id,),
+            )
+            replay_id = authority_reconciliation.propose_candidate(
+                conn,
+                detected_entity_id=None,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_id=authority_id,
+                match_method="identifier",
+                match_score=0.92,
+                evidence_context="identifier match",
+                reviewer_note="first note",
+                created_at="2026-06-06T10:20:30Z",
+            )
+            with pytest.raises(ValueError, match="conflicting reviewer_note"):
+                authority_reconciliation.propose_candidate(
+                    conn,
+                    detected_entity_id=None,
+                    raw_label="Jane Smith",
+                    entity_type="person",
+                    candidate_authority_id=authority_id,
+                    reviewer_note="different note",
+                    created_at="2026-06-07T10:20:30Z",
+                )
+            unchanged_id = authority_reconciliation.propose_candidate(
+                conn,
+                detected_entity_id=None,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_id=authority_id,
+                match_method="name",
+                match_score=0.50,
+                created_at="2026-06-07T10:20:30Z",
+            )
+            supplemental_id = authority_reconciliation.propose_candidate(
+                conn,
+                detected_entity_id=None,
+                raw_label="Jane Smith",
+                entity_type="person",
+                candidate_authority_id=authority_id,
+                match_method="name",
+                match_score=0.50,
+                evidence_context="additional source",
+                created_at="2026-06-08T10:20:30Z",
+            )
+            row = conn.execute(
+                """
+                SELECT match_score, confidence_score, match_method,
+                       evidence_context, reviewer_note, review_state
+                FROM authority_reconciliation WHERE authority_reconciliation_id=?
+                """,
+                (proposal_id,),
+            ).fetchone()
+            history = conn.execute(
+                """
+                SELECT match_score, evidence_context
+                FROM authority_reconciliation_evidence_history
+                WHERE authority_reconciliation_id=? ORDER BY history_id
+                """,
+                (proposal_id,),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    assert replay_id == unchanged_id == supplemental_id == proposal_id
+    assert row["match_score"] == pytest.approx(0.92)
+    assert row["confidence_score"] == pytest.approx(0.92)
+    assert row["match_method"] == "identifier"
+    assert row["evidence_context"] == "additional source"
+    assert row["reviewer_note"] == "first note"
+    assert row["review_state"] == "accepted"
+    assert [(item["match_score"], item["evidence_context"]) for item in history] == [
+        (0.55, "name match"),
+        (0.55, "name match"),
+        (0.92, "identifier match"),
+        (0.92, "additional source"),
+    ]
+
+
 def test_readding_authority_identifier_cannot_demote_primary_status(tmp_path) -> None:
     conn = bootstrap_db(tmp_path)
     try:
