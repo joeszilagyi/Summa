@@ -488,6 +488,8 @@ def apply_authority_merge_decision(
         source_namespace="authority_merge_event",
         source_id=str(merge.row_id),
         source_run_id=run_id,
+        allow_established_transition=True,
+        reviewer=reviewer,
     )
     result.update(
         {
