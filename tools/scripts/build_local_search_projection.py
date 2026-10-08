@@ -948,6 +948,10 @@ def build_projection_payload_streaming(
         )
         temp_index_path.replace(index_path)
         temp_index_path = None
+        if args.validate_index_file:
+            validate_projection_index_file(index_path, payload)
+        else:
+            validate_projection_index_post_write(index_path, payload)
         return payload
     finally:
         conn.close()
@@ -1335,6 +1339,10 @@ def write_index(
             validate_projection_index_post_write(temp_path, payload)
         temp_path.replace(index_path)
         temp_path = None
+        if validate_index_file:
+            validate_projection_index_file(index_path, payload)
+        else:
+            validate_projection_index_post_write(index_path, payload)
         return None
     finally:
         if conn is not None:
