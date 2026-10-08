@@ -21,6 +21,77 @@ def bootstrap_db(tmp_path):
     return canonical_store.connect_canonical_store(db_path)
 
 
+def test_readding_authority_identifier_cannot_demote_primary_status(tmp_path) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        authority_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="primary-identifier-replay",
+            created_at=FIXED_TIMESTAMP,
+        )
+        first_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=authority_id,
+            scheme="orcid",
+            value="0000-0002-1825-0097",
+            is_primary=1,
+            review_state="accepted",
+            verified_at=FIXED_TIMESTAMP,
+        )
+        replay_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=authority_id,
+            scheme="orcid",
+            value="0000-0002-1825-0097",
+            review_state="accepted",
+            verified_at="2026-06-06T10:20:30Z",
+        )
+        primary_flag = conn.execute(
+            "SELECT is_primary FROM authority_identifier WHERE authority_identifier_id=?",
+            (first_id,),
+        ).fetchone()[0]
+        secondary_authority_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="John Smith",
+            source_namespace="pytest",
+            source_id="secondary-identifier-promotion",
+            created_at=FIXED_TIMESTAMP,
+        )
+        secondary_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=secondary_authority_id,
+            scheme="local",
+            value="secondary-id",
+            is_primary=0,
+            review_state="accepted",
+            verified_at=FIXED_TIMESTAMP,
+        )
+        promoted_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=secondary_authority_id,
+            scheme="local",
+            value="secondary-id",
+            is_primary=1,
+            review_state="accepted",
+            verified_at="2026-06-06T10:20:30Z",
+        )
+        promoted_flag = conn.execute(
+            "SELECT is_primary FROM authority_identifier WHERE authority_identifier_id=?",
+            (secondary_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert replay_id == first_id
+    assert primary_flag == 1
+    assert promoted_id == secondary_id
+    assert promoted_flag == 1
+
+
 @pytest.mark.parametrize(
     "initial_state",
     ["machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"],

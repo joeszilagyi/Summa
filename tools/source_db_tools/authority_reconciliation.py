@@ -336,7 +336,7 @@ def add_authority_identifier(
           normalized_uri=excluded.normalized_uri,
           validity_status=excluded.validity_status,
           validation_warning=excluded.validation_warning,
-          is_primary=excluded.is_primary,
+          is_primary=MAX(authority_identifier.is_primary, excluded.is_primary),
           confidence_score=COALESCE(excluded.confidence_score, authority_identifier.confidence_score),
           review_state=COALESCE(excluded.review_state, authority_identifier.review_state),
           last_verified_at=excluded.last_verified_at,
