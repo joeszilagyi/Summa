@@ -302,6 +302,12 @@ def test_cycle_evidence_write_and_read_helpers_are_deterministic(tmp_path: Path)
         assert [artifact["artifact_type"] for artifact in summary["artifacts"]] == [
             "candidate_batch"
         ]
+        assert summary["candidates_considered"][0]["candidate_ref_id"] == "candidate-1"
+        assert summary["candidates_considered"][0]["selected"] == 1
+        assert summary["candidates_excluded"][0]["exclusion_reason"] == "no source handoff supplied"
+        assert summary["candidates_excluded"][0]["retryable"] == 1
+        assert summary["tool_failures"][0]["error_summary"] == "fixture failure"
+        assert summary["operator_overrides"][0]["override_kind"] == "manual_candidate_batch_fixture"
         assert count_rows(conn, "source_claim") == 0
     finally:
         conn.close()
@@ -972,6 +978,17 @@ def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
                         },
                     ]
                 )
+            if any(
+                f"FROM {table} WHERE cycle_event_id=?" in sql
+                for table in (
+                    "cycle_candidate_considered",
+                    "cycle_candidate_excluded",
+                    "cycle_tool_failure",
+                    "cycle_operator_override",
+                )
+            ):
+                assert params == ("cycle:test",)
+                return FakeCursor()
             assert params == ("cycle:test",)
             raise AssertionError(f"unexpected SQL: {sql}")
 
@@ -998,6 +1015,10 @@ def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
     assert len(detail_queries) == 1
     assert [stage["stage_name"] for stage in summary["stages"]] == ["run_gather"]
     assert [artifact["artifact_type"] for artifact in summary["artifacts"]] == ["candidate_batch"]
+    assert summary["candidates_considered"] == []
+    assert summary["candidates_excluded"] == []
+    assert summary["tool_failures"] == []
+    assert summary["operator_overrides"] == []
 
 
 def test_record_stage_artifacts_streams_hash_without_read_bytes(
