@@ -2616,6 +2616,15 @@ def record_source_relationship(
         existing["review_state"],
         review_state_value,
     )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    if existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES and (
+        proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+        or _pending_review_state(review_state_value)
+    ):
+        preserve_established_envelope = True
     relationship_confidence_value = (
         existing["confidence_score"]
         if preserve_established_envelope
@@ -2670,9 +2679,13 @@ def record_source_relationship(
             ),
             "confidence_score": relationship_confidence_value,
             "provenance_event_ref": relationship_provenance_value,
-            "evidence_locator_ref": _first_present(
-                _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
-                existing["evidence_locator_ref"],
+            "evidence_locator_ref": (
+                existing["evidence_locator_ref"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
+                    existing["evidence_locator_ref"],
+                )
             ),
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
