@@ -144,6 +144,63 @@ def test_local_authority_replay_preserves_reviewed_state_and_score(
 
 
 @pytest.mark.parametrize(
+    ("initial_state", "replay_state", "expected_state", "expected_score"),
+    [
+        ("accepted", "proposed", "accepted", 0.95),
+        ("accepted", "accepted", "accepted", 0.95),
+        ("curated", "needs_review", "curated", 0.95),
+        ("proposed", "accepted", "accepted", 0.10),
+    ],
+)
+def test_identifier_replay_preserves_reviewed_state_and_score(
+    tmp_path,
+    initial_state: str,
+    replay_state: str,
+    expected_state: str,
+    expected_score: float,
+) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        authority_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="identifier-review-replay",
+            created_at=FIXED_TIMESTAMP,
+        )
+        first_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=authority_id,
+            scheme="orcid",
+            value="0000-0002-1825-0097",
+            confidence_score=0.95,
+            review_state=initial_state,
+            verified_at=FIXED_TIMESTAMP,
+        )
+        replay_id = authority_reconciliation.add_authority_identifier(
+            conn,
+            authority_record_id=authority_id,
+            scheme="orcid",
+            value="0000-0002-1825-0097",
+            confidence_score=0.10,
+            review_state=replay_state,
+            verified_at="2026-06-06T10:20:30Z",
+        )
+        row = conn.execute(
+            "SELECT review_state, confidence_score FROM authority_identifier "
+            "WHERE authority_identifier_id=?",
+            (first_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert replay_id == first_id
+    assert row["review_state"] == expected_state
+    assert row["confidence_score"] == expected_score
+
+
+@pytest.mark.parametrize(
     "initial_state",
     ["machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"],
 )
