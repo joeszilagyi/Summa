@@ -2146,6 +2146,48 @@ def test_topic_cycle_existing_retryable_run_requires_force(
     cycle.validate_existing_run_dir(run_dir, force=True, resume=False)
 
 
+def test_topic_cycle_force_records_distinct_ledger_attempts(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-repeat"
+    args = [
+        "--workspace",
+        str(workspace),
+        "--db",
+        str(db_path),
+        "--run-dir",
+        str(run_dir),
+        "--run-id",
+        "cycle-repeat",
+        "--timestamp",
+        "2026-06-03T12:00:00Z",
+        "--mode",
+        "local",
+        "--candidate-batch-fixture",
+        str(CANDIDATE_BATCH),
+    ]
+    first = run_cycle(args)
+    assert first.returncode == 0, first.stdout + first.stderr
+    first_id = load_manifest(run_dir)["cycle_event_id"]
+
+    second = run_cycle([*args, "--force"])
+    assert second.returncode == 0, second.stdout + second.stderr
+    second_id = load_manifest(run_dir)["cycle_event_id"]
+    assert first_id != second_id
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT cycle_event_id FROM cycle_event WHERE run_id=? ORDER BY rowid",
+            ("cycle-repeat",),
+        ).fetchall()
+        assert [row[0] for row in rows] == [first_id, second_id]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
 def test_topic_cycle_runner_has_no_direct_canonical_family_inserts() -> None:
     body = SCRIPT.read_text(encoding="utf-8")
     forbidden = [

@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 import time
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -349,6 +350,7 @@ def build_manifest(
         run_id=run_id,
         started_at=started_at,
         workspace_ref=str(workspace),
+        attempt_id=uuid.uuid4().hex,
     )
     return {
         "schema_version": SCHEMA_VERSION,
