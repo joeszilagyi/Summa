@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from tools.common.candidate_feedback_contract import compact_next_action_prompt_payload
-from tools.source_db_tools import canonical_ingest, canonical_store
+from tools.source_db_tools import authority_reconciliation, canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER_PATH = REPO_ROOT / "tools" / "scripts" / "build_candidate_feedback_plan.py"
@@ -1681,6 +1681,65 @@ def test_candidate_feedback_includes_entity_leads_without_extraction_records(
     assert any(
         item["object_ref"] == f"detected_entity:{entity.row_id}" for item in payload["lead_scores"]
     )
+
+
+def test_feedback_entity_leads_exclude_already_linked_entities(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="candidate-feedback-tests",
+                object_id="linked-entity-lead",
+                event_type="feedback_test",
+                tool_name="tests.test_candidate_feedback_selection",
+                event_timestamp=FIXED_CREATED_AT,
+                provenance_event_key_v1="prov:feedback:linked-entity-lead",
+            )
+            authority_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Already Linked Person",
+                source_namespace="pytest",
+                source_id="linked-feedback-person",
+                created_at=FIXED_CREATED_AT,
+            )
+            linked = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                entity_label="Already Linked Person",
+                entity_type="person",
+                authority_record_id=authority_id,
+                review_state="proposed",
+                workspace_id="feedback_subject",
+                record_last_updated=FIXED_CREATED_AT,
+            )
+            unlinked = canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                entity_label="Unlinked Person",
+                entity_type="person",
+                review_state="proposed",
+                workspace_id="feedback_subject",
+                record_last_updated=FIXED_CREATED_AT,
+            )
+        leads = planner.load_entity_leads(
+            conn,
+            subject_id="feedback_subject",
+            enabled_facets=["people"],
+            history_by_event_key={},
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+        )
+        linked_row = conn.execute(
+            "SELECT review_state FROM extraction_detected_entity WHERE detected_entity_id=?",
+            (linked.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert [lead["object_ref"] for lead in leads] == [f"detected_entity:{unlinked.row_id}"]
+    assert linked_row["review_state"] == "proposed"
 
 
 def test_feedback_plan_deferred_facet_list_excludes_selected_facet_for_lead(tmp_path: Path) -> None:
