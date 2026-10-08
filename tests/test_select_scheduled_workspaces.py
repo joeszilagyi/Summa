@@ -43,6 +43,66 @@ def test_scheduler_skip_retryability_follows_reason_class(
     assert selection_explanation.scheduler_skip_retryable(reasons) is retryable
 
 
+def test_scheduler_explanation_id_covers_full_decision_set() -> None:
+    common = {
+        "planner_run_id": "planner:same-run",
+        "planned_at": "2026-01-01T00:00:00Z",
+        "registry_path": "/fixture/registry.json",
+        "include_manual": False,
+        "include_saturated": False,
+        "ignore_saturation": False,
+        "saturation_policy": None,
+    }
+    selected_a = {"workspace_id": "workspace-a", "topic_label": "A"}
+    selected_b = {"workspace_id": "workspace-b", "topic_label": "B"}
+    skipped_c = {"workspace_id": "workspace-c", "reasons": ["selection limit reached"]}
+    baseline = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[selected_a, selected_b],
+        skipped_workspaces=[skipped_c],
+        limit=2,
+    )
+    same = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[selected_a, selected_b],
+        skipped_workspaces=[skipped_c],
+        limit=2,
+    )
+    different_selection = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[selected_a],
+        skipped_workspaces=[
+            {"workspace_id": "workspace-b", "reasons": ["selection limit reached"]},
+            skipped_c,
+        ],
+        limit=2,
+    )
+    different_reason = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[selected_a, selected_b],
+        skipped_workspaces=[
+            {"workspace_id": "workspace-c", "reasons": ["failure_state is blocked"]}
+        ],
+        limit=2,
+    )
+    different_limit = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[selected_a, selected_b],
+        skipped_workspaces=[skipped_c],
+        limit=3,
+    )
+
+    assert baseline["explanation_id"] == same["explanation_id"]
+    assert len(
+        {
+            baseline["explanation_id"],
+            different_selection["explanation_id"],
+            different_reason["explanation_id"],
+            different_limit["explanation_id"],
+        }
+    ) == 4
+
+
 def run_selector(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
