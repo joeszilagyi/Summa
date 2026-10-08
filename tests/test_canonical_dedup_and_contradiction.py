@@ -1476,7 +1476,11 @@ def test_null_workspace_claims_do_not_compare_against_other_workspaces(tmp_path:
                 event_timestamp=FIXED_TIMESTAMP,
             )
             claim_ids = []
-            for workspace_id, year in ((None, 1940), ("workspace-a", 1950), ("workspace-b", 1930)):
+            for workspace_id, year in (
+                (None, 1940),
+                ("workspace-a", 1950),
+                ("workspace-b", 1930),
+            ):
                 claim = canonical_store.record_source_claim(
                     conn,
                     claim_text=json.dumps({"year": year}),
