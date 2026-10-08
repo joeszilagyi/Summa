@@ -59,6 +59,7 @@ OBJECT_REF_TABLES: dict[str, tuple[str, tuple[str, ...]]] = {
 
 AUDITED_TABLES = (
     "provenance_event",
+    "authority_record",
     "work",
     "source_access",
     "capture_event",
@@ -128,16 +129,16 @@ class GraphClosureLookup:
         self._provenance_keys: set[str] | None = None
 
     def provenance_exists(self, key: Any) -> bool:
-        text = _text(key)
-        if text is None:
+        key_text = _text(key)
+        if key_text is None:
             return False
         if self._provenance_keys is None:
             self._provenance_keys = {
-                text
+                row_text
                 for row in self.conn.execute("SELECT provenance_event_key_v1 FROM provenance_event")
-                if (text := _text(row[0])) is not None
+                if (row_text := _text(row[0])) is not None
             }
-        return text in self._provenance_keys
+        return key_text in self._provenance_keys
 
     def object_ref_exists(self, object_ref: str | None) -> bool:
         text = _text(object_ref)
@@ -283,6 +284,59 @@ def audit_work(
         _provenance_key, invalid = _provenance_issue(lookup, row, "work", "work_id")
         if invalid is not None:
             issues.append(invalid)
+    return issues
+
+
+def audit_authority_record(
+    conn: sqlite3.Connection, *, lookup: GraphClosureLookup | None = None
+) -> list[dict[str, Any]]:
+    lookup = lookup or GraphClosureLookup(conn)
+    issues: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT * FROM authority_record ORDER BY authority_record_id"):
+        authority_id = row["authority_record_id"]
+        provenance_ref = _text(row["provenance_event_ref"])
+        if provenance_ref is not None and not lookup.provenance_exists(provenance_ref):
+            issues.append(
+                orphan_issue(
+                    "authority_record",
+                    authority_id,
+                    "authority_record.provenance_event_ref does not resolve",
+                    policy="authority_provenance_must_resolve",
+                )
+            )
+            continue
+        merge_target = row["merged_into_authority_record_id"]
+        if merge_target is not None and (
+            merge_target == authority_id
+            or not lookup.object_ref_exists(f"authority_record:{merge_target}")
+        ):
+            issues.append(
+                orphan_issue(
+                    "authority_record",
+                    authority_id,
+                    "authority_record merge target is self-referential or missing",
+                    policy="authority_merge_target_must_resolve_to_another_record",
+                )
+            )
+            continue
+        if provenance_ref is not None:
+            continue
+        if _text(row["source_namespace"]) is not None and _text(row["source_id"]) is not None:
+            issues.append(
+                unresolved_issue(
+                    "authority_record",
+                    authority_id,
+                    "legacy source-linked authority record lacks a provenance_event_ref",
+                )
+            )
+        else:
+            issues.append(
+                orphan_issue(
+                    "authority_record",
+                    authority_id,
+                    "authority record has no resolvable provenance or source identity",
+                )
+            )
     return issues
 
 
@@ -690,6 +744,7 @@ def collect_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     lookup = GraphClosureLookup(conn)
     issues: list[dict[str, Any]] = []
     issues.extend(audit_provenance_event(conn, lookup=lookup))
+    issues.extend(audit_authority_record(conn, lookup=lookup))
     issues.extend(audit_work(conn, lookup=lookup))
     issues.extend(audit_source_access(conn, lookup=lookup))
     issues.extend(audit_capture_event(conn, lookup=lookup))
