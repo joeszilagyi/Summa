@@ -46,6 +46,51 @@ def test_bootstrap_includes_cycle_evidence_ledger_tables(tmp_path: Path) -> None
     } <= tables
 
 
+def test_cycle_attempt_migration_preserves_existing_evidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(db_path, target_version=10)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            original_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="same-run",
+                started_at="2026-06-01T00:00:00Z",
+                workspace_ref="/workspace",
+            )
+            stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+                conn,
+                cycle_event_id=original_id,
+                run_id="same-run",
+                stage_name="run_gather",
+                stage_order=1,
+            )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT cycle_event_id FROM cycle_stage_event WHERE stage_event_id=?",
+            (stage_id,),
+        ).fetchone()[0] == original_id
+        with conn:
+            next_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="same-run",
+                started_at="2026-06-01T00:00:00Z",
+                workspace_ref="/workspace",
+                cycle_event_id="cycle:next-attempt",
+            )
+        assert next_id != original_id
+        assert count_rows(conn, "cycle_event") == 2
+    finally:
+        conn.close()
+
+
 def test_cycle_evidence_write_and_read_helpers_are_deterministic(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -380,7 +425,7 @@ def test_cycle_events_for_subject_returns_latest_when_limited(tmp_path: Path) ->
         conn.close()
 
 
-def test_cycle_event_start_replays_are_idempotent_by_run_id(tmp_path: Path) -> None:
+def test_cycle_event_start_replays_are_idempotent_by_attempt(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
@@ -414,10 +459,29 @@ def test_cycle_event_start_replays_are_idempotent_by_run_id(tmp_path: Path) -> N
         assert event["started_at"] == "2026-06-01T00:00:00Z"
         expected_id = cycle_evidence_ledger.build_cycle_event_id(
             run_id="run-duplicate",
-            started_at="2026-06-03T00:00:00Z",
+            started_at="2026-06-01T00:00:00Z",
             workspace_ref=str(tmp_path / "workspace"),
         )
         assert first_id == expected_id
+        later_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="run-duplicate",
+            workspace_id="fixture_workspace",
+            workspace_ref=str(tmp_path / "workspace"),
+            subject_key="fixture_subject",
+            domain_pack_id="general.v1",
+            cycle_depth=1,
+            mode="local",
+            started_at="2026-06-03T00:00:00Z",
+            status="running",
+        )
+        assert later_id != first_id
+        assert count_rows(conn, "cycle_event") == 2
+        assert cycle_evidence_ledger.build_cycle_event_id(
+            run_id="run-duplicate",
+            started_at="2026-06-01T00:00:00Z",
+            workspace_ref=str(tmp_path / "other-workspace"),
+        ) != first_id
         with pytest.raises(
             cycle_evidence_ledger.CycleEvidenceLedgerError,
             match="ledger replay mismatch",
@@ -425,20 +489,21 @@ def test_cycle_event_start_replays_are_idempotent_by_run_id(tmp_path: Path) -> N
             cycle_evidence_ledger.record_cycle_event_start(
                 conn,
                 run_id="run-duplicate",
-                workspace_id="fixture_workspace",
                 workspace_ref=str(tmp_path / "workspace"),
                 subject_key="fixture_subject",
                 domain_pack_id="general.v1",
                 cycle_depth=1,
                 mode="local",
-                started_at="2026-06-03T00:00:00Z",
+                started_at="2026-06-01T00:00:00Z",
                 status="running",
+                cycle_event_id=first_id,
+                workspace_id="different_workspace",
             )
     finally:
         conn.close()
 
 
-def test_cycle_event_start_replay_ignores_status_transition_for_force_reruns(
+def test_cycle_event_start_replay_ignores_status_transition(
     tmp_path: Path,
 ) -> None:
     db_path = init_db(tmp_path)

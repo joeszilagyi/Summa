@@ -49,7 +49,10 @@ def test_migration_backfills_existing_rows_once(tmp_path: Path) -> None:
         conn.commit()
 
         result = canonical_store.apply_migrations(conn, applied_at=STAMP, applied_by="pytest")
-        assert result.applied_migration_ids == ("0010_canonical_row_revisions",)
+        assert result.applied_migration_ids == (
+            "0010_canonical_row_revisions",
+            "0011_cycle_event_attempts",
+        )
         history = _revisions(conn, "work", 1)
         assert len(history) == 1
         assert history[0]["change_kind"] == "baseline"

@@ -72,10 +72,9 @@ def build_cycle_event_id(
     run_id: str,
     started_at: str | None = None,
     workspace_ref: str | None = None,
+    attempt_id: str | None = None,
 ) -> str:
-    del started_at
-    del workspace_ref
-    return stable_id("cycle", run_id)
+    return stable_id("cycle", run_id, started_at, workspace_ref, attempt_id)
 
 
 def json_dumps(value: object) -> str:
@@ -525,7 +524,7 @@ def record_cycle_event_start(
           final_feedback_plan_ref, row_count_delta_json, warning_count, error_count,
           metadata_json, record_last_updated
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id) DO NOTHING
+        ON CONFLICT(cycle_event_id) DO NOTHING
         RETURNING cycle_event_id
         """,
         tuple(expected.values()),
@@ -533,12 +532,12 @@ def record_cycle_event_start(
     row = cursor.fetchone()
     if row is None:
         existing_row = conn.execute(
-            "SELECT * FROM cycle_event WHERE run_id=?",
-            (run_id_text,),
+            "SELECT * FROM cycle_event WHERE cycle_event_id=?",
+            (event_id,),
         ).fetchone()
         _assert_append_only_replay_compatible(
             "cycle_event",
-            f"run_id={run_id_text}",
+            f"cycle_event_id={event_id}",
             existing_row,
             expected,
             ignore=frozenset({"record_last_updated", "status", "row_count_delta_json"}),

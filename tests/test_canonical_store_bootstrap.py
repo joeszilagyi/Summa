@@ -277,6 +277,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
+        "0011_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -332,6 +333,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
+        "0011_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -447,6 +449,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0008_source_reconciliation_hot_path_indexes",
         "0009_source_claim_anchor_requirement",
         "0010_canonical_row_revisions",
+        "0011_cycle_event_attempts",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -764,14 +767,18 @@ def test_existing_source_db_helpers_work_against_bootstrapped_store(tmp_path: Pa
 
 
 def test_migration_sql_contains_no_destructive_statements() -> None:
-    sql_text = "\n".join(
-        line
-        for migration in canonical_store.MIGRATIONS
-        for line in migration.sql_path.read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith("--")
-    ).upper()
-    assert "DROP TABLE" not in sql_text
-    assert "CREATE TABLE AS SELECT" not in sql_text
+    for migration in canonical_store.MIGRATIONS:
+        sql_text = "\n".join(
+            line
+            for line in migration.sql_path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("--")
+        ).upper()
+        if migration.migration_id == "0011_cycle_event_attempts":
+            assert "INSERT INTO CYCLE_EVENT_NEXT SELECT * FROM CYCLE_EVENT;" in sql_text
+            assert "ALTER TABLE CYCLE_EVENT_NEXT RENAME TO CYCLE_EVENT;" in sql_text
+            sql_text = sql_text.replace("DROP TABLE CYCLE_EVENT;", "")
+        assert "DROP TABLE" not in sql_text
+        assert "CREATE TABLE AS SELECT" not in sql_text
 
 
 def test_check_mode_survives_stale_wal_and_shm_sidecars(tmp_path: Path) -> None:

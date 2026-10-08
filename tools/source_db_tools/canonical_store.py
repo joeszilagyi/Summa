@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 10
-CURRENT_MIGRATION_ID = "0010_canonical_row_revisions"
+CURRENT_SCHEMA_VERSION = 11
+CURRENT_MIGRATION_ID = "0011_cycle_event_attempts"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -133,6 +133,7 @@ class MigrationSpec:
     migration_id: str
     sql_path: Path
     notes: str
+    rebuilds_foreign_key_parent: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,6 +357,13 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         migration_id="0010_canonical_row_revisions",
         sql_path=MIGRATIONS_DIR / "0010_canonical_row_revisions.sql",
         notes="Retain immutable full-row revisions for stable-ID canonical projections.",
+    ),
+    MigrationSpec(
+        version=11,
+        migration_id="0011_cycle_event_attempts",
+        sql_path=MIGRATIONS_DIR / "0011_cycle_event_attempts.sql",
+        notes="Allow multiple cycle ledger attempts for one run id.",
+        rebuilds_foreign_key_parent=True,
     ),
 )
 
@@ -888,7 +896,13 @@ def apply_migrations(
         )
 
     timestamp = now_rfc3339() if applied_at is None else applied_at
-    script_parts = ["PRAGMA foreign_keys=ON;", "BEGIN IMMEDIATE;"]
+    rebuilds_foreign_key_parent = any(
+        migration.rebuilds_foreign_key_parent for migration in pending
+    )
+    script_parts = [
+        "PRAGMA foreign_keys=OFF;" if rebuilds_foreign_key_parent else "PRAGMA foreign_keys=ON;",
+        "BEGIN IMMEDIATE;",
+    ]
     for migration in pending:
         sql_text = load_sql_text(migration.sql_path).strip()
         if not sql_text:
@@ -904,7 +918,17 @@ def apply_migrations(
                 ddl_hash=ddl_hash,
             ).strip()
         )
+    if rebuilds_foreign_key_parent:
+        script_parts.extend(
+            [
+                "CREATE TEMP TABLE migration_foreign_key_check (violation INTEGER CHECK(violation=0));",
+                "INSERT INTO migration_foreign_key_check SELECT 1 FROM pragma_foreign_key_check;",
+                "DROP TABLE migration_foreign_key_check;",
+            ]
+        )
     script_parts.append("COMMIT;")
+    if rebuilds_foreign_key_parent:
+        script_parts.append("PRAGMA foreign_keys=ON;")
     script = "\n".join(script_parts) + "\n"
 
     try:
@@ -912,6 +936,8 @@ def apply_migrations(
     except sqlite3.Error as exc:
         with contextlib.suppress(sqlite3.Error):
             conn.rollback()
+        if rebuilds_foreign_key_parent:
+            conn.execute("PRAGMA foreign_keys=ON")
         raise CanonicalStoreError(f"failed to apply canonical store migrations: {exc}") from exc
 
     final_version = get_schema_version(conn)
