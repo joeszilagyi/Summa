@@ -419,6 +419,23 @@ def cadence_reason(entry: dict[str, Any]) -> str:
     return f"schedule_posture:{schedule_posture}"
 
 
+def refresh_planned_run_id(record: dict[str, Any]) -> None:
+    """Bind a planned-run ID to its canonical, non-ID record content."""
+    identity_fields = {key: value for key, value in record.items() if key != "planned_run_id"}
+    try:
+        canonical = json.dumps(
+            identity_fields,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise SelectionError("planned-run record contains non-JSON identity fields") from exc
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    record["planned_run_id"] = f"{record['planner_run_id']}:{record['workspace_id']}:{digest}"
+
+
 def planned_run_record(
     *,
     entry: dict[str, Any],
@@ -454,6 +471,7 @@ def planned_run_record(
         "default_subject_manifest": entry.get("default_subject_manifest"),
         "resolved_default_subject_manifest": entry.get("resolved_default_subject_manifest"),
     }
+    refresh_planned_run_id(record)
     return record
 
 
@@ -811,6 +829,7 @@ def build_selection_payload(args: argparse.Namespace) -> dict[str, Any]:
     )
     for record in planned_records:
         record["selection_explanation_id"] = selection_explanation["explanation_id"]
+        refresh_planned_run_id(record)
     if args.planned_runs_jsonl is not None:
         append_planned_run_records(
             args.planned_runs_jsonl,
