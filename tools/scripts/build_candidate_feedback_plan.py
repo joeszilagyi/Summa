@@ -1278,9 +1278,9 @@ def aggregate_facet_scores(
         metrics[facet]["successful_extractions"] += int(lead["signals"]["successful_extractions"])
         metrics[facet]["failed_extractions"] += int(lead["signals"]["failed_extractions"])
 
-    no_prior_history = not history
     facet_scores: list[dict[str, Any]] = []
     for facet in enabled_facets:
+        no_prior_history = not history_by_facet[facet]
         signal_bucket = metrics[facet]
         capped_productive_runs = capped_count(
             signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP
@@ -1301,9 +1301,7 @@ def aggregate_facet_scores(
             for event in history_by_facet[facet]
             if isinstance(event.get("run_id"), str) and event.get("run_id")
         }
-        apply_recent_low_yield_penalty = bool(
-            last_run_zero_yield[facet] and capped_productive_runs == 0 and capped_open_leads == 0
-        )
+        apply_recent_low_yield_penalty = bool(last_run_zero_yield[facet] and capped_open_leads == 0)
         score = (
             weights["productive_run"] * capped_productive_runs
             + weights["open_lead"] * capped_open_leads
