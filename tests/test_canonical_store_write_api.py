@@ -483,6 +483,53 @@ def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) 
     assert int(row["accepted_for_citation"]) == 1
 
 
+@pytest.mark.parametrize("invalid_flag", [2, -1, 999, True, 1.0, "1", None])
+def test_work_upsert_rejects_nonbinary_citation_flag_on_insert_and_update(
+    tmp_path: Path, invalid_flag: object
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="invalid-citation-flag",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:invalid-citation-flag",
+        )
+        with pytest.raises(canonical_store.CanonicalStoreError, match="accepted_for_citation"):
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:invalid-citation-insert",
+                provenance_event_ref=provenance.event_key,
+                accepted_for_citation=invalid_flag,
+            )
+        work = canonical_store.upsert_work(
+            conn,
+            work_key_v1="work:invalid-citation-update",
+            provenance_event_ref=provenance.event_key,
+            title="Original title",
+            accepted_for_citation=0,
+        )
+        with pytest.raises(canonical_store.CanonicalStoreError, match="accepted_for_citation"):
+            canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:invalid-citation-update",
+                provenance_event_ref=provenance.event_key,
+                title="Should not be saved",
+                accepted_for_citation=invalid_flag,
+            )
+        rows = conn.execute(
+            "SELECT work_key_v1, title, accepted_for_citation FROM work ORDER BY work_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert work.created is True
+    assert [tuple(row) for row in rows] == [("work:invalid-citation-update", "Original title", 0)]
+
+
 def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
