@@ -62,27 +62,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_json_object(path: Path, *, label: str) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise BackupPlanError(f"could not read {label}: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise BackupPlanError(f"could not parse {label}: {path} (line {exc.lineno})") from exc
-
-    if not isinstance(payload, dict):
-        raise BackupPlanError(f"{label} must contain a JSON object: {path}")
-    return payload
-
-
 def validate_policy_or_raise(policy_path: Path) -> dict[str, Any]:
-    result, exit_code = validate_crown_jewel_store_policy.validate_crown_jewel_store_policy(policy_path)
+    payload, errors, exit_code = validate_crown_jewel_store_policy.load_json_object(policy_path)
+    if payload is None:
+        if errors:
+            raise BackupPlanError(errors[0].get("message", "crown-jewel store policy validation failed"))
+        raise BackupPlanError("crown-jewel store policy validation failed")
+    result, exit_code = validate_crown_jewel_store_policy.validate_crown_jewel_store_policy_payload(
+        payload
+    )
     if exit_code != validate_crown_jewel_store_policy.EXIT_PASS:
         errors = result.get("errors", [])
         if errors:
             raise BackupPlanError(errors[0].get("message", "crown-jewel store policy validation failed"))
         raise BackupPlanError("crown-jewel store policy validation failed")
-    return load_json_object(policy_path, label="crown-jewel store policy")
+    return payload
 
 
 def validate_manifest_payload_or_raise(manifest: dict[str, Any]) -> None:

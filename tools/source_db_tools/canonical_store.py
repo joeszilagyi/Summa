@@ -851,6 +851,12 @@ def validate_existing_store(
         raise CanonicalStoreError(
             f"canonical store schema_version {version_row.schema_version} is newer than supported version {latest_version}"
         )
+    sqlite_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if sqlite_version != version_row.schema_version:
+        raise CanonicalStoreError(
+            f"canonical store PRAGMA user_version {sqlite_version} does not match "
+            f"schema_version {version_row.schema_version}"
+        )
 
     history_rows = load_applied_migrations(conn)
     if len(history_rows) != version_row.schema_version:
@@ -981,15 +987,18 @@ def apply_migrations(
         raise CanonicalStoreError(
             "refusing canonical store migrations inside an active caller transaction"
         )
+    foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
+    if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
+        raise CanonicalStoreError(
+            "refusing canonical store migrations without PRAGMA foreign_keys=ON"
+        )
 
     timestamp = now_rfc3339() if applied_at is None else applied_at
     rebuilds_foreign_key_parent = any(
         migration.rebuilds_foreign_key_parent for migration in pending
     )
-    script_parts = [
-        "PRAGMA foreign_keys=OFF;" if rebuilds_foreign_key_parent else "PRAGMA foreign_keys=ON;",
-        "BEGIN IMMEDIATE;",
-    ]
+    script_parts = ["PRAGMA foreign_keys=OFF;"] if rebuilds_foreign_key_parent else []
+    script_parts.append("BEGIN IMMEDIATE;")
     for migration in pending:
         sql_text = load_sql_text(migration.sql_path).strip()
         if not sql_text:

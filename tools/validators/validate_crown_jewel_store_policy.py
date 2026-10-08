@@ -155,12 +155,20 @@ def validate_token_field(payload: dict[str, Any], *, field_name: str, errors: li
 
 
 def validate_crown_jewel_store_policy(target: Path) -> tuple[dict[str, Any], int]:
-    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
-    warnings: list[dict[str, Any]] = []
-
     payload, errors, load_exit = load_json_object(target)
     if payload is None:
-        return {"counts": counts, "errors": errors, "warnings": warnings}, load_exit
+        return {
+            "counts": {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0},
+            "errors": errors,
+            "warnings": [],
+        }, load_exit
+    return validate_crown_jewel_store_policy_payload(payload)
+
+
+def validate_crown_jewel_store_policy_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    counts = {"inspected": 0, "accepted": 0, "rejected": 0, "deferred": 0}
+    warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
     counts["inspected"] = 1
 

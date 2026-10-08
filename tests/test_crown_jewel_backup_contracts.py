@@ -68,6 +68,24 @@ def sample_policy_payload() -> dict:
     }
 
 
+def test_backup_planner_validates_the_policy_payload_it_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "policy.json"
+    payload = sample_policy_payload()
+    write_json(path, payload)
+    original_loader = planner.validate_crown_jewel_store_policy.load_json_object
+
+    def load_once(target: Path):
+        loaded = original_loader(target)
+        target.unlink()
+        return loaded
+
+    monkeypatch.setattr(planner.validate_crown_jewel_store_policy, "load_json_object", load_once)
+
+    assert planner.validate_policy_or_raise(path) == payload
+
+
 def sample_manifest_payload() -> dict:
     return {
         "schema_version": "crown-jewel-backup-manifest.v1",

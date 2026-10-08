@@ -34,6 +34,8 @@ from tools.validators.validate_local_search_results import (  # noqa: E402
     EXIT_PASS as EXIT_VALIDATOR_PASS,  # noqa: E402
 )
 from tools.validators.validate_local_search_results import (  # noqa: E402
+    no_duplicate_object_pairs,
+    reject_json_constant,
     validate_local_search_results,  # noqa: E402
 )
 
@@ -69,12 +71,20 @@ class SearchQueryError(RuntimeError):
     """Raised when search query inputs or outputs cannot be processed."""
 
 
+def parse_projection_json(raw: str) -> Any:
+    return json.loads(
+        raw,
+        object_pairs_hook=no_duplicate_object_pairs,
+        parse_constant=reject_json_constant,
+    )
+
+
 @lru_cache(maxsize=1024)
 def parse_indexed_fields_json(indexed_fields_json: str) -> tuple[dict[str, Any], ...]:
     try:
-        parsed = json.loads(indexed_fields_json)
-    except json.JSONDecodeError:
-        return ()
+        parsed = parse_projection_json(indexed_fields_json)
+    except ValueError as exc:
+        raise SearchQueryError(f"invalid indexed_fields_json: {exc}") from exc
     if not isinstance(parsed, list):
         return ()
     indexed_fields: list[dict[str, Any]] = []
@@ -401,7 +411,7 @@ def build_result(row: sqlite3.Row, *, terms: list[str], rank: int) -> dict[str, 
         "publication_state": row["publication_state"],
         "visibility": {
             "profile": row["profile"],
-            "suppressed_fields": json.loads(row["suppressed_fields_json"]),
+            "suppressed_fields": parse_projection_json(row["suppressed_fields_json"]),
         },
         "score": None if row["score"] is None else float(row["score"]),
         "links": {

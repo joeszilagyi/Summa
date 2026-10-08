@@ -32,6 +32,11 @@ sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
 
 
+def test_projection_field_json_rejects_non_finite_values() -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        builder.projection_field_json({"score": float("nan")})
+
+
 def create_search_db(tmp_path: Path) -> Path:
     db = tmp_path / "search.sqlite"
     conn = sqlite3.connect(db)
