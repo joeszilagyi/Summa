@@ -1626,49 +1626,34 @@ def evaluate_temporal_relation_constraint(
                         object_role="subject",
                     )
     elif predicate == "met":
-        overlap = intervals_overlap(
-            *lifespan_interval(subject_facts), *lifespan_interval(object_facts)
+        comparable_pairs = (
+            bool(subject_facts.birth_years and object_facts.death_years)
+            or bool(object_facts.birth_years and subject_facts.death_years)
         )
-        if overlap is False:
-            subject_birth, subject_death = lifespan_interval(subject_facts)
-            object_birth, object_death = lifespan_interval(object_facts)
-            if (
-                subject_birth is not None
-                and object_death is not None
-                and subject_birth > object_death
-            ):
-                target = object_facts.death_years[0]
-                rationale = (
-                    f"relationship {relationship_id} predicate met is impossible: "
-                    f"subject birth year {subject_birth} is after object death year {object_death}"
-                )
-                contradictions.append(
-                    RelationalContradiction(
-                        relationship_id=relationship_id,
-                        rule_id=RELATIONAL_TEMPORAL_RULE,
-                        target_object_ref=_source_claim_ref(target.source_claim_id),
-                        rationale=rationale,
+        seen_death_claim_ids: set[int] = set()
+        for births, deaths, birth_role, death_role in (
+            (subject_facts.birth_years, object_facts.death_years, "subject", "object"),
+            (object_facts.birth_years, subject_facts.death_years, "object", "subject"),
+        ):
+            for birth in births:
+                for death in deaths:
+                    if birth.year <= death.year or death.source_claim_id in seen_death_claim_ids:
+                        continue
+                    seen_death_claim_ids.add(death.source_claim_id)
+                    rationale = (
+                        f"relationship {relationship_id} predicate met is impossible: "
+                        f"{birth_role} birth year {birth.year} is after "
+                        f"{death_role} death year {death.year}"
                     )
-                )
-            elif (
-                object_birth is not None
-                and subject_death is not None
-                and object_birth > subject_death
-            ):
-                target = subject_facts.death_years[0]
-                rationale = (
-                    f"relationship {relationship_id} predicate met is impossible: "
-                    f"object birth year {object_birth} is after subject death year {subject_death}"
-                )
-                contradictions.append(
-                    RelationalContradiction(
-                        relationship_id=relationship_id,
-                        rule_id=RELATIONAL_TEMPORAL_RULE,
-                        target_object_ref=_source_claim_ref(target.source_claim_id),
-                        rationale=rationale,
+                    contradictions.append(
+                        RelationalContradiction(
+                            relationship_id=relationship_id,
+                            rule_id=RELATIONAL_TEMPORAL_RULE,
+                            target_object_ref=_source_claim_ref(death.source_claim_id),
+                            rationale=rationale,
+                        )
                     )
-                )
-        elif overlap is None:
+        if not comparable_pairs:
             skipped.append("met requires enough endpoint lifespan facts to prove non-overlap")
 
     event_year = _relationship_event_year(row)

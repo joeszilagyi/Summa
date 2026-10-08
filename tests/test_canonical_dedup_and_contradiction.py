@@ -1738,6 +1738,70 @@ def test_relational_met_non_overlap_flags_contradiction(tmp_path: Path) -> None:
     assert "predicate met is impossible" in contradiction["evidence_note"]
 
 
+def test_relational_met_checks_competing_lifespan_facts(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch = build_batch(
+        [
+            structured_claim_candidate(
+                "cand:birth.early",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1920,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:birth.late",
+                payload={
+                    "claim_type": "birth_year",
+                    "about_object_ref": "authority:person-a",
+                    "year": 1940,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.early",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1930,
+                },
+            ),
+            structured_claim_candidate(
+                "cand:death.late",
+                payload={
+                    "claim_type": "death_year",
+                    "about_object_ref": "authority:person-b",
+                    "year": 1950,
+                },
+            ),
+            relationship_candidate(
+                "cand:met.competing",
+                from_object_ref="authority:person-a",
+                predicate="met",
+                to_object_ref="authority:person-b",
+            ),
+        ],
+        run_id="gather-relational-met-competing",
+    )
+
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            ingest_batch(conn, batch, batch_name="relational-met-competing.json", db_path=db_path)
+        rows = conn.execute(
+            """
+            SELECT target_label, evidence_note FROM source_relationship
+            WHERE predicate='contradicts'
+              AND target_label='relational_temporal_lifespan_overlap'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert "subject birth year 1940 is after object death year 1930" in rows[0]["evidence_note"]
+
+
 def test_relational_influenced_is_conservative_for_posthumous_influence(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     batch = build_batch(
