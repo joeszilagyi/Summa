@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.common import atomic_write
 from tools.scripts import ingest_gather_candidate_batch as ingest_batch_script
 from tools.scripts import replay_canonical_write_spool as replay_script
 from tools.source_db_tools import canonical_store, canonical_write_spool
@@ -96,7 +97,6 @@ def _normalize_batch_paths_to_repo_root(batch_record: dict[str, object]) -> None
             provenance["llm_runner_path"] = _as_absolute(llm_runner_path)
 
 
-
 def test_spool_record_validation() -> None:
     batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
     record = canonical_write_spool.build_spool_record(
@@ -137,6 +137,32 @@ def test_spool_record_validation() -> None:
         canonical_write_spool.validate_spool_record(invalid_status)
 
 
+def test_spool_write_fsyncs_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool_dir = tmp_path / "spool"
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={"artifact_refs": []},
+        replay_recipe={},
+        failure="database is locked",
+        canonical_db_path=tmp_path / "canonical.sqlite",
+        spool_dir=spool_dir,
+        originating_tool="pytest",
+        created_at=FIXED_TIMESTAMP,
+    )
+    fsynced: list[Path] = []
+    monkeypatch.setattr(atomic_write, "_fsync_directory", fsynced.append)
+
+    path = canonical_write_spool.write_spool_record(spool_dir, record)
+
+    assert fsynced == [path.parent]
+    assert (
+        canonical_write_spool.load_spool_record(path)["spool_record_id"]
+        == record["spool_record_id"]
+    )
+
+
 def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
     spool_dir = tmp_path / "spool"
     missing_db = tmp_path / "missing.sqlite"
@@ -161,6 +187,24 @@ def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None
     assert record["operation_kind"] == "candidate_batch_ingest"
     assert record["replay_status"] == "pending"
     assert record["operation_input"]["artifact_refs"][0]["artifact_hash"]
+    assert (
+        record["originating_run_id"]
+        == json.loads(CANDIDATE_BATCH.read_text(encoding="utf-8"))["run_id"]
+    )
+
+
+def test_spool_run_directory_cannot_escape_spool_root(tmp_path: Path) -> None:
+    spool_dir = tmp_path / "spool"
+    record_path = canonical_write_spool.spool_record_path(
+        spool_dir,
+        {
+            "originating_run_id": "../outside/..",
+            "spool_record_id": "canonical-write-spool:test:123",
+        },
+    )
+
+    assert record_path.resolve().is_relative_to((spool_dir / "canonical-unavailable").resolve())
+    assert ".." not in record_path.parts
 
 
 def test_execution_artifact_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
@@ -243,7 +287,9 @@ def test_invalid_candidate_batch_does_not_create_replayable_spool(tmp_path: Path
     assert not spool_dir.exists()
 
 
-def test_ingest_validation_failure_does_not_spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_validation_failure_does_not_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = bootstrap_db(tmp_path)
     spool_dir = tmp_path / "spool"
     args = SimpleNamespace(
@@ -332,18 +378,11 @@ def test_replay_candidate_batch_from_single_record_file(tmp_path: Path) -> None:
         ],
     )
     assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
-    record_path, record = first_spool_record(tmp_path / "spool")
+    record_path, _record = first_spool_record(tmp_path / "spool")
 
     single_record = nested / "single-spool-record.json"
-    single_record.write_text(
-        json.dumps({**record, "spool_path": str(single_record), "spool_record_checksum": ""}, sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-    )
-    single_payload = json.loads(single_record.read_text(encoding="utf-8"))
-    single_payload["spool_record_checksum"] = canonical_write_spool.record_checksum(single_payload)
-    single_record.write_text(json.dumps(single_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    record_path.unlink()
+    record_path.replace(single_record)
+    assert canonical_write_spool.load_spool_record(single_record)["spool_path"] == str(record_path)
 
     db_path = bootstrap_db(tmp_path)
     replay_proc = run_script(
@@ -395,8 +434,13 @@ def test_replay_candidate_batch_uses_spool_anchor_for_relative_paths(tmp_path: P
         candidate_batch_path = (artifact_root / candidate_batch_path).resolve()
     batch_payload = json.loads(candidate_batch_path.read_text(encoding="utf-8"))
     _normalize_batch_paths_to_repo_root(batch_payload)
-    candidate_batch_path.write_text(json.dumps(batch_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    batch_record["replay_recipe"]["batch_path"] = str(Path(batch_record["replay_recipe"]["batch_path"]).name)
+    candidate_batch_path.write_text(
+        json.dumps(batch_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    batch_record["replay_recipe"]["batch_path"] = str(
+        Path(batch_record["replay_recipe"]["batch_path"]).name
+    )
     batch_record["replay_recipe"]["artifact_root"] = str(
         Path(batch_record["replay_recipe"].get("artifact_root", str(batch_path.parent))).resolve()
     )
@@ -534,7 +578,9 @@ def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_pat
     )
     canonical_write_spool.write_spool_record(spool_dir, record)
     partial_path = nested / "partial.json"
-    partial_path.write_text('{"schema_version": "canonical-write-spool-record.v1"', encoding="utf-8")
+    partial_path.write_text(
+        '{"schema_version": "canonical-write-spool-record.v1"', encoding="utf-8"
+    )
 
     validate_proc = run_script(VALIDATE, ["--spool-path", str(spool_dir)])
     assert validate_proc.returncode == 1
@@ -548,7 +594,10 @@ def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_pat
     assert unrelated.exists()
 
 
-def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "expected_schema_version", [999, canonical_store.CURRENT_SCHEMA_VERSION - 1]
+)
+def test_replay_schema_mismatch_fails_clearly(tmp_path: Path, expected_schema_version: int) -> None:
     spool_dir = tmp_path / "spool"
     batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
     record = canonical_write_spool.build_spool_record(
@@ -567,7 +616,7 @@ def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
         canonical_db_path=tmp_path / "canonical.sqlite",
         spool_dir=spool_dir,
         originating_tool="pytest",
-        expected_schema_version=999,
+        expected_schema_version=expected_schema_version,
         created_at=FIXED_TIMESTAMP,
     )
     canonical_write_spool.write_spool_record(spool_dir, record)
@@ -582,6 +631,43 @@ def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
     report = json.loads(replay_proc.stdout)
     assert report["records_failed"] == 1
     assert "schema_version" in report["results"][0]["error"]
+
+
+def test_replay_matching_schema_is_allowed(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={
+            "artifact_refs": [
+                {
+                    "artifact_type": "gather_candidate_batch",
+                    "artifact_path": str(CANDIDATE_BATCH),
+                    "artifact_hash": batch_hash,
+                }
+            ]
+        },
+        replay_recipe={"batch_path": str(CANDIDATE_BATCH), "batch_hash": batch_hash},
+        failure="database locked",
+        canonical_db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        originating_tool="pytest",
+        expected_schema_version=canonical_store.CURRENT_SCHEMA_VERSION,
+        created_at=FIXED_TIMESTAMP,
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        report = canonical_write_spool.replay_spool_record(
+            conn,
+            record,
+            db_path=db_path,
+            dry_run=True,
+            record_path=Path(str(record["spool_path"])),
+        )
+    finally:
+        conn.close()
+
+    assert report["status"] == "dry_run"
 
 
 def test_spool_validator_cli_help_and_validation(tmp_path: Path) -> None:
@@ -656,7 +742,9 @@ def test_moved_spool_record_remains_loadable(tmp_path: Path) -> None:
     assert loaded["spool_path"] == str(record_path)
 
 
-def test_replay_main_writes_report_with_atomic_json_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replay_main_writes_report_with_atomic_json_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     spool_dir = tmp_path / "spool"
     spool_proc = run_script(
         INGEST_BATCH,

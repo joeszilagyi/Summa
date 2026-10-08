@@ -1028,6 +1028,44 @@ def test_candidate_feedback_planner_sparse_state_uses_bootstrap_selection(tmp_pa
     assert explanation["policy"]["policy_id"] == payload["scoring_policy"]["policy_id"]
 
 
+def test_source_access_lead_uses_its_own_facet_provenance(tmp_path: Path) -> None:
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    seed_feedback_state(db_path, subject_id=subject_id)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        work_id = conn.execute(
+            "SELECT work_id FROM work WHERE title='High Yield Work'"
+        ).fetchone()[0]
+        access = canonical_store.record_source_access(
+            conn,
+            provenance_event_ref=f"prov:feedback:{subject_id}:open-questions",
+            work_id=work_id,
+            source_locus_id="locus:open-question-access",
+            source_lead_id="lead:open-question-access",
+            original_locator="https://example.test/open-question-access",
+            citation_hint="Cross-facet source access",
+            workspace_id=subject_id,
+            review_state="needs_review",
+            record_last_updated=FIXED_CREATED_AT,
+        )
+        history = planner.provenance_map_by_key(planner.load_gather_history(conn, subject_id))
+        leads = planner.load_source_access_leads(
+            conn,
+            subject_id=subject_id,
+            work_ids=planner.scope_work_ids(conn, subject_id),
+            history_by_event_key=history,
+            weights=planner.DEFAULT_SCORING_WEIGHTS,
+            warnings=[],
+        )
+    finally:
+        conn.close()
+
+    lead = next(item for item in leads if item["object_ref"] == f"source_access:{access.row_id}")
+    assert lead["facet"] == "open_questions"
+    assert "cycle-one-open-questions" in lead["related_run_ids"]
+
+
 def test_candidate_feedback_planner_ranks_productive_locus_above_low_yield(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
