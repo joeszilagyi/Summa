@@ -377,7 +377,7 @@ def replay_spool_record(
     validate_spool_record(record)
     check = canonical_store.check_canonical_store(db_path)
     expected_schema = record.get("canonical_db", {}).get("expected_schema_version")
-    if expected_schema is not None and int(expected_schema) > int(check.schema_version):
+    if expected_schema is not None and int(expected_schema) != int(check.schema_version):
         raise CanonicalWriteSpoolError(
             f"spool expects schema_version {expected_schema}, target has {check.schema_version}"
         )

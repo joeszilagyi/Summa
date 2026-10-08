@@ -548,7 +548,10 @@ def test_validate_spool_ignores_unrelated_files_but_rejects_partial_json(tmp_pat
     assert unrelated.exists()
 
 
-def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
+@pytest.mark.parametrize("expected_schema_version", [999, canonical_store.CURRENT_SCHEMA_VERSION - 1])
+def test_replay_schema_mismatch_fails_clearly(
+    tmp_path: Path, expected_schema_version: int
+) -> None:
     spool_dir = tmp_path / "spool"
     batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
     record = canonical_write_spool.build_spool_record(
@@ -567,7 +570,7 @@ def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
         canonical_db_path=tmp_path / "canonical.sqlite",
         spool_dir=spool_dir,
         originating_tool="pytest",
-        expected_schema_version=999,
+        expected_schema_version=expected_schema_version,
         created_at=FIXED_TIMESTAMP,
     )
     canonical_write_spool.write_spool_record(spool_dir, record)
@@ -582,6 +585,43 @@ def test_replay_schema_mismatch_fails_clearly(tmp_path: Path) -> None:
     report = json.loads(replay_proc.stdout)
     assert report["records_failed"] == 1
     assert "schema_version" in report["results"][0]["error"]
+
+
+def test_replay_matching_schema_is_allowed(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    batch_hash = canonical_write_spool.hash_file(CANDIDATE_BATCH)
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={
+            "artifact_refs": [
+                {
+                    "artifact_type": "gather_candidate_batch",
+                    "artifact_path": str(CANDIDATE_BATCH),
+                    "artifact_hash": batch_hash,
+                }
+            ]
+        },
+        replay_recipe={"batch_path": str(CANDIDATE_BATCH), "batch_hash": batch_hash},
+        failure="database locked",
+        canonical_db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        originating_tool="pytest",
+        expected_schema_version=canonical_store.CURRENT_SCHEMA_VERSION,
+        created_at=FIXED_TIMESTAMP,
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        report = canonical_write_spool.replay_spool_record(
+            conn,
+            record,
+            db_path=db_path,
+            dry_run=True,
+            record_path=Path(str(record["spool_path"])),
+        )
+    finally:
+        conn.close()
+
+    assert report["status"] == "dry_run"
 
 
 def test_spool_validator_cli_help_and_validation(tmp_path: Path) -> None:
