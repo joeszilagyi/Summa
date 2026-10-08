@@ -492,13 +492,14 @@ def audit_source_relationship(
             continue
         from_ok = lookup.object_ref_exists(_text(row["from_object_ref"]))
         to_ref = _text(row["to_object_ref"])
-        to_ok = to_ref is None or lookup.object_ref_exists(to_ref)
+        to_ok = to_ref is not None and lookup.object_ref_exists(to_ref)
         if from_ok and to_ok:
             continue
         has_target_label = _text(row["target_label"]) is not None
         if (
             provenance_key is not None
             and _reviewable(row["review_state"])
+            and (to_ref is not None or has_target_label)
             and (from_ok or has_target_label)
         ):
             issues.append(
