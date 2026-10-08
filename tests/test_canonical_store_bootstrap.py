@@ -515,6 +515,21 @@ def test_migrations_do_not_commit_caller_transaction(tmp_path: Path) -> None:
         )
 
 
+def test_migrations_require_foreign_keys_on_before_script(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+        with pytest.raises(canonical_store.CanonicalStoreError, match="foreign_keys=ON"):
+            canonical_store.apply_migrations(
+                conn, target_version=1, applied_at=FIXED_TIMESTAMP, applied_by="pytest"
+            )
+        assert canonical_store.actual_tables(conn) == set()
+    finally:
+        conn.close()
+
+
 def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
 
@@ -1000,6 +1015,7 @@ def test_migration_runner_preserves_original_error_when_rollback_fails(tmp_path:
     db_path = tmp_path / "broken_migration_with_bad_rollback.sqlite"
     conn = sqlite3.connect(db_path, factory=FailingRollbackConnection)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     bad_sql = tmp_path / "0002_bad.sql"
     bad_sql.write_text("CREATE TABLE broken (\n", encoding="utf-8")
     migrations = (

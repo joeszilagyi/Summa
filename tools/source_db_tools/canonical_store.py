@@ -981,15 +981,18 @@ def apply_migrations(
         raise CanonicalStoreError(
             "refusing canonical store migrations inside an active caller transaction"
         )
+    foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
+    if foreign_keys_row is None or int(foreign_keys_row[0]) != 1:
+        raise CanonicalStoreError(
+            "refusing canonical store migrations without PRAGMA foreign_keys=ON"
+        )
 
     timestamp = now_rfc3339() if applied_at is None else applied_at
     rebuilds_foreign_key_parent = any(
         migration.rebuilds_foreign_key_parent for migration in pending
     )
-    script_parts = [
-        "PRAGMA foreign_keys=OFF;" if rebuilds_foreign_key_parent else "PRAGMA foreign_keys=ON;",
-        "BEGIN IMMEDIATE;",
-    ]
+    script_parts = ["PRAGMA foreign_keys=OFF;"] if rebuilds_foreign_key_parent else []
+    script_parts.append("BEGIN IMMEDIATE;")
     for migration in pending:
         sql_text = load_sql_text(migration.sql_path).strip()
         if not sql_text:
