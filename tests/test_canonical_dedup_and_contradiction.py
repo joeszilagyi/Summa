@@ -2480,6 +2480,10 @@ def test_established_claims_are_not_demoted_by_structured_contradictions(
             history_after = conn.execute(
                 "SELECT COUNT(*) FROM review_state_history"
             ).fetchone()[0]
+            blocked_history = conn.execute(
+                """SELECT previous_state, new_state, reason
+                FROM review_state_history WHERE reason='blocked_established_state'"""
+            ).fetchall()
             rows = conn.execute(
                 "SELECT source_claim_id, review_state FROM source_claim ORDER BY source_claim_id"
             ).fetchall()
@@ -2488,7 +2492,12 @@ def test_established_claims_are_not_demoted_by_structured_contradictions(
 
     assert len(contradictions) >= 1
     assert contradiction_count == 1
-    assert history_before == history_after
+    assert history_after == history_before + 2
+    assert len(blocked_history) == 2
+    assert all(
+        row["previous_state"] == established_state and row["new_state"] == established_state
+        for row in blocked_history
+    )
     for row in rows:
         assert row["review_state"] == established_state
 

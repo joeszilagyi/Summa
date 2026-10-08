@@ -357,12 +357,47 @@ def update_review_state(
     )
     previous_state = None if row["review_state"] is None else str(row["review_state"])
     previous_state_value = str(previous_state or "").strip().lower()
+    if previous_state == new_state_value:
+        return False
     if (
         previous_state_value in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
         and not allow_established_transition
     ):
-        return False
-    if previous_state == new_state_value:
+        attempted_change = json.dumps(
+            {"requested_state": new_state_value, "reason": reason, "note": note},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        canonical_store.record_review_state_history(
+            conn,
+            target_namespace=target_namespace,
+            target_id=str(target_id),
+            previous_state=previous_state,
+            new_state=previous_state_value,
+            changed_by=changed_by,
+            changed_at=changed_at,
+            reason="blocked_established_state",
+            note=attempted_change,
+            source_namespace=source_namespace,
+            source_id=source_id,
+            source_tool=source_tool,
+            source_run_id=source_run_id,
+            review_state_history_key_v1=canonical_store.stable_write_key(
+                "review-blocked",
+                target_namespace,
+                target_id,
+                previous_state,
+                new_state_value,
+                changed_by,
+                changed_at,
+                reason,
+                note,
+                source_namespace,
+                source_id,
+                source_tool,
+                source_run_id,
+            ),
+        )
         return False
     conn.execute(
         f"UPDATE {table_name} SET review_state=?, record_last_updated=? WHERE {pk_column}=?",

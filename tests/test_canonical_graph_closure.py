@@ -337,6 +337,59 @@ def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
     assert "accepted_authority_id" in issues[0]["message"]
 
 
+def test_authority_records_report_broken_provenance_and_merge_targets(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="authority-audit",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:authority-audit",
+            )
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with conn:
+            rows = (
+                (1, "bad-provenance", "missing:provenance", None, "fixture", "one"),
+                (2, "self-merge", provenance.event_key, 2, "fixture", "two"),
+                (3, "missing-merge", provenance.event_key, 999, "fixture", "three"),
+                (4, "legacy-source", None, None, "fixture", "four"),
+                (5, "no-source", None, None, None, None),
+            )
+            conn.executemany(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type, preferred_label,
+                    provenance_event_ref, merged_into_authority_record_id,
+                    source_namespace, source_id, created_at, record_last_updated
+                ) VALUES (?, ?, 'person', 'Authority', ?, ?, ?, ?, ?, ?)
+                """,
+                [(*row, FIXED_TIMESTAMP, FIXED_TIMESTAMP) for row in rows],
+            )
+        conn.execute("PRAGMA foreign_keys=ON")
+        issues = canonical_graph_closure.audit_authority_record(conn)
+        collected_authorities = [
+            issue
+            for issue in canonical_graph_closure.collect_issues(conn)
+            if issue["table"] == "authority_record"
+        ]
+    finally:
+        conn.close()
+
+    by_id = {issue["primary_key"]: issue for issue in issues}
+    assert collected_authorities == issues
+    assert by_id["1"]["status"] == "true_orphan_error", issues
+    assert "provenance" in by_id["1"]["message"]
+    assert by_id["2"]["status"] == "true_orphan_error"
+    assert by_id["3"]["status"] == "true_orphan_error"
+    assert by_id["4"]["status"] == "unresolved_tracked"
+    assert by_id["5"]["status"] == "true_orphan_error"
+
+
 def test_targetless_relationship_is_not_treated_as_closed(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)

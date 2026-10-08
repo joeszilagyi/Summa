@@ -182,6 +182,7 @@ def main() -> int:
                         strict=not args.no_strict,
                         db_path=db_path,
                     )
+                report["transaction_status"] = "committed"
             finally:
                 conn.close()
     except (
