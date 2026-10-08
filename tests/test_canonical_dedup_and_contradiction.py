@@ -459,6 +459,59 @@ def test_existing_work_match_fallback_prefilters_by_source_locator(tmp_path: Pat
     )
 
 
+@pytest.mark.parametrize("stored_column", ["original_locator", "canonical_url"])
+def test_title_source_match_normalizes_stored_locator_before_comparison(
+    tmp_path: Path, stored_column: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="tests",
+                object_id=f"locator-normalization-{stored_column}",
+                event_type="seed",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+            )
+            work = canonical_store.upsert_work(
+                conn,
+                work_key_v1=f"work:locator-normalization-{stored_column}",
+                provenance_event_ref=provenance.event_key,
+                work_type="article",
+                title="Stored Locator Variant",
+                workspace_id="theta_subject",
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            stored_locator = "doi:10.1000/ＦＯＯ"
+            canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                work_id=work.row_id,
+                original_locator=(
+                    stored_locator if stored_column == "original_locator" else "source:other"
+                ),
+                canonical_url=(stored_locator if stored_column == "canonical_url" else None),
+                workspace_id="theta_subject",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            match = canonical_reconciliation.find_existing_work_match(
+                conn,
+                structured={stored_column: "doi:10.1000/FOO"},
+                work_type="article",
+                title="Stored Locator Variant",
+                workspace_id="theta_subject",
+            )
+    finally:
+        conn.close()
+
+    assert match is not None
+    assert match.work_id == work.row_id
+    assert match.method == "normalized_title_type_source"
+
+
 def test_existing_work_match_batches_identifier_lookups(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
