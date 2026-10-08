@@ -1148,7 +1148,7 @@ def list_cycle_events_for_subject(
     sql = """
         SELECT * FROM cycle_event
         WHERE subject_key=?
-        ORDER BY started_at DESC, run_id DESC, cycle_event_id DESC
+        ORDER BY started_at DESC, rowid DESC
     """
     params: tuple[object, ...] = (_require_nonblank(subject_key, "subject_key"),)
     if limit is not None:
@@ -1610,7 +1610,7 @@ def record_topic_cycle_manifest(
 ) -> str:
     """Record operational evidence from a topic-cycle manifest.
 
-    The function is idempotent for the same run/stage/artifact ids and never
+    The function is idempotent for the same cycle event/stage/artifact ids and never
     writes canonical source facts, claims, captures, or review decisions.
     """
 

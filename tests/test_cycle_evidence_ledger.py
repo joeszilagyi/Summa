@@ -477,6 +477,12 @@ def test_cycle_event_start_replays_are_idempotent_by_attempt(tmp_path: Path) -> 
         )
         assert later_id != first_id
         assert count_rows(conn, "cycle_event") == 2
+        assert [
+            event["cycle_event_id"]
+            for event in cycle_evidence_ledger.list_cycle_events_for_subject(
+                conn, "fixture_subject", limit=2
+            )
+        ] == [later_id, first_id]
         assert cycle_evidence_ledger.build_cycle_event_id(
             run_id="run-duplicate",
             started_at="2026-06-01T00:00:00Z",
