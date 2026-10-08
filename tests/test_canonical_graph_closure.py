@@ -288,7 +288,7 @@ def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=19)
     conn = canonical_store.connect_canonical_store(db_path)
     try:
         with conn:
@@ -325,7 +325,12 @@ def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
                     FIXED_TIMESTAMP,
                 ),
             )
-        conn.execute("PRAGMA foreign_keys=ON")
+    finally:
+        conn.close()
+
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
         issues = canonical_graph_closure.audit_authority_reconciliation(conn)
     finally:
         conn.close()

@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 19
-CURRENT_MIGRATION_ID = "0019_authority_merge_pair_guard"
+CURRENT_SCHEMA_VERSION = 20
+CURRENT_MIGRATION_ID = "0020_authority_candidate_ref_guard"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -431,6 +431,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         migration_id="0019_authority_merge_pair_guard",
         sql_path=MIGRATIONS_DIR / "0019_authority_merge_pair_guard.sql",
         notes="Reject duplicate authority merge event source and target pairs.",
+    ),
+    MigrationSpec(
+        version=20,
+        migration_id="0020_authority_candidate_ref_guard",
+        sql_path=MIGRATIONS_DIR / "0020_authority_candidate_ref_guard.sql",
+        notes="Enforce candidate_authority_id references without rebuilding the history-bearing table.",
     ),
 )
 
