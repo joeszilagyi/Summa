@@ -2388,3 +2388,49 @@ def test_record_review_state_history_uses_single_lookup_for_existing_rows(
         if sql.strip().startswith("SELECT rowid FROM review_state_history")
     ]
     assert len(rowid_lookups) == 0
+
+
+@pytest.mark.parametrize(
+    "changed_field,new_value",
+    [
+        ("reason", "different reason"),
+        ("note", "different note"),
+        ("source_namespace", "different namespace"),
+        ("source_id", "different source"),
+        ("source_tool", "different tool"),
+        ("source_run_id", "different run"),
+    ],
+)
+def test_review_history_replay_rejects_conflicting_transition_evidence(
+    tmp_path: Path, changed_field: str, new_value: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    transition = {
+        "target_namespace": "source_claim",
+        "target_id": "claim:1",
+        "previous_state": "proposed",
+        "new_state": "needs_review",
+        "changed_by": "pytest",
+        "changed_at": FIXED_TIMESTAMP,
+        "reason": "initial reason",
+        "note": "initial note",
+        "source_namespace": "fixture",
+        "source_id": "source:1",
+        "source_tool": "pytest",
+        "source_run_id": "run:1",
+    }
+    try:
+        first = canonical_store.record_review_state_history(conn, **transition)
+        replay = canonical_store.record_review_state_history(conn, **transition)
+        with pytest.raises(canonical_store.CanonicalStoreError, match="different transition evidence"):
+            canonical_store.record_review_state_history(
+                conn, **{**transition, changed_field: new_value}
+            )
+        count = conn.execute("SELECT COUNT(*) FROM review_state_history").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.row_id == first.row_id
+    assert count == 1

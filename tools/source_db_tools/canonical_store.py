@@ -2750,15 +2750,35 @@ def record_review_state_history(
         changed_by,
         changed_at_value,
     )
+    proposed_values = {
+        "target_namespace": _require_nonblank(target_namespace, "target_namespace"),
+        "target_id": _require_nonblank(target_id, "target_id"),
+        "previous_state": _optional_nonblank(previous_state, "previous_state"),
+        "new_state": new_state_value,
+        "changed_by": _require_nonblank(changed_by, "changed_by"),
+        "changed_at": changed_at_value,
+        "reason": _optional_nonblank(reason, "reason"),
+        "note": _optional_nonblank(note, "note"),
+        "source_namespace": _optional_nonblank(source_namespace, "source_namespace"),
+        "source_id": _optional_nonblank(source_id, "source_id"),
+        "source_tool": _optional_nonblank(source_tool, "source_tool"),
+        "source_run_id": _optional_nonblank(source_run_id, "source_run_id"),
+    }
     existing = conn.execute(
         """
-        SELECT rowid, review_state_history_key_v1
+        SELECT rowid, target_namespace, target_id, previous_state, new_state,
+               changed_by, changed_at, reason, note, source_namespace,
+               source_id, source_tool, source_run_id
         FROM review_state_history
         WHERE review_state_history_key_v1=?
         """,
         (key,),
     ).fetchone()
     if existing is not None:
+        if any(existing[field] != value for field, value in proposed_values.items()):
+            raise CanonicalStoreError(
+                "review_state_history key already exists with different transition evidence"
+            )
         return CanonicalWriteResult("review_state_history", int(existing["rowid"]), key, False)
     cursor = conn.execute(
         """
@@ -2781,18 +2801,7 @@ def record_review_state_history(
         """,
         (
             key,
-            _require_nonblank(target_namespace, "target_namespace"),
-            _require_nonblank(target_id, "target_id"),
-            _optional_nonblank(previous_state, "previous_state"),
-            new_state_value,
-            _require_nonblank(changed_by, "changed_by"),
-            changed_at_value,
-            _optional_nonblank(reason, "reason"),
-            _optional_nonblank(note, "note"),
-            _optional_nonblank(source_namespace, "source_namespace"),
-            _optional_nonblank(source_id, "source_id"),
-            _optional_nonblank(source_tool, "source_tool"),
-            _optional_nonblank(source_run_id, "source_run_id"),
+            *(proposed_values[field] for field in proposed_values),
             changed_at_value,
         ),
     )
