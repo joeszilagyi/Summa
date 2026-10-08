@@ -761,13 +761,16 @@ def find_existing_authority_match(
         return matches
     rows = conn.execute(
         """
-        SELECT authority_record_id
+        SELECT authority_record_id, authority_type
         FROM authority_record
-        WHERE label_norm=? AND authority_type=? AND merged_into_authority_record_id IS NULL
+        WHERE label_norm=? AND merged_into_authority_record_id IS NULL
         ORDER BY authority_record_id
         """,
-        (normalized_label, entity_type),
+        (normalized_label,),
     ).fetchall()
+    rows = [
+        row for row in rows if normalize_authority_label(row["authority_type"]) == normalized_type
+    ]
     if len(rows) == 1:
         return [
             AuthorityMatch(
