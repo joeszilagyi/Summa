@@ -43,7 +43,7 @@ conn = canonical_store.connect_existing_read_only(db_path)
 summary = cycle_evidence_ledger.summarize_cycle_evidence(conn, cycle_event_id)
 ```
 
-The helper returns deterministic ordered stage and artifact summaries. Write helpers are transaction-friendly and use parameterized SQL.
+The helper returns the cycle event, counts, and deterministically ordered `stages`, `artifacts`, `candidates_considered`, `candidates_excluded`, `tool_failures`, and `operator_overrides` lists. These details are local/private operator evidence; do not publish the raw summary. Write helpers are transaction-friendly and use parameterized SQL.
 
 ## Adding Evidence
 
