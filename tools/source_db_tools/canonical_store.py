@@ -1429,15 +1429,43 @@ def record_provenance_event(
         source_object_id_value,
         timestamp,
     )
+    values = {
+        "object_namespace": object_namespace_value,
+        "object_id": object_id_value,
+        "event_type": event_type_value,
+        "actor_type": _optional_nonblank(actor_type, "actor_type"),
+        "actor_id": _optional_nonblank(actor_id, "actor_id"),
+        "actor_label": _optional_nonblank(actor_label, "actor_label"),
+        "tool_name": _optional_nonblank(tool_name, "tool_name"),
+        "tool_version": _optional_nonblank(tool_version, "tool_version"),
+        "model_name": _optional_nonblank(model_name, "model_name"),
+        "prompt_id": _optional_nonblank(prompt_id, "prompt_id"),
+        "run_id": _optional_nonblank(run_id, "run_id"),
+        "source_object_namespace": source_object_namespace_value,
+        "source_object_id": source_object_id_value,
+        "event_timestamp": timestamp,
+        "confidence_score": score,
+        "note_text": _optional_nonblank(note_text, "note_text"),
+    }
     existing = conn.execute(
         """
-        SELECT provenance_event_id
+        SELECT *
         FROM provenance_event
         WHERE provenance_event_key_v1=?
         """,
         (key,),
     ).fetchone()
     if existing is not None:
+        mismatched = [
+            field
+            for field, value in values.items()
+            if (field != "event_timestamp" or event_timestamp is not None)
+            and existing[field] != value
+        ]
+        if mismatched:
+            raise CanonicalStoreError(
+                f"provenance event replay conflict for key {key}: " + ", ".join(mismatched)
+            )
         return ProvenanceEventRef(event_id=int(existing["provenance_event_id"]), event_key=key)
     cursor = conn.execute(
         """
@@ -1464,22 +1492,7 @@ def record_provenance_event(
         """,
         (
             key,
-            object_namespace_value,
-            object_id_value,
-            event_type_value,
-            _optional_nonblank(actor_type, "actor_type"),
-            _optional_nonblank(actor_id, "actor_id"),
-            _optional_nonblank(actor_label, "actor_label"),
-            _optional_nonblank(tool_name, "tool_name"),
-            _optional_nonblank(tool_version, "tool_version"),
-            _optional_nonblank(model_name, "model_name"),
-            _optional_nonblank(prompt_id, "prompt_id"),
-            _optional_nonblank(run_id, "run_id"),
-            source_object_namespace_value,
-            source_object_id_value,
-            timestamp,
-            score,
-            _optional_nonblank(note_text, "note_text"),
+            *(values.values()),
             timestamp,
         ),
     )

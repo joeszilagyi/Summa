@@ -98,7 +98,7 @@ class ProvenanceLookupCountingProxy:
     def execute(self, sql: str, params: object = ()) -> object:
         if isinstance(sql, str):
             normalized_sql = " ".join(sql.split()).upper()
-            if normalized_sql.startswith("SELECT PROVENANCE_EVENT_ID FROM PROVENANCE_EVENT"):
+            if normalized_sql.startswith("SELECT * FROM PROVENANCE_EVENT"):
                 self.provenance_lookup_count += 1
             if normalized_sql.startswith("SELECT COUNT(*) AS COUNT"):
                 self.prior_state_count_query_count += 1
