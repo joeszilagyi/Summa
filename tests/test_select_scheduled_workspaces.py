@@ -1544,7 +1544,7 @@ def test_selector_helper_paths_cover_validation_and_policy_branches(
     )
     assert retryable_reasons == [
         "attempt_count 3 reached run_budget.max_attempts 3",
-        "retryable failure count 3 exceeded retry_policy.max_retryable_failures 2",
+        "retryable failure count 3 reached retry_policy.max_retryable_failures 2",
         "retry backoff active until 2026-01-01T00:15:00Z",
     ]
 
@@ -1999,3 +1999,31 @@ def test_selector_build_selection_payload_render_text_and_main_paths(
     )
     assert selector.main() == 1
     assert "Error: boom" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "failure_count, expected_reasons",
+    [
+        (1, []),
+        (2, ["retryable failure count 2 reached retry_policy.max_retryable_failures 2"]),
+    ],
+)
+def test_selector_retryable_failure_limit_blocks_at_exact_threshold(
+    failure_count: int, expected_reasons: list[str]
+) -> None:
+    reasons = selector.scheduler_policy_ineligibility_reasons(
+        {
+            "scheduler_policy": {
+                "run_budget": {"max_attempts": 4},
+                "retry_policy": {"max_retryable_failures": 2},
+                "failure_state": {"status": "retryable", "attempt_count": failure_count},
+            }
+        },
+        args=argparse.Namespace(
+            run_budget_max_attempts=None,
+            run_budget_max_runtime_seconds=None,
+        ),
+        planned_at=selector.parse_timestamp("2026-06-01T00:00:00Z", label="planned_at"),
+    )
+
+    assert reasons == expected_reasons

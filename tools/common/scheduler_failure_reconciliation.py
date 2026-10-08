@@ -281,10 +281,10 @@ def derive_failure_state(
         )
 
     max_retryable_failures = value_as_positive_int(retry_policy, "max_retryable_failures")
-    if max_retryable_failures is not None and attempt_count > max_retryable_failures:
+    if max_retryable_failures is not None and attempt_count >= max_retryable_failures:
         blocked_reasons.append(
             "retryable failure count "
-            f"{attempt_count} exceeded retry_policy.max_retryable_failures {max_retryable_failures}"
+            f"{attempt_count} reached retry_policy.max_retryable_failures {max_retryable_failures}"
         )
 
     if blocked_reasons:
