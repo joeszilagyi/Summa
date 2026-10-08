@@ -287,13 +287,23 @@ RECOGNIZED_INGEST_EVENT_TYPES = frozenset(
 
 COUNTED_CANONICAL_TABLES = (
     "provenance_event",
+    "authority_record",
+    "authority_identifier",
+    "authority_reconciliation",
+    "authority_merge_event",
     "work",
+    "work_identifier",
+    "work_metadata",
+    "work_url",
+    "work_subject",
     "source_access",
     "source_claim",
     "capture_event",
     "extraction_record",
     "extraction_detected_entity",
     "source_relationship",
+    "topic_extension",
+    "review_state_history",
 )
 
 

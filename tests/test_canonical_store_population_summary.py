@@ -72,6 +72,38 @@ def test_population_summary_reports_initialized_empty_store(tmp_path: Path) -> N
     assert summary["last_ingest_at"] is None
 
 
+def test_canonical_family_counts_include_authority_and_supporting_records(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_record (
+                    authority_key_v1, authority_type, preferred_label, created_at,
+                    record_last_updated
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("authority:test", "person", "Test Authority", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+            )
+        counts = canonical_store.canonical_family_counts(conn)
+    finally:
+        conn.close()
+
+    assert counts["authority_record"] == 1
+    assert {
+        "authority_identifier",
+        "authority_reconciliation",
+        "authority_merge_event",
+        "work_identifier",
+        "work_metadata",
+        "work_url",
+        "work_subject",
+        "topic_extension",
+        "review_state_history",
+    }.issubset(counts)
+
+
 def test_population_summary_reports_populated_store_and_last_ingest_without_mutation(
     tmp_path: Path,
 ) -> None:
