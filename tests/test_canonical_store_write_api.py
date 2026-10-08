@@ -72,6 +72,69 @@ def test_generic_lookup_chooses_lowest_id_when_criteria_match_multiple_rows() ->
         conn.close()
 
 
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [(-1, None), (None, -1), (5, 4), (True, 1), (1, 1.5)],
+)
+def test_detected_entity_writer_rejects_invalid_spans(
+    tmp_path: Path, start: object, end: object
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="invalid-span",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:invalid-span",
+        )
+        with pytest.raises(canonical_store.CanonicalStoreError, match="character_"):
+            canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                entity_label="Entity",
+                character_start=start,
+                character_end=end,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM extraction_detected_entity").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_detected_entity_sql_triggers_reject_invalid_insert_and_update(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="invalid detected-entity source span"):
+            conn.execute(
+                "INSERT INTO extraction_detected_entity "
+                "(entity_label, source_span_start, source_span_end, record_last_updated) "
+                "VALUES ('Invalid', -1, 2, ?)",
+                (FIXED_TIMESTAMP,),
+            )
+        cursor = conn.execute(
+            "INSERT INTO extraction_detected_entity "
+            "(entity_label, source_span_start, source_span_end, record_last_updated) "
+            "VALUES ('Valid', 2, 3, ?)",
+            (FIXED_TIMESTAMP,),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="invalid detected-entity source span"):
+            conn.execute(
+                "UPDATE extraction_detected_entity SET source_span_end=1 "
+                "WHERE detected_entity_id=?",
+                (cursor.lastrowid,),
+            )
+        row = conn.execute(
+            "SELECT source_span_start, source_span_end FROM extraction_detected_entity "
+            "WHERE detected_entity_id=?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        assert tuple(row) == (2, 3)
+    finally:
+        conn.close()
+
+
 def test_write_api_records_provenance_and_core_rows(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
