@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic next-action feedback plan from canonical subject state."""
+"""Build a next-action feedback plan from canonical subject state."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import heapq
 import json
 import sqlite3
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +162,10 @@ def parse_args() -> argparse.Namespace:
         "--generated-at", help="Optional RFC3339 timestamp override for deterministic tests."
     )
     parser.add_argument(
+        "--planner-run-id",
+        help="Optional run identity for reproducible fixtures; defaults to a fresh ID per plan.",
+    )
+    parser.add_argument(
         "--max-facet-candidates",
         type=int,
         default=DEFAULT_MAX_FACET_CANDIDATES,
@@ -223,6 +228,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise CandidateFeedbackError("--max-deferred-candidates must be non-negative")
     if not isinstance(args.feedback_plan_stage, str) or not args.feedback_plan_stage.strip():
         raise CandidateFeedbackError("--feedback-plan-stage must be a non-empty string")
+    planner_run_id = getattr(args, "planner_run_id", None)
+    if planner_run_id is not None and not planner_run_id.strip():
+        raise CandidateFeedbackError("--planner-run-id must be a non-empty string")
 
 
 def load_runtime(
@@ -1667,6 +1675,7 @@ def build_plan(
     selection_explanation = build_feedback_selection_explanation(
         subject_id=subject["subject_id"],
         workspace_id=subject["subject_id"],
+        run_id=getattr(args, "planner_run_id", None) or f"feedback-plan:{uuid.uuid4().hex}",
         generated_at=generated_at,
         scoring_policy=scoring_policy,
         facet_scores=facet_scores,
