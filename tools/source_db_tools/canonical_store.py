@@ -1444,6 +1444,12 @@ def upsert_work(
     created_at: str | None = None,
     record_last_updated: str | None = None,
 ) -> CanonicalWriteResult:
+    if (
+        isinstance(accepted_for_citation, bool)
+        or not isinstance(accepted_for_citation, int)
+        or accepted_for_citation not in (0, 1)
+    ):
+        raise CanonicalStoreError("accepted_for_citation must be 0 or 1")
     _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     work_key = _require_nonblank(work_key_v1, "work_key_v1")
     review_state_value = _normalize_review_state(review_state, default=DEFAULT_WORK_REVIEW_STATE)
@@ -1499,7 +1505,7 @@ def upsert_work(
                 _optional_nonblank(workspace_id, "workspace_id"),
                 _optional_nonblank(authority_level, "authority_level"),
                 _optional_nonblank(public_blocker, "public_blocker"),
-                1 if int(accepted_for_citation) else 0,
+                accepted_for_citation,
                 provenance_event_ref,
                 first_seen_value,
                 last_seen_value,
@@ -1564,7 +1570,7 @@ def upsert_work(
         if preserve_established_envelope
         else max(
             int(existing["accepted_for_citation"] or 0),
-            1 if int(accepted_for_citation) else 0,
+            accepted_for_citation,
         )
     )
     _update_row(
