@@ -23,6 +23,7 @@ from tools.source_db_tools import canonical_store, identifier_normalization
 RECONCILIATION_TOOL = "tools/source_db_tools/canonical_reconciliation.py"
 WORK_DUPLICATE_EVENT_TYPE = "work_duplicate_encountered"
 AUTHORITY_MATCH_EXACT_IDENTIFIER = 1.0
+AUTHORITY_MATCH_EXACT_IDENTIFIER_AMBIGUOUS = 0.5
 AUTHORITY_MATCH_LABEL_AND_TYPE = 0.75
 AUTHORITY_MATCH_LABEL_AND_TYPE_AMBIGUOUS = 0.5
 AUTO_MERGE_REVIEW_STATES = ("accepted", "approved", "curated", "reviewed")
@@ -711,9 +712,9 @@ def find_existing_authority_match(
     for identifier in identifiers:
         normalized = normalize_external_identifier(identifier["scheme"], identifier["value"])
         review_state_placeholders = ", ".join("?" for _ in AUTO_MERGE_REVIEW_STATES)
-        row = conn.execute(
+        rows = conn.execute(
             f"""
-            SELECT authority_record.authority_record_id
+            SELECT DISTINCT authority_record.authority_record_id
             FROM authority_identifier
             INNER JOIN authority_record
               ON authority_record.authority_record_id = authority_identifier.authority_record_id
@@ -724,6 +725,7 @@ def find_existing_authority_match(
               AND authority_identifier.confidence_score IS NOT NULL
               AND authority_identifier.confidence_score >= ?
               AND authority_record.merged_into_authority_record_id IS NULL
+            ORDER BY authority_record.authority_record_id
             """,
             (
                 normalized["scheme"],
@@ -732,15 +734,25 @@ def find_existing_authority_match(
                 *AUTO_MERGE_REVIEW_STATES,
                 AUTO_MERGE_IDENTIFIER_CONFIDENCE_THRESHOLD,
             ),
-        ).fetchone()
-        if row is not None:
+        ).fetchall()
+        if len(rows) == 1:
             return [
                 AuthorityMatch(
-                    authority_record_id=int(row["authority_record_id"]),
+                    authority_record_id=int(rows[0]["authority_record_id"]),
                     method="exact_authority_identifier",
                     confidence_score=AUTHORITY_MATCH_EXACT_IDENTIFIER,
                     automatic_merge=True,
                 )
+            ]
+        if len(rows) > 1:
+            return [
+                AuthorityMatch(
+                    authority_record_id=int(row["authority_record_id"]),
+                    method="ambiguous_exact_authority_identifier",
+                    confidence_score=AUTHORITY_MATCH_EXACT_IDENTIFIER_AMBIGUOUS,
+                    automatic_merge=False,
+                )
+                for row in rows
             ]
 
     normalized_label = normalize_authority_label(entity_label)
@@ -2098,6 +2110,8 @@ def run_reconciliation_pass_for_ingest(
                 evidence_context=(
                     "normalized label and entity type match"
                     if match.method == "normalized_label_and_type"
+                    else "duplicate trusted authority identifier requires review"
+                    if match.method == "ambiguous_exact_authority_identifier"
                     else "ambiguous normalized label and entity type match"
                 ),
                 review_state=review_state,
