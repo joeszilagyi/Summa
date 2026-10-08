@@ -47,6 +47,7 @@ def run_check(path: Path, *, quick: bool = False) -> dict[str, Any]:
         }
     try:
         rows = [row[0] for row in conn.execute(f"PRAGMA {pragma}").fetchall()]
+        foreign_key_rows = conn.execute("PRAGMA foreign_key_check").fetchmany(101)
     except sqlite3.DatabaseError as exc:
         return {
             "database": str(path),
@@ -56,11 +57,19 @@ def run_check(path: Path, *, quick: bool = False) -> dict[str, Any]:
         }
     finally:
         conn.close()
+    messages = [] if rows == ["ok"] else rows
+    for table, row_id, parent, foreign_key_index in foreign_key_rows[:100]:
+        messages.append(
+            "foreign_key_check: "
+            f"table={table} rowid={row_id} parent={parent} foreign_key_index={foreign_key_index}"
+        )
+    if len(foreign_key_rows) > 100:
+        messages.append("foreign_key_check: additional violations omitted")
     return {
         "database": str(path),
         "operation": pragma,
-        "status": "pass" if rows == ["ok"] else "fail",
-        "messages": rows,
+        "status": "pass" if rows == ["ok"] and not foreign_key_rows else "fail",
+        "messages": messages or ["ok"],
     }
 
 
@@ -181,10 +190,12 @@ def profile(path: Path) -> dict[str, Any]:
         journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     finally:
         conn.close()
+    integrity = run_check(path)
     return {
         "database": str(path),
         "operation": "profile",
-        "status": "pass",
+        "status": integrity["status"],
+        "integrity": integrity,
         "user_version": user_version,
         "page_count": page_count,
         "page_size": page_size,
