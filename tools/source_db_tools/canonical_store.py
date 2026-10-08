@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 13
-CURRENT_MIGRATION_ID = "0013_cycle_ledger_status_constraints"
+CURRENT_SCHEMA_VERSION = 14
+CURRENT_MIGRATION_ID = "0014_ingested_gather_candidate_selection"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -377,6 +377,12 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         sql_path=MIGRATIONS_DIR / "0013_cycle_ledger_status_constraints.sql",
         notes="Constrain cycle and stage lifecycle statuses at the SQLite boundary.",
         rebuilds_foreign_key_parent=True,
+    ),
+    MigrationSpec(
+        version=14,
+        migration_id="0014_ingested_gather_candidate_selection",
+        sql_path=MIGRATIONS_DIR / "0014_ingested_gather_candidate_selection.sql",
+        notes="Correct selection evidence for successfully ingested gather candidates.",
     ),
 )
 
