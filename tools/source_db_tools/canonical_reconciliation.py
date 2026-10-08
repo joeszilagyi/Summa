@@ -873,7 +873,8 @@ def record_authority_reconciliation(
     )
     existing = conn.execute(
         """
-        SELECT authority_reconciliation_id, review_state, updated_at, record_last_updated
+        SELECT authority_reconciliation_id, review_state, confidence_score, match_score,
+               evidence_context, updated_at, record_last_updated
         FROM authority_reconciliation
         WHERE reconciliation_key_v1=?
         """,
@@ -916,6 +917,14 @@ def record_authority_reconciliation(
             reconciliation_key,
             True,
         )
+    existing_state_text = str(existing["review_state"] or "").strip().lower()
+    proposed_state_text = review_state_value.strip().lower()
+    preserve_established_envelope = canonical_store._preserve_authority_envelope(
+        existing["review_state"], review_state_value
+    ) or (
+        existing_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+        and proposed_state_text in canonical_store.PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+    )
     conn.execute(
         """
         UPDATE authority_reconciliation
@@ -924,9 +933,9 @@ def record_authority_reconciliation(
         WHERE authority_reconciliation_id=?
         """,
         (
-            score,
-            score,
-            evidence_context,
+            existing["confidence_score"] if preserve_established_envelope else score,
+            existing["match_score"] if preserve_established_envelope else score,
+            existing["evidence_context"] if preserve_established_envelope else evidence_context,
             (
                 existing["review_state"]
                 if (

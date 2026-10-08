@@ -160,10 +160,19 @@ def test_accept_candidate_preserves_terminal_entity_review_state(tmp_path, initi
     assert entity_row["authority_record_id"] == authority_id
 
 
-@pytest.mark.parametrize("existing_state", ["accepted", "rejected", "curated"])
+@pytest.mark.parametrize(
+    ("existing_state", "replay_state"),
+    [
+        ("accepted", "needs_review"),
+        ("accepted", "accepted"),
+        ("rejected", "needs_review"),
+        ("curated", "needs_review"),
+    ],
+)
 def test_record_authority_reconciliation_preserves_established_review_state_on_replay(
     tmp_path,
     existing_state: str,
+    replay_state: str,
 ) -> None:
     conn = bootstrap_db(tmp_path)
     try:
@@ -224,12 +233,12 @@ def test_record_authority_reconciliation_preserves_established_review_state_on_r
                 match_method="exact_name",
                 confidence_score=0.70,
                 evidence_context="after",
-                review_state="needs_review",
+                review_state=replay_state,
                 created_at="2026-06-05T10:21:30Z",
             )
             row = conn.execute(
                 """
-                SELECT review_state, confidence_score, evidence_context
+                SELECT review_state, confidence_score, match_score, evidence_context
                 FROM authority_reconciliation
                 WHERE authority_reconciliation_id=?
                 """,
@@ -242,6 +251,9 @@ def test_record_authority_reconciliation_preserves_established_review_state_on_r
     assert replay.created is False
     assert replay.row_id == baseline.row_id
     assert row["review_state"] == existing_state
+    assert row["confidence_score"] == 0.99
+    assert row["match_score"] == 0.99
+    assert row["evidence_context"] == "before"
 
 
 def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
