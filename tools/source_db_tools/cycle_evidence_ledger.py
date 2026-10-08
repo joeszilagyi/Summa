@@ -1723,6 +1723,21 @@ def _stage_by_name(stages: Iterable[Mapping[str, Any]], name: str) -> Mapping[st
     return None
 
 
+_DELIBERATE_STAGE_SKIP_REASONS = frozenset(
+    {
+        "not requested",
+        "disabled_by_operator_flag",
+        "dry-run does not mutate canonical db",
+        "execution fixture supplied",
+    }
+)
+
+
+def _skipped_stage_retryable(reason: str) -> bool:
+    """Only unexpected skips should become retryable work."""
+    return reason.strip().casefold() not in _DELIBERATE_STAGE_SKIP_REASONS
+
+
 def record_topic_cycle_manifest(
     conn: sqlite3.Connection,
     *,
@@ -1864,7 +1879,7 @@ def record_topic_cycle_manifest(
                 candidate_ref_id=name,
                 candidate_label=name,
                 exclusion_reason=str(raw_stage["skipped_reason"]),
-                retryable=True,
+                retryable=_skipped_stage_retryable(str(raw_stage["skipped_reason"])),
             )
 
     gather_event = _load_gather_event(conn, run_id)
