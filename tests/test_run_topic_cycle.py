@@ -2110,6 +2110,23 @@ def test_topic_cycle_refuses_completed_run_without_force(tmp_path: Path) -> None
     assert "already completed" in second.stderr
 
 
+@pytest.mark.parametrize("status", ["failed", "partial", "degraded"])
+def test_topic_cycle_existing_retryable_run_requires_force(
+    tmp_path: Path, status: str
+) -> None:
+    cycle = load_run_topic_cycle_module()
+    run_dir = tmp_path / "cycle-repeat"
+    run_dir.mkdir()
+    (run_dir / "topic-cycle-run.json").write_text(
+        json.dumps({"status": status}), encoding="utf-8"
+    )
+
+    with pytest.raises(cycle.TopicCycleError, match=f"status {status}"):
+        cycle.validate_existing_run_dir(run_dir, force=False, resume=False)
+
+    cycle.validate_existing_run_dir(run_dir, force=True, resume=False)
+
+
 def test_topic_cycle_runner_has_no_direct_canonical_family_inserts() -> None:
     body = SCRIPT.read_text(encoding="utf-8")
     forbidden = [

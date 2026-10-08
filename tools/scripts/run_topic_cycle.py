@@ -64,7 +64,7 @@ SCHEMA_VERSION = "topic-cycle-run.v1"
 DEFAULT_FACET = "sources"
 DEFAULT_PHASE = "01a"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
-KNOWN_RUN_STATUSES = {"completed", "dry_run", "failed", "partial"}
+KNOWN_RUN_STATUSES = {"completed", "dry_run", "failed", "partial", "degraded"}
 REMOTE_FETCH_ENABLED = False
 
 
@@ -322,7 +322,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional graph-closure report path. Defaults to <run-dir>/graph-closure-report.json.",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Allow replacing an existing completed cycle manifest."
+        "--force", action="store_true", help="Allow replacing an existing cycle manifest."
     )
     parser.add_argument(
         "--resume", action="store_true", help="Reserved; currently refuses partial runs clearly."
@@ -600,7 +600,7 @@ def validate_existing_run_dir(run_dir: Path, *, force: bool, resume: bool) -> No
         raise TopicCycleError(
             f"topic cycle run already completed at {manifest_path}; use --force or a new run id"
         )
-    if status in {"failed", "partial"} and not resume and not force:
+    if status in {"failed", "partial", "degraded"} and not resume and not force:
         raise TopicCycleError(
             f"topic cycle run already exists with status {status}; use --resume, --force, or a new run id"
         )
