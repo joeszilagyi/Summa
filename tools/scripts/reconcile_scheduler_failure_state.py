@@ -171,7 +171,7 @@ def reconciliation_entry(
         "workspace_id": workspace["workspace_id"],
         "ledger_path": str(ledger_path),
         "ledger_event_count": len(events),
-        "terminal_run_count": len(run_outcomes),
+        "terminal_run_count": sum(not outcome.inferred_stale for outcome in run_outcomes),
         "registry_failure_state": registry_failure_state,
         "derived_failure_state": copy.deepcopy(derived_failure_state),
         "recommendation": recommendation,
@@ -230,6 +230,7 @@ def build_reconciliation_payload(args: argparse.Namespace) -> dict[str, Any]:
             run_budget=run_budget if isinstance(run_budget, dict) else None,
             retry_policy=retry_policy if isinstance(retry_policy, dict) else None,
             events=events,
+            as_of=generated_at,
         )
         entries.append(
             reconciliation_entry(
