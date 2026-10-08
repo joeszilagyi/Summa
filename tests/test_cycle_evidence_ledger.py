@@ -509,6 +509,102 @@ def test_cycle_event_start_replays_are_idempotent_by_attempt(tmp_path: Path) -> 
         conn.close()
 
 
+def test_cycle_event_terminal_state_is_idempotent_but_not_rewritable(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="terminal-cycle",
+            started_at=FIXED_TIMESTAMP,
+            status="running",
+        )
+        finish = {
+            "cycle_event_id": event_id,
+            "status": "failed",
+            "ended_at": "2026-06-04T10:01:00Z",
+            "warning_count": 1,
+            "row_count_delta": {"work": 2},
+        }
+        cycle_evidence_ledger.record_cycle_event_finish(conn, **finish)
+        cycle_evidence_ledger.record_cycle_event_finish(conn, **finish)
+
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="terminal status"):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn, cycle_event_id=event_id, status="completed"
+            )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="replay mismatch"):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn, **dict(finish, ended_at="2026-06-04T10:02:00Z")
+            )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="replay mismatch"):
+            cycle_evidence_ledger.record_cycle_event_finish(
+                conn, **dict(finish, row_count_delta={"work": 3})
+            )
+        event = cycle_evidence_ledger.load_cycle_event(conn, event_id)
+        assert event is not None
+        assert event["status"] == "failed"
+        assert event["ended_at"] == finish["ended_at"]
+    finally:
+        conn.close()
+
+
+def test_cycle_stage_terminal_state_is_idempotent_but_not_rewritable(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn, run_id="terminal-stage", started_at=FIXED_TIMESTAMP
+        )
+        stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=event_id,
+            run_id="terminal-stage",
+            stage_name="run_gather",
+            stage_order=1,
+            started_at=FIXED_TIMESTAMP,
+            status="running",
+        )
+        finish = {
+            "stage_event_id": stage_id,
+            "status": "passed",
+            "ended_at": "2026-06-04T10:01:00Z",
+            "validation_status": "pass",
+        }
+        cycle_evidence_ledger.record_cycle_stage_finish(conn, **finish)
+        cycle_evidence_ledger.record_cycle_stage_finish(conn, **finish)
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="terminal status"):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn, stage_event_id=stage_id, status="failed"
+            )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="replay mismatch"):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn, **dict(finish, validation_status="fail")
+            )
+        row = conn.execute(
+            "SELECT status, ended_at FROM cycle_stage_event WHERE stage_event_id=?", (stage_id,)
+        ).fetchone()
+        assert tuple(row) == ("passed", finish["ended_at"])
+
+        skipped_id = cycle_evidence_ledger.record_cycle_stage_start(
+            conn,
+            cycle_event_id=event_id,
+            run_id="terminal-stage",
+            stage_name="feedback_plan_post",
+            stage_order=2,
+            status="skipped",
+        )
+        cycle_evidence_ledger.record_cycle_stage_finish(
+            conn, stage_event_id=skipped_id, status="skipped"
+        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="terminal status"):
+            cycle_evidence_ledger.record_cycle_stage_finish(
+                conn, stage_event_id=skipped_id, status="failed"
+            )
+    finally:
+        conn.close()
+
+
 def test_cycle_event_start_replay_ignores_status_transition(
     tmp_path: Path,
 ) -> None:
@@ -1076,6 +1172,13 @@ def test_record_topic_cycle_manifest_uses_stage_evidence_for_artifacts_and_candi
             manifest_hash="manifest-hash",
             canonical_db_ref=str(db_path),
         )
+        assert cycle_evidence_ledger.record_topic_cycle_manifest(
+            conn,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            manifest_hash="manifest-hash",
+            canonical_db_ref=str(db_path),
+        ) == event_id
 
         artifact_rows = conn.execute(
             """
