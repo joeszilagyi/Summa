@@ -632,6 +632,23 @@ def test_migration_runner_refuses_downgrade_and_unknown_future_version(tmp_path:
         canonical_store.check_canonical_store(future_path)
 
 
+@pytest.mark.parametrize("sqlite_version", [0, canonical_store.CURRENT_SCHEMA_VERSION + 1])
+def test_store_validation_rejects_sqlite_user_version_drift(
+    tmp_path: Path, sqlite_version: int
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(f"PRAGMA user_version={sqlite_version}")
+    finally:
+        conn.close()
+
+    with pytest.raises(canonical_store.CanonicalStoreError, match="user_version.*schema_version"):
+        canonical_store.check_canonical_store(db_path)
+    with pytest.raises(canonical_store.CanonicalStoreError, match="user_version.*schema_version"):
+        canonical_store.init_canonical_store(db_path)
+
+
 def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event_ref(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical-v2.sqlite"
     conn = canonical_store.connect_canonical_store(db_path)
