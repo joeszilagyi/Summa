@@ -983,6 +983,10 @@ def apply_migrations(
             applied_migration_ids=(),
             noop=True,
         )
+    if conn.in_transaction:
+        raise CanonicalStoreError(
+            "refusing canonical store migrations inside an active caller transaction"
+        )
 
     timestamp = now_rfc3339() if applied_at is None else applied_at
     rebuilds_foreign_key_parent = any(
