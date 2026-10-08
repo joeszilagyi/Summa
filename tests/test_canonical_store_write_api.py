@@ -1765,7 +1765,7 @@ def test_write_api_preserves_immutable_capture_and_extraction_fields_on_replay(
                 encoding_handling="latin1",
                 truncation_status="truncated",
                 workspace_id="immutable_subject",
-                created_at=NEWER_TIMESTAMP,
+                created_at=OLDER_TIMESTAMP,
                 record_last_updated=OLDER_TIMESTAMP,
             )
             capture_row = conn.execute(
