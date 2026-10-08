@@ -191,11 +191,11 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     }
 
     selected = records_by_workspace["selected_workspace"]
+    assert selected["planned_run_id"].startswith("planner-fixture:selected_workspace:")
     assert selected == {
         **selected,
         "schema_version": "planned-run.v1",
         "planner_run_id": "planner-fixture",
-        "planned_run_id": "planner-fixture:selected_workspace",
         "planned_at": "2026-01-01T00:00:00Z",
         "workspace_id": "selected_workspace",
         "selection_explanation_id": explanation["explanation_id"],
@@ -566,7 +566,7 @@ def test_selector_appends_planned_runs_without_merging_existing_terminal_line(
     appended = json.loads(lines[1])
     assert appended["workspace_id"] == "selected_workspace"
     assert appended["decision"] == "selected"
-    assert appended["planned_run_id"] == "planner-fixture:selected_workspace"
+    assert appended["planned_run_id"].startswith("planner-fixture:selected_workspace:")
 
 
 def test_selector_append_planned_runs_deduplicates_duplicates_in_single_call(tmp_path: Path) -> None:
@@ -766,6 +766,24 @@ def test_selector_planned_run_record_reuses_policy_snapshots_without_deepcopy(
     assert record["default_subject_manifest"] == str(manifest_path)
     assert record["resolved_default_subject_manifest"] == str(manifest_path)
 
+    same_record = selector.planned_run_record(
+        entry=entry,
+        decision="selected",
+        registry_path=registry_path,
+        planner_run_id="planner-fixture",
+        planned_at="2026-01-01T00:00:00Z",
+        run_budget=run_budget,
+        retry_policy=retry_policy,
+        failure_state=failure_state,
+    )
+    assert same_record["planned_run_id"] == record["planned_run_id"]
+    changed_decision = dict(record, decision="skipped")
+    selector.refresh_planned_run_id(changed_decision)
+    assert changed_decision["planned_run_id"] != record["planned_run_id"]
+    changed_explanation = dict(record, selection_explanation_id="different-explanation")
+    selector.refresh_planned_run_id(changed_explanation)
+    assert changed_explanation["planned_run_id"] != record["planned_run_id"]
+
 
 def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspaces" / "selected"
@@ -819,7 +837,27 @@ def test_selector_append_is_idempotent_when_planned_run_ids_repeat(tmp_path: Pat
     assert len(lines) == 1
     record = json.loads(lines[0])
     assert record["planner_run_id"] == "planner-idempotent"
-    assert record["planned_run_id"] == "planner-idempotent:selected_workspace"
+    assert record["planned_run_id"].startswith("planner-idempotent:selected_workspace:")
+
+    changed_plan = run_selector(
+        [
+            "--registry",
+            str(registry_path),
+            "--planner-run-id",
+            "planner-idempotent",
+            "--planned-at",
+            "2026-01-02T00:00:00Z",
+            "--planned-runs-jsonl",
+            str(planned_runs),
+            "--format",
+            "json",
+        ]
+    )
+    assert changed_plan.returncode == 0, changed_plan.stdout + changed_plan.stderr
+    records = [json.loads(line) for line in planned_runs.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert records[0]["planned_run_id"] != records[1]["planned_run_id"]
+    assert records[1]["planned_at"] == "2026-01-02T00:00:00Z"
 
 
 def test_selector_append_planned_runs_uses_file_lock_and_deduplicates_existing_ids(
@@ -921,12 +959,14 @@ def test_selector_can_plan_manual_workspace_without_executing_it(tmp_path: Path)
     assert payload["selected_workspaces"][0]["workspace_id"] == "manual_workspace"
     explanation = payload["selection_explanation"]
     assert explanation["selected_candidate"]["candidate_id"] == "manual_workspace"
+    assert payload["planned_run_records"][0]["planned_run_id"].startswith(
+        "planner-manual:manual_workspace:"
+    )
     assert payload["planned_run_records"] == [
         {
             **payload["planned_run_records"][0],
             "schema_version": "planned-run.v1",
             "planner_run_id": "planner-manual",
-            "planned_run_id": "planner-manual:manual_workspace",
             "planned_at": "2026-01-01T00:00:00Z",
             "workspace_id": "manual_workspace",
             "selection_explanation_id": explanation["explanation_id"],
@@ -1097,8 +1137,12 @@ def test_selector_derives_deterministic_planner_run_id_when_not_provided(tmp_pat
     payload_second = json.loads(run_second.stdout)
     assert payload["planner_run_id"] == payload_second["planner_run_id"]
     assert payload["planner_run_id"].startswith("planner-")
-    assert payload["planned_run_records"][0]["planned_run_id"] == (
-        f"{payload['planner_run_id']}:selected_workspace"
+    assert (
+        payload["planned_run_records"][0]["planned_run_id"]
+        == payload_second["planned_run_records"][0]["planned_run_id"]
+    )
+    assert payload["planned_run_records"][0]["planned_run_id"].startswith(
+        f"{payload['planner_run_id']}:selected_workspace:"
     )
 
 
