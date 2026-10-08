@@ -359,6 +359,52 @@ def test_replay_candidate_batch_and_idempotence(tmp_path: Path) -> None:
     assert second_report["records_skipped"] == 1
 
 
+def test_replay_commit_with_failed_spool_update_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool_dir = tmp_path / "spool"
+    spool_proc = run_script(
+        INGEST_BATCH,
+        [
+            "--db",
+            str(tmp_path / "missing.sqlite"),
+            "--batch",
+            str(CANDIDATE_BATCH),
+            "--degraded-spool",
+            "--spool-dir",
+            str(spool_dir),
+        ],
+    )
+    assert spool_proc.returncode == 0, spool_proc.stdout + spool_proc.stderr
+    record_path, _record = first_spool_record(spool_dir)
+    db_path = bootstrap_db(tmp_path)
+    args = replay_script.parse_args(["--db", str(db_path), "--spool-path", str(record_path)])
+
+    def fail_mark(*_args: object, **_kwargs: object) -> None:
+        raise OSError("spool update failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(canonical_write_spool, "mark_spool_record_replayed", fail_mark)
+        report, exit_code = replay_script.replay(args)
+
+    assert exit_code == 1
+    assert report["records_uncertain"] == 1
+    assert (
+        canonical_write_spool.load_spool_record(record_path)["replay_status"] == "replay_uncertain"
+    )
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]
+    assert count > 0
+
+    second, second_exit = replay_script.replay(args)
+
+    assert second_exit == 1
+    assert second["records_attempted"] == 0
+    assert second["results"][0]["status"] == "skipped_replay_uncertain"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM work").fetchone()[0] == count
+
+
 def test_replay_candidate_batch_from_single_record_file(tmp_path: Path) -> None:
     missing_db = tmp_path / "missing.sqlite"
     spool_root = tmp_path / "spool_root"

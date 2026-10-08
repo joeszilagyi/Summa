@@ -57,6 +57,13 @@ Replay does not delete spool records. Successful replay marks a record as
 marked `replayed`. Existing canonical ingest and review helpers remain
 responsible for row-level idempotence.
 
+Before applying a write, replay durably marks the record `replay_uncertain`.
+This protects against a crash or spool-file update failure after the DB commit:
+later runs skip that record and exit nonzero rather than applying it twice.
+Reconcile its effects in the canonical DB before manually resetting it to
+`pending` or marking it `replayed`. The replay report counts these records in
+`records_uncertain`; a failed preflight remains `failed` and retryable.
+
 Topic cycles that use degraded spooling report `degraded`, not `completed`, and
 their manifests reference the pending spool artifacts.
 

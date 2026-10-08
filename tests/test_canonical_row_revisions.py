@@ -58,6 +58,7 @@ def test_migration_backfills_existing_rows_once(tmp_path: Path) -> None:
             "0015_authority_reconciliation_evidence_history",
             "0016_cycle_error_counts",
             "0017_authority_merge_self_guard",
+            "0018_authority_merge_cycle_guard",
         )
         history = _revisions(conn, "work", 1)
         assert len(history) == 1

@@ -201,6 +201,45 @@ def test_authority_merge_self_guard_preserves_legacy_rows_on_upgrade(tmp_path: P
         conn.close()
 
 
+def test_authority_merge_cycle_guard_rejects_direct_sql_chain(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO authority_record (
+                    authority_record_id, authority_key_v1, authority_type,
+                    preferred_label, created_at, record_last_updated
+                ) VALUES (?, ?, 'person', 'Authority', ?, ?)
+                """,
+                (
+                    (1, "authority:first", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (2, "authority:second", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                    (3, "authority:third", FIXED_TIMESTAMP, FIXED_TIMESTAMP),
+                ),
+            )
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=2 WHERE authority_record_id=1"
+            )
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=3 WHERE authority_record_id=2"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="merge cycle"):
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=1 WHERE authority_record_id=3"
+            )
+        assert conn.execute(
+            "SELECT merged_into_authority_record_id FROM authority_record WHERE authority_record_id=3"
+        ).fetchone()[0] is None
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="merge cycle"):
+            conn.execute(
+                "UPDATE authority_record SET merged_into_authority_record_id=1 WHERE authority_record_id=3"
+            )
+    finally:
+        conn.close()
+
+
 def test_connect_canonical_store_can_opt_into_rollback_journal_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "rollback.sqlite"
     conn = canonical_store.connect_canonical_store(db_path, journal_mode="DELETE")
@@ -377,6 +416,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
+        "0018_authority_merge_cycle_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -439,6 +479,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
+        "0018_authority_merge_cycle_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -561,6 +602,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0015_authority_reconciliation_evidence_history",
         "0016_cycle_error_counts",
         "0017_authority_merge_self_guard",
+        "0018_authority_merge_cycle_guard",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)

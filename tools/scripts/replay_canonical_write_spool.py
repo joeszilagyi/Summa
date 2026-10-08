@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,7 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "records_attempted": 0,
         "records_replayed": 0,
         "records_failed": 0,
+        "records_uncertain": 0,
         "records_skipped": 0,
         "operation_counts": {},
         "results": [],
@@ -113,33 +115,57 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "result_refs": None,
                 "error": None,
             }
-            if record["replay_status"] == "replayed":
-                result_item["status"] = "skipped_already_replayed"
-                report["records_skipped"] += 1
-                report["results"].append(result_item)
-                continue
-            if record["replay_status"] not in {"pending", "failed"}:
-                result_item["status"] = "skipped"
-                report["records_skipped"] += 1
-                report["results"].append(result_item)
-                continue
-            if args.limit is not None and pending_attempts >= args.limit:
-                result_item["status"] = "skipped_limit"
-                report["records_skipped"] += 1
-                report["results"].append(result_item)
-                continue
-            pending_attempts += 1
-            report["records_attempted"] += 1
-            try:
-                if args.dry_run:
-                    result = canonical_write_spool.replay_spool_record(
-                        conn,
-                        record,
-                        db_path=db_path,
-                        dry_run=True,
-                        record_path=record_path,
+            lock = (
+                canonical_write_spool.lock_spool_record(record_path)
+                if not args.dry_run and record["replay_status"] in {"pending", "failed"}
+                else nullcontext()
+            )
+            with lock:
+                if not args.dry_run and record["replay_status"] in {"pending", "failed"}:
+                    record = canonical_write_spool.load_spool_record(record_path)
+                    result_item["prior_replay_status"] = record["replay_status"]
+                if record["replay_status"] == "replayed":
+                    result_item["status"] = "skipped_already_replayed"
+                    report["records_skipped"] += 1
+                    report["results"].append(result_item)
+                    continue
+                if record["replay_status"] == "replay_uncertain":
+                    result_item["status"] = "skipped_replay_uncertain"
+                    result_item["error"] = (
+                        "reconcile DB effects before manually resetting this spool record"
                     )
-                else:
+                    report["records_uncertain"] += 1
+                    report["records_skipped"] += 1
+                    report["results"].append(result_item)
+                    continue
+                if record["replay_status"] not in {"pending", "failed"}:
+                    result_item["status"] = "skipped"
+                    report["records_skipped"] += 1
+                    report["results"].append(result_item)
+                    continue
+                if args.limit is not None and pending_attempts >= args.limit:
+                    result_item["status"] = "skipped_limit"
+                    report["records_skipped"] += 1
+                    report["results"].append(result_item)
+                    continue
+                pending_attempts += 1
+                report["records_attempted"] += 1
+                claimed = False
+                try:
+                    # Preflight catches deterministic input/schema failures before the
+                    # durable claim; it must not mutate either store.
+                    preflight_result = canonical_write_spool.replay_spool_record(
+                        conn, record, db_path=db_path, dry_run=True, record_path=record_path
+                    )
+                    if args.dry_run:
+                        result_item["status"] = "dry_run"
+                        result_item["result_refs"] = _result_refs(preflight_result)
+                        report["results"].append(result_item)
+                        continue
+                    record = canonical_write_spool.mark_spool_record_replay_uncertain(
+                        record_path, record
+                    )
+                    claimed = True
                     with conn:
                         result = canonical_write_spool.replay_spool_record(
                             conn,
@@ -148,32 +174,31 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                             dry_run=False,
                             record_path=record_path,
                         )
-                result_item["status"] = "dry_run" if args.dry_run else "replayed"
-                result_item["result_refs"] = _result_refs(result)
-                if not args.dry_run:
+                    result_item["result_refs"] = _result_refs(result)
                     canonical_write_spool.mark_spool_record_replayed(
                         record_path,
                         record,
                         replayed_at=canonical_write_spool.now_rfc3339(),
                         replay_result_refs=result_item["result_refs"],
                     )
+                    result_item["status"] = "replayed"
                     report["records_replayed"] += 1
-            except Exception as exc:
-                result_item["status"] = "failed"
-                result_item["error"] = str(exc)
-                report["records_failed"] += 1
-                if not args.dry_run:
-                    canonical_write_spool.mark_spool_record_failed(
-                        record_path,
-                        record,
-                        failure_message=str(exc),
-                        replayed_at=canonical_write_spool.now_rfc3339(),
-                    )
+                except Exception as exc:
+                    result_item["status"] = "replay_uncertain" if claimed else "failed"
+                    result_item["error"] = str(exc)
+                    report["records_uncertain" if claimed else "records_failed"] += 1
+                    if not args.dry_run and not claimed:
+                        canonical_write_spool.mark_spool_record_failed(
+                            record_path,
+                            record,
+                            failure_message=str(exc),
+                            replayed_at=canonical_write_spool.now_rfc3339(),
+                        )
+                    report["results"].append(result_item)
+                    if args.strict:
+                        break
+                    continue
                 report["results"].append(result_item)
-                if args.strict:
-                    break
-                continue
-            report["results"].append(result_item)
     except canonical_write_spool.CanonicalWriteSpoolError as exc:
         report["warnings"].append(str(exc))
         report["status"] = "failed"
@@ -184,7 +209,7 @@ def replay(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     report["ended_at"] = canonical_write_spool.now_rfc3339()
     if args.dry_run:
         report["status"] = "dry_run"
-    elif report["records_failed"]:
+    elif report["records_failed"] or report["records_uncertain"]:
         report["status"] = "failed"
     elif report["records_replayed"] or report["records_skipped"]:
         report["status"] = "completed"
@@ -202,6 +227,7 @@ def render_text(report: dict[str, Any]) -> str:
                 f"records_attempted={report['records_attempted']}",
                 f"records_replayed={report['records_replayed']}",
                 f"records_failed={report['records_failed']}",
+                f"records_uncertain={report['records_uncertain']}",
                 f"records_skipped={report['records_skipped']}",
             ]
         )

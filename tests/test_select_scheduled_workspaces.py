@@ -91,8 +91,30 @@ def test_scheduler_explanation_id_covers_full_decision_set() -> None:
         skipped_workspaces=[skipped_c],
         limit=3,
     )
+    no_selection = selection_explanation.build_scheduler_selection_explanation(
+        **common,
+        selected_workspaces=[],
+        skipped_workspaces=[skipped_c],
+        limit=0,
+    )
 
     assert baseline["explanation_id"] == same["explanation_id"]
+    assert [item["candidate_id"] for item in baseline["selected_candidates"]] == [
+        "workspace-a",
+        "workspace-b",
+    ]
+    assert selection_explanation.validate_selection_explanation(baseline) == []
+    assert selection_explanation.validate_selection_explanation(
+        {key: value for key, value in baseline.items() if key != "selected_candidates"}
+    ) == []
+    assert no_selection["selected_candidates"] == []
+    assert selection_explanation.validate_selection_explanation(no_selection) == []
+    assert (
+        "scheduled_workspace.selected_candidates must match selected workspaces"
+        in selection_explanation.validate_selection_explanation(
+            {**baseline, "selected_candidates": baseline["selected_candidates"][:1]}
+        )
+    )
     assert len(
         {
             baseline["explanation_id"],
@@ -260,6 +282,9 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
     assert explanation["schema_version"] == "selection-explanation.v1"
     assert explanation["selection_kind"] == "scheduled_workspace"
     assert explanation["selected_candidate"]["candidate_id"] == "selected_workspace"
+    assert [item["candidate_id"] for item in explanation["selected_candidates"]] == [
+        "selected_workspace"
+    ]
     assert {
         candidate["candidate_id"] for candidate in explanation["considered_candidates"]
     } == {

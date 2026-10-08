@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from tools.source_db_tools import (
@@ -635,3 +637,54 @@ def test_record_authority_merge_event_is_idempotent_without_rewriting_timestamp(
     assert merge_row["evidence_note"] == "first merge pass"
     assert merge_row["merged_at"] == FIXED_TIMESTAMP
     assert merge_row["merged_by"] == "operator"
+
+
+def test_record_authority_merge_event_rejects_two_record_cycle(tmp_path) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        with conn:
+            first_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="First",
+                source_namespace="pytest",
+                source_id="cycle-first",
+                created_at=FIXED_TIMESTAMP,
+            )
+            second_id = authority_reconciliation.create_local_authority(
+                conn,
+                authority_type="person",
+                preferred_label="Second",
+                source_namespace="pytest",
+                source_id="cycle-second",
+                created_at=FIXED_TIMESTAMP,
+            )
+            canonical_reconciliation.record_authority_merge_event(
+                conn,
+                from_authority_record_id=first_id,
+                into_authority_record_id=second_id,
+                merge_reason="fixture_merge",
+                evidence_note="first link",
+                merged_by="pytest",
+                merged_at=FIXED_TIMESTAMP,
+            )
+            with pytest.raises(sqlite3.IntegrityError, match="merge cycle"):
+                canonical_reconciliation.record_authority_merge_event(
+                    conn,
+                    from_authority_record_id=second_id,
+                    into_authority_record_id=first_id,
+                    merge_reason="fixture_merge",
+                    evidence_note="reverse link",
+                    merged_by="pytest",
+                    merged_at=FIXED_TIMESTAMP,
+                )
+            second_target = conn.execute(
+                "SELECT merged_into_authority_record_id FROM authority_record WHERE authority_record_id=?",
+                (second_id,),
+            ).fetchone()[0]
+            merge_count = conn.execute("SELECT COUNT(*) FROM authority_merge_event").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert second_target is None
+    assert merge_count == 1
