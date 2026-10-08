@@ -375,6 +375,47 @@ def test_connect_existing_read_only_sets_busy_timeout(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_migrations_do_not_commit_caller_transaction(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    prior_version = canonical_store.CURRENT_SCHEMA_VERSION - 1
+    canonical_store.init_canonical_store(
+        db_path,
+        target_version=prior_version,
+        applied_at=FIXED_TIMESTAMP,
+        applied_by="pytest",
+    )
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO work (work_key_v1, title, record_last_updated) VALUES (?, ?, ?)",
+            ("work:uncommitted", "Uncommitted work", FIXED_TIMESTAMP),
+        )
+        assert conn.in_transaction
+
+        with pytest.raises(canonical_store.CanonicalStoreError, match="active caller transaction"):
+            canonical_store.apply_migrations(conn, applied_by="pytest")
+
+        assert conn.in_transaction
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work WHERE work_key_v1='work:uncommitted'"
+            ).fetchone()[0]
+            == 1
+        )
+        conn.rollback()
+    finally:
+        conn.close()
+
+    assert canonical_store.check_canonical_store(db_path).schema_version == prior_version
+    with canonical_store.connect_canonical_store(db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work WHERE work_key_v1='work:uncommitted'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
 def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
 
