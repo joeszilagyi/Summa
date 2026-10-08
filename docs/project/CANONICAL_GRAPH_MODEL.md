@@ -55,7 +55,7 @@ The current runtime already holds graph-shaped material in several places:
 - `provenance_event`, `capture_event`, and `extraction_record` provide
   provenance history.
 - `review_state_history` and `authority_reconciliation` provide review-oriented
-  annotations. Migration 0014 retains append-only snapshots of reconciliation
+  annotations. Migration 0015 retains append-only snapshots of reconciliation
   evidence in `authority_reconciliation_evidence_history`.
 - `authority_identifier`, `work_identifier`, `source_access`, `work_metadata`,
   `work_url`, `authority_merge_event`, `authority_reconciliation_evidence_history`,

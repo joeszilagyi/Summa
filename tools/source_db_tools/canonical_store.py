@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 14
-CURRENT_MIGRATION_ID = "0014_authority_reconciliation_evidence_history"
+CURRENT_SCHEMA_VERSION = 15
+CURRENT_MIGRATION_ID = "0015_authority_reconciliation_evidence_history"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -398,8 +398,14 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=14,
-        migration_id="0014_authority_reconciliation_evidence_history",
-        sql_path=MIGRATIONS_DIR / "0014_authority_reconciliation_evidence_history.sql",
+        migration_id="0014_ingested_gather_candidate_selection",
+        sql_path=MIGRATIONS_DIR / "0014_ingested_gather_candidate_selection.sql",
+        notes="Correct selection evidence for successfully ingested gather candidates.",
+    ),
+    MigrationSpec(
+        version=15,
+        migration_id="0015_authority_reconciliation_evidence_history",
+        sql_path=MIGRATIONS_DIR / "0015_authority_reconciliation_evidence_history.sql",
         notes="Retain immutable evidence snapshots for authority reconciliation rows.",
     ),
 )
@@ -843,7 +849,7 @@ def validate_existing_store(
             "ix_canonical_row_revision_target",
             "ux_canonical_row_revision_predecessor",
         }
-    if version_row.schema_version < 14:
+    if version_row.schema_version < 15:
         expected_tables = expected_tables - {"authority_reconciliation_evidence_history"}
         required_indexes = required_indexes - {"ix_authority_reconciliation_evidence_history_row"}
     missing_tables = expected_tables - table_set
@@ -863,7 +869,7 @@ def validate_existing_store(
                 "canonical store is missing required revision triggers: "
                 + ", ".join(sorted(missing_triggers))
             )
-    if version_row.schema_version >= 14:
+    if version_row.schema_version >= 15:
         missing_triggers = REQUIRED_AUTHORITY_EVIDENCE_HISTORY_TRIGGERS - actual_triggers(conn)
         if missing_triggers:
             raise CanonicalStoreError(

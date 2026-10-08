@@ -36,7 +36,7 @@ def test_migration_backfills_and_versions_reconciliation_evidence(tmp_path) -> N
         conn.commit()
 
         canonical_store.apply_migrations(conn, applied_by="pytest")
-        assert canonical_store.check_canonical_store(tmp_path / "canonical.sqlite").schema_version == 14
+        assert canonical_store.check_canonical_store(tmp_path / "canonical.sqlite").schema_version == 15
         rows = _history(conn, old)
         assert [(row["change_kind"], row["evidence_context"]) for row in rows] == [
             ("baseline", "original evidence")

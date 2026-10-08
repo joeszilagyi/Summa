@@ -24,7 +24,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-from tools.source_db_tools import identifier_normalization  # noqa: E402
+from tools.source_db_tools import canonical_store, identifier_normalization  # noqa: E402
 
 AUTHORITY_NAMESPACE = uuid.UUID("8b3022f5-6267-4545-8f41-3d337657d4f5")
 
@@ -266,13 +266,26 @@ def create_local_authority(
 ) -> int:
     timestamp = created_at or now_iso()
     key = "auth:local:" + stable_key(authority_type, preferred_label, source_namespace, source_id)
+    provenance = canonical_store.record_provenance_event(
+        conn,
+        object_namespace="authority_record",
+        object_id=key,
+        event_type="local_authority_creation",
+        actor_type="tool",
+        actor_id="authority_reconciliation.create_local_authority",
+        tool_name="authority_reconciliation.create_local_authority",
+        source_object_namespace=source_namespace if source_namespace and source_id else None,
+        source_object_id=source_id if source_namespace and source_id else None,
+        event_timestamp=timestamp,
+        provenance_event_key_v1=canonical_store.stable_write_key("prov", "local_authority", key),
+    )
     conn.execute(
         """
         INSERT INTO authority_record (
           authority_key_v1, authority_type, preferred_label, label_norm,
           sort_label, source_namespace, source_id, reconciliation_status,
-          review_state, confidence_score, created_at, record_last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          review_state, confidence_score, provenance_event_ref, created_at, record_last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(authority_key_v1) DO UPDATE SET
           review_state=CASE
             WHEN authority_record.review_state IN ('accepted', 'approved', 'curated', 'reviewed')
@@ -290,6 +303,9 @@ def create_local_authority(
              ) THEN authority_record.confidence_score
             ELSE COALESCE(excluded.confidence_score, authority_record.confidence_score)
           END,
+          provenance_event_ref=COALESCE(
+            authority_record.provenance_event_ref, excluded.provenance_event_ref
+          ),
           record_last_updated=excluded.record_last_updated
         """,
         (
@@ -303,6 +319,7 @@ def create_local_authority(
             "local",
             review_state,
             confidence_score,
+            provenance.event_key,
             timestamp,
             timestamp,
         ),
