@@ -693,6 +693,53 @@ def test_bootstrap_bias_applies_to_each_untried_facet() -> None:
     assert [item["facet"] for item in scores] == ["open_questions", "works", "sources"]
 
 
+def test_recent_zero_yield_penalty_survives_older_productive_history() -> None:
+    weights = {name: 0.0 for name in planner.DEFAULT_SCORING_WEIGHTS}
+    weights["recent_low_yield_penalty"] = 2.0
+    zero_yield = {
+        "work": 0,
+        "source_claim": 0,
+        "extraction_detected_entity": 0,
+        "source_relationship": 0,
+    }
+    history = [
+        {
+            "facet": "sources",
+            "run_id": "recent-zero",
+            "total_yield": 0,
+            "yields": zero_yield,
+        },
+        {
+            "facet": "sources",
+            "run_id": "older-productive",
+            "total_yield": 1,
+            "yields": {**zero_yield, "work": 1},
+        },
+    ]
+    scores = planner.aggregate_facet_scores(
+        enabled_facets=["sources"],
+        bundles={"sources": {"bundle_id": "bundle:sources"}},
+        history=history,
+        lead_candidates=[],
+        weights=weights,
+    )
+
+    assert scores[0]["score"] == -1.75
+    assert "productive_history" in scores[0]["reason_codes"]
+    assert "recent_low_yield_penalty" in scores[0]["reason_codes"]
+
+    history.reverse()
+    recovered_scores = planner.aggregate_facet_scores(
+        enabled_facets=["sources"],
+        bundles={"sources": {"bundle_id": "bundle:sources"}},
+        history=history,
+        lead_candidates=[],
+        weights=weights,
+    )
+    assert recovered_scores[0]["score"] == 0.25
+    assert "recent_low_yield_penalty" not in recovered_scores[0]["reason_codes"]
+
+
 def test_aggregate_lead_scores_uses_bounded_top_n_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

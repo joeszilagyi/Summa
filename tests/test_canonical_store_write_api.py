@@ -813,6 +813,94 @@ def test_source_claim_acceptance_replay_preserves_claim_text_and_provenance(tmp_
     assert row["public_blocker"] == "trusted"
 
 
+@pytest.mark.parametrize("replay_state", ["proposed", "accepted"])
+def test_accepted_claim_replay_preserves_identity_and_evidence(
+    tmp_path: Path, replay_state: str
+) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        anchors = []
+        for label in ("accepted", "replay"):
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture_ingest",
+                object_id=f"claim-anchor-{label}",
+                event_type="fixture_ingest",
+                tool_name="pytest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1=f"prov:claim-anchor-{label}",
+            )
+            capture = canonical_store.record_capture_event(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator=f"https://example.test/claim-anchor/{label}",
+                captured_at=FIXED_TIMESTAMP,
+                capture_method="fixture_capture",
+            )
+            extraction = canonical_store.record_extraction_record(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                capture_event_id=capture.row_id,
+                extraction_method="fixture_extract",
+                extraction_status="completed",
+                created_at=FIXED_TIMESTAMP,
+            )
+            anchors.append((provenance, capture, extraction))
+        accepted_provenance, accepted_capture, accepted_extraction = anchors[0]
+        replay_provenance, replay_capture, replay_extraction = anchors[1]
+        baseline = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=accepted_provenance.event_key,
+            source_claim_key_v1="claim:accepted-anchor",
+            about_object_ref="work:accepted",
+            claim_text="Accepted factual claim.",
+            public_summary="Accepted summary",
+            claim_type="fact",
+            review_state="accepted",
+            workspace_id="accepted_workspace",
+            evidence_locator_ref="evidence:accepted",
+            capture_event_id=accepted_capture.row_id,
+            extraction_id=accepted_extraction.row_id,
+        )
+        replay = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=replay_provenance.event_key,
+            source_claim_key_v1="claim:accepted-anchor",
+            about_object_ref="work:unrelated",
+            claim_text="Untrusted question?",
+            public_summary="Untrusted summary",
+            claim_type="question",
+            review_state=replay_state,
+            workspace_id="unrelated_workspace",
+            evidence_locator_ref="evidence:unrelated",
+            capture_event_id=replay_capture.row_id,
+            extraction_id=replay_extraction.row_id,
+        )
+        row = conn.execute(
+            "SELECT about_object_ref, claim_text, public_summary, claim_type, review_state, "
+            "workspace_id, is_open_question, provenance_event_ref, evidence_locator_ref, "
+            "capture_event_id, extraction_id FROM source_claim WHERE source_claim_id=?",
+            (baseline.row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert baseline.created is True
+    assert replay.created is False
+    assert replay.row_id == baseline.row_id
+    assert row["about_object_ref"] == "work:accepted"
+    assert row["claim_text"] == "Accepted factual claim."
+    assert row["public_summary"] == "Accepted summary"
+    assert row["claim_type"] == "fact"
+    assert row["review_state"] == "accepted"
+    assert row["workspace_id"] == "accepted_workspace"
+    assert row["is_open_question"] == 0
+    assert row["provenance_event_ref"] == accepted_provenance.event_key
+    assert row["evidence_locator_ref"] == "evidence:accepted"
+    assert row["capture_event_id"] == accepted_capture.row_id
+    assert row["extraction_id"] == accepted_extraction.row_id
+
+
 def test_source_relationship_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
