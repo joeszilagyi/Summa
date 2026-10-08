@@ -184,6 +184,59 @@ def test_fetch_rows_in_batches_streams_with_fetchmany() -> None:
     assert cursor.calls == 3
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_projection_reads_one_source_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    db = create_search_db(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    finally:
+        conn.close()
+
+    original_batches = builder.fetch_rows_in_batches
+    changed_source = False
+
+    def change_source_after_first_batch(cursor, *, batch_size: int):
+        nonlocal changed_source
+        for rows in original_batches(cursor, batch_size=batch_size):
+            yield rows
+            if not changed_source:
+                writer = sqlite3.connect(db)
+                try:
+                    writer.execute(
+                        "UPDATE source_claim SET public_summary='Changed claim summary' WHERE source_claim_id=1"
+                    )
+                    writer.commit()
+                finally:
+                    writer.close()
+                changed_source = True
+
+    monkeypatch.setattr(builder, "fetch_rows_in_batches", change_source_after_first_batch)
+    args = SimpleNamespace(
+        db=str(db),
+        profile="local",
+        correction_ledger=None,
+        generated_at="2026-06-02T00:00:00Z",
+        validate_index_file=False,
+    )
+    index_path = tmp_path / "projection.sqlite" if streaming else None
+
+    payload = builder.build_projection_payload(args, index_path=index_path)
+
+    assert changed_source
+    claim = next(record for record in payload["records"] if record["object_ref"] == "claim:1")
+    assert claim["title"] == "Public claim summary"
+    writer = sqlite3.connect(db)
+    try:
+        assert writer.execute(
+            "SELECT public_summary FROM source_claim WHERE source_claim_id=1"
+        ).fetchone()[0] == "Changed claim summary"
+    finally:
+        writer.close()
+
+
 def test_iter_record_batches_slices_records_for_executemany() -> None:
     records = [
         {"projection_id": "record-1"},

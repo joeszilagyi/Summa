@@ -823,6 +823,7 @@ def build_projection_payload_streaming(
     temp_index_path: Path | None = None
     conn = connect_read_only(db_path)
     try:
+        conn.execute("BEGIN")
         source_schema_version = read_schema_version(conn)
         candidate_records = 0
         projected_count = 0
@@ -966,6 +967,7 @@ def build_projection_payload(
     _, superseded_refs, ledger_applied = load_correction_resolution(args.correction_ledger)
     conn = connect_read_only(db_path)
     try:
+        conn.execute("BEGIN")
         source_schema_version = read_schema_version(conn)
         candidate_records = 0
         projected_records: list[dict[str, Any]] = []
