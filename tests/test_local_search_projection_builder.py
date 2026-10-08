@@ -38,6 +38,11 @@ def test_projection_index_json_fields_require_strict_json(raw: str) -> None:
         builder.strict_projection_field_json(raw, field_name="indexed_fields_json")
 
 
+def test_projection_field_json_rejects_non_finite_values() -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        builder.projection_field_json({"score": float("nan")})
+
+
 def create_search_db(tmp_path: Path) -> Path:
     db = tmp_path / "search.sqlite"
     conn = sqlite3.connect(db)

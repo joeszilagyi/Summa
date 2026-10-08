@@ -307,6 +307,10 @@ def database_fingerprint(payload: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+def projection_field_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, allow_nan=False)
+
+
 def has_projection_index_marker(conn: sqlite3.Connection) -> bool:
     if not table_exists(conn, "projection_metadata"):
         return False
@@ -1219,9 +1223,9 @@ def write_index(
                         record["public_blocker"],
                         record["lineage_state"],
                         payload["profile"],
-                        json.dumps(record["visible_profiles"], sort_keys=True),
-                        json.dumps(record["suppressed_fields"], sort_keys=True),
-                        json.dumps(record["indexed_fields"], sort_keys=True),
+                        projection_field_json(record["visible_profiles"]),
+                        projection_field_json(record["suppressed_fields"]),
+                        projection_field_json(record["indexed_fields"]),
                     )
                 )
                 search_projection_fts_rows.append(
@@ -1300,9 +1304,9 @@ def write_index(
                             record["public_blocker"],
                             record["lineage_state"],
                             payload["profile"],
-                            json.dumps(record["visible_profiles"], sort_keys=True),
-                            json.dumps(record["suppressed_fields"], sort_keys=True),
-                            json.dumps(record["indexed_fields"], sort_keys=True),
+                            projection_field_json(record["visible_profiles"]),
+                            projection_field_json(record["suppressed_fields"]),
+                            projection_field_json(record["indexed_fields"]),
                         )
                     )
                     search_projection_fts_rows.append(
