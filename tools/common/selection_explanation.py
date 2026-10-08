@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -29,18 +30,20 @@ def stable_explanation_id(
     stage_name: str | None = None,
     selected_candidate_id: str | None = None,
     policy_id: str | None = None,
+    decision_fingerprint: str | None = None,
 ) -> str:
-    seed = "\x1f".join(
-        [
-            selection_kind,
-            subject_id or "",
-            workspace_id or "",
-            run_id or "",
-            stage_name or "",
-            selected_candidate_id or "",
-            policy_id or "",
-        ]
-    )
+    parts = [
+        selection_kind,
+        subject_id or "",
+        workspace_id or "",
+        run_id or "",
+        stage_name or "",
+        selected_candidate_id or "",
+        policy_id or "",
+    ]
+    if decision_fingerprint is not None:
+        parts.append(decision_fingerprint)
+    seed = "\x1f".join(parts)
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
     return f"selection:{selection_kind}:{digest}"
 
@@ -511,15 +514,6 @@ def build_selection_explanation(
     selected_id = str(selected_candidate.get("candidate_id") or "")
     policy_payload = dict(policy or {})
     policy_id = policy_payload.get("policy_id")
-    explanation_id = stable_explanation_id(
-        selection_kind=selection_kind,
-        subject_id=subject_id,
-        workspace_id=workspace_id,
-        run_id=run_id,
-        stage_name=stage_name,
-        selected_candidate_id=selected_id,
-        policy_id=str(policy_id) if policy_id is not None else None,
-    )
     considered = [dict(item) for item in considered_candidates]
     excluded = [dict(item) for item in excluded_candidates]
     selected_seen = any(item.get("candidate_id") == selected_id for item in considered)
@@ -531,6 +525,35 @@ def build_selection_explanation(
     for item in excluded:
         if not item.get("reason"):
             raise SelectionExplanationError("every excluded candidate must include a reason")
+    decision_fingerprint = None
+    if selection_kind == "scheduled_workspace":
+        try:
+            decision_json = json.dumps(
+                {
+                    "selected_candidate": dict(selected_candidate),
+                    "considered_candidates": considered,
+                    "excluded_candidates": excluded,
+                    "policy": policy_payload,
+                    "budget": dict(budget or {}),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SelectionExplanationError("scheduler decision must be JSON-serializable") from exc
+        decision_fingerprint = hashlib.sha256(decision_json.encode("utf-8")).hexdigest()[:24]
+    explanation_id = stable_explanation_id(
+        selection_kind=selection_kind,
+        subject_id=subject_id,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        stage_name=stage_name,
+        selected_candidate_id=selected_id,
+        policy_id=str(policy_id) if policy_id is not None else None,
+        decision_fingerprint=decision_fingerprint,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "explanation_id": explanation_id,
