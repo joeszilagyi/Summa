@@ -10,7 +10,9 @@ from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER_PATH = REPO_ROOT / "tools" / "scripts" / "run_topic_gather.py"
-FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXTURE_BATCH = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+)
 FIXTURE_PROMPT = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "rendered-prompt.txt"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
 
@@ -86,7 +88,9 @@ def write_seed_batch(tmp_path: Path, *, subject_id: str, run_id: str = "cycle-on
     payload["created_at"] = FIXED_CREATED_AT
     payload["subject"]["subject_id"] = subject_id
     seed_path = tmp_path / f"{run_id}-gather-candidate-batch.json"
-    seed_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    seed_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     prompt_path = seed_path.with_name("rendered-prompt.txt")
     prompt_path.write_text(FIXTURE_PROMPT.read_text(encoding="utf-8"), encoding="utf-8")
     return seed_path
@@ -204,6 +208,71 @@ def seed_cycle_one_state(db_path: Path, *, subject_id: str, extra_accepted_works
         conn.close()
 
 
+def test_high_confidence_pending_prior_state_stays_an_open_lead(tmp_path: Path) -> None:
+    subject_id = "fixture_subject"
+    db_path = bootstrap_db(tmp_path)
+    seed_cycle_one_state(db_path, subject_id=subject_id)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance_ref = f"prov:gather-iteration:{subject_id}"
+            for state, title, score in (
+                ("proposed", "Pending High Work", 0.99),
+                ("proposed", "Pending Low Work", 0.40),
+                ("ambiguous", "Ambiguous High Work", 0.99),
+                ("rejected", "Rejected High Work", 0.99),
+            ):
+                canonical_store.upsert_work(
+                    conn,
+                    work_key_v1=f"work:{subject_id}:{state}:{title}",
+                    provenance_event_ref=provenance_ref,
+                    work_type="article",
+                    title=title,
+                    review_state=state,
+                    confidence_score=score,
+                    workspace_id=subject_id,
+                )
+            source_row = conn.execute(
+                "SELECT extraction_id, capture_event_id FROM extraction_record LIMIT 1"
+            ).fetchone()
+            canonical_store.record_extraction_detected_entity(
+                conn,
+                provenance_event_ref=provenance_ref,
+                extraction_id=int(source_row["extraction_id"]),
+                capture_event_id=int(source_row["capture_event_id"]),
+                entity_label="Pending High Entity",
+                entity_type="person",
+                review_state="needs_review",
+                confidence_score=0.99,
+                workspace_id=subject_id,
+            )
+
+        prior_state = canonical_store.load_gather_prior_state(
+            conn, subject_id=subject_id, per_family_limit=20
+        )
+        canonical_store.build_prior_state_context(prior_state, cycle_depth=2)
+    finally:
+        conn.close()
+
+    works = {record["title"]: record for record in prior_state["records"]["works"]}
+    entities = {record["entity_label"]: record for record in prior_state["records"]["entities"]}
+    assert works["Accepted Alpha Work"]["epistemic_role"] == "established_context"
+    assert works["Pending High Work"]["epistemic_role"] == "open_lead"
+    assert entities["Pending High Entity"]["epistemic_role"] == "open_lead"
+    assert "Pending Low Work" not in works
+    assert "Ambiguous High Work" not in works
+    assert "Rejected High Work" not in works
+    assert "[proposed lead, conf=0.99] Pending High Work" in prior_state["context_text"]
+    assert "[needs_review lead, conf=0.99] Pending High Entity" in prior_state["context_text"]
+    assert "high-confidence context" not in prior_state["context_text"]
+
+    compact = compact_prior_state_prompt_payload(prior_state, cycle_depth=2)
+    assert {
+        record["work_id"]: record["epistemic_role"] for record in compact["records"]["works"]
+    } == {record["work_id"]: record["epistemic_role"] for record in prior_state["records"]["works"]}
+    assert any(record["epistemic_role"] == "open_lead" for record in compact["records"]["entities"])
+
+
 def test_gather_iteration_empty_prior_state_dry_run_succeeds(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -239,8 +308,16 @@ def test_gather_iteration_empty_prior_state_dry_run_succeeds(tmp_path: Path) -> 
 
     assert payload["iteration_mode"] == "prior_state"
     assert payload["cycle_depth"] == 1
-    assert payload["prior_state"]["record_counts"]["works"] == {"total": 0, "selected": 0, "rendered": 0}
-    assert payload["prior_state"]["record_counts"]["previous_runs"] == {"total": 0, "selected": 0, "rendered": 0}
+    assert payload["prior_state"]["record_counts"]["works"] == {
+        "total": 0,
+        "selected": 0,
+        "rendered": 0,
+    }
+    assert payload["prior_state"]["record_counts"]["previous_runs"] == {
+        "total": 0,
+        "selected": 0,
+        "rendered": 0,
+    }
     assert payload["prior_state"]["previous_run_ids"] == []
     assert payload["prior_state"]["context_hash"] == payload["provenance"]["prior_state_hash"]
     expected_prior_state_text = json.dumps(
@@ -319,7 +396,9 @@ def test_gather_iteration_cycle_two_sees_cycle_one_state(tmp_path: Path) -> None
     assert payload["prompt"]["budget"]["source_block_count"] == 0
 
 
-def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(tmp_path: Path) -> None:
+def test_gather_iteration_applies_bounded_prior_state_limit_deterministically(
+    tmp_path: Path,
+) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     subject_id = "fixture_subject"
@@ -499,8 +578,14 @@ def test_gather_iteration_prior_state_hash_is_deterministic(tmp_path: Path) -> N
     second_payload = json.loads(batch_path_for(workspace_root, run_id).read_text(encoding="utf-8"))
     second_prompt = prompt_path_for(workspace_root, run_id).read_text(encoding="utf-8")
 
-    assert first_payload["prior_state"]["context_hash"] == second_payload["prior_state"]["context_hash"]
-    assert first_payload["prior_state"]["context_text"] == second_payload["prior_state"]["context_text"]
+    assert (
+        first_payload["prior_state"]["context_hash"]
+        == second_payload["prior_state"]["context_hash"]
+    )
+    assert (
+        first_payload["prior_state"]["context_text"]
+        == second_payload["prior_state"]["context_text"]
+    )
     assert first_prompt == second_prompt
 
 

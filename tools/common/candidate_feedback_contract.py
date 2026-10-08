@@ -241,11 +241,17 @@ def compact_prior_state_prompt_payload(
         "record_counts": compact_selected_counts(),
         "records": {
             "works": compact_record_list(
-                record_map.get("works"), field_names=("work_id", "review_state", "confidence_score")
+                record_map.get("works"),
+                field_names=("work_id", "review_state", "epistemic_role", "confidence_score"),
             ),
             "entities": compact_record_list(
                 record_map.get("entities"),
-                field_names=("detected_entity_id", "review_state", "confidence_score"),
+                field_names=(
+                    "detected_entity_id",
+                    "review_state",
+                    "epistemic_role",
+                    "confidence_score",
+                ),
             ),
             "source_claims": compact_record_list(
                 record_map.get("source_claims"),
