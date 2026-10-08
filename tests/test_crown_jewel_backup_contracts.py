@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLANNER_PATH = REPO_ROOT / "tools" / "common" / "crown_jewel_backup.py"
@@ -173,6 +174,21 @@ def test_backup_planner_reuses_cached_glob_matches(tmp_path: Path, monkeypatch) 
 
     assert manifest["store_entries"][0]["matched_paths"] == ["dbs/shared/one.sqlite"]
     assert glob_calls == ["dbs/shared/*.sqlite"]
+
+
+def test_backup_planner_rejects_symlink_match_outside_repo(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    policy_path = repo_root / "config" / "durability_policies" / "policy.json"
+    write_json(policy_path, sample_policy_payload())
+    outside_file = tmp_path / "private-registry.json"
+    outside_file.write_text("{}\n", encoding="utf-8")
+    matched_path = repo_root / "runtime" / "config" / "topic_workspaces.local.json"
+    matched_path.parent.mkdir(parents=True)
+    matched_path.symlink_to(outside_file)
+
+    planner.cached_glob_matches.cache_clear()
+    with pytest.raises(planner.BackupPlanError, match="outside repository root"):
+        planner.plan_backup_manifest(policy_path=policy_path, repo_root=repo_root)
 
 
 def test_backup_manifest_validator_rejects_present_without_matches(tmp_path: Path) -> None:
