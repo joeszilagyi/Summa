@@ -665,9 +665,7 @@ def resolve_domain_pack_stage(
 def spool_dir_for(args: argparse.Namespace, run_dir: Path) -> Path:
     run_root = run_dir.resolve()
     spool_dir = (
-        resolve_path(args.spool_dir)
-        if getattr(args, "spool_dir", None)
-        else run_root / "spool"
+        resolve_path(args.spool_dir) if getattr(args, "spool_dir", None) else run_root / "spool"
     )
     if not spool_dir.is_relative_to(run_root):
         raise TopicCycleError("--spool-dir must be inside --run-dir")

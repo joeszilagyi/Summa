@@ -90,8 +90,7 @@ def _looks_high_entropy(token: str) -> bool:
         return False
     counts = {char: token.count(char) for char in set(token)}
     entropy = -sum(
-        (count / len(token)) * math.log2(count / len(token))
-        for count in counts.values()
+        (count / len(token)) * math.log2(count / len(token)) for count in counts.values()
     )
     return entropy >= 3.5
 
@@ -111,7 +110,10 @@ def find_secret_marker_spans(value: str | None) -> list[tuple[int, int]]:
     )
     selected: list[tuple[int, int]] = []
     for start, end in sorted(spans, key=lambda span: (span[0], -(span[1] - span[0]))):
-        if any(start < selected_end and end > selected_start for selected_start, selected_end in selected):
+        if any(
+            start < selected_end and end > selected_start
+            for selected_start, selected_end in selected
+        ):
             continue
         selected.append((start, end))
     return selected

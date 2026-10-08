@@ -55,6 +55,8 @@ from tools.common.source_adapter_handoff import (  # noqa: E402
 )
 from tools.scripts.plan_local_git_repo_adapter import (  # noqa: E402
     git as git_command,
+)
+from tools.scripts.plan_local_git_repo_adapter import (  # noqa: E402
     matches_any_glob,
 )
 from tools.scripts.plan_structured_data_source_adapter import (  # noqa: E402
@@ -1789,9 +1791,7 @@ def trusted_git_candidate_paths(
 
     tracked_proc = git_command(repo_path, "ls-files")
     if tracked_proc.returncode != 0:
-        raise SourceAcquisitionError(
-            f"git ls-files failed for local checkout: {repo_path}"
-        )
+        raise SourceAcquisitionError(f"git ls-files failed for local checkout: {repo_path}")
 
     candidate_paths: list[str] = []
     for relative_path in tracked_proc.stdout.splitlines():

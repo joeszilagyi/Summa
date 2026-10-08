@@ -1934,9 +1934,7 @@ def record_source_claim(
             "publication_state": claim_publication_state_value,
             "authority_level": claim_authority_level_value,
             "public_blocker": claim_public_blocker_value,
-            "workspace_id": _first_present(
-                workspace_id_value, existing["workspace_id"]
-            ),
+            "workspace_id": _first_present(workspace_id_value, existing["workspace_id"]),
             "is_open_question": max(int(existing["is_open_question"] or 0), is_open_question_value),
             "confidence_score": claim_confidence_value,
             "provenance_event_ref": claim_provenance_value,

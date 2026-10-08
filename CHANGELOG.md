@@ -9,6 +9,18 @@ concrete tracked surfaces or tools rather than only the changelog itself.
 
 ## [8.8.0.5]
 
+### October 2026 recovery
+
+- Recovered the August backlog hardening series, including network allowlist,
+  source handoff, leak scanning, workspace path, and scheduler safeguards, for
+  review and publication on the default branch.
+- Confined scheduled-run output to a trusted root and environment-selected
+  topic registries to trusted config roots; added regression tests and operator
+  guidance for both paths.
+- Updated remote executor test fixtures to build validated loopback handoffs
+  directly, leaving the production remote manifest planner's loopback refusal
+  intact.
+
 ### Added
 
 - Added canonical ingest entrypoints `tools/scripts/ingest_gather_candidate_batch.py`
