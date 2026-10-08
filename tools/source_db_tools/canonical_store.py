@@ -2838,7 +2838,7 @@ def _latest_provenance_event(
         placeholders = ", ".join("?" for _ in event_type_list)
         query += f" WHERE event_type IN ({placeholders})"
         params = event_type_list
-    query += " ORDER BY event_timestamp DESC, provenance_event_id DESC LIMIT 1"
+    query += " ORDER BY julianday(event_timestamp) DESC, provenance_event_id DESC LIMIT 1"
     row = conn.execute(query, params).fetchone()
     if row is None:
         return None

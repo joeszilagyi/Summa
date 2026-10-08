@@ -9,7 +9,9 @@ import pytest
 from tools.source_db_tools import canonical_ingest, canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_BATCH = REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+FIXTURE_BATCH = (
+    REPO_ROOT / "tests" / "fixtures" / "canonical_ingest" / "gather-candidate-batch.json"
+)
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 
 
@@ -70,7 +72,9 @@ def test_population_summary_reports_initialized_empty_store(tmp_path: Path) -> N
     assert summary["last_ingest_at"] is None
 
 
-def test_population_summary_reports_populated_store_and_last_ingest_without_mutation(tmp_path: Path) -> None:
+def test_population_summary_reports_populated_store_and_last_ingest_without_mutation(
+    tmp_path: Path,
+) -> None:
     db_path = bootstrap_db(tmp_path)
     batch, batch_hash = canonical_ingest.load_validated_candidate_batch(FIXTURE_BATCH)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -101,6 +105,33 @@ def test_population_summary_reports_populated_store_and_last_ingest_without_muta
     assert summary["last_ingest_event_type"] == "gather_candidate_batch_ingest"
     assert summary["last_ingest_at"] is not None
     assert summary["last_provenance_event_at"] == summary["last_ingest_at"]
+
+
+def test_population_summary_orders_offset_timestamps_by_instant(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            for object_id, timestamp in (
+                ("earlier-offset", "2026-06-03T15:00:00+04:00"),
+                ("later-utc", "2026-06-03T12:00:00Z"),
+                ("same-instant-offset", "2026-06-03T14:00:00+02:00"),
+            ):
+                canonical_store.record_provenance_event(
+                    conn,
+                    object_namespace="pytest",
+                    object_id=object_id,
+                    event_type="gather_candidate_batch_ingest",
+                    event_timestamp=timestamp,
+                    provenance_event_key_v1=f"prov:pytest:{object_id}",
+                )
+    finally:
+        conn.close()
+
+    summary = canonical_store.summarize_canonical_store_population(db_path)
+
+    assert summary["last_provenance_event_at"] == "2026-06-03T14:00:00+02:00"
+    assert summary["last_ingest_at"] == "2026-06-03T14:00:00+02:00"
 
 
 def test_population_summary_fast_path_skips_full_counts(
@@ -201,6 +232,7 @@ def test_population_summary_warns_when_only_provenance_events_exist(tmp_path: Pa
 
     assert summary["status"] == "populated"
     assert summary["table_counts"]["provenance_event"] == 1
-    assert "provenance events exist, but no substantive canonical family rows were found" in summary[
-        "warnings"
-    ]
+    assert (
+        "provenance events exist, but no substantive canonical family rows were found"
+        in summary["warnings"]
+    )
