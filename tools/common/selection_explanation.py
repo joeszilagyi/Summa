@@ -475,7 +475,7 @@ def validate_selection_explanation(payload: Mapping[str, Any]) -> list[str]:
         errors.append(
             "selected candidate must appear in considered_candidates unless operator_overrides is non-empty"
         )
-    if payload.get("selection_kind") == "scheduled_workspace":
+    if payload.get("selection_kind") == "scheduled_workspace" and "selected_candidates" in payload:
         selected_candidates = payload.get("selected_candidates")
         expected_selected = [
             dict(item)

@@ -104,6 +104,9 @@ def test_scheduler_explanation_id_covers_full_decision_set() -> None:
         "workspace-b",
     ]
     assert selection_explanation.validate_selection_explanation(baseline) == []
+    assert selection_explanation.validate_selection_explanation(
+        {key: value for key, value in baseline.items() if key != "selected_candidates"}
+    ) == []
     assert no_selection["selected_candidates"] == []
     assert selection_explanation.validate_selection_explanation(no_selection) == []
     assert (
