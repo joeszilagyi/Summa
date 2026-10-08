@@ -627,6 +627,7 @@ def find_existing_work_match(
     normalized_title = normalize_title(title)
     normalized_type = normalize_authority_label(work_type)
     if source_identifier and normalized_title and normalized_type:
+        # Compare locators after Python normalization; raw SQL equality loses variants.
         rows = conn.execute(
             """
             SELECT work.work_id, work.work_key_v1, work.title, work.work_type,
@@ -635,15 +636,12 @@ def find_existing_work_match(
             INNER JOIN work ON work.work_id = access.work_id
             WHERE (? IS NULL OR work.workspace_id=?)
               AND COALESCE(work.work_type, '') = ?
-              AND (access.canonical_url = ? OR access.original_locator = ?)
             ORDER BY work.work_id
             """,
             (
                 workspace_id,
                 workspace_id,
                 work_type or "",
-                source_identifier,
-                source_identifier,
             ),
         ).fetchall()
         matches: list[sqlite3.Row] = []

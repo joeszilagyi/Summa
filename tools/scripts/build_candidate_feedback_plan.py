@@ -796,10 +796,8 @@ def load_source_access_leads(
                access.source_lead_id, access.original_locator, access.canonical_url,
                access.citation_hint, access.review_state, access.first_seen_at,
                access.last_seen_at, access.record_last_updated,
-               work.provenance_event_ref AS work_provenance_event_ref
+               access.provenance_event_ref AS source_access_provenance_event_ref
         FROM source_access AS access
-        LEFT JOIN work
-          ON work.work_id = access.work_id
         WHERE {scope_sql}
           AND access.review_state IN ({placeholders})
         ORDER BY COALESCE(access.last_seen_at, access.first_seen_at, access.record_last_updated) DESC, access.source_access_id ASC
@@ -813,7 +811,7 @@ def load_source_access_leads(
     seen_work_refs: set[str] = set()
     source_access_requests: list[dict[str, Any]] = []
     for row in rows:
-        provenance = history_by_event_key.get(str(row["work_provenance_event_ref"] or ""))
+        provenance = history_by_event_key.get(str(row["source_access_provenance_event_ref"] or ""))
         facet = provenance["facet"] if provenance is not None else "sources"
         work_ref_value: str | None = None
         if row["work_id"] is not None:
