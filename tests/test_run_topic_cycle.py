@@ -855,6 +855,10 @@ def test_topic_cycle_local_fixture_cycle_populates_canonical_store_and_feedback(
     stages = stages_by_name(manifest)
     assert stages["ingest_candidate_batch"]["status"] == "passed"
     assert stages["ingest_execution_artifacts"]["status"] == "passed"
+    for stage_name in ("ingest_candidate_batch", "ingest_execution_artifacts"):
+        report_path = Path(stages[stage_name]["artifacts"]["ingest_report"])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["transaction_status"] == "committed"
     assert stages["build_feedback_plan_post"]["status"] == "passed"
     assert "graph_closure_audit" not in stages
     assert (

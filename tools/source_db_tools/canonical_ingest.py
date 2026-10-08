@@ -1486,7 +1486,7 @@ def ingest_candidate_batch(
             except canonical_reconciliation.CanonicalReconciliationError as exc:
                 raise CanonicalIngestError(f"candidate-batch reconciliation failed: {exc}") from exc
             _apply_curation_counts(report, curation_counts)
-        report["transaction_status"] = "committed"
+        report["transaction_status"] = "writes_applied_pending_caller_commit"
     return report
 
 
@@ -2014,7 +2014,7 @@ def ingest_execution_artifacts(
                     f"execution-artifact reconciliation failed: {exc}"
                 ) from exc
             _apply_curation_counts(report, curation_counts)
-        report["transaction_status"] = "committed"
+        report["transaction_status"] = "writes_applied_pending_caller_commit"
     return report
 
 
