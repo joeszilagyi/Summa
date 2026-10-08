@@ -494,6 +494,64 @@ def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     assert report["status"] == "fail"
 
 
+def test_source_access_with_missing_provenance_is_reported(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="source-access-provenance",
+                event_type="fixture_ingest",
+                tool_name="pytest.graph_closure",
+                run_id="graph-closure",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:source-access",
+            )
+            access = canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator="https://example.invalid/source-access-provenance",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.execute(
+                "UPDATE source_access SET provenance_event_ref=? WHERE source_access_id=?",
+                ("prov:missing", access.row_id),
+            )
+            legacy_access = canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator="https://example.invalid/legacy-source-access",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.execute(
+                "UPDATE source_access SET provenance_event_ref=NULL WHERE source_access_id=?",
+                (legacy_access.row_id,),
+            )
+    finally:
+        conn.close()
+
+    report = canonical_graph_closure.audit_canonical_graph_closure(
+        db_path, generated_at=FIXED_TIMESTAMP
+    )
+
+    source_access_issues = [
+        issue for issue in report["issues"] if issue["table"] == "source_access"
+    ]
+    assert len(source_access_issues) == 1
+    assert any(
+        issue["table"] == "source_access"
+        and issue["code"] == "SOURCE_ACCESS_TRUE_ORPHAN"
+        and "provenance_event_ref" in issue["message"]
+        for issue in source_access_issues
+    )
+    assert report["status"] == "fail"
+
+
 def test_graph_closure_batches_existence_lookups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

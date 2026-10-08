@@ -204,6 +204,45 @@ def test_ingested_gather_candidate_migration_corrects_legacy_selection(tmp_path:
     ]
 
 
+def test_cycle_error_count_migration_backfills_stage_evidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(db_path, target_version=14)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="legacy-error-count",
+                started_at=FIXED_TIMESTAMP,
+                status="failed",
+                error_count=1,
+            )
+            for index, (stage_status, validation_status) in enumerate(
+                (("failed", None), ("spooled", None), ("warning", "fail")), start=1
+            ):
+                cycle_evidence_ledger.record_cycle_stage_start(
+                    conn,
+                    cycle_event_id=event_id,
+                    run_id="legacy-error-count",
+                    stage_name=f"stage_{index}",
+                    stage_order=index,
+                    status=stage_status,
+                    validation_status=validation_status,
+                )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        row = cycle_evidence_ledger.load_cycle_event(conn, event_id)
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["error_count"] == 3
+
+
 def test_cycle_status_migration_rolls_back_on_unknown_legacy_status(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     canonical_store.init_canonical_store(db_path, target_version=12)
@@ -694,6 +733,67 @@ def test_cycle_event_terminal_state_is_idempotent_but_not_rewritable(tmp_path: P
         conn.close()
 
 
+def test_cycle_start_rejects_divergent_status_replay(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn, run_id="start-status-replay", started_at=FIXED_TIMESTAMP, status="running"
+        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="start-status-replay",
+                started_at=FIXED_TIMESTAMP,
+                status="failed",
+                cycle_event_id=event_id,
+            )
+        cycle_evidence_ledger.record_cycle_event_finish(
+            conn, cycle_event_id=event_id, status="failed", ended_at=FIXED_TIMESTAMP
+        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="start-status-replay",
+                started_at=FIXED_TIMESTAMP,
+                status="completed",
+                cycle_event_id=event_id,
+            )
+    finally:
+        conn.close()
+
+
+def test_manifest_finalization_accepts_existing_open_cycle(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    manifest_path = tmp_path / "topic-cycle-run.json"
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        event_id = cycle_evidence_ledger.record_cycle_event_start(
+            conn,
+            run_id="finalize-open-cycle",
+            started_at=FIXED_TIMESTAMP,
+            status="running",
+            topic_cycle_manifest_path=str(manifest_path),
+            error_count=1,
+            metadata={"schema_version": None},
+        )
+        manifest = {
+            "run_id": "finalize-open-cycle",
+            "started_at": FIXED_TIMESTAMP,
+            "ended_at": FIXED_TIMESTAMP,
+            "status": "failed",
+            "stages": [],
+            "cycle_evidence_ledger": {"cycle_event_id": event_id},
+        }
+        with conn:
+            assert cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn, manifest=manifest, manifest_path=manifest_path
+            ) == event_id
+        assert cycle_evidence_ledger.load_cycle_event(conn, event_id)["status"] == "failed"
+    finally:
+        conn.close()
+
+
 def test_cycle_stage_terminal_state_is_idempotent_but_not_rewritable(tmp_path: Path) -> None:
     db_path = init_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -750,7 +850,7 @@ def test_cycle_stage_terminal_state_is_idempotent_but_not_rewritable(tmp_path: P
         conn.close()
 
 
-def test_cycle_event_start_replay_ignores_status_transition(
+def test_cycle_event_start_replay_rejects_terminal_status_mismatch(
     tmp_path: Path,
 ) -> None:
     db_path = init_db(tmp_path)
@@ -768,22 +868,23 @@ def test_cycle_event_start_replay_ignores_status_transition(
             started_at="2026-06-01T00:00:00Z",
             status="completed",
         )
-        second_id = cycle_evidence_ledger.record_cycle_event_start(
-            conn,
-            run_id="run-force-rerun",
-            workspace_id="fixture_workspace",
-            workspace_ref=str(tmp_path / "workspace"),
-            subject_key="fixture_subject",
-            domain_pack_id="general.v1",
-            cycle_depth=1,
-            mode="local",
-            started_at="2026-06-01T00:00:00Z",
-            status="failed",
-        )
+        with pytest.raises(cycle_evidence_ledger.CycleEvidenceLedgerError, match="status"):
+            cycle_evidence_ledger.record_cycle_event_start(
+                conn,
+                run_id="run-force-rerun",
+                workspace_id="fixture_workspace",
+                workspace_ref=str(tmp_path / "workspace"),
+                subject_key="fixture_subject",
+                domain_pack_id="general.v1",
+                cycle_depth=1,
+                mode="local",
+                started_at="2026-06-01T00:00:00Z",
+                status="failed",
+            )
     finally:
         conn.close()
 
-    assert first_id == second_id
+    assert first_id is not None
 
 
 def test_feedback_candidate_fallback_uses_current_deferred_contract(tmp_path: Path) -> None:
@@ -1233,6 +1334,51 @@ def test_manifest_deliberate_stage_skips_are_not_retryable(tmp_path: Path) -> No
 
     assert [row["exclusion_reason"] for row in rows] == reasons
     assert [bool(row["retryable"]) for row in rows] == [False, False, False, False, True]
+
+
+@pytest.mark.parametrize(
+    ("status", "stages", "expected_errors"),
+    [
+        (
+            "failed",
+            [
+                {"name": "gather", "status": "failed"},
+                {"name": "ingest", "status": "spooled"},
+                {"name": "audit", "status": "degraded"},
+                {"name": "validation", "status": "warning", "validation": {"status": "fail"}},
+                {"name": "graph_closure_audit", "status": "not_reached", "required": False},
+                {"name": "optional", "status": "not_reached", "required": False},
+            ],
+            5,
+        ),
+        ("failed", [], 1),
+        ("completed", [{"name": "optional", "status": "skipped"}], 0),
+    ],
+)
+def test_manifest_error_count_reflects_stage_evidence(
+    tmp_path: Path, status: str, stages: list[dict[str, object]], expected_errors: int
+) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_id = cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn,
+                manifest_path=tmp_path / "topic-cycle-run.json",
+                manifest={
+                    "run_id": "stage-error-count",
+                    "status": status,
+                    "warnings": ["warning stays separate"],
+                    "stages": stages,
+                },
+            )
+        row = cycle_evidence_ledger.load_cycle_event(conn, event_id)
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["error_count"] == expected_errors
+    assert row["warning_count"] == 1
 
 
 def test_record_stage_artifacts_hashes_embedded_dicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

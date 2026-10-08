@@ -513,6 +513,7 @@ def record_cycle_event_start(
     error_count: int = 0,
     metadata: Mapping[str, object] | None = None,
     cycle_event_id: str | None = None,
+    _allow_terminal_transition: bool = False,
 ) -> str:
     run_id_text = _require_nonblank(run_id, "run_id")
     started = started_at or now_rfc3339()
@@ -562,12 +563,22 @@ def record_cycle_event_start(
             "SELECT * FROM cycle_event WHERE cycle_event_id=?",
             (event_id,),
         ).fetchone()
+        # Manifest finalization may find the still-open event it is about to finish.
+        allow_status_difference = (
+            _allow_terminal_transition
+            and existing_row is not None
+            and existing_row["status"] in CYCLE_OPEN_STATUSES
+            and expected["status"] not in CYCLE_OPEN_STATUSES
+        )
         _assert_append_only_replay_compatible(
             "cycle_event",
             f"cycle_event_id={event_id}",
             existing_row,
             expected,
-            ignore=frozenset({"record_last_updated", "status", "row_count_delta_json"}),
+            ignore=frozenset(
+                {"record_last_updated", "row_count_delta_json"}
+                | ({"status"} if allow_status_difference else set())
+            ),
         )
         return str(existing_row["cycle_event_id"])
     return str(row[0])
@@ -1752,6 +1763,24 @@ def _skipped_stage_retryable(reason: str) -> bool:
     return reason.strip().casefold() not in _DELIBERATE_STAGE_SKIP_REASONS
 
 
+def _manifest_error_count(status: str, stages: Iterable[Mapping[str, Any]]) -> int:
+    """Count problematic stage evidence once; warnings have their own counter."""
+    problem_stages = 0
+    for stage in stages:
+        stage_status = stage.get("status")
+        validation_status = _dict_or_empty(stage.get("validation")).get("status")
+        if (
+            stage_status in {"failed", "degraded", "spooled", "partial"}
+            or (
+                stage_status == "not_reached"
+                and (stage.get("required", True) or stage.get("name") == "graph_closure_audit")
+            )
+            or validation_status in {"fail", "failed", "error", "invalid"}
+        ):
+            problem_stages += 1
+    return max(problem_stages, int(status in {"failed", "degraded", "partial"}))
+
+
 def record_topic_cycle_manifest(
     conn: sqlite3.Connection,
     *,
@@ -1787,7 +1816,7 @@ def record_topic_cycle_manifest(
     status = _require_nonblank(manifest.get("status"), "manifest.status")
     warnings = manifest.get("warnings")
     warning_count = len(warnings) if isinstance(warnings, list) else 0
-    error_count = 1 if status == "failed" else 0
+    error_count = _manifest_error_count(status, stages)
     event_id = record_cycle_event_start(
         conn,
         run_id=run_id,
@@ -1812,6 +1841,7 @@ def record_topic_cycle_manifest(
         error_count=error_count,
         metadata={"schema_version": manifest.get("schema_version")},
         cycle_event_id=cycle_event_id,
+        _allow_terminal_transition=True,
     )
     artifact_schema_ids = _collect_artifact_schema_ids(stages)
     stage_ids: dict[str, str] = {}
