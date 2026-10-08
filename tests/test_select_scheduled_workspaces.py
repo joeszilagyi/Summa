@@ -10,11 +10,37 @@ from pathlib import Path
 
 import pytest
 
+from tools.common import selection_explanation
 from tools.scripts import select_scheduled_workspaces as selector
 from tools.source_db_tools import canonical_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "select_scheduled_workspaces.py"
+
+
+@pytest.mark.parametrize(
+    "reasons,retryable",
+    [
+        (["retry backoff active until 2026-01-02T00:00:00Z"], True),
+        (["saturation_state is cooldown until cycle 3: low_yield"], True),
+        (["selection limit reached"], True),
+        (["selection limit reached after saturation deprioritization"], True),
+        (["lifecycle_state is 'archived'; scheduler only selects active workspaces"], False),
+        (["schedule_posture is manual; pass --include-manual to include it"], False),
+        (["default_subject_manifest is missing or unresolved"], False),
+        (["failure_state is blocked"], False),
+        (["attempt_count 2 reached run_budget.max_attempts 2"], False),
+        (["retryable failure count 2 reached retry_policy.max_retryable_failures 2"], False),
+        (["saturation_state is halted: max_attempts"], False),
+        (["retry backoff active until 2026-01-02T00:00:00Z", "failure_state is blocked"], False),
+        (["unknown future skip reason"], False),
+        ([], False),
+    ],
+)
+def test_scheduler_skip_retryability_follows_reason_class(
+    reasons: list[str], retryable: bool
+) -> None:
+    assert selection_explanation.scheduler_skip_retryable(reasons) is retryable
 
 
 def run_selector(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -183,6 +209,7 @@ def test_selector_emits_and_persists_planned_run_records(tmp_path: Path) -> None
         "inactive_workspace",
     }
     assert all(candidate["reason"] for candidate in explanation["excluded_candidates"])
+    assert all(not candidate["retryable"] for candidate in explanation["excluded_candidates"])
     assert set(records_by_workspace) == {
         "selected_workspace",
         "manual_workspace",
