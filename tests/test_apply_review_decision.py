@@ -10,13 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from tools.scripts import apply_review_decision as apply_review_script
 from tools.source_db_tools import (
     authority_reconciliation,
     canonical_store,
     review_decision_apply,
 )
-from tools.scripts import apply_review_decision as apply_review_script
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPLY_SCRIPT = REPO_ROOT / "tools" / "scripts" / "apply_review_decision.py"
@@ -196,7 +195,9 @@ def snapshot_protected_counts(conn) -> dict[str, int]:
 
 def assert_non_decreasing_counts(before: dict[str, int], after: dict[str, int]) -> None:
     for table, before_count in before.items():
-        assert after[table] >= before_count, f"{table} decreased from {before_count} to {after[table]}"
+        assert after[table] >= before_count, (
+            f"{table} decreased from {before_count} to {after[table]}"
+        )
 
 
 def review_history_count(conn, *, namespace: str, target_id: int) -> int:
@@ -349,7 +350,9 @@ def test_cli_waiting_on_db_lock_can_be_killed_without_mutating_state(tmp_path: P
                 created_at=FIXED_TIMESTAMP,
                 record_last_updated=FIXED_TIMESTAMP,
             )
-        history_before = review_history_count(conn, namespace="source_claim", target_id=claim.row_id)
+        history_before = review_history_count(
+            conn, namespace="source_claim", target_id=claim.row_id
+        )
         lock_conn = sqlite3.connect(db_path, timeout=30)
         try:
             lock_conn.execute("BEGIN EXCLUSIVE")
@@ -471,7 +474,9 @@ def test_reject_authority_merge_records_review_without_repointing(tmp_path: Path
             winner_id = create_authority(conn, "Rejected Merge Winner")
             loser_id = create_authority(conn, "Rejected Merge Loser")
             reconciliation_id = insert_reconciliation(conn, loser_id=loser_id, winner_id=winner_id)
-            entity_id = create_detected_entity_for_authority(conn, authority_id=loser_id, suffix="reject")
+            entity_id = create_detected_entity_for_authority(
+                conn, authority_id=loser_id, suffix="reject"
+            )
 
         result = review_decision_apply.apply_review_decision(
             conn,
@@ -538,6 +543,133 @@ def test_reject_contradicted_claim_preserves_claim_and_records_audit(tmp_path: P
     assert before_claims == after_claims == 1
     assert claim_row["review_state"] == "rejected"
     assert history_count == 1
+
+
+@pytest.mark.parametrize("established_state", ["accepted", "approved", "curated", "reviewed"])
+@pytest.mark.parametrize(
+    "action, expected_state", [("reject_claim", "rejected"), ("mark_contradicted", "needs_review")]
+)
+def test_explicit_review_corrects_established_claim_with_audit(
+    tmp_path: Path, established_state: str, action: str, expected_state: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            prov = provenance(conn, f"established-claim-{established_state}-{action}")
+            claim = canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=prov.event_key,
+                source_claim_key_v1=f"claim:review-correction:{established_state}:{action}",
+                about_object_ref="authority:person-a",
+                claim_text="Incorrect reviewed claim.",
+                claim_type="fixture",
+                review_state=established_state,
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+        result = review_decision_apply.apply_review_decision(
+            conn,
+            target=f"source_claim:{claim.row_id}",
+            decision_action=action,
+            reviewer="operator",
+            reason="Manual correction after source review.",
+            expected_state=established_state,
+            decided_at=FIXED_TIMESTAMP,
+        )
+        replay = review_decision_apply.apply_review_decision(
+            conn,
+            target=f"source_claim:{claim.row_id}",
+            decision_action=action,
+            reviewer="operator",
+            reason="Manual correction after source review.",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        claim_row = conn.execute(
+            "SELECT claim_text, review_state FROM source_claim WHERE source_claim_id=?",
+            (claim.row_id,),
+        ).fetchone()
+        history = conn.execute(
+            """
+            SELECT previous_state, new_state, changed_by, source_tool, source_id
+            FROM review_state_history
+            WHERE target_namespace='source_claim' AND target_id=?
+            """,
+            (str(claim.row_id),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert result["status"] == "completed"
+    assert replay["status"] == "already_applied"
+    assert claim_row["claim_text"] == "Incorrect reviewed claim."
+    assert claim_row["review_state"] == expected_state
+    assert len(history) == 1
+    assert history[0]["previous_state"] == established_state
+    assert history[0]["new_state"] == expected_state
+    assert history[0]["changed_by"] == "operator"
+    assert history[0]["source_tool"] == review_decision_apply.APPLY_TOOL
+    assert history[0]["source_id"] is not None
+
+
+@pytest.mark.parametrize(
+    "action, expected_state",
+    [("reject_relationship", "rejected"), ("mark_contradicted", "needs_review")],
+)
+def test_explicit_review_corrects_established_relationship(
+    tmp_path: Path, action: str, expected_state: str
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = connect(db_path)
+    try:
+        with conn:
+            prov = provenance(conn, f"established-relationship-{action}")
+            relationship = canonical_store.record_source_relationship(
+                conn,
+                provenance_event_ref=prov.event_key,
+                from_object_ref="authority:person-a",
+                to_object_ref="authority:person-b",
+                predicate="knows",
+                evidence_note="Original reviewed evidence.",
+                review_state="accepted",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+        result = review_decision_apply.apply_review_decision(
+            conn,
+            target=f"source_relationship:{relationship.row_id}",
+            decision_action=action,
+            reviewer="operator",
+            reason="Manual correction after source review.",
+            expected_state="accepted",
+            decided_at=FIXED_TIMESTAMP,
+        )
+        relationship_row = conn.execute(
+            "SELECT predicate, evidence_note, review_state FROM source_relationship WHERE source_relationship_id=?",
+            (relationship.row_id,),
+        ).fetchone()
+        history = conn.execute(
+            """
+            SELECT previous_state, new_state, changed_by, source_tool
+            FROM review_state_history
+            WHERE target_namespace='source_relationship' AND target_id=?
+            """,
+            (str(relationship.row_id),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert result["status"] == "completed"
+    assert relationship_row["predicate"] == "knows"
+    assert relationship_row["evidence_note"] == "Original reviewed evidence."
+    assert relationship_row["review_state"] == expected_state
+    assert len(history) == 1
+    assert history[0]["previous_state"] == "accepted"
+    assert history[0]["new_state"] == expected_state
+    assert history[0]["changed_by"] == "operator"
+    assert history[0]["source_tool"] == review_decision_apply.APPLY_TOOL
 
 
 def test_resolve_contradiction_preserves_relationship_and_underlying_claims(tmp_path: Path) -> None:
@@ -728,8 +860,12 @@ def test_review_actions_preserve_protected_rows_and_stable_ids(tmp_path: Path) -
             "SELECT review_state FROM source_relationship WHERE source_relationship_id=?",
             (contradiction.row_id,),
         ).fetchone()
-        merge_history = review_history_count(conn, namespace="authority_reconciliation", target_id=merge_reconciliation_id)
-        reject_history = review_history_count(conn, namespace="source_claim", target_id=claim.row_id)
+        merge_history = review_history_count(
+            conn, namespace="authority_reconciliation", target_id=merge_reconciliation_id
+        )
+        reject_history = review_history_count(
+            conn, namespace="source_claim", target_id=claim.row_id
+        )
         contradiction_history = review_history_count(
             conn, namespace="source_relationship", target_id=contradiction.row_id
         )
@@ -897,7 +1033,9 @@ def test_expected_state_mismatch_fails_and_rolls_back(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_transaction_rolls_back_partial_merge_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transaction_rolls_back_partial_merge_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = connect(db_path)
     original_repoint = review_decision_apply.repoint_authority_references

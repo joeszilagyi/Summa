@@ -171,6 +171,8 @@ def _review_state_update(
     source_namespace: str,
     source_id: str,
     source_run_id: str | None,
+    allow_established_transition: bool = False,
+    reviewer: str | None = None,
 ) -> bool:
     return canonical_reconciliation.update_review_state(
         conn,
@@ -183,6 +185,9 @@ def _review_state_update(
         source_namespace=source_namespace,
         source_id=source_id,
         source_run_id=source_run_id,
+        allow_established_transition=allow_established_transition,
+        changed_by=reviewer or "canonical_reconciliation",
+        source_tool=APPLY_TOOL if reviewer else canonical_reconciliation.RECONCILIATION_TOOL,
     )
 
 
@@ -631,6 +636,8 @@ def apply_source_claim_rejection(
         source_namespace="provenance_event",
         source_id=provenance.event_key,
         source_run_id=run_id,
+        allow_established_transition=True,
+        reviewer=reviewer,
     )
     result["provenance_event_id"] = provenance.event_id
     if not changed:
@@ -688,6 +695,8 @@ def apply_relationship_rejection(
         source_namespace="provenance_event",
         source_id=provenance.event_key,
         source_run_id=run_id,
+        allow_established_transition=True,
+        reviewer=reviewer,
     )
     result["provenance_event_id"] = provenance.event_id
     if not changed:
