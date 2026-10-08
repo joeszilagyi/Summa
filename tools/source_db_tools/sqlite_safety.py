@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -143,6 +144,13 @@ def backup_database(
             if check["status"] != "pass":
                 raise SQLiteSafetyError(f"backup integrity check failed: {check['messages']}")
             backup_path.replace(destination)
+            with destination.open("rb") as backup_file:
+                os.fsync(backup_file.fileno())
+            directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     except Exception:
         if backup_path is not None and backup_path.exists():
             backup_path.unlink()
