@@ -163,6 +163,29 @@ def test_spool_write_fsyncs_parent_directory(
     ]
 
 
+def test_spool_record_remains_valid_after_relocation(tmp_path: Path) -> None:
+    spool_dir = tmp_path / "spool"
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={"artifact_refs": []},
+        replay_recipe={},
+        failure="database is locked",
+        canonical_db_path=tmp_path / "canonical.sqlite",
+        spool_dir=spool_dir,
+        originating_tool="pytest",
+        created_at=FIXED_TIMESTAMP,
+    )
+    original_path = canonical_write_spool.write_spool_record(spool_dir, record)
+    moved_path = tmp_path / "restored" / "record.json"
+    moved_path.parent.mkdir()
+    original_path.replace(moved_path)
+
+    loaded = canonical_write_spool.load_spool_record(moved_path)
+
+    assert loaded["spool_path"] == str(original_path)
+    assert loaded["spool_record_id"] == record["spool_record_id"]
+
+
 def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
     spool_dir = tmp_path / "spool"
     missing_db = tmp_path / "missing.sqlite"
