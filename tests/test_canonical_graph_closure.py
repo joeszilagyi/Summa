@@ -284,6 +284,59 @@ def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> N
     assert any(issue["status"] == "unresolved_tracked" for issue in report["issues"])
 
 
+def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="reconciliation-authority-ref",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:reconciliation-authority-ref",
+            )
+            work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:reconciliation-target",
+                provenance_event_ref=provenance.event_key,
+                title="Valid target",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+        conn.execute("PRAGMA foreign_keys=OFF")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO authority_reconciliation (
+                    reconciliation_key_v1, target_namespace, target_id, raw_label,
+                    candidate_authority_record_id, candidate_authority_id,
+                    accepted_authority_id, created_at, updated_at, record_last_updated
+                ) VALUES (?, 'work', ?, 'Candidate', 999, 998, 997, ?, ?, ?)
+                """,
+                (
+                    "authrec:missing-authority-refs",
+                    str(work.row_id),
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+        conn.execute("PRAGMA foreign_keys=ON")
+        issues = canonical_graph_closure.audit_authority_reconciliation(conn)
+    finally:
+        conn.close()
+
+    assert len(issues) == 1
+    assert issues[0]["status"] == "true_orphan_error"
+    assert "candidate_authority_record_id" in issues[0]["message"]
+    assert "candidate_authority_id" in issues[0]["message"]
+    assert "accepted_authority_id" in issues[0]["message"]
+
+
 def test_targetless_relationship_is_not_treated_as_closed(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
@@ -344,6 +397,64 @@ def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     codes = {issue["code"] for issue in report["issues"]}
     assert "SOURCE_ACCESS_TRUE_ORPHAN" in codes
     assert "CAPTURE_EVENT_TRUE_ORPHAN" in codes
+    assert report["status"] == "fail"
+
+
+def test_source_access_with_missing_provenance_is_reported(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="source-access-provenance",
+                event_type="fixture_ingest",
+                tool_name="pytest.graph_closure",
+                run_id="graph-closure",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:source-access",
+            )
+            access = canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator="https://example.invalid/source-access-provenance",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.execute(
+                "UPDATE source_access SET provenance_event_ref=? WHERE source_access_id=?",
+                ("prov:missing", access.row_id),
+            )
+            legacy_access = canonical_store.record_source_access(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                original_locator="https://example.invalid/legacy-source-access",
+                workspace_id="fixture-workspace",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            conn.execute(
+                "UPDATE source_access SET provenance_event_ref=NULL WHERE source_access_id=?",
+                (legacy_access.row_id,),
+            )
+    finally:
+        conn.close()
+
+    report = canonical_graph_closure.audit_canonical_graph_closure(
+        db_path, generated_at=FIXED_TIMESTAMP
+    )
+
+    source_access_issues = [
+        issue for issue in report["issues"] if issue["table"] == "source_access"
+    ]
+    assert len(source_access_issues) == 1
+    assert any(
+        issue["table"] == "source_access"
+        and issue["code"] == "SOURCE_ACCESS_TRUE_ORPHAN"
+        and "provenance_event_ref" in issue["message"]
+        for issue in source_access_issues
+    )
     assert report["status"] == "fail"
 
 

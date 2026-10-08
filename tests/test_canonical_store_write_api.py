@@ -478,7 +478,7 @@ def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) 
     assert first.created is True
     assert second.created is False
     assert second.row_id == first.row_id
-    assert row["title"] == "Fixture Beta Work Updated"
+    assert row["title"] == "Fixture Beta Work"
     assert row["review_state"] == "accepted"
     assert int(row["accepted_for_citation"]) == 1
 
@@ -549,6 +549,9 @@ def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_pa
             provenance_event_ref=accepted_prov.event_key,
             work_type="article",
             title="Fixture Authority Work",
+            rights_posture="open",
+            refetchability_status="available",
+            raw_cite_text="Reviewed citation",
             review_state="accepted",
             confidence_score=0.95,
             authority_level="high",
@@ -572,27 +575,34 @@ def test_work_upsert_does_not_demote_authority_envelope_on_pending_replay(tmp_pa
             conn,
             work_key_v1="work:fixture-authority",
             provenance_event_ref=proposed_prov.event_key,
-            work_type="article",
+            work_type="book",
             title="Fixture Authority Work Updated",
+            rights_posture="restricted",
+            refetchability_status="unavailable",
+            raw_cite_text="Unreviewed citation",
             review_state="proposed",
             confidence_score=0.10,
             authority_level="low",
             publication_state="draft",
             public_blocker="untrusted",
             accepted_for_citation=0,
-            workspace_id="authoritative_subject",
+            workspace_id="unreviewed_subject",
             created_at=FIXED_TIMESTAMP,
             record_last_updated=FIXED_TIMESTAMP,
         )
         row = conn.execute(
-            "SELECT work_type, title, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation FROM work WHERE work_id=?",
+            "SELECT work_type, title, rights_posture, refetchability_status, raw_cite_text, workspace_id, review_state, confidence_score, provenance_event_ref, authority_level, publication_state, public_blocker, accepted_for_citation FROM work WHERE work_id=?",
             (baseline.row_id,),
         ).fetchone()
     finally:
         conn.close()
 
     assert row["work_type"] == "article"
-    assert row["title"] == "Fixture Authority Work Updated"
+    assert row["title"] == "Fixture Authority Work"
+    assert row["rights_posture"] == "open"
+    assert row["refetchability_status"] == "available"
+    assert row["raw_cite_text"] == "Reviewed citation"
+    assert row["workspace_id"] == "authoritative_subject"
     assert row["review_state"] == "accepted"
     assert row["confidence_score"] == 0.95
     assert row["provenance_event_ref"] == accepted_prov.event_key
@@ -670,7 +680,7 @@ def test_work_upsert_acceptance_replay_preserves_authority_envelope(tmp_path: Pa
     assert row["publication_state"] == "published"
     assert row["public_blocker"] == "trusted"
     assert int(row["accepted_for_citation"]) == 1
-    assert row["title"] == "Fixture Authority Work Replayed"
+    assert row["title"] == "Fixture Authority Work"
 
 
 def test_source_claim_replay_does_not_replace_authority_envelope_fields(tmp_path: Path) -> None:
