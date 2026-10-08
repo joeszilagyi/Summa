@@ -53,14 +53,16 @@ def provenance(conn, suffix: str = "fixture") -> canonical_store.ProvenanceEvent
     )
 
 
-def create_authority(conn, label: str, *, authority_type: str = "person") -> int:
+def create_authority(
+    conn, label: str, *, authority_type: str = "person", review_state: str = "needs_review"
+) -> int:
     return authority_reconciliation.create_local_authority(
         conn,
         authority_type=authority_type,
         preferred_label=label,
         source_namespace="pytest",
         source_id=label,
-        review_state="needs_review",
+        review_state=review_state,
         confidence_score=0.8,
         created_at=FIXED_TIMESTAMP,
     )
@@ -413,7 +415,7 @@ def test_accept_authority_merge_repoints_safe_references_and_preserves_rows(tmp_
     try:
         with conn:
             winner_id = create_authority(conn, "Jane Smith Winner")
-            loser_id = create_authority(conn, "Jane Smith Loser")
+            loser_id = create_authority(conn, "Jane Smith Loser", review_state="accepted")
             reconciliation_id = insert_reconciliation(conn, loser_id=loser_id, winner_id=winner_id)
             entity_id = create_detected_entity_for_authority(conn, authority_id=loser_id)
             work_subject_id = create_work_subject_for_authority(conn, authority_id=loser_id)
@@ -445,6 +447,14 @@ def test_accept_authority_merge_repoints_safe_references_and_preserves_rows(tmp_
         ).fetchone()
         merge_count = count_rows(conn, "authority_merge_event")
         claim_count = count_rows(conn, "source_claim")
+        loser_history = conn.execute(
+            """
+            SELECT previous_state, new_state, changed_by
+            FROM review_state_history
+            WHERE target_namespace='authority_record' AND target_id=?
+            """,
+            (str(loser_id),),
+        ).fetchall()
     finally:
         conn.close()
 
@@ -452,12 +462,17 @@ def test_accept_authority_merge_repoints_safe_references_and_preserves_rows(tmp_
     assert result["merge_event_id"] is not None
     assert result["winner_authority_id"] == winner_id
     assert result["loser_authority_id"] == loser_id
+    assert result["rows_demoted"] == {"authority_record": 1}
     assert result["references_repointed"] == {
         "extraction_detected_entity.authority_record_id": 1,
         "work_subject.authority_record_id": 1,
     }
     assert loser["merged_into_authority_record_id"] == winner_id
     assert loser["review_state"] == "demoted"
+    assert [
+        (row["previous_state"], row["new_state"], row["changed_by"])
+        for row in loser_history
+    ] == [("accepted", "demoted", "operator")]
     assert rec["review_state"] == "accepted"
     assert rec["accepted_authority_id"] == winner_id
     assert entity["authority_record_id"] == winner_id
