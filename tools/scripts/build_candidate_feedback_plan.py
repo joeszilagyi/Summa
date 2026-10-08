@@ -1278,9 +1278,9 @@ def aggregate_facet_scores(
         metrics[facet]["successful_extractions"] += int(lead["signals"]["successful_extractions"])
         metrics[facet]["failed_extractions"] += int(lead["signals"]["failed_extractions"])
 
-    no_prior_history = not history
     facet_scores: list[dict[str, Any]] = []
     for facet in enabled_facets:
+        no_prior_history = not history_by_facet[facet]
         signal_bucket = metrics[facet]
         capped_productive_runs = capped_count(
             signal_bucket["productive_runs"], FACET_SCORE_SIGNAL_CAP
