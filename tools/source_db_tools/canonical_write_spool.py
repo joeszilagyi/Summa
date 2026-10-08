@@ -7,11 +7,14 @@ recorded operation through the normal canonical APIs.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +35,7 @@ ALLOWED_OPERATION_KINDS = {
     "review_decision_apply",
     "cycle_evidence_write",
 }
-REPLAY_STATUSES = {"pending", "replayed", "failed", "superseded", "skipped"}
+REPLAY_STATUSES = {"pending", "replay_uncertain", "replayed", "failed", "superseded", "skipped"}
 FAILURE_KINDS = {
     "db_missing",
     "db_locked",
@@ -308,6 +311,30 @@ def mark_spool_record_replayed(
     payload["replay_result_refs"] = dict(replay_result_refs)
     payload["spool_record_checksum"] = record_checksum(payload)
     return write_spool_record(path, payload)
+
+
+def mark_spool_record_replay_uncertain(path: Path, record: Mapping[str, Any]) -> dict[str, Any]:
+    """Durably prevent automatic retry before the first possible DB write."""
+    payload = dict(record)
+    payload["replay_status"] = "replay_uncertain"
+    payload["replayed_at"] = None
+    payload["replay_result_refs"] = None
+    payload["spool_record_checksum"] = record_checksum(payload)
+    write_spool_record(path, payload)
+    return payload
+
+
+@contextmanager
+def lock_spool_record(path: Path) -> Iterator[None]:
+    """Serialize claims across replay processes, including atomic JSON replacements."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def mark_spool_record_failed(
