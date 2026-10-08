@@ -497,10 +497,17 @@ def load_selection_records(selection_path: Path) -> list[dict[str, Any]]:
                 raise ScheduledCycleError(f"selection JSONL line {line_number} must be an object")
             records.append(value)
     bound_records: list[dict[str, Any]] = []
+    seen_planned_run_ids: set[str] = set()
     for record in records:
         errors = validate_planned_run_record(record)
         if errors:
             raise ScheduledCycleError(errors[0])
+        planned_run_id = record["planned_run_id"]
+        if planned_run_id in seen_planned_run_ids:
+            raise ScheduledCycleError(
+                f"selection artifact has duplicate planned_run_id: {planned_run_id}"
+            )
+        seen_planned_run_ids.add(planned_run_id)
         bound_records.append(bind_planned_run_record(record))
     return bound_records
 

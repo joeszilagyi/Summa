@@ -1004,26 +1004,44 @@ def test_scheduled_runner_stable_failure_reason_contract_fields(tmp_path: Path) 
     )
 
 
+def test_scheduled_runner_rejects_duplicate_planned_run_ids_before_execution(tmp_path: Path) -> None:
+    workspace, manifest = write_workspace(tmp_path, "duplicate_subject")
+    record = planned_record(
+        workspace_id="duplicate_subject", workspace=workspace, manifest=manifest
+    )
+    selection = write_selection(tmp_path, [record, dict(record)])
+    db_path = tmp_path / "canonical.sqlite"
+    db_path.write_text("fixture\n", encoding="utf-8")
+    run_dir = tmp_path / "scheduled-run"
+    ledger_root = tmp_path / "ledgers"
+
+    proc = run_scheduled(
+        [
+            "--selection", str(selection),
+            "--db", str(db_path),
+            "--run-dir", str(run_dir),
+            "--cycle-runner", str(write_fake_cycle_runner(tmp_path)),
+            "--ledger-root", str(ledger_root),
+        ]
+    )
+
+    assert proc.returncode == scheduled_runner.EXIT_VALIDATION_FAILED
+    assert "duplicate planned_run_id" in proc.stderr
+    assert not run_dir.exists()
+    assert not ledger_root.exists()
+
+
 def test_scheduled_runner_generates_collision_safe_child_run_ids(
     tmp_path: Path, monkeypatch
 ) -> None:
     workspace, manifest = write_workspace(tmp_path, "duplicate_subject")
+    first_record = planned_record(
+        workspace_id="duplicate_subject", workspace=workspace, manifest=manifest, max_attempts=3
+    )
+    second_record = dict(first_record, planned_run_id="planner-test:duplicate_subject:second")
     selection = write_selection(
         tmp_path,
-        [
-            planned_record(
-                workspace_id="duplicate_subject",
-                workspace=workspace,
-                manifest=manifest,
-                max_attempts=3,
-            ),
-            planned_record(
-                workspace_id="duplicate_subject",
-                workspace=workspace,
-                manifest=manifest,
-                max_attempts=3,
-            ),
-        ],
+        [first_record, second_record],
     )
     runner = write_fake_cycle_runner(tmp_path, exit_code=0)
     db_path = tmp_path / "canonical.sqlite"
@@ -1095,22 +1113,13 @@ def test_scheduled_runner_does_not_double_run_locked_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, manifest = write_workspace(tmp_path, "locked_subject")
+    first_record = planned_record(
+        workspace_id="locked_subject", workspace=workspace, manifest=manifest, max_attempts=3
+    )
+    second_record = dict(first_record, planned_run_id="planner-test:locked_subject:second")
     selection = write_selection(
         tmp_path,
-        [
-            planned_record(
-                workspace_id="locked_subject",
-                workspace=workspace,
-                manifest=manifest,
-                max_attempts=3,
-            ),
-            planned_record(
-                workspace_id="locked_subject",
-                workspace=workspace,
-                manifest=manifest,
-                max_attempts=3,
-            ),
-        ],
+        [first_record, second_record],
     )
     db_path = tmp_path / "canonical.sqlite"
     db_path.write_text("fixture\n", encoding="utf-8")
