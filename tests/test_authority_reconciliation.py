@@ -21,6 +21,48 @@ def bootstrap_db(tmp_path):
     return canonical_store.connect_canonical_store(db_path)
 
 
+def test_local_authority_creation_records_stable_provenance(tmp_path) -> None:
+    conn = bootstrap_db(tmp_path)
+    try:
+        authority_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="local-authority-provenance",
+            created_at=FIXED_TIMESTAMP,
+        )
+        replay_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="local-authority-provenance",
+            created_at="2026-06-06T10:20:30Z",
+        )
+        row = conn.execute(
+            "SELECT provenance_event_ref FROM authority_record WHERE authority_record_id=?",
+            (authority_id,),
+        ).fetchone()
+        events = conn.execute(
+            """
+            SELECT provenance_event_key_v1, object_namespace, event_type,
+                   source_object_namespace, source_object_id
+            FROM provenance_event
+            WHERE object_namespace='authority_record'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert replay_id == authority_id
+    assert len(events) == 1
+    assert row["provenance_event_ref"] == events[0]["provenance_event_key_v1"]
+    assert events[0]["event_type"] == "local_authority_creation"
+    assert events[0]["source_object_namespace"] == "pytest"
+    assert events[0]["source_object_id"] == "local-authority-provenance"
+
+
 def test_readding_authority_identifier_cannot_demote_primary_status(tmp_path) -> None:
     conn = bootstrap_db(tmp_path)
     try:
@@ -204,7 +246,9 @@ def test_identifier_replay_preserves_reviewed_state_and_score(
     "initial_state",
     ["machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"],
 )
-def test_accept_candidate_promotes_pending_authority_linked_entity_state(tmp_path, initial_state: str) -> None:
+def test_accept_candidate_promotes_pending_authority_linked_entity_state(
+    tmp_path, initial_state: str
+) -> None:
     conn = bootstrap_db(tmp_path)
     try:
         with conn:
@@ -272,7 +316,9 @@ def test_accept_candidate_promotes_pending_authority_linked_entity_state(tmp_pat
 
 
 @pytest.mark.parametrize("initial_state", ["accepted", "approved", "curated", "reviewed"])
-def test_accept_candidate_preserves_terminal_entity_review_state(tmp_path, initial_state: str) -> None:
+def test_accept_candidate_preserves_terminal_entity_review_state(
+    tmp_path, initial_state: str
+) -> None:
     conn = bootstrap_db(tmp_path)
     try:
         with conn:

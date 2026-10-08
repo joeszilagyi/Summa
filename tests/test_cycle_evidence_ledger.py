@@ -150,6 +150,60 @@ def test_cycle_status_migration_preserves_rows_and_enforces_checks(tmp_path: Pat
         conn.close()
 
 
+def test_ingested_gather_candidate_migration_corrects_legacy_selection(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    canonical_store.init_canonical_store(db_path, target_version=13)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            event_id = cycle_evidence_ledger.record_cycle_event_start(
+                conn, run_id="legacy-gather", status="running", started_at=FIXED_TIMESTAMP
+            )
+            for index, (stage_name, stage_status) in enumerate(
+                (
+                    ("run_gather", "passed"),
+                    ("ingest_candidate_batch", "dry_run"),
+                    ("ingest_candidate_batch", "passed"),
+                ),
+                start=1,
+            ):
+                stage_id = cycle_evidence_ledger.record_cycle_stage_start(
+                    conn,
+                    cycle_event_id=event_id,
+                    run_id="legacy-gather",
+                    stage_name=stage_name,
+                    stage_order=index,
+                    status=stage_status,
+                )
+                cycle_evidence_ledger.record_cycle_candidate_considered(
+                    conn,
+                    cycle_event_id=event_id,
+                    stage_event_id=stage_id,
+                    candidate_kind="source_lead",
+                    candidate_ref_type="gather_candidate",
+                    candidate_ref_id=f"candidate-{index}",
+                    selected=False,
+                )
+    finally:
+        conn.close()
+
+    canonical_store.init_canonical_store(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT candidate_ref_id, selected FROM cycle_candidate_considered "
+            "ORDER BY candidate_ref_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert [(row["candidate_ref_id"], bool(row["selected"])) for row in rows] == [
+        ("candidate-1", False),
+        ("candidate-2", False),
+        ("candidate-3", True),
+    ]
+
+
 def test_cycle_status_migration_rolls_back_on_unknown_legacy_status(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     canonical_store.init_canonical_store(db_path, target_version=12)
@@ -302,6 +356,12 @@ def test_cycle_evidence_write_and_read_helpers_are_deterministic(tmp_path: Path)
         assert [artifact["artifact_type"] for artifact in summary["artifacts"]] == [
             "candidate_batch"
         ]
+        assert summary["candidates_considered"][0]["candidate_ref_id"] == "candidate-1"
+        assert summary["candidates_considered"][0]["selected"] == 1
+        assert summary["candidates_excluded"][0]["exclusion_reason"] == "no source handoff supplied"
+        assert summary["candidates_excluded"][0]["retryable"] == 1
+        assert summary["tool_failures"][0]["error_summary"] == "fixture failure"
+        assert summary["operator_overrides"][0]["override_kind"] == "manual_candidate_batch_fixture"
         assert count_rows(conn, "source_claim") == 0
     finally:
         conn.close()
@@ -874,6 +934,53 @@ def test_candidate_batch_payload_records_considered_candidates_without_file_read
     assert [bool(row["selected"]) for row in rows] == [False, False]
 
 
+@pytest.mark.parametrize(
+    ("stage_status", "selected"),
+    [("passed", True), ("completed", True), ("dry_run", False), ("spooled", False)],
+)
+def test_manifest_selects_gather_candidates_only_after_successful_ingest(
+    tmp_path: Path, stage_status: str, selected: bool
+) -> None:
+    db_path = init_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn,
+                manifest_path=tmp_path / "topic-cycle-run.json",
+                manifest={
+                    "run_id": "gather-intake-test",
+                    "status": "completed",
+                    "stages": [
+                        {
+                            "name": "ingest_candidate_batch",
+                            "status": stage_status,
+                            "evidence": {
+                                "candidate_batch": {
+                                    "candidates": [
+                                        {
+                                            "candidate_id": "candidate-1",
+                                            "candidate_type": "source_lead",
+                                            "review_status": "unverified",
+                                            "persistence_status": "workspace_run_only",
+                                        }
+                                    ]
+                                }
+                            },
+                        }
+                    ],
+                },
+            )
+        row = conn.execute(
+            "SELECT selected FROM cycle_candidate_considered WHERE candidate_ref_id='candidate-1'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert bool(row["selected"]) is selected
+
+
 def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -972,6 +1079,17 @@ def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
                         },
                     ]
                 )
+            if any(
+                f"FROM {table} WHERE cycle_event_id=?" in sql
+                for table in (
+                    "cycle_candidate_considered",
+                    "cycle_candidate_excluded",
+                    "cycle_tool_failure",
+                    "cycle_operator_override",
+                )
+            ):
+                assert params == ("cycle:test",)
+                return FakeCursor()
             assert params == ("cycle:test",)
             raise AssertionError(f"unexpected SQL: {sql}")
 
@@ -998,6 +1116,10 @@ def test_summarize_cycle_evidence_uses_grouped_counts_and_combined_detail_query(
     assert len(detail_queries) == 1
     assert [stage["stage_name"] for stage in summary["stages"]] == ["run_gather"]
     assert [artifact["artifact_type"] for artifact in summary["artifacts"]] == ["candidate_batch"]
+    assert summary["candidates_considered"] == []
+    assert summary["candidates_excluded"] == []
+    assert summary["tool_failures"] == []
+    assert summary["operator_overrides"] == []
 
 
 def test_record_stage_artifacts_streams_hash_without_read_bytes(

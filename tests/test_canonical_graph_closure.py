@@ -337,6 +337,53 @@ def test_authority_reconciliation_checks_authority_refs_even_with_valid_target(
     assert "accepted_authority_id" in issues[0]["message"]
 
 
+def test_targetless_relationship_is_not_treated_as_closed(tmp_path: Path) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            provenance = canonical_store.record_provenance_event(
+                conn,
+                object_namespace="fixture",
+                object_id="targetless-relationship",
+                event_type="fixture_ingest",
+                event_timestamp=FIXED_TIMESTAMP,
+                provenance_event_key_v1="prov:graph-closure:targetless",
+            )
+            work = canonical_store.upsert_work(
+                conn,
+                work_key_v1="work:targetless-source",
+                provenance_event_ref=provenance.event_key,
+                title="Source work",
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+            orphan = canonical_store.record_source_relationship(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                from_object_ref=f"work:{work.row_id}",
+                predicate="related_to",
+                review_state="proposed",
+                created_at=FIXED_TIMESTAMP,
+            )
+            unresolved = canonical_store.record_source_relationship(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                from_object_ref=f"work:{work.row_id}",
+                predicate="related_to",
+                target_label="Unknown target",
+                review_state="proposed",
+                created_at=FIXED_TIMESTAMP,
+            )
+        issues = canonical_graph_closure.audit_source_relationship(conn)
+    finally:
+        conn.close()
+
+    by_id = {issue["primary_key"]: issue for issue in issues}
+    assert by_id[str(orphan.row_id)]["status"] == "true_orphan_error"
+    assert by_id[str(unresolved.row_id)]["status"] == "unresolved_tracked"
+
+
 def test_missing_work_links_are_reported_as_orphans(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
     init_db(db_path)
