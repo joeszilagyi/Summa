@@ -286,6 +286,18 @@ def build_feedback_selection_explanation(
     )
 
 
+def scheduler_skip_retryable(reasons: Sequence[str]) -> bool:
+    """Only temporary deferrals should create retryable scheduler obligations."""
+    temporary_prefixes = (
+        "retry backoff active until ",
+        "saturation_state is cooldown",
+        "selection limit reached",
+    )
+    return bool(reasons) and all(
+        reason.startswith(temporary_prefixes) for reason in reasons
+    )
+
+
 def build_scheduler_selection_explanation(
     *,
     planner_run_id: str,
@@ -352,7 +364,7 @@ def build_scheduler_selection_explanation(
                 candidate_type="workspace",
                 label=str(item.get("topic_label") or workspace_id),
                 reason=reason,
-                retryable=True,
+                retryable=scheduler_skip_retryable(reasons or [reason]),
                 metadata={"reasons": reasons},
             )
         )
