@@ -851,6 +851,12 @@ def validate_existing_store(
         raise CanonicalStoreError(
             f"canonical store schema_version {version_row.schema_version} is newer than supported version {latest_version}"
         )
+    sqlite_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if sqlite_version != version_row.schema_version:
+        raise CanonicalStoreError(
+            f"canonical store PRAGMA user_version {sqlite_version} does not match "
+            f"schema_version {version_row.schema_version}"
+        )
 
     history_rows = load_applied_migrations(conn)
     if len(history_rows) != version_row.schema_version:
