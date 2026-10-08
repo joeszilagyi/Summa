@@ -283,7 +283,7 @@ DEFAULT_GATHER_PRIOR_STATE_HIGH_CONFIDENCE = 0.8
 GATHER_PRIOR_STATE_SOURCE_NAMESPACE = "topic_subject"
 PRIOR_STATE_ESTABLISHED_REVIEW_STATES = frozenset({"accepted", "approved", "curated", "reviewed"})
 PRIOR_STATE_LEAD_REVIEW_STATES = frozenset(
-    {"machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
+    {"ambiguous", "machine_extracted", "needs_review", "proposed", "recorded", "unreviewed"}
 )
 PRIOR_STATE_EXCLUDED_REVIEW_STATES = frozenset({"demoted", "deprecated", "rejected"})
 RECOGNIZED_INGEST_EVENT_TYPES = frozenset(
@@ -851,6 +851,12 @@ def validate_existing_store(
         raise CanonicalStoreError(
             f"canonical store schema_version {version_row.schema_version} is newer than supported version {latest_version}"
         )
+    sqlite_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if sqlite_version != version_row.schema_version:
+        raise CanonicalStoreError(
+            f"canonical store PRAGMA user_version {sqlite_version} does not match "
+            f"schema_version {version_row.schema_version}"
+        )
 
     history_rows = load_applied_migrations(conn)
     if len(history_rows) != version_row.schema_version:
@@ -1219,6 +1225,7 @@ def _is_open_question_claim(claim_text: str, claim_type: str | None) -> bool:
 def _pending_review_state(state: str | None) -> bool:
     return (state or "") in {
         "",
+        "ambiguous",
         "machine_extracted",
         "needs_review",
         "proposed",

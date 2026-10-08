@@ -398,6 +398,69 @@ def test_query_cli_treats_sql_injection_like_input_as_plain_text(tmp_path: Path)
     assert payload["counts"]["total_estimate"] is None
 
 
+@pytest.mark.parametrize(
+    "raw_json",
+    [
+        '[{"field":"title","field":"private","text":"hidden"}]',
+        '[{"field":"title","text":NaN}]',
+    ],
+)
+def test_query_rejects_ambiguous_indexed_fields_json(raw_json: str) -> None:
+    query_tool.parse_indexed_fields_json.cache_clear()
+    with pytest.raises(query_tool.SearchQueryError, match="invalid indexed_fields_json"):
+        query_tool.parse_indexed_fields_json(raw_json)
+
+
+@pytest.mark.parametrize(
+    "raw_json",
+    [
+        '[{"field":"title","field":"private"}]',
+        '[NaN]',
+    ],
+)
+def test_query_rejects_ambiguous_suppressed_fields_json(raw_json: str) -> None:
+    row = {
+        "projection_id": 1,
+        "object_type": "work",
+        "object_ref": "work:1",
+        "title": "Public Work",
+        "subtitle": None,
+        "indexed_fields_json": "[]",
+        "match_snippet": None,
+        "suppressed_fields_json": raw_json,
+        "review_state": "reviewed",
+        "publication_state": "public_release_allowed",
+        "profile": "local",
+        "score": 1.0,
+    }
+    with pytest.raises(ValueError):
+        query_tool.build_result(row, terms=["work"], rank=1)
+
+
+@pytest.mark.parametrize(
+    ("column", "raw_json"),
+    [
+        ("indexed_fields_json", '[{"field":"title","field":"private"}]'),
+        ("suppressed_fields_json", '[NaN]'),
+    ],
+)
+def test_query_cli_fails_closed_on_ambiguous_projection_json(
+    tmp_path: Path, column: str, raw_json: str
+) -> None:
+    index_db = build_local_index(tmp_path)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            f"UPDATE search_projection SET {column}=? WHERE title='Public Work'",
+            (raw_json,),
+        )
+
+    result = run_query("--index-db", str(index_db), "--query", "Public")
+
+    assert result.returncode == 1
+    assert not result.stdout
+    assert "Error:" in result.stderr
+
+
 def test_query_cli_can_include_total_estimate(tmp_path: Path) -> None:
     index_db = build_ranked_index(
         tmp_path,
