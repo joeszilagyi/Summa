@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 12
-CURRENT_MIGRATION_ID = "0012_cycle_event_attempts"
+CURRENT_SCHEMA_VERSION = 13
+CURRENT_MIGRATION_ID = "0013_cycle_ledger_status_constraints"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -369,6 +369,13 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
         migration_id="0012_cycle_event_attempts",
         sql_path=MIGRATIONS_DIR / "0012_cycle_event_attempts.sql",
         notes="Allow multiple cycle ledger attempts for one run id.",
+        rebuilds_foreign_key_parent=True,
+    ),
+    MigrationSpec(
+        version=13,
+        migration_id="0013_cycle_ledger_status_constraints",
+        sql_path=MIGRATIONS_DIR / "0013_cycle_ledger_status_constraints.sql",
+        notes="Constrain cycle and stage lifecycle statuses at the SQLite boundary.",
         rebuilds_foreign_key_parent=True,
     ),
 )
@@ -2616,6 +2623,15 @@ def record_source_relationship(
         existing["review_state"],
         review_state_value,
     )
+    existing_state_text = (
+        None if existing["review_state"] is None else str(existing["review_state"]).strip().lower()
+    )
+    proposed_state_text = review_state_value.strip().lower()
+    if existing_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES and (
+        proposed_state_text in PRIOR_STATE_ESTABLISHED_REVIEW_STATES
+        or _pending_review_state(review_state_value)
+    ):
+        preserve_established_envelope = True
     relationship_confidence_value = (
         existing["confidence_score"]
         if preserve_established_envelope
@@ -2670,9 +2686,13 @@ def record_source_relationship(
             ),
             "confidence_score": relationship_confidence_value,
             "provenance_event_ref": relationship_provenance_value,
-            "evidence_locator_ref": _first_present(
-                _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
-                existing["evidence_locator_ref"],
+            "evidence_locator_ref": (
+                existing["evidence_locator_ref"]
+                if preserve_established_envelope
+                else _first_present(
+                    _optional_nonblank(evidence_locator_ref, "evidence_locator_ref"),
+                    existing["evidence_locator_ref"],
+                )
             ),
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },

@@ -16,6 +16,24 @@ SCHEMA_VERSION = "cycle-evidence-ledger.v1"
 DEFAULT_PRIVACY_CLASSIFICATION = "local_operator"
 CYCLE_OPEN_STATUSES = frozenset({"planned", "running"})
 STAGE_OPEN_STATUSES = frozenset({"planned", "running"})
+CYCLE_STATUSES = CYCLE_OPEN_STATUSES | frozenset(
+    {"completed", "dry_run", "failed", "partial", "degraded"}
+)
+STAGE_STATUSES = STAGE_OPEN_STATUSES | frozenset(
+    {
+        "completed",
+        "passed",
+        "failed",
+        "partial",
+        "dry_run",
+        "degraded",
+        "spooled",
+        "skipped",
+        "not_reached",
+        "warning",
+        "recorded",
+    }
+)
 PENDING_REVIEW_STATES = frozenset(
     {
         "",
@@ -104,6 +122,13 @@ def _require_nonblank(value: object, field_name: str) -> str:
     if not text:
         raise CycleEvidenceLedgerError(f"{field_name} is required")
     return text
+
+
+def _require_status(value: object, *, kind: str, allowed: frozenset[str]) -> str:
+    status = _require_nonblank(value, "status")
+    if status not in allowed:
+        raise CycleEvidenceLedgerError(f"invalid {kind} status: {status}")
+    return status
 
 
 def _optional_text(value: object) -> str | None:
@@ -506,7 +531,7 @@ def record_cycle_event_start(
         "previous_run_ids_json": _json_sequence(previous_run_ids),
         "mode": mode,
         "started_at": started,
-        "status": _require_nonblank(status, "status"),
+        "status": _require_status(status, kind="cycle_event", allowed=CYCLE_STATUSES),
         "topic_cycle_manifest_path": topic_cycle_manifest_path,
         "topic_cycle_manifest_hash": topic_cycle_manifest_hash,
         "canonical_db_ref": canonical_db_ref,
@@ -562,7 +587,7 @@ def record_cycle_event_finish(
     error_count: int | None = None,
 ) -> None:
     now = now_rfc3339()
-    final_status = _require_nonblank(status, "status")
+    final_status = _require_status(status, kind="cycle_event", allowed=CYCLE_STATUSES)
     if final_status in CYCLE_OPEN_STATUSES:
         raise CycleEvidenceLedgerError("cycle_event finish requires a terminal status")
     existing_row = conn.execute(
@@ -669,7 +694,7 @@ def record_cycle_stage_start(
         "stage_name": stage,
         "stage_order": int(stage_order),
         "started_at": started_at_value,
-        "status": _require_nonblank(status, "status"),
+        "status": _require_status(status, kind="cycle_stage_event", allowed=STAGE_STATUSES),
         "required_stage": _bool_int(required_stage),
         "skipped_reason": skipped_reason,
         "command_name": command_name,
@@ -719,7 +744,7 @@ def record_cycle_stage_finish(
     error_summary: str | None = None,
 ) -> None:
     now = now_rfc3339()
-    final_status = _require_nonblank(status, "status")
+    final_status = _require_status(status, kind="cycle_stage_event", allowed=STAGE_STATUSES)
     if final_status in STAGE_OPEN_STATUSES:
         raise CycleEvidenceLedgerError("cycle_stage_event finish requires a terminal status")
     existing_row = conn.execute(

@@ -279,6 +279,7 @@ def test_init_canonical_store_upgrades_v2_db_with_source_access_provenance_event
         "0010_canonical_row_revisions",
         "0011_detected_entity_span_bounds",
         "0012_cycle_event_attempts",
+        "0013_cycle_ledger_status_constraints",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -336,6 +337,7 @@ def test_init_canonical_store_upgrades_v3_db_with_source_access_lead_identity_in
         "0010_canonical_row_revisions",
         "0011_detected_entity_span_bounds",
         "0012_cycle_event_attempts",
+        "0013_cycle_ledger_status_constraints",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -453,6 +455,7 @@ def test_init_canonical_store_upgrades_v4_db_with_detected_entity_workspace_scop
         "0010_canonical_row_revisions",
         "0011_detected_entity_span_bounds",
         "0012_cycle_event_attempts",
+        "0013_cycle_ledger_status_constraints",
     )
 
     conn = canonical_store.connect_canonical_store(db_path)
@@ -780,6 +783,16 @@ def test_migration_sql_contains_no_destructive_statements() -> None:
             assert "INSERT INTO CYCLE_EVENT_NEXT SELECT * FROM CYCLE_EVENT;" in sql_text
             assert "ALTER TABLE CYCLE_EVENT_NEXT RENAME TO CYCLE_EVENT;" in sql_text
             sql_text = sql_text.replace("DROP TABLE CYCLE_EVENT;", "")
+        if migration.migration_id == "0013_cycle_ledger_status_constraints":
+            assert "INSERT INTO CYCLE_EVENT_CHECKED SELECT * FROM CYCLE_EVENT;" in sql_text
+            assert (
+                "INSERT INTO CYCLE_STAGE_EVENT_CHECKED SELECT * FROM CYCLE_STAGE_EVENT;"
+                in sql_text
+            )
+            assert "ALTER TABLE CYCLE_EVENT_CHECKED RENAME TO CYCLE_EVENT;" in sql_text
+            assert "ALTER TABLE CYCLE_STAGE_EVENT_CHECKED RENAME TO CYCLE_STAGE_EVENT;" in sql_text
+            sql_text = sql_text.replace("DROP TABLE CYCLE_EVENT;", "")
+            sql_text = sql_text.replace("DROP TABLE CYCLE_STAGE_EVENT;", "")
         assert "DROP TABLE" not in sql_text
         assert "CREATE TABLE AS SELECT" not in sql_text
 

@@ -1890,13 +1890,23 @@ def test_feedback_plan_explanation_ids_are_scoped_by_stage_name(tmp_path: Path) 
         tmp_path,
         db_path,
         manifest_path,
-        extra_args=["--feedback-plan-stage", "build_feedback_plan_pre"],
+        extra_args=[
+            "--feedback-plan-stage",
+            "build_feedback_plan_pre",
+            "--planner-run-id",
+            "fixed-feedback-plan-run",
+        ],
     )
     post_result, _post_path, post_payload = build_plan(
         tmp_path,
         db_path,
         manifest_path,
-        extra_args=["--feedback-plan-stage", "build_feedback_plan_post"],
+        extra_args=[
+            "--feedback-plan-stage",
+            "build_feedback_plan_post",
+            "--planner-run-id",
+            "fixed-feedback-plan-run",
+        ],
     )
 
     assert pre_result.returncode == 0, pre_result.stdout + pre_result.stderr
@@ -1911,6 +1921,46 @@ def test_feedback_plan_explanation_ids_are_scoped_by_stage_name(tmp_path: Path) 
         pre_payload["selection_explanation"]["selected_candidate"]["candidate_id"]
         == post_payload["selection_explanation"]["selected_candidate"]["candidate_id"]
     )
+
+
+def test_repeated_feedback_plans_get_distinct_explanations_and_ledger_runs(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subject_id = "feedback_subject"
+    db_path = bootstrap_db(tmp_path)
+    manifest_path = write_manifest(workspace_root, subject_id=subject_id)
+    seed_feedback_state(db_path, subject_id=subject_id)
+
+    first_result, _first_path, first_payload = build_plan(
+        tmp_path, db_path, manifest_path, extra_args=["--record-selection-ledger"]
+    )
+    second_result, _second_path, second_payload = build_plan(
+        tmp_path, db_path, manifest_path, extra_args=["--record-selection-ledger"]
+    )
+
+    assert first_result.returncode == 0, first_result.stdout + first_result.stderr
+    assert second_result.returncode == 0, second_result.stdout + second_result.stderr
+    assert first_payload["generated_at"] == second_payload["generated_at"] == FIXED_CREATED_AT
+    first_explanation = first_payload["selection_explanation"]
+    second_explanation = second_payload["selection_explanation"]
+    assert first_explanation["selected_candidate"] == second_explanation["selected_candidate"]
+    assert first_explanation["run_id"] != second_explanation["run_id"]
+    assert first_explanation["explanation_id"] != second_explanation["explanation_id"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        run_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT run_id FROM cycle_event WHERE mode='selection_explanation'"
+            )
+        }
+    finally:
+        conn.close()
+    assert run_ids == {
+        first_explanation["explanation_id"],
+        second_explanation["explanation_id"],
+    }
 
 
 def test_entity_type_to_facet_mapping_keeps_non_person_place_entities_visible(
@@ -2551,7 +2601,12 @@ def test_candidate_feedback_planner_is_deterministic_for_same_store_and_options(
     manifest_path = write_manifest(workspace_root, subject_id=subject_id)
     seed_feedback_state(db_path, subject_id=subject_id)
 
-    first_result, first_path, first_payload = build_plan(tmp_path, db_path, manifest_path)
+    first_result, first_path, first_payload = build_plan(
+        tmp_path,
+        db_path,
+        manifest_path,
+        extra_args=["--planner-run-id", "fixed-feedback-plan-run"],
+    )
     second_result = run_planner(
         [
             "--db",
@@ -2564,6 +2619,8 @@ def test_candidate_feedback_planner_is_deterministic_for_same_store_and_options(
             str(tmp_path / "candidate-feedback-plan-second.json"),
             "--generated-at",
             FIXED_CREATED_AT,
+            "--planner-run-id",
+            "fixed-feedback-plan-run",
         ]
     )
     second_path = tmp_path / "candidate-feedback-plan-second.json"
