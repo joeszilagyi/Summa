@@ -2081,6 +2081,7 @@ def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path:
             "2026-06-03T12:00:00Z",
             "--mode",
             "local",
+            "--graph-closure",
         ]
     )
 
@@ -2091,14 +2092,27 @@ def test_topic_cycle_failure_stage_reflects_subject_resolution_failure(tmp_path:
     failed_stage = stages_by_name(manifest)["resolve_subject_runtime"]
     assert failed_stage["status"] == "failed"
     assert failed_stage["error_message"]
+    assert [stage["name"] for stage in manifest["stages"]] == manifest["stage_plan"]
+    assert all(stage["status"] == "not_reached" for stage in manifest["stages"][1:])
+    assert all(
+        stage["skipped_reason"] == "blocked_by:resolve_subject_runtime"
+        for stage in manifest["stages"][1:]
+    )
+    assert manifest["graph_closure"]["status"] == "not_reached"
+    assert manifest["graph_closure"]["blocked_reason"] == "blocked_by:resolve_subject_runtime"
 
     conn = sqlite3.connect(db_path)
     try:
-        row = conn.execute(
-            "SELECT status, error_summary FROM cycle_stage_event WHERE run_id=? AND stage_name=?",
-            ("cycle-subject-fail", "resolve_subject_runtime"),
-        ).fetchone()
-        assert row == ("failed", failed_stage["error_message"])
+        rows = conn.execute(
+            "SELECT stage_name, status, started_at, ended_at, error_summary "
+            "FROM cycle_stage_event WHERE run_id=? ORDER BY stage_order",
+            ("cycle-subject-fail",),
+        ).fetchall()
+        assert [(row[0], row[1]) for row in rows] == [
+            (stage["name"], stage["status"]) for stage in manifest["stages"]
+        ]
+        assert rows[0][4] == failed_stage["error_message"]
+        assert all(row[2] is None and row[3] is None for row in rows[1:])
     finally:
         conn.close()
 
