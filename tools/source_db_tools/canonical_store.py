@@ -1462,6 +1462,8 @@ def record_provenance_event(
             if (field != "event_timestamp" or event_timestamp is not None)
             and existing[field] != value
         ]
+        if event_timestamp is not None and existing["record_last_updated"] != timestamp:
+            mismatched.append("record_last_updated")
         if mismatched:
             raise CanonicalStoreError(
                 f"provenance event replay conflict for key {key}: " + ", ".join(mismatched)
