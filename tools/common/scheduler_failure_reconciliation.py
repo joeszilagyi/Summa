@@ -13,9 +13,13 @@ from tools.common.runtime_ledger import load_events as load_runtime_events
 FAILURE_EVENT_TYPE = "command_failure"
 SUCCESS_EVENT_TYPE = "command_end"
 TERMINAL_EVENT_TYPES = {FAILURE_EVENT_TYPE, SUCCESS_EVENT_TYPE}
+START_EVENT_TYPE = "command_start"
 SUCCESS_STATUSES = {"pass", "passed", "success", "succeeded", "ok"}
 FAILURE_STATUSES = {"fail", "failed", "error"}
 UNKNOWN_STATUS_BLOCK_REASON = "command_end status is not a recognized success or failure value"
+STALE_IN_PROGRESS_BLOCK_REASON = "stale_in_progress: command_start has no terminal event"
+DEFAULT_STALE_AFTER_SECONDS = 24 * 60 * 60
+RUNTIME_GRACE_SECONDS = 5 * 60
 
 
 class SchedulerFailureReconciliationError(RuntimeError):
@@ -24,12 +28,13 @@ class SchedulerFailureReconciliationError(RuntimeError):
 
 @dataclass(frozen=True)
 class RunOutcome:
-    """Terminal outcome for one runtime-ledger run_id."""
+    """Terminal or inferred stale outcome for one runtime-ledger run_id."""
 
     run_id: str
     status: str
     occurred_at: str
     failure_reason: str | None = None
+    inferred_stale: bool = False
 
 
 def parse_timestamp(raw_value: str, *, label: str) -> datetime:
@@ -80,7 +85,25 @@ def read_runtime_ledger(path: Path, *, workspace_id: str) -> list[dict[str, Any]
     return events
 
 
-def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
+def summarize_run_outcomes(
+    events: list[dict[str, Any]],
+    *,
+    as_of: str | None = None,
+    run_budget: dict[str, Any] | None = None,
+) -> list[RunOutcome]:
+    """Include unmatched starts only after their runtime limit plus grace has expired.
+
+    Without a configured runtime limit, wait a full day to avoid classifying
+    ordinary long-running work as a crash. Callers without ``as_of`` retain the
+    original terminal-only behavior.
+    """
+    cutoff = parse_timestamp(as_of, label="as_of") if as_of is not None else None
+    max_runtime = value_as_positive_int(run_budget, "max_runtime_seconds")
+    stale_after_seconds = (
+        max_runtime + RUNTIME_GRACE_SECONDS
+        if max_runtime is not None
+        else DEFAULT_STALE_AFTER_SECONDS
+    )
     runs: dict[str, list[dict[str, Any]]] = {}
     for event in events:
         run_id = event.get("run_id")
@@ -94,6 +117,23 @@ def summarize_run_outcomes(events: list[dict[str, Any]]) -> list[RunOutcome]:
             event for event in run_events if event.get("event_type") in TERMINAL_EVENT_TYPES
         ]
         if not terminal_events:
+            starts = [event for event in run_events if event.get("event_type") == START_EVENT_TYPE]
+            if cutoff is not None and starts:
+                latest_start = max(
+                    parse_timestamp(str(event["occurred_at"]), label="command_start occurred_at")
+                    for event in starts
+                )
+                stale_at = latest_start + timedelta(seconds=stale_after_seconds)
+                if stale_at <= cutoff:
+                    outcomes.append(
+                        RunOutcome(
+                            run_id=run_id,
+                            status="failure",
+                            occurred_at=stale_at.isoformat().replace("+00:00", "Z"),
+                            failure_reason=STALE_IN_PROGRESS_BLOCK_REASON,
+                            inferred_stale=True,
+                        )
+                    )
             continue
         terminal_events.sort(
             key=lambda event: occurrence_sort_key(
@@ -174,8 +214,9 @@ def derive_failure_state(
     run_budget: dict[str, Any] | None,
     retry_policy: dict[str, Any] | None,
     events: list[dict[str, Any]],
+    as_of: str | None = None,
 ) -> tuple[dict[str, Any] | None, list[str], list[RunOutcome]]:
-    run_outcomes = summarize_run_outcomes(events)
+    run_outcomes = summarize_run_outcomes(events, as_of=as_of, run_budget=run_budget)
     if not run_outcomes:
         return current_failure_state, ["no terminal runtime-ledger outcomes found"], run_outcomes
 
@@ -205,6 +246,15 @@ def derive_failure_state(
 
     attempt_count = len(consecutive_failures)
     newest_failure = consecutive_failures[0]
+    if newest_failure.inferred_stale:
+        derived = {
+            "status": "blocked",
+            "attempt_count": attempt_count,
+            "last_failure_at": newest_failure.occurred_at,
+            "last_failure_reason": STALE_IN_PROGRESS_BLOCK_REASON,
+            "blocked_reason": STALE_IN_PROGRESS_BLOCK_REASON,
+        }
+        return derived, [STALE_IN_PROGRESS_BLOCK_REASON], run_outcomes
     derived: dict[str, Any] = {
         "status": "retryable",
         "attempt_count": attempt_count,

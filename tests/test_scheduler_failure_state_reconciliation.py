@@ -164,6 +164,16 @@ def build_success_event(*, workspace_id: str, run_id: str, occurred_at: str) -> 
     )
 
 
+def build_start_event(*, workspace_id: str, run_id: str, occurred_at: str) -> dict[str, object]:
+    return runtime_ledger.build_event(
+        workspace_id=workspace_id,
+        run_id=run_id,
+        event_type="command_start",
+        command="pytest-fixture",
+        occurred_at=occurred_at,
+    )
+
+
 def build_unknown_status_event(
     *, workspace_id: str, run_id: str, occurred_at: str, status: str
 ) -> dict[str, object]:
@@ -798,6 +808,111 @@ def test_reconciliation_keeps_current_state_without_terminal_runs(tmp_path: Path
     assert entry["recommendation"] == "keep"
     assert entry["reasons"] == ["no terminal runtime-ledger outcomes found"]
     assert entry["derived_failure_state"] == entry["registry_failure_state"]
+
+
+def test_stale_open_start_becomes_blocked_without_inflating_terminal_count(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, subject_id="subject.stale")
+    registry_path = write_registry(
+        tmp_path,
+        [
+            workspace_record(
+                workspace_id="stale_workspace",
+                workspace_root=workspace_root,
+                manifest_path=manifest_path,
+                scheduler_policy={"run_budget": {"max_attempts": 3, "max_runtime_seconds": 600}},
+            )
+        ],
+    )
+    ledger_root = tmp_path / "runtime" / "ledgers"
+    append_ledger_events(
+        ledger_root / "stale_workspace.runtime-ledger.jsonl",
+        [
+            build_failure_event(
+                workspace_id="stale_workspace",
+                run_id="failed-run",
+                occurred_at="2026-06-01T00:00:00Z",
+                message="earlier failure",
+            ),
+            build_start_event(
+                workspace_id="stale_workspace",
+                run_id="open-run",
+                occurred_at="2026-06-01T00:10:00Z",
+            ),
+        ],
+    )
+    proc = run_reconciliation(
+        [
+            "--registry",
+            str(registry_path),
+            "--ledger-root",
+            str(ledger_root),
+            "--generated-at",
+            "2026-06-01T00:25:00Z",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    entry = json.loads(proc.stdout)["entries"][0]
+    assert entry["terminal_run_count"] == 1
+    assert entry["latest_failure_at"] == "2026-06-01T00:25:00Z"
+    assert entry["derived_failure_state"] == {
+        "status": "blocked",
+        "attempt_count": 2,
+        "last_failure_at": "2026-06-01T00:25:00Z",
+        "last_failure_reason": scheduler_reconciliation.STALE_IN_PROGRESS_BLOCK_REASON,
+        "blocked_reason": scheduler_reconciliation.STALE_IN_PROGRESS_BLOCK_REASON,
+    }
+
+
+def test_open_start_cutoff_and_late_terminal_outcome() -> None:
+    start = build_start_event(
+        workspace_id="workspace-a", run_id="open-run", occurred_at="2026-06-01T00:10:00Z"
+    )
+    budget = {"max_runtime_seconds": 600}
+    before_cutoff = scheduler_reconciliation.summarize_run_outcomes(
+        [start], as_of="2026-06-01T00:24:59Z", run_budget=budget
+    )
+    at_cutoff = scheduler_reconciliation.summarize_run_outcomes(
+        [start], as_of="2026-06-01T00:25:00Z", run_budget=budget
+    )
+    after_terminal = scheduler_reconciliation.summarize_run_outcomes(
+        [
+            start,
+            build_success_event(
+                workspace_id="workspace-a",
+                run_id="open-run",
+                occurred_at="2026-06-01T00:26:00Z",
+            ),
+        ],
+        as_of="2026-06-01T00:27:00Z",
+        run_budget=budget,
+    )
+
+    assert before_cutoff == []
+    assert len(at_cutoff) == 1
+    assert at_cutoff[0].inferred_stale is True
+    assert at_cutoff[0].occurred_at == "2026-06-01T00:25:00Z"
+    assert [(outcome.status, outcome.inferred_stale) for outcome in after_terminal] == [
+        ("success", False)
+    ]
+
+
+def test_open_start_without_runtime_limit_uses_conservative_fallback() -> None:
+    start = build_start_event(
+        workspace_id="workspace-a", run_id="open-run", occurred_at="2026-06-01T00:00:00Z"
+    )
+    assert (
+        scheduler_reconciliation.summarize_run_outcomes([start], as_of="2026-06-01T23:59:59Z") == []
+    )
+    outcomes = scheduler_reconciliation.summarize_run_outcomes(
+        [start], as_of="2026-06-02T00:00:00Z"
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].inferred_stale is True
 
 
 def test_reconciliation_normalizes_generated_at_to_utc_z(tmp_path: Path) -> None:
