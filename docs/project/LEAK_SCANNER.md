@@ -21,16 +21,25 @@ regexes. The scanner is now the single reusable surface for:
 ## Allowlist posture
 
 False-positive suppression is explicit and audited through
-`leak-scan-allowlist.v1`.
+`leak-scan-allowlist.v2`.
 
 Each entry must declare:
 
 - `entry_id`
-- `finding_code`
-- `path_glob`
-- `match_substring`
+- `finding_fingerprint`: the exact `sha256:` fingerprint emitted on the finding
 - `reason`
-- `approved_by`
+- `approved_by`: a bounded reviewer identity token
+- `expires_at`: a timezone-qualified expiration timestamp
 
-Suppressed findings stay visible in the machine-readable report with the
-allowlist entry that matched them.
+Each finding includes a `finding_fingerprint` derived from its path, marker,
+location, excerpt, and a hash of the surrounding scanned context. The context
+hash is emitted instead of the source text so the scanner can bind an approval
+without re-disclosing a secret.
+
+Allowlist entries match only that exact finding fingerprint; broad path or
+substring suppressions are rejected. Expired entries no longer suppress
+findings. Suppressed findings stay visible in the machine-readable report with
+only the allowlist entry ID that matched them by default. The report's
+`allowlist_audit` also emits only `entry_ids` by default;
+`--debug-allowlist-audit` is a private/debug-only opt-in for including full
+allowlist entries and their audit metadata.

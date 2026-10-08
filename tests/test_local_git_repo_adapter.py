@@ -332,10 +332,21 @@ def test_local_git_repo_plans_clean_checkout_with_commit_metadata(tmp_path: Path
 def test_local_git_repo_reports_dirty_state_clearly(tmp_path: Path) -> None:
     scenario_dir = init_fixture_repo(tmp_path, dirty=True)
     adapter_path = write_adapter(scenario_dir)
+    handoff_jsonl = tmp_path / "blocked-handoff.jsonl"
 
-    proc = run_planner(["--adapter", str(adapter_path), "--format", "json"])
+    proc = run_planner(
+        [
+            "--adapter",
+            str(adapter_path),
+            "--handoff-jsonl",
+            str(handoff_jsonl),
+            "--format",
+            "json",
+        ]
+    )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert not handoff_jsonl.exists()
     payload = json.loads(proc.stdout)
     assert payload["repo_state"] == "dirty"
     assert payload["blockers"] == ["git working tree has local modifications or untracked files"]
@@ -414,6 +425,55 @@ def test_local_git_repo_execution_smokes_a_clean_checkout(tmp_path: Path) -> Non
     ).encode("utf-8")
 
 
+def test_local_git_repo_execution_rejects_forged_repository_path(
+    tmp_path: Path,
+) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
+    adapter_path = write_adapter(scenario_dir)
+    repo_dir = scenario_dir / "repo"
+    forged_repo = tmp_path / "forged-repo"
+    shutil.copytree(repo_dir, forged_repo)
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(
+        ["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    record = json.loads(handoff_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    record["resolved_source_path"] = str(forged_repo)
+    handoff_jsonl.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    output = tmp_path / "forged-repo-execution"
+    exec_proc = run_executor(handoff=handoff_jsonl, output=output, adapter_path=adapter_path)
+
+    assert exec_proc.returncode == 1
+    assert "does not match the trusted adapter manifest" in exec_proc.stderr
+    assert not (output / "capture-events.jsonl").exists()
+
+
+def test_local_git_repo_execution_rejects_forged_candidate_paths(tmp_path: Path) -> None:
+    scenario_dir = init_fixture_repo(tmp_path, include_remote_url=True)
+    adapter_path = write_adapter(scenario_dir)
+    handoff_jsonl = tmp_path / "handoff.jsonl"
+
+    proc = run_planner(
+        ["--adapter", str(adapter_path), "--handoff-jsonl", str(handoff_jsonl), "--format", "json"]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    record = json.loads(handoff_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    record["preserved"]["source_metadata"]["candidate_paths"] = ["ignored/secret.txt"]
+    handoff_jsonl.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    output = tmp_path / "forged-candidates-execution"
+    exec_proc = run_executor(handoff=handoff_jsonl, output=output, adapter_path=adapter_path)
+
+    assert exec_proc.returncode == 1
+    assert "do not match the trusted adapter selection" in exec_proc.stderr
+    assert not (output / "capture-events.jsonl").exists()
+
+
 def test_local_git_repo_execution_reads_each_candidate_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -450,6 +510,7 @@ def test_local_git_repo_execution_reads_each_candidate_file_once(
     capture_events, extraction_records, text_artifacts, local_paths, failed = source_executor.execute_local_git_repo(
         records=records,
         adapter_payload=adapter_payload,
+        adapter_path=adapter_path,
         run_id="local-git-execution",
         created_at="2026-06-03T12:34:56Z",
         handoff_hash=handoff_hash,

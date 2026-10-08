@@ -121,6 +121,31 @@ def test_network_safety_gate_refuses_exceeded_budget() -> None:
     assert "SIDE_EFFECT_BUDGET_EXCEEDED" in codes
 
 
+def test_network_safety_gate_rejects_conflicting_duplicate_urls() -> None:
+    request = base_request()
+    duplicate = dict(request["planned_actions"][0])
+    duplicate["action_id"] = "fetch-duplicate"
+    duplicate["method"] = "HEAD"
+    request["planned_actions"].append(duplicate)
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "refuse"
+    assert any(error["code"] == "DUPLICATE_ACTION_URL" for error in payload["errors"])
+
+
+def test_network_safety_gate_allows_identical_duplicate_url_actions() -> None:
+    request = base_request()
+    duplicate = dict(request["planned_actions"][0])
+    duplicate["action_id"] = "fetch-duplicate"
+    request["planned_actions"].append(duplicate)
+
+    payload = gate.evaluate_request(request)
+
+    assert payload["decision"] == "dry_run"
+    assert not any(error["code"] == "DUPLICATE_ACTION_URL" for error in payload["errors"])
+
+
 def test_network_safety_gate_refuses_actions_that_exceed_min_interval_cadence() -> None:
     request = base_request()
     request["rate_limits"] = {
@@ -180,6 +205,19 @@ def test_allowlisted_rejects_subdomain_forgery_for_bare_host_prefix() -> None:
     ) is True
 
 
+def test_allowlisted_host_entries_match_exact_hosts_only() -> None:
+    assert gate.allowlisted(
+        "https://example.com/status",
+        hosts=["example.com"],
+        prefixes=[],
+    ) is True
+    assert gate.allowlisted(
+        "https://api.example.com/status",
+        hosts=["example.com"],
+        prefixes=[],
+    ) is False
+
+
 def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_userinfo() -> None:
     assert gate.allowlisted(
         "https://xn--bcher-kva.example/alpha",
@@ -195,6 +233,29 @@ def test_allowlisted_normalizes_host_case_punycode_default_port_and_rejects_user
         "https://example.com@attacker.invalid/path",
         hosts=["attacker.invalid"],
         prefixes=[],
+    ) is False
+
+
+def test_allowlisted_enforces_prefix_path_scheme_and_port_boundaries() -> None:
+    assert gate.allowlisted(
+        "https://example.com/apiary/results",
+        hosts=[],
+        prefixes=["https://example.com/api"],
+    ) is False
+    assert gate.allowlisted(
+        "https://example.com/api/v1/results",
+        hosts=[],
+        prefixes=["https://example.com/api"],
+    ) is True
+    assert gate.allowlisted(
+        "http://example.com:8443/api/v1",
+        hosts=[],
+        prefixes=["https://example.com:8443/api"],
+    ) is False
+    assert gate.allowlisted(
+        "https://example.com:8444/api/v1",
+        hosts=[],
+        prefixes=["https://example.com:8443/api"],
     ) is False
 
 
@@ -249,10 +310,72 @@ def test_network_safety_gate_refuses_dirty_worktree_when_required(tmp_path: Path
         "repo_root": str(repo_root),
     }
 
-    payload = gate.evaluate_request(request)
+    payload = gate.evaluate_request(request, execution_repo_root=repo_root)
 
     assert payload["decision"] == "refuse"
     assert any(error["code"] == "DIRTY_WORKTREE_REFUSED" for error in payload["errors"])
+
+
+def test_network_safety_gate_rejects_forged_worktree_repo_root(tmp_path: Path) -> None:
+    actual_repo = tmp_path / "actual-repo"
+    actual_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(actual_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (actual_repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    forged_repo = tmp_path / "forged-repo"
+    forged_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(forged_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    request = base_request()
+    request["dirty_worktree_policy"] = {
+        "require_clean_worktree": True,
+        "repo_root": str(forged_repo),
+    }
+
+    payload = gate.evaluate_request(request, execution_repo_root=actual_repo)
+
+    assert payload["decision"] == "refuse"
+    assert any(error["code"] == "DIRTY_WORKTREE_REPO_MISMATCH" for error in payload["errors"])
+
+
+def test_network_safety_gate_cli_rejects_forged_worktree_repo_root(tmp_path: Path) -> None:
+    forged_repo = tmp_path / "forged-repo"
+    forged_repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(forged_repo), "init", "-b", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    request = base_request()
+    request["dirty_worktree_policy"] = {
+        "require_clean_worktree": True,
+        "repo_root": str(forged_repo),
+    }
+    request_path = write_request(tmp_path, request)
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(request_path)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads(proc.stdout)
+    assert any(error["code"] == "DIRTY_WORKTREE_REPO_MISMATCH" for error in report["errors"])
 
 
 def test_network_safety_gate_cli_writes_machine_readable_reports(tmp_path: Path) -> None:

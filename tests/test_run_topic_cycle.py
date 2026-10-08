@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.source_db_tools import canonical_store
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
 WRAPPER = REPO_ROOT / "tools" / "scripts" / "Index_Run_Topic_Cycle.sh"
@@ -31,14 +33,17 @@ def run_cycle(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def init_db(path: Path) -> None:
+def init_db(path: Path, *, target_version: int | None = None) -> None:
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "tools" / "source_db_tools" / "init_canonical_store.py"),
+        "--db",
+        str(path),
+    ]
+    if target_version is not None:
+        command.extend(["--target-version", str(target_version)])
     proc = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "tools" / "source_db_tools" / "init_canonical_store.py"),
-            "--db",
-            str(path),
-        ],
+        command,
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -376,6 +381,70 @@ def test_topic_cycle_pure_dry_run_writes_manifest_without_db_mutation(tmp_path: 
     ]
     assert not (run_dir / "spool").exists()
     assert not any(path.suffix == ".lock" for path in workspace.rglob("*"))
+
+
+def test_topic_cycle_rejects_spool_dir_outside_run_dir(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-spool-containment"
+    outside_spool_dir = tmp_path / "outside-spool"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-spool-containment",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--spool-dir",
+            str(outside_spool_dir),
+            "--degraded-spool",
+            "--dry-run",
+        ]
+    )
+
+    assert proc.returncode == 1
+    assert "--spool-dir must be inside --run-dir" in proc.stderr
+    assert not outside_spool_dir.exists()
+    assert not run_dir.exists()
+
+
+def test_topic_cycle_rejects_graph_closure_report_outside_run_dir(tmp_path: Path) -> None:
+    workspace = write_workspace(tmp_path)
+    db_path = tmp_path / "canonical.sqlite"
+    init_db(db_path)
+    run_dir = tmp_path / "cycle-graph-closure-containment"
+    outside_report = tmp_path / "outside-graph-closure-report.json"
+
+    proc = run_cycle(
+        [
+            "--workspace",
+            str(workspace),
+            "--db",
+            str(db_path),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            "cycle-graph-closure-containment",
+            "--timestamp",
+            "2026-06-03T12:00:00Z",
+            "--graph-closure",
+            "--graph-closure-report",
+            str(outside_report),
+            "--dry-run",
+        ]
+    )
+
+    assert proc.returncode == 1
+    assert "--graph-closure-report must be inside --run-dir" in proc.stderr
+    assert not outside_report.exists()
+    assert not run_dir.exists()
 
 
 def test_topic_cycle_acquires_workspace_lock_by_default(
@@ -1705,7 +1774,7 @@ def test_topic_cycle_execution_artifact_receipt_reused_between_acquisition_and_i
 def test_topic_cycle_graph_closure_strict_fails_on_orphan_row(tmp_path: Path) -> None:
     workspace = write_workspace(tmp_path)
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
     insert_orphan_source_claim(db_path)
     run_dir = tmp_path / "cycle-closure-fail"
 

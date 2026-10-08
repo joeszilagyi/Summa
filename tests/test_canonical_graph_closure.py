@@ -15,9 +15,10 @@ FIXTURE_BATCH = (
 FIXED_TIMESTAMP = "2026-06-03T12:34:56Z"
 
 
-def init_db(path: Path) -> None:
+def init_db(path: Path, *, target_version: int | None = None) -> None:
     canonical_store.init_canonical_store(
         path,
+        target_version=target_version,
         applied_at=FIXED_TIMESTAMP,
         applied_by="pytest.graph_closure",
     )
@@ -251,7 +252,7 @@ def test_populated_store_has_no_true_orphan_errors(tmp_path: Path) -> None:
 
 def test_true_orphan_claim_fails_strict_audit(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
     insert_orphan_claim(db_path)
 
     report = canonical_graph_closure.audit_canonical_graph_closure(
@@ -267,7 +268,7 @@ def test_true_orphan_claim_fails_strict_audit(tmp_path: Path) -> None:
 
 def test_unresolved_tracked_claim_is_visible_but_not_orphan(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
     insert_unresolved_tracked_claim(db_path)
 
     report = canonical_graph_closure.audit_canonical_graph_closure(
@@ -378,7 +379,7 @@ def test_graph_closure_batches_existence_lookups(tmp_path: Path, monkeypatch: py
 
 def test_graph_closure_preserves_audit_order_without_global_sort(tmp_path: Path) -> None:
     db_path = tmp_path / "canonical.sqlite"
-    init_db(db_path)
+    init_db(db_path, target_version=canonical_store.CURRENT_SCHEMA_VERSION - 1)
     insert_work_orphan(db_path)
     insert_orphan_claim(db_path)
 

@@ -29,6 +29,20 @@ VALIDATOR_WRAPPER_PATH = SCRIPTS_DIR / "validate_gather_candidate_batch.py"
 COMMON_PATH = REPO_ROOT / "tools" / "common" / "llm_source_text_wrapper.py"
 HOSTILE_SOURCE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "topic_gather" / "hostile_source.txt"
 FIXED_CREATED_AT = "2026-06-03T12:34:56Z"
+FAKE_CANDIDATE_CLAIM = "FAKE CODEX CANDIDATE OUTPUT"
+FAKE_TYPED_CANDIDATE_OUTPUT = json.dumps(
+    [
+        {
+            "candidate_type": "timeline_item",
+            "locator": None,
+            "claim": FAKE_CANDIDATE_CLAIM,
+            "confidence": None,
+            "reason": "llm_proposed",
+            "source_span": None,
+        }
+    ],
+    separators=(",", ":"),
+)
 
 
 def load_module(path: Path, module_name: str):
@@ -120,6 +134,42 @@ def run_wrapper(
 
 def batch_path_for(workspace_root: Path, run_id: str) -> Path:
     return workspace_root / "runs" / "gather" / run_id / "gather-candidate-batch.json"
+
+
+def test_invoke_llm_runner_bridge_does_not_include_child_output_in_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_output = "prompt-secret /home/joe/private/token=abc123"
+
+    class FailedProcess:
+        returncode = 7
+
+        def stderr_tail(self, *, line_count: int) -> str:
+            del line_count
+            return sensitive_output
+
+        def stdout_tail(self, *, line_count: int) -> str:
+            del line_count
+            return "runtime event containing diagnostics"
+
+    monkeypatch.setattr(
+        driver,
+        "run_streaming_command",
+        lambda *args, **kwargs: FailedProcess(),
+    )
+
+    with pytest.raises(driver.GatherDriverError) as exc_info:
+        driver.invoke_llm_runner_bridge(
+            ["bash", "llm_runner_bridge.sh"],
+            label="fixture gather",
+            timeout_seconds=10.0,
+        )
+
+    message = str(exc_info.value)
+    assert "exit 7" in message
+    assert "diagnostics retained privately" in message
+    assert sensitive_output not in message
+    assert "runtime event containing diagnostics" not in message
 
 
 def prompt_path_for(workspace_root: Path, run_id: str) -> Path:
@@ -527,6 +577,57 @@ def test_run_topic_gather_is_cwd_independent_for_absolute_paths(tmp_path: Path) 
     assert prompt_path.is_file()
     report, exit_code = validator.validate_gather_candidate_batch(batch_path)
     assert exit_code == validator.EXIT_PASS, report
+
+
+def test_gather_candidate_batch_validator_rejects_external_payload_paths(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["sources"])
+    run_id = "external-payload-paths"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "sources",
+            "--mode",
+            "dry-run",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    batch_path = batch_path_for(workspace_root, run_id)
+    payload = json.loads(batch_path.read_text(encoding="utf-8"))
+    payload["subject"]["manifest_path"] = "/etc/passwd"
+    payload["domain_pack"]["path"] = "/etc/passwd"
+    payload["prompt_bundle"]["selected_template_file"] = "/etc/passwd"
+    payload["source_text_wrapping"]["wrapper_template_path"] = "/etc/passwd"
+    payload["engine"]["runner_path"] = "/etc/passwd"
+    payload["engine"]["bridge_path"] = "/etc/passwd"
+
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        payload, target=batch_path
+    )
+
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    error_codes = {error["code"] for error in report["errors"]}
+    assert {
+        "SUBJECT_MANIFEST_PATH_OUTSIDE_WORKSPACE",
+        "DOMAIN_PACK_PATH_OUTSIDE_REPO",
+        "PROMPT_BUNDLE_TEMPLATE_PATH_OUTSIDE_REPO",
+        "WRAPPER_TEMPLATE_PATH_OUTSIDE_REPO",
+        "RUNNER_PATH_OUTSIDE_REPO",
+        "BRIDGE_PATH_OUTSIDE_REPO",
+    } <= error_codes
 
 
 def test_resolve_prior_state_context_reuses_validated_store_connection(
@@ -1689,7 +1790,7 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "live-fake-codex"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -1746,11 +1847,11 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
         ).hexdigest()
     )
     candidate_record = json.loads(payload["candidates"][0]["text"])
-    assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert payload["candidates"][0]["candidate_type"] == "timeline_item"
     assert candidate_record == {
         "candidate_type": payload["facet"]["candidate_type_hint"],
         "locator": None,
-        "claim": fake_output,
+        "claim": FAKE_CANDIDATE_CLAIM,
         "confidence": None,
         "reason": "llm_proposed",
         "source_span": None,
@@ -1764,6 +1865,67 @@ def test_run_topic_gather_live_mode_uses_llm_runner_bridge_and_stamps_output(
     assert "--skip-git-repo-check" in log_text
     assert "workspace-write" in log_text
 
+    external_payload = json.loads(json.dumps(payload))
+    external_payload["engine_output_ref"] = "/etc/passwd"
+    external_payload["provenance"]["stamped_output_path"] = "/etc/passwd"
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        external_payload, target=batch_path
+    )
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    error_codes = {error["code"] for error in report["errors"]}
+    assert {
+        "ENGINE_OUTPUT_PATH_OUTSIDE_BATCH",
+        "STAMPED_OUTPUT_PATH_OUTSIDE_BATCH",
+    } <= error_codes
+
+    raw_candidate_payload = json.loads(json.dumps(payload))
+    raw_candidate_payload["candidates"][0]["candidate_type"] = "raw_candidate_text"
+    report, exit_code = validator.validate_gather_candidate_batch_payload(
+        raw_candidate_payload, target=batch_path
+    )
+    assert exit_code == validator.EXIT_VALIDATION_FAILED
+    assert "LIVE_RAW_CANDIDATE_TEXT_FORBIDDEN" in {
+        error["code"] for error in report["errors"]
+    }
+
+
+def test_run_topic_gather_live_mode_rejects_untyped_engine_output(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    manifest_path = write_manifest(workspace_root, enabled_facets=["timeline"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_log = write_fake_codex(fake_bin)
+    run_id = "live-untyped-output"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_CODEX_LOG"] = str(fake_log)
+    env["FAKE_CODEX_OUTPUT"] = "freeform model prose is not a candidate record"
+
+    proc = run_driver(
+        [
+            "--subject",
+            str(manifest_path),
+            "--workspace",
+            str(workspace_root),
+            "--facet",
+            "timeline",
+            "--mode",
+            "live",
+            "--engine",
+            "codex",
+            "--run-id",
+            run_id,
+            "--created-at",
+            FIXED_CREATED_AT,
+        ],
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "must be one JSON array of typed candidate records" in proc.stderr
+    assert not batch_path_for(workspace_root, run_id).exists()
+
 
 def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     tmp_path: Path,
@@ -1775,7 +1937,7 @@ def test_run_topic_gather_live_mode_records_engine_usage_from_json_events(
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "live-fake-codex-json"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -1855,7 +2017,7 @@ def test_run_topic_gather_live_mode_reuses_cached_output_without_reinvoking_engi
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -1999,7 +2161,7 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
     fake_bin.mkdir()
     fake_log = write_fake_codex(fake_bin)
     run_id = "hostile-live-allowed"
-    fake_output = "FAKE CODEX CANDIDATE OUTPUT"
+    fake_output = FAKE_TYPED_CANDIDATE_OUTPUT
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_CODEX_LOG"] = str(fake_log)
@@ -2040,11 +2202,11 @@ def test_run_topic_gather_live_mode_allows_hostile_source_text_when_explicitly_a
     assert payload["source_text_wrapping"]["blocks"][0]["source_profile"]["line_count"] > 0
     assert payload["raw_engine_output"] is None
     candidate_record = json.loads(payload["candidates"][0]["text"])
-    assert payload["candidates"][0]["candidate_type"] == "raw_candidate_text"
+    assert payload["candidates"][0]["candidate_type"] == "timeline_item"
     assert candidate_record == {
         "candidate_type": payload["facet"]["candidate_type_hint"],
         "locator": None,
-        "claim": fake_output,
+        "claim": FAKE_CANDIDATE_CLAIM,
         "confidence": None,
         "reason": "llm_proposed",
         "source_span": None,

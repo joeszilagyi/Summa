@@ -55,6 +55,7 @@ LLM_RUNNER_CLAUDE_JSON_SCHEMA="${CLAUDE_JSON_SCHEMA:-$LLM_RUNNER_CLAUDE_JSON_SCH
 
 readonly LLM_RUNNER_SUPPORTED_ENGINES="codex|claude"
 readonly LLM_RUNNER_REQUIRED_RUNTIME_LOGGER="runtime_log_event"
+readonly LLM_RUNNER_FOOTER_TOKEN_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # ---------------------------------------------------------------------------
 # Internal state
@@ -99,6 +100,15 @@ _llm_runner_require_output_dir() {
   fi
   if [[ ! -w "$output_dir" ]]; then
     printf 'llm_runner: output directory "%s" is not writable\n' "$output_dir" >&2
+    return 1
+  fi
+}
+
+_llm_runner_validate_footer_token() {
+  local field_name="$1" value="$2"
+
+  if [[ ! "$value" =~ $LLM_RUNNER_FOOTER_TOKEN_REGEX ]]; then
+    printf 'llm_runner: %s must be a single ASCII footer token\n' "$field_name" >&2
     return 1
   fi
 }
@@ -391,6 +401,15 @@ raise SystemExit(0)
 PY
 }
 
+# Keep engine diagnostics in the mode-600 temporary stderr artifact. Never
+# copy untrusted engine output into operator-facing stderr or runtime logs.
+_llm_runner_report_failure() {
+  local phase="$1" rc="$2"
+  printf 'LLM (%s) failed in phase: %s (exit=%s); stderr retained in private run artifact\n' \
+    "$LLM_RUNNER_ENGINE" "$phase" "$rc" >&2
+  return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # llm_runner_run_quiet <tmp_dir> <prompt_text> <phase> <tool_name>
 #   Run the selected engine in <tmp_dir> with <prompt_text>.
@@ -428,11 +447,8 @@ llm_runner_run_quiet() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -473,11 +489,8 @@ llm_runner_run_quiet_from_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -569,11 +582,8 @@ llm_runner_run_to_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -668,11 +678,8 @@ llm_runner_run_to_file_from_file() {
   end_ts="$(date +%s)"
   elapsed=$((end_ts - start_ts))
   runtime_log_event LLM_FAIL \
-    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_file=${stderr_file}"
-  printf 'LLM (%s) failed in phase: %s\n' "$LLM_RUNNER_ENGINE" "$phase" >&2
-  printf 'Captured stderr: %s\n' "$stderr_file" >&2
-  tail -n 80 "$stderr_file" >&2 || true
-  return "$rc"
+    "tool=${tool_name} engine=${LLM_RUNNER_ENGINE} phase=${phase} exit=${rc} elapsed=${elapsed}s output_file=${output_file} stderr_artifact=private"
+  _llm_runner_report_failure "$phase" "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -731,6 +738,17 @@ llm_runner_stamp_output() {
   local model_str tmp_file output_dir
   local footer_schema_version="run-body-footer.v1"
 
+  _llm_runner_validate_footer_token "place" "$place" || return 1
+  _llm_runner_validate_footer_token "facet" "$facet" || return 1
+  _llm_runner_validate_footer_token "phase" "$phase" || return 1
+  case "$LLM_RUNNER_ENGINE" in
+    codex|claude) ;;
+    *)
+      printf 'llm_runner: unsupported footer engine\n' >&2
+      return 1
+      ;;
+  esac
+
   _llm_runner_require_output_dir "$file" || return 1
   _llm_runner_has_stamp_footer "$file" && return 0
 
@@ -759,6 +777,8 @@ llm_runner_stamp_output() {
       model_str="unknown"
       ;;
   esac
+
+  _llm_runner_validate_footer_token "model" "$model_str" || return 1
 
   if ! printf '\n---\nRUN_META_VERSION: %s\nGENERATED_BY: %s\nMODEL: %s\nPLACE: %s\nFACET: %s\nPHASE: %s\nRUN_TS: %s\n' \
       "$footer_schema_version" "$LLM_RUNNER_ENGINE" "$model_str" "$place" "$facet" "$phase" \

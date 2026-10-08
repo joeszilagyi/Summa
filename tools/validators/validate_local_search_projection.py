@@ -302,7 +302,7 @@ def validate_indexed_fields(
                 message=f"{field_label}.field must not expose restricted evidence fields in public search artifacts",
                 path=f"{field_label}.field",
             )
-        if text is not None and contains_secret_marker(text):
+        if text is not None and contains_secret_marker(text, field_name=field_name):
             add_error(
                 errors,
                 code="SECRET_MARKER_EXPOSED",

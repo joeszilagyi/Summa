@@ -133,22 +133,89 @@ def test_scan_directory_streams_text_files_without_read_text(
     assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
 
 
-def test_support_bundle_profile_disables_secret_and_private_path_scans(tmp_path: Path) -> None:
-    root = tmp_path / "support-bundle"
+def test_scan_directory_scans_common_text_files_without_known_suffixes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
     root.mkdir()
-    (root / "notes.txt").write_text(
-        "authorization: bearer token-123\n/private/path/should-not-flag\n",
-        encoding="utf-8",
-    )
+    leak_by_name = {
+        "data.jsonl": "Authorization: Bearer jsonl-leak\n",
+        "config.yaml": "token=yaml-leak\n",
+        "config.yml": "secret=yml-leak\n",
+        "rows.csv": "private key csv-leak\n",
+        "data.xml": "<note>private_note</note>\n",
+        ".env": "api_key=env-leak\n",
+        "README": "/home/joe/private/extensionless.txt\n",
+        "run.sh": "raw_payload shell-leak\n",
+        "key.pem": "Authorization: Bearer pem-leak\n",
+        "drawing.svg": "<text>Authorization: Bearer svg-leak</text>\n",
+    }
+    for name, body in leak_by_name.items():
+        (root / name).write_text(body, encoding="utf-8")
 
-    report = scanner.scan_directory(root, profile="support_bundle")
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    assert {finding["path"] for finding in report["findings"]} == set(leak_by_name)
+
+
+def test_scan_directory_reports_provider_and_opaque_secret_shapes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    secrets = [
+        "ghp_1234567890abcdefghijkl",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        "AKIAIOSFODNN7EXAMPLE",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature-value-123456789",
+        "opaque=aB3dE7gH9jK2mN5pQ8rT4vW6xY1zC0f",
+    ]
+    (root / "secrets.txt").write_text("\n".join(secrets) + "\n", encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
+
+    assert report["status"] == "fail"
+    assert len(report["findings"]) == len(secrets)
+    assert {finding["code"] for finding in report["findings"]} == {"SECRET_MARKER"}
+
+
+def test_scan_directory_skips_binary_files_after_text_sniff(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00Authorization: Bearer binary-leak")
+    (root / "unknown.data").write_bytes(b"\xff\xfe\xfd\x00binary")
+
+    report = scanner.scan_directory(root, profile="public_bundle")
 
     assert report["status"] == "pass"
     assert report["findings"] == []
-    assert report["counts"]["findings"] == 0
 
 
-def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Path) -> None:
+def test_support_bundle_profile_scans_all_leak_categories(tmp_path: Path) -> None:
+    root = tmp_path / "support-bundle"
+    root.mkdir()
+    (root / "logs").mkdir()
+    (root / "notes.txt").write_text(
+        "authorization: bearer token-123\n"
+        "/home/joe/private/path\n"
+        "prompt_output raw_text private_note operator_excerpt_text\n",
+        encoding="utf-8",
+    )
+    (root / "logs" / "runtime.log").write_text("safe log content\n", encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="support_bundle")
+
+    assert report["status"] == "fail"
+    codes = {item["code"] for item in report["findings"]}
+    assert {
+        "SECRET_MARKER",
+        "PRIVATE_PATH",
+        "RUNTIME_LOG_PATH",
+        "PROMPT_OUTPUT_MARKER",
+        "RAW_PAYLOAD_MARKER",
+        "PRIVATE_NOTE_MARKER",
+        "RESTRICTED_EVIDENCE_MARKER",
+    } <= codes
+
+
+def test_allowlist_suppresses_known_false_positive_and_keeps_entry_id(tmp_path: Path) -> None:
     root = stage_fixture(tmp_path, "public_bundle_allowlisted")
     allowlist = root / "allowlist.json"
 
@@ -160,7 +227,134 @@ def test_allowlist_suppresses_known_false_positive_and_keeps_audit(tmp_path: Pat
     assert report["counts"]["suppressed_findings"] == 1
     suppressed = report["suppressed_findings"][0]
     assert suppressed["allowlist_entry_id"] == "allow-doc-literal-token"
-    assert suppressed["allowlist_approved_by"] == "operator.alex"
+    assert "allowlist_reason" not in suppressed
+    assert "allowlist_approved_by" not in suppressed
+
+
+def test_allowlist_fingerprint_does_not_suppress_other_matching_markers(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=approved-example token=unapproved-example\n", encoding="utf-8")
+
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    assert len(raw_report["findings"]) == 2
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "allow-first-token-marker",
+                "finding_fingerprint": raw_report["findings"][0]["finding_fingerprint"],
+                "reason": "The first documentation marker is an intentional example.",
+                "approved_by": "operator.alex",
+                "expires_at": "2099-12-31T23:59:59Z",
+            }
+        ],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["counts"]["suppressed_findings"] == 1
+    assert report["findings"][0]["line"] == 1
+    assert report["findings"][0]["column"] > report["suppressed_findings"][0]["column"]
+
+
+def test_allowlist_fingerprint_changes_when_source_context_changes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    source = root / "index.html"
+    source.write_text("token=approved-example\n", encoding="utf-8")
+    approved_finding = scanner.scan_directory(root, profile="public_bundle")["findings"][0]
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "allow-original-token-context",
+                "finding_fingerprint": approved_finding["finding_fingerprint"],
+                "reason": "The original documentation marker is an intentional example.",
+                "approved_by": "operator.alex",
+                "expires_at": "2099-12-31T23:59:59Z",
+            }
+        ],
+    }
+    source.write_text("token=changed-example\n", encoding="utf-8")
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["findings"]
+    assert report["suppressed_findings"] == []
+
+
+def test_expired_allowlist_fingerprint_does_not_suppress_finding(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=expired-example\n", encoding="utf-8")
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    finding = raw_report["findings"][0]
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [
+            {
+                "entry_id": "expired-token-marker",
+                "finding_fingerprint": finding["finding_fingerprint"],
+                "reason": "This approval is no longer current.",
+                "approved_by": "operator.alex",
+                "expires_at": "2020-01-01T00:00:00Z",
+            }
+        ],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["status"] == "fail"
+    assert report["findings"] == [finding]
+    assert report["suppressed_findings"] == []
+
+
+def test_allowlist_audit_redacts_entries_by_default_and_supports_private_debug(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "index.html").write_text("token=approved-example\n", encoding="utf-8")
+    raw_report = scanner.scan_directory(root, profile="public_bundle")
+    allowlist_entry = {
+        "entry_id": "private-audit-entry",
+        "finding_fingerprint": raw_report["findings"][0]["finding_fingerprint"],
+        "reason": "private reviewer context must not be emitted by normal reports",
+        "approved_by": "reviewer.private@example",
+        "expires_at": "2099-12-31T23:59:59Z",
+    }
+    allowlist = {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entries": [allowlist_entry],
+    }
+
+    report = scanner.scan_directory(root, profile="public_bundle", allowlist_payload=allowlist)
+
+    assert report["allowlist_audit"] == {
+        "schema_version": scanner.ALLOWLIST_SCHEMA_VERSION,
+        "entry_ids": ["private-audit-entry"],
+    }
+    serialized_report = json.dumps(report)
+    assert allowlist_entry["reason"] not in serialized_report
+    assert allowlist_entry["approved_by"] not in serialized_report
+
+    debug_report = scanner.scan_directory(
+        root,
+        profile="public_bundle",
+        allowlist_payload=allowlist,
+        include_allowlist_audit=True,
+    )
+
+    assert debug_report["allowlist_audit"]["entries"] == [allowlist_entry]
+    assert (
+        debug_report["suppressed_findings"][0]["allowlist_reason"]
+        == allowlist_entry["reason"]
+    )
+    assert (
+        debug_report["suppressed_findings"][0]["allowlist_approved_by"]
+        == allowlist_entry["approved_by"]
+    )
 
 
 def test_leak_scanner_cli_writes_reports(tmp_path: Path) -> None:

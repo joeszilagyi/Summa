@@ -2,17 +2,70 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import mimetypes
 import re
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from tools.common.search_leak_policy import contains_private_path, contains_secret_marker
+from tools.common.search_leak_policy import contains_private_path, find_secret_marker_spans
 
-ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v1"
+ALLOWLIST_SCHEMA_VERSION = "leak-scan-allowlist.v2"
 REPORT_SCHEMA_VERSION = "leak-scan-report.v1"
-TEXT_SUFFIXES = {".css", ".html", ".json", ".log", ".md", ".txt"}
+FINDING_FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+REVIEWER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:+-]{1,127}$")
+BINARY_SUFFIXES = {
+    ".7z",
+    ".avi",
+    ".avif",
+    ".bin",
+    ".bmp",
+    ".class",
+    ".deb",
+    ".dll",
+    ".dmg",
+    ".doc",
+    ".docx",
+    ".eot",
+    ".exe",
+    ".gif",
+    ".ico",
+    ".jar",
+    ".jpeg",
+    ".jpg",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".odt",
+    ".ogg",
+    ".otf",
+    ".pdf",
+    ".png",
+    ".pyc",
+    ".so",
+    ".sqlite",
+    ".sqlite3",
+    ".tar",
+    ".tif",
+    ".tiff",
+    ".ttf",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".xls",
+    ".xlsx",
+    ".xz",
+    ".zip",
+}
+BINARY_MIME_PREFIXES = ("audio/", "font/", "image/", "video/")
+TEXT_MIME_TYPES = {"image/svg+xml"}
+TEXT_SNIFF_BYTES = 8192
 RUNTIME_LOG_PATH_RE = re.compile(r"(?i)(?:^|/)(?:logs?|runtime-logs?|index-actions\.log)(?:/|$)")
 PROMPT_OUTPUT_BODY_RE = re.compile(r"(?i)\b(prompt_output|raw_prompt_output|01a_prompt|01r_prompt|prompt_bundle_id)\b")
 RAW_PAYLOAD_BODY_RE = re.compile(r"(?i)\b(full_extracted_text|raw_payload|raw_text|full_text)\b")
@@ -30,19 +83,68 @@ PROFILES: dict[str, dict[str, bool]] = {
         "scan_restricted_evidence_markers": True,
     },
     "support_bundle": {
-        "scan_secret_markers": False,
-        "scan_private_path_markers": False,
-        "scan_runtime_log_paths": False,
-        "scan_prompt_output_markers": False,
-        "scan_raw_payload_markers": False,
-        "scan_private_note_markers": False,
-        "scan_restricted_evidence_markers": False,
+        "scan_secret_markers": True,
+        "scan_private_path_markers": True,
+        "scan_runtime_log_paths": True,
+        "scan_prompt_output_markers": True,
+        "scan_raw_payload_markers": True,
+        "scan_private_note_markers": True,
+        "scan_restricted_evidence_markers": True,
     },
 }
 
 
 class LeakScannerError(RuntimeError):
     """Raised when scanner inputs are malformed or unreadable."""
+
+
+def finding_fingerprint(finding: dict[str, Any]) -> str:
+    """Return a stable identifier for the complete finding context."""
+    identity = {
+        key: finding.get(key)
+        for key in (
+            "path",
+            "code",
+            "message",
+            "line",
+            "column",
+            "excerpt",
+            "context_fingerprint",
+        )
+    }
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _is_text_file(path: Path) -> bool:
+    """Return whether a file is safe to pass through the line-oriented scanner."""
+    if path.suffix.lower() in BINARY_SUFFIXES:
+        return False
+    mime_type, _ = mimetypes.guess_type(path.name, strict=False)
+    if (
+        mime_type is not None
+        and mime_type.startswith(BINARY_MIME_PREFIXES)
+        and mime_type not in TEXT_MIME_TYPES
+    ):
+        return False
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(TEXT_SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def load_allowlist(path: Path | None) -> dict[str, Any]:
@@ -65,17 +167,49 @@ def validate_allowlist(payload: dict[str, Any]) -> list[dict[str, str]]:
     if not isinstance(entries, list):
         errors.append({"code": "INVALID_ENTRIES", "message": "entries must be an array"})
         return errors
-    required = ("entry_id", "finding_code", "path_glob", "match_substring", "reason", "approved_by")
+    required = ("entry_id", "finding_fingerprint", "reason", "approved_by", "expires_at")
+    allowed = set(required)
     seen_ids: set[str] = set()
     for index, entry in enumerate(entries):
         label = f"entries[{index}]"
         if not isinstance(entry, dict):
             errors.append({"code": "INVALID_ENTRY", "message": f"{label} must be an object"})
             continue
+        for key in sorted(set(entry) - allowed):
+            errors.append({"code": "UNKNOWN_ENTRY_FIELD", "message": f"{label}.{key} is not supported"})
         for key in required:
             value = entry.get(key)
             if not isinstance(value, str) or not value.strip():
                 errors.append({"code": "INVALID_ENTRY_FIELD", "message": f"{label}.{key} must be a non-blank string"})
+        fingerprint = entry.get("finding_fingerprint")
+        if isinstance(fingerprint, str) and not FINDING_FINGERPRINT_RE.fullmatch(fingerprint):
+            errors.append(
+                {
+                    "code": "INVALID_FINDING_FINGERPRINT",
+                    "message": f"{label}.finding_fingerprint must be a sha256 fingerprint",
+                }
+            )
+        expires_at = entry.get("expires_at")
+        if isinstance(expires_at, str):
+            try:
+                parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                parsed_expiry = None
+            if parsed_expiry is None or parsed_expiry.tzinfo is None:
+                errors.append(
+                    {
+                        "code": "INVALID_EXPIRY",
+                        "message": f"{label}.expires_at must be an ISO-8601 timestamp with timezone",
+                    }
+                )
+        approved_by = entry.get("approved_by")
+        if isinstance(approved_by, str) and not REVIEWER_ID_RE.fullmatch(approved_by):
+            errors.append(
+                {
+                    "code": "INVALID_REVIEWER_ID",
+                    "message": f"{label}.approved_by must be a bounded reviewer identity token",
+                }
+            )
         entry_id = entry.get("entry_id")
         if isinstance(entry_id, str) and entry_id.strip():
             if entry_id in seen_ids:
@@ -88,7 +222,20 @@ def _line_number_for_offset(body: str, offset: int) -> int:
     return body.count("\n", 0, offset) + 1
 
 
-def _finding(*, path: str, code: str, message: str, line: int | None = None, excerpt: str | None = None) -> dict[str, Any]:
+def _column_number_for_offset(body: str, offset: int) -> int:
+    return offset - body.rfind("\n", 0, offset)
+
+
+def _finding(
+    *,
+    path: str,
+    code: str,
+    message: str,
+    line: int | None = None,
+    column: int | None = None,
+    excerpt: str | None = None,
+    context: str | None = None,
+) -> dict[str, Any]:
     finding: dict[str, Any] = {
         "path": path,
         "code": code,
@@ -96,8 +243,15 @@ def _finding(*, path: str, code: str, message: str, line: int | None = None, exc
     }
     if line is not None:
         finding["line"] = line
+    if column is not None:
+        finding["column"] = column
     if excerpt is not None:
         finding["excerpt"] = excerpt
+    if context is not None:
+        finding["context_fingerprint"] = (
+            "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
+        )
+    finding["finding_fingerprint"] = finding_fingerprint(finding)
     return finding
 
 
@@ -110,7 +264,9 @@ def _regex_findings(body: str, *, rel_path: str, pattern: re.Pattern[str], code:
                 code=code,
                 message=message,
                 line=_line_number_for_offset(body, match.start()),
+                column=_column_number_for_offset(body, match.start()),
                 excerpt=match.group(0),
+                context=body,
             )
         )
     return findings
@@ -133,7 +289,9 @@ def _regex_findings_for_line(
                 code=code,
                 message=message,
                 line=line_number,
+                column=match.start() + 1,
                 excerpt=match.group(0),
+                context=line,
             )
         )
     return findings
@@ -142,16 +300,18 @@ def _regex_findings_for_line(
 def _scan_line(line: str, *, rel_path: str, profile: str, line_number: int) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     profile_config = PROFILES[profile]
-    if profile_config["scan_secret_markers"] and contains_secret_marker(line):
+    if profile_config["scan_secret_markers"]:
         findings.extend(
-            _regex_findings_for_line(
-                line,
-                rel_path=rel_path,
-                pattern=re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"),
+            _finding(
+                path=rel_path,
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
-                line_number=line_number,
+                line=line_number,
+                column=start + 1,
+                excerpt=line[start:end],
+                context=line,
             )
+            for start, end in find_secret_marker_spans(line)
         )
     if profile_config["scan_private_path_markers"] and contains_private_path(line):
         findings.extend(
@@ -216,15 +376,18 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
     findings: list[dict[str, Any]] = []
     profile_config = PROFILES[profile]
-    if profile_config["scan_secret_markers"] and contains_secret_marker(body):
+    if profile_config["scan_secret_markers"]:
         findings.extend(
-            _regex_findings(
-                body,
-                rel_path=rel_path,
-                pattern=re.compile(r"(?i)(authorization:\s*bearer|api[_-]?key\s*=|secret\s*=|token\s*=|private key)"),
+            _finding(
+                path=rel_path,
                 code="SECRET_MARKER",
                 message="secret-looking token remains in scanned output",
+                line=_line_number_for_offset(body, start),
+                column=_column_number_for_offset(body, start),
+                excerpt=body[start:end],
+                context=body,
             )
+            for start, end in find_secret_marker_spans(body)
         )
     if profile_config["scan_private_path_markers"] and contains_private_path(body):
         findings.extend(
@@ -281,20 +444,26 @@ def scan_text(body: str, *, rel_path: str, profile: str) -> list[dict[str, Any]]
 
 
 def _entry_matches(finding: dict[str, Any], entry: dict[str, Any]) -> bool:
-    excerpt = finding.get("excerpt")
-    if not isinstance(excerpt, str):
+    expires_at = entry.get("expires_at")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
         return False
     return (
-        finding.get("code") == entry.get("finding_code")
-        and isinstance(finding.get("path"), str)
-        and fnmatch(finding["path"], entry["path_glob"])
-        and entry["match_substring"] in excerpt
+        isinstance(finding.get("finding_fingerprint"), str)
+        and finding["finding_fingerprint"] == entry.get("finding_fingerprint")
     )
 
 
 def apply_allowlist(
     findings: list[dict[str, Any]],
     allowlist_payload: dict[str, Any],
+    *,
+    include_allowlist_audit: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     entries = allowlist_payload.get("entries", [])
     active: list[dict[str, Any]] = []
@@ -308,14 +477,18 @@ def apply_allowlist(
         if matched_entry is None:
             active.append(finding)
             continue
-        suppressed.append(
-            {
-                **finding,
-                "allowlist_entry_id": matched_entry["entry_id"],
-                "allowlist_reason": matched_entry["reason"],
-                "allowlist_approved_by": matched_entry["approved_by"],
-            }
-        )
+        suppressed_finding = {
+            **finding,
+            "allowlist_entry_id": matched_entry["entry_id"],
+        }
+        if include_allowlist_audit:
+            suppressed_finding.update(
+                {
+                    "allowlist_reason": matched_entry["reason"],
+                    "allowlist_approved_by": matched_entry["approved_by"],
+                }
+            )
+        suppressed.append(suppressed_finding)
     return active, suppressed
 
 
@@ -325,6 +498,7 @@ def scan_directory(
     profile: str,
     allowlist_payload: dict[str, Any] | None = None,
     exclude_globs: tuple[str, ...] | list[str] | None = None,
+    include_allowlist_audit: bool = False,
 ) -> dict[str, Any]:
     if profile not in PROFILES:
         raise LeakScannerError(f"unknown leak scanner profile: {profile}")
@@ -356,7 +530,7 @@ def scan_directory(
                     message="runtime log path is not allowed in this profile",
                 )
             )
-        if path.suffix.lower() not in TEXT_SUFFIXES:
+        if not _is_text_file(path):
             continue
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -367,7 +541,22 @@ def scan_directory(
         except (OSError, UnicodeDecodeError):
             continue
 
-    findings, suppressed = apply_allowlist(raw_findings, normalized_allowlist)
+    findings, suppressed = apply_allowlist(
+        raw_findings,
+        normalized_allowlist,
+        include_allowlist_audit=include_allowlist_audit,
+    )
+    allowlist_entries = normalized_allowlist.get("entries", [])
+    allowlist_audit: dict[str, Any] = {
+        "schema_version": normalized_allowlist.get("schema_version"),
+        "entry_ids": [
+            entry["entry_id"]
+            for entry in allowlist_entries
+            if isinstance(entry, dict) and isinstance(entry.get("entry_id"), str)
+        ],
+    }
+    if include_allowlist_audit:
+        allowlist_audit["entries"] = allowlist_entries
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "profile": profile,
@@ -380,8 +569,5 @@ def scan_directory(
         },
         "findings": findings,
         "suppressed_findings": suppressed,
-        "allowlist_audit": {
-            "schema_version": normalized_allowlist.get("schema_version"),
-            "entries": normalized_allowlist.get("entries", []),
-        },
+        "allowlist_audit": allowlist_audit,
     }

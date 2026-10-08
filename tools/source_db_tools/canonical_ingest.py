@@ -917,6 +917,14 @@ def ingest_candidate_batch(
             else:
                 claim_text = _structured_claim_text(candidate, structured)
                 claim_type = _structured_claim_type(candidate_type, structured)
+                about_object_ref = _structured_about_object_ref(structured)
+                if about_object_ref is None:
+                    about_object_ref = canonical_store.stable_write_key(
+                        "candidate_claim",
+                        _key_scope(workspace_id),
+                        _normalize_key_text(claim_type),
+                        _normalize_key_text(claim_text),
+                    )
                 pending_source_claim_records.append(
                     {
                         "source_claim_key_v1": _claim_key_for_candidate(
@@ -924,9 +932,9 @@ def ingest_candidate_batch(
                             workspace_id=workspace_id,
                             claim_text=claim_text,
                             claim_type=claim_type,
-                            about_object_ref=_structured_about_object_ref(structured),
+                            about_object_ref=about_object_ref,
                         ),
-                        "about_object_ref": _structured_about_object_ref(structured),
+                        "about_object_ref": about_object_ref,
                         "claim_text": claim_text,
                         "public_summary": (
                             structured.get("public_summary") if structured is not None else None
@@ -943,7 +951,7 @@ def ingest_candidate_batch(
                 claim_work_items.add(
                     (
                         workspace_id,
-                        _structured_about_object_ref(structured),
+                        about_object_ref,
                         claim_type,
                     )
                 )

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from tools.common.source_adapter_handoff import build_remote_url_manifest_handoff_record
 from tools.scripts import execute_source_adapter as source_executor
 
 pytestmark = pytest.mark.network_fixture
@@ -20,7 +21,6 @@ pytestmark = pytest.mark.network_fixture
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = REPO_ROOT / "tools" / "scripts" / "execute_source_adapter.py"
 VALIDATOR = REPO_ROOT / "tools" / "validators" / "validate_source_acquisition_execution.py"
-PLANNER = REPO_ROOT / "tools" / "scripts" / "plan_remote_url_manifest_adapter.py"
 ADAPTER = (
     REPO_ROOT
     / "tests"
@@ -136,9 +136,7 @@ def test_read_limited_response_uses_incremental_buffering() -> None:
                 return chunks.pop(0)
             return b""
 
-    payload, truncated = source_executor.read_limited_response(
-        FakeResponse(), max_response_bytes=6
-    )
+    payload, truncated = source_executor.read_limited_response(FakeResponse(), max_response_bytes=6)
 
     assert payload == b"abcdef"
     assert truncated is False
@@ -155,9 +153,7 @@ def test_read_limited_response_truncates_without_extra_copy() -> None:
                 return chunks.pop(0)
             return b""
 
-    payload, truncated = source_executor.read_limited_response(
-        FakeResponse(), max_response_bytes=5
-    )
+    payload, truncated = source_executor.read_limited_response(FakeResponse(), max_response_bytes=5)
 
     assert payload == b"abcde"
     assert truncated is True
@@ -358,25 +354,21 @@ def make_handoff(tmp_path: Path, urls: list[str]) -> Path:
         encoding="utf-8",
     )
     handoff = tmp_path / "handoff.jsonl"
-    proc = subprocess.run(
-        [
-            sys.executable,
-            str(PLANNER),
-            "--adapter",
-            str(ADAPTER),
-            "--manifest-jsonl",
-            str(manifest),
-            "--handoff-jsonl",
-            str(handoff),
-            "--format",
-            "json",
-        ],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    adapter_payload = json.loads(ADAPTER.read_text(encoding="utf-8"))
+    # The production planner rejects loopback URLs. These executor-only fixtures
+    # deliberately target a local HTTP server and still pass handoff validation.
+    records = [
+        build_remote_url_manifest_handoff_record(
+            adapter_payload,
+            adapter_path=ADAPTER,
+            manifest_input_path=manifest,
+            entry={"url": url, "title": f"entry {index}"},
+            sequence=index,
+            line_number=index,
+        )
+        for index, url in enumerate(urls, start=1)
+    ]
+    handoff.write_bytes(canonical_jsonl_bytes(records))
     return handoff
 
 
@@ -658,7 +650,7 @@ def test_remote_executor_marks_denied_only_runs_as_network_attempted(
     gate_request_path = tmp_path / "gate-request.json"
     gate_request_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(source_executor, "load_request", lambda _path: {})
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: gate_report)
+    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload, **_: gate_report)
 
     (
         execution_record,
@@ -758,7 +750,9 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             },
         ],
     }
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: wrong_method_report)
+    monkeypatch.setattr(
+        source_executor, "evaluate_request", lambda _payload, **_: wrong_method_report
+    )
 
     with pytest.raises(
         source_executor.SourceAcquisitionError,
@@ -805,7 +799,9 @@ def test_remote_executor_rejects_gate_report_mismatch_before_network_activity(
             },
         ],
     }
-    monkeypatch.setattr(source_executor, "evaluate_request", lambda _payload: extra_action_report)
+    monkeypatch.setattr(
+        source_executor, "evaluate_request", lambda _payload, **_: extra_action_report
+    )
 
     with pytest.raises(
         source_executor.SourceAcquisitionError,
@@ -938,7 +934,10 @@ def test_execute_remote_fetches_deduplicates_duplicate_urls_and_sleeps_once(
             "payload_sha256": hashlib.sha256(body).hexdigest(),
             "payload_byte_count": len(body),
             "truncated": False,
-            "headers": {"Content-Type": "text/plain; charset=utf-8", "Content-Length": str(len(body))},
+            "headers": {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": str(len(body)),
+            },
         }
 
     monkeypatch.setattr(source_executor, "remote_fetch_one", fake_remote_fetch_one)
@@ -983,6 +982,33 @@ def test_execute_remote_fetches_deduplicates_duplicate_urls_and_sleeps_once(
     }
     assert binary_artifacts == {}
     assert payload_path.exists()
+
+
+def test_gate_action_by_url_rejects_conflicting_duplicate_urls() -> None:
+    gate_report = {
+        "planned_actions": [
+            {
+                "action_id": "fetch-1",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "GET",
+            },
+            {
+                "action_id": "fetch-2",
+                "action_kind": "fetch_payload",
+                "url": "https://host-a.test/one",
+                "status": "planned",
+                "method": "HEAD",
+            },
+        ]
+    }
+
+    with pytest.raises(
+        source_executor.SourceAcquisitionError,
+        match="contains conflicting actions for URL",
+    ):
+        source_executor.gate_action_by_url(gate_report)
 
 
 def test_execute_remote_fetches_runs_hosts_concurrently_and_rates_each_host_independently(

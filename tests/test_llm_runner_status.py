@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import textwrap
 from pathlib import Path
@@ -502,6 +503,36 @@ def test_llm_runner_bridge_reports_runtime_log_events_on_failure(
     assert "LLM (codex) failed in phase: phase" in proc.stderr
 
 
+def test_llm_runner_bridge_keeps_engine_stderr_private(tmp_path: Path) -> None:
+    proc, _args, _stdin, _output = _run_llm_runner_bridge_with_fake_engine(
+        tmp_path,
+        engine="codex",
+        prompt_text="bridge private diagnostics probe",
+        exit_code=2,
+        engine_script="""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '%s\n' "$@" > "$ARGS_FILE"
+            cat > "$STDIN_FILE"
+            printf 'prompt-secret /home/joe/private/token=abc123\\n' >&2
+            exit "$EXIT_CODE"
+            """,
+    )
+
+    combined_output = proc.stdout + proc.stderr
+    assert proc.returncode == 2
+    assert "prompt-secret" not in combined_output
+    assert "/home/joe/private/token=abc123" not in combined_output
+    assert "Captured stderr:" not in combined_output
+    assert "stderr_file=" not in combined_output
+    assert "stderr_artifact=private" in proc.stdout
+    assert "stderr retained in private run artifact" in proc.stderr
+    stderr_artifacts = list((tmp_path / "work").glob("llm.phase.stderr.*"))
+    assert len(stderr_artifacts) == 1
+    assert stat.S_IMODE(stderr_artifacts[0].stat().st_mode) == 0o600
+    assert "prompt-secret" in stderr_artifacts[0].read_text(encoding="utf-8")
+
+
 def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) -> None:
     output_file = tmp_path / "stamped.txt"
     output_file.write_text(
@@ -542,6 +573,59 @@ def test_llm_runner_stamp_output_uses_exact_footer_block_at_eof(tmp_path: Path) 
     assert "PLACE: place" in stamped
     assert "FACET: facet" in stamped
     assert "PHASE: phase" in stamped
+
+
+def test_llm_runner_stamp_output_rejects_footer_token_injection(tmp_path: Path) -> None:
+    output_file = tmp_path / "stamped.txt"
+    baseline_file = tmp_path / "baseline.txt"
+    output_file.write_text("body line\n", encoding="utf-8")
+    baseline_file.write_text(output_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+    script = textwrap.dedent(
+        f"""\
+        set -euo pipefail
+        runtime_log_event() {{
+          :
+        }}
+        source "{RUNNER_PATH}"
+        place="place"
+        facet="facet"
+        phase="phase"
+        place="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 10
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        place="place"
+        facet="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 11
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        facet="facet"
+        phase="$INVALID"
+        if llm_runner_stamp_output "{output_file}" "$place" "$facet" "$phase"; then
+          exit 12
+        fi
+        cmp -- "{output_file}" "{baseline_file}"
+        """
+    )
+    proc = subprocess.run(
+        ["bash", "-lc", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "LLM_ENGINE": "codex",
+            "CODEX_MODEL": "test-model",
+            "INVALID": "safe\nFORGED_FIELD: injected",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "must be a single ASCII footer token" in proc.stderr
 
 
 def test_llm_runner_stamp_output_does_not_spawn_python(tmp_path: Path) -> None:

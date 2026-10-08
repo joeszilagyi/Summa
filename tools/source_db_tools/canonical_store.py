@@ -26,8 +26,8 @@ from tools.common.canonical_graph_model_contract import (  # noqa: E402
 )
 
 SCHEMA_NAMESPACE = "canonical_store"
-CURRENT_SCHEMA_VERSION = 8
-CURRENT_MIGRATION_ID = "0008_source_reconciliation_hot_path_indexes"
+CURRENT_SCHEMA_VERSION = 9
+CURRENT_MIGRATION_ID = "0009_source_claim_anchor_requirement"
 SCHEMA_VERSION_TABLE = "schema_version"
 MIGRATION_HISTORY_TABLE = "schema_migration_history"
 MODULE_PATH = "tools/source_db_tools/canonical_store.py"
@@ -312,9 +312,15 @@ MIGRATIONS: tuple[MigrationSpec, ...] = (
     ),
     MigrationSpec(
         version=8,
-        migration_id=CURRENT_MIGRATION_ID,
+        migration_id="0008_source_reconciliation_hot_path_indexes",
         sql_path=MIGRATIONS_DIR / "0008_source_reconciliation_hot_path_indexes.sql",
         notes="Add remaining source_claim and source_relationship reconciliation indexes.",
+    ),
+    MigrationSpec(
+        version=9,
+        migration_id="0009_source_claim_anchor_requirement",
+        sql_path=MIGRATIONS_DIR / "0009_source_claim_anchor_requirement.sql",
+        notes="Require every source_claim to retain an object or source-artifact anchor.",
     ),
 )
 
@@ -1067,6 +1073,18 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
+def _source_claim_has_anchor(
+    about_object_ref: Any,
+    capture_event_id: Any,
+    extraction_id: Any,
+) -> bool:
+    return bool(
+        (about_object_ref is not None and str(about_object_ref).strip())
+        or capture_event_id is not None
+        or extraction_id is not None
+    )
+
+
 def _timestamp_merge_key(value: str) -> dt.datetime:
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -1746,11 +1764,16 @@ def record_source_claim(
     _require_provenance_event(conn, provenance_event_ref, provenance_event_id)
     claim_text_value = _require_nonblank(claim_text, "claim_text")
     claim_type_value = _optional_nonblank(claim_type, "claim_type")
+    about_object_ref_value = _optional_nonblank(about_object_ref, "about_object_ref")
+    workspace_id_value = _optional_nonblank(workspace_id, "workspace_id")
     claim_key = source_claim_key_v1 or stable_write_key(
         "claim",
-        _optional_nonblank(about_object_ref, "about_object_ref") or "about:unknown",
+        workspace_id_value or "workspace:global",
+        about_object_ref_value or "about:unknown",
         claim_type_value or "claim",
         claim_text_value,
+        capture_event_id,
+        extraction_id,
     )
     is_open_question_value = 1 if _is_open_question_claim(claim_text_value, claim_type_value) else 0
     review_state_value = _normalize_review_state(
@@ -1765,6 +1788,31 @@ def record_source_claim(
         "SELECT * FROM source_claim WHERE source_claim_key_v1=?",
         (claim_key,),
     ).fetchone()
+    if existing is None and source_claim_key_v1 is None:
+        legacy_claim_key = stable_write_key(
+            "claim",
+            about_object_ref_value or "about:unknown",
+            claim_type_value or "claim",
+            claim_text_value,
+        )
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM source_claim
+            WHERE source_claim_key_v1=? AND workspace_id IS ?
+            """,
+            (legacy_claim_key, workspace_id_value),
+        ).fetchone()
+    if not _source_claim_has_anchor(about_object_ref_value, capture_event_id, extraction_id):
+        existing_has_anchor = existing is not None and _source_claim_has_anchor(
+            existing["about_object_ref"],
+            existing["capture_event_id"],
+            existing["extraction_id"],
+        )
+        if not existing_has_anchor:
+            raise CanonicalStoreError(
+                "source_claim requires an about_object_ref, capture_event_id, or extraction_id anchor"
+            )
     if existing is None:
         cursor = conn.execute(
             """
@@ -1791,7 +1839,7 @@ def record_source_claim(
             """,
             (
                 claim_key,
-                _optional_nonblank(about_object_ref, "about_object_ref"),
+                about_object_ref_value,
                 claim_text_value,
                 _optional_nonblank(public_summary, "public_summary"),
                 _optional_nonblank(claim_type, "claim_type"),
@@ -1799,7 +1847,7 @@ def record_source_claim(
                 _optional_nonblank(publication_state, "publication_state"),
                 _optional_nonblank(authority_level, "authority_level"),
                 _optional_nonblank(public_blocker, "public_blocker"),
-                _optional_nonblank(workspace_id, "workspace_id"),
+                workspace_id_value,
                 is_open_question_value,
                 score,
                 provenance_event_ref,
@@ -1871,7 +1919,7 @@ def record_source_claim(
         int(existing["source_claim_id"]),
         {
             "about_object_ref": _first_present(
-                _optional_nonblank(about_object_ref, "about_object_ref"),
+                about_object_ref_value,
                 existing["about_object_ref"],
             ),
             "claim_text": claim_text_update_value,
@@ -1886,9 +1934,7 @@ def record_source_claim(
             "publication_state": claim_publication_state_value,
             "authority_level": claim_authority_level_value,
             "public_blocker": claim_public_blocker_value,
-            "workspace_id": _first_present(
-                _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
-            ),
+            "workspace_id": _first_present(workspace_id_value, existing["workspace_id"]),
             "is_open_question": max(int(existing["is_open_question"] or 0), is_open_question_value),
             "confidence_score": claim_confidence_value,
             "provenance_event_ref": claim_provenance_value,
@@ -1902,7 +1948,10 @@ def record_source_claim(
             "record_last_updated": _max_nonnull_iso(existing["record_last_updated"], timestamp),
         },
     )
-    return CanonicalWriteResult("source_claim", int(existing["source_claim_id"]), claim_key, False)
+    existing_key = existing["source_claim_key_v1"] or claim_key
+    return CanonicalWriteResult(
+        "source_claim", int(existing["source_claim_id"]), existing_key, False
+    )
 
 
 def record_capture_event(

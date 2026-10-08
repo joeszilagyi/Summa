@@ -150,7 +150,8 @@ def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: 
             ).fetchall()
         }
         weird_claim = conn.execute(
-            "SELECT claim_text, review_state FROM source_claim WHERE claim_text LIKE '%before Alpha Example was born%'"
+            "SELECT claim_text, review_state, about_object_ref FROM source_claim "
+            "WHERE claim_text LIKE '%before Alpha Example was born%'"
         ).fetchone()
     finally:
         conn.close()
@@ -168,6 +169,7 @@ def test_candidate_batch_ingest_writes_reviewable_rows_and_provenance(tmp_path: 
     assert relationship_states == {"proposed"}
     assert provenance_refs == {report["provenance_event"]["event_key"]}
     assert weird_claim["review_state"] == "proposed"
+    assert str(weird_claim["about_object_ref"]).startswith("candidate_claim:")
 
     output_path = tmp_path / "knowledge_tree_export.json"
     proc = subprocess.run(

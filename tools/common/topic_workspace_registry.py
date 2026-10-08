@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,7 +14,9 @@ TRACKED_CONFIG_ROOT = REPO_ROOT / "config"
 LOCAL_REGISTRY_ROOT = REPO_ROOT / "runtime" / "config"
 DEFAULT_REGISTRY_ENV = "INDEXER_TOPIC_WORKSPACE_REGISTRY"
 DEFAULT_REGISTRY_PATH = LOCAL_REGISTRY_ROOT / "topic_workspaces.local.json"
+TRUSTED_REGISTRY_ROOTS = (TRACKED_CONFIG_ROOT, LOCAL_REGISTRY_ROOT)
 REGISTRY_SCHEMA_VERSION = "topic-workspace-registry.v1"
+WORKSPACE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 try:
     from tools.common.atomic_write import atomic_write_json
@@ -58,6 +61,14 @@ def resolve_registry_path(
     return (anchor / path).resolve()
 
 
+def is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def discover_registry_path(
     explicit_path: str | Path | None = None,
     *,
@@ -70,7 +81,13 @@ def discover_registry_path(
     env_map = os.environ if env is None else env
     raw_env = env_map.get(DEFAULT_REGISTRY_ENV)
     if raw_env:
-        return resolve_registry_path(raw_env, base_dir=cwd)
+        resolved_env = resolve_registry_path(raw_env, base_dir=cwd)
+        if not any(is_path_within(resolved_env, root) for root in TRUSTED_REGISTRY_ROOTS):
+            raise TopicWorkspaceRegistryError(
+                f"{DEFAULT_REGISTRY_ENV} must resolve under a trusted registry root: "
+                f"{resolved_env}"
+            )
+        return resolved_env
 
     return DEFAULT_REGISTRY_PATH
 
@@ -145,14 +162,6 @@ def resolve_existing_path(raw_value: str, registry_path: Path) -> Path | None:
     return None
 
 
-def is_path_within(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def is_tracked_registry_path(path: Path) -> bool:
     return is_path_within(path, TRACKED_CONFIG_ROOT)
 
@@ -223,6 +232,10 @@ def _normalize_workspace_id(
     if normalized_workspace_id != raw_value:
         raise TopicWorkspaceRegistryError(
             f"{source_label} has leading/trailing whitespace in topic workspace registry: {raw_value!r}"
+        )
+    if not WORKSPACE_ID_PATTERN.fullmatch(normalized_workspace_id):
+        raise TopicWorkspaceRegistryError(
+            f"{source_label} must match the workspace identifier pattern: {raw_value!r}"
         )
     return normalized_workspace_id
 

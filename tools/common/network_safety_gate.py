@@ -83,20 +83,30 @@ def normalized_allowlist_url(value: str) -> str | None:
 
 
 def allowlisted(url: str, hosts: list[str], prefixes: list[str]) -> bool:
-    parsed = urlparse(url)
     normalized_url = normalized_allowlist_url(url)
     if normalized_url is None:
         return False
+    parsed = urlparse(normalized_url)
     host = normalize_host(parsed.hostname or "")
     for allowed_host in hosts:
         normalized_host = normalize_host(allowed_host)
-        if host == normalized_host or host.endswith("." + normalized_host):
+        if host == normalized_host:
             return True
     for prefix in prefixes:
         normalized_prefix = normalized_allowlist_url(prefix)
         if normalized_prefix is None:
             continue
-        if normalized_url.startswith(normalized_prefix):
+        parsed_prefix = urlparse(normalized_prefix)
+        if (
+            parsed.scheme != parsed_prefix.scheme
+            or normalize_host(parsed.hostname or "")
+            != normalize_host(parsed_prefix.hostname or "")
+            or parsed.port != parsed_prefix.port
+        ):
+            continue
+        prefix_path = (parsed_prefix.path or "/").rstrip("/")
+        url_path = parsed.path or "/"
+        if not prefix_path or url_path == prefix_path or url_path.startswith(prefix_path + "/"):
             return True
     return False
 
@@ -219,6 +229,7 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
         errors.append({"code": "INVALID_PLANNED_ACTIONS", "message": "planned_actions must be a non-empty array"})
     else:
         seen_ids: set[str] = set()
+        seen_urls: dict[str, tuple[Any, ...]] = {}
         for index, action in enumerate(actions):
             if not isinstance(action, dict):
                 errors.append({"code": "INVALID_PLANNED_ACTION", "message": f"planned_actions[{index}] must be an object"})
@@ -240,6 +251,26 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
             units = action.get("side_effect_units")
             if not isinstance(units, int) or isinstance(units, bool) or units < 0:
                 errors.append({"code": "INVALID_SIDE_EFFECT_UNITS", "message": f"planned_actions[{index}].side_effect_units must be an integer >= 0"})
+            if isinstance(url, str) and url.strip():
+                action_tuple = (
+                    action.get("action_kind"),
+                    url,
+                    action.get("method"),
+                    units,
+                )
+                previous_tuple = seen_urls.get(url)
+                if previous_tuple is not None and previous_tuple != action_tuple:
+                    errors.append(
+                        {
+                            "code": "DUPLICATE_ACTION_URL",
+                            "message": (
+                                f"planned_actions[{index}].url duplicates an earlier URL "
+                                "with a different action tuple"
+                            ),
+                        }
+                    )
+                else:
+                    seen_urls[url] = action_tuple
 
     return errors
 
@@ -247,6 +278,7 @@ def validate_request_shape(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def evaluate_request(
     payload: dict[str, Any],
     *,
+    execution_repo_root: Path | None = None,
     git_status_provider: Callable[[Path], tuple[bool | None, str | None]] = git_worktree_is_clean,
 ) -> dict[str, Any]:
     errors = validate_request_shape(payload)
@@ -327,12 +359,29 @@ def evaluate_request(
         repo_root_value = dirty_policy.get("repo_root")
         if not isinstance(repo_root_value, str) or not repo_root_value.strip():
             errors.append({"code": "DIRTY_WORKTREE_POLICY_INVALID", "message": "repo_root is required when require_clean_worktree is true"})
+        elif execution_repo_root is None:
+            errors.append(
+                {
+                    "code": "DIRTY_WORKTREE_CONTEXT_UNAVAILABLE",
+                    "message": "trusted executor repository root is required when require_clean_worktree is true",
+                }
+            )
         else:
-            clean, detail = git_status_provider(Path(repo_root_value))
-            if clean is None:
-                errors.append({"code": "DIRTY_WORKTREE_STATUS_UNKNOWN", "message": detail or "could not inspect git worktree status"})
-            elif clean is False:
-                errors.append({"code": "DIRTY_WORKTREE_REFUSED", "message": "network operation refused because the git worktree is dirty"})
+            trusted_repo_root = execution_repo_root.expanduser().resolve()
+            requested_repo_root = Path(repo_root_value).expanduser().resolve()
+            if requested_repo_root != trusted_repo_root:
+                errors.append(
+                    {
+                        "code": "DIRTY_WORKTREE_REPO_MISMATCH",
+                        "message": "dirty_worktree_policy.repo_root must match the trusted executor repository root",
+                    }
+                )
+            else:
+                clean, detail = git_status_provider(trusted_repo_root)
+                if clean is None:
+                    errors.append({"code": "DIRTY_WORKTREE_STATUS_UNKNOWN", "message": detail or "could not inspect git worktree status"})
+                elif clean is False:
+                    errors.append({"code": "DIRTY_WORKTREE_REFUSED", "message": "network operation refused because the git worktree is dirty"})
 
     dry_run = payload.get("dry_run") is True
     if not errors and dry_run:

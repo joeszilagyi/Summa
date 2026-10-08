@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote_to_bytes, urlparse
 
 try:
     from common import (
@@ -265,18 +265,76 @@ def _is_valid_http_host(hostname: str) -> bool:
         return bool(HOSTNAME_PATTERN.fullmatch(hostname))
 
 
+def _has_hostile_http_path(path: str) -> bool:
+    """Reject path forms whose interpretation can change across URL parsers."""
+
+    if "\\" in path:
+        return True
+
+    index = 0
+    while index < len(path):
+        if path[index] != "%":
+            index += 1
+            continue
+        if index + 2 >= len(path) or not re.fullmatch(
+            r"[0-9A-Fa-f]{2}", path[index + 1 : index + 3]
+        ):
+            return True
+        decoded_byte = int(path[index + 1 : index + 3], 16)
+        if (
+            decoded_byte < 0x20
+            or decoded_byte == 0x7F
+            or decoded_byte in {0x00, 0x2E, 0x2F, 0x5C}
+        ):
+            return True
+        index += 3
+
+    try:
+        decoded_path = unquote_to_bytes(path).decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded_path):
+        return True
+    return any(
+        segment in {".", ".."}
+        for candidate in (path, decoded_path)
+        for segment in candidate.split("/")
+    )
+
+
 def normalize_http_url(value: str) -> str | None:
     if any(ch.isspace() for ch in value):
         return None
     if any(ord(ch) < 32 or ord(ch) == 0x7F for ch in value):
         return None
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     host = parsed.hostname
     if not isinstance(host, str) or not _is_valid_http_host(host):
         return None
     if parsed.username or parsed.password:
+        return None
+    normalized_host = host.rstrip(".").casefold()
+    if normalized_host == "localhost" or normalized_host.endswith(".localhost"):
+        return None
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        return None
+    default_port = 80 if parsed.scheme == "http" else 443
+    if parsed_port not in {None, default_port}:
+        return None
+    if "#" in value or _has_hostile_http_path(parsed.path):
+        return None
+    try:
+        address = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
         return None
     return normalized_allowlist_url(value)
 

@@ -281,6 +281,72 @@ def test_write_api_allows_unscoped_detected_entity_without_workspace(tmp_path: P
     assert entity_row["provenance_event_ref"] == provenance.event_key
 
 
+def test_source_claim_requires_object_or_source_artifact_anchor(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="fixture-claim-anchor",
+            event_type="fixture_ingest",
+            tool_name="pytest",
+            run_id="fixture-claim-anchor",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:fixture-claim-anchor",
+        )
+
+        with pytest.raises(canonical_store.CanonicalStoreError, match="requires .*anchor"):
+            canonical_store.record_source_claim(
+                conn,
+                provenance_event_ref=provenance.event_key,
+                claim_text="An unanchored claim must be rejected.",
+                source_claim_key_v1="claim:unanchored-api",
+                created_at=FIXED_TIMESTAMP,
+                record_last_updated=FIXED_TIMESTAMP,
+            )
+
+        with pytest.raises(sqlite3.IntegrityError, match="source_claim requires"):
+            conn.execute(
+                """
+                INSERT INTO source_claim (
+                  source_claim_key_v1,
+                  claim_text,
+                  created_at,
+                  record_last_updated
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "claim:unanchored-sql",
+                    "A directly inserted unanchored claim must be rejected.",
+                    FIXED_TIMESTAMP,
+                    FIXED_TIMESTAMP,
+                ),
+            )
+
+        claim = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            source_claim_key_v1="claim:anchored",
+            about_object_ref="work:fixture-anchor",
+            claim_text="An anchored claim is valid.",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="source_claim requires"):
+            conn.execute(
+                """
+                UPDATE source_claim
+                SET about_object_ref=NULL, capture_event_id=NULL, extraction_id=NULL
+                WHERE source_claim_id=?
+                """,
+                (claim.row_id,),
+            )
+    finally:
+        conn.close()
+
+
 def test_work_upsert_is_idempotent_and_preserves_reviewed_state(tmp_path: Path) -> None:
     db_path = bootstrap_db(tmp_path)
     conn = canonical_store.connect_canonical_store(db_path)
@@ -867,6 +933,271 @@ def test_source_claim_is_deduplicated_by_logical_identity_without_supplied_key(t
     assert first.created is True
     assert second.created is False
     assert first.row_id == second.row_id
+    assert count == 1
+
+
+def test_source_claim_default_identity_includes_source_artifact_ids(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-source-artifact-identity",
+            event_type="fixture_ingest",
+            run_id="claim-source-artifact-identity",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-source-artifact-identity",
+        )
+        capture_first = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/claim-source-one",
+            captured_at=FIXED_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="a" * 64,
+            workspace_id="alpha_subject",
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_second = canonical_store.record_capture_event(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            original_locator="https://example.test/claim-source-two",
+            captured_at=FIXED_TIMESTAMP,
+            capture_method="fixture_capture",
+            content_hash="b" * 64,
+            workspace_id="alpha_subject",
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_claim_first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from a captured source.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        capture_claim_second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from a captured source.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_second.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+
+        extraction_first = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="c" * 64,
+            output_hash="d" * 64,
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_second = canonical_store.record_extraction_record(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            capture_event_id=capture_first.row_id,
+            extraction_method="fixture_extract",
+            extraction_status="completed",
+            input_hash="c" * 64,
+            output_hash="e" * 64,
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_claim_first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from an extraction.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            extraction_id=extraction_first.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        extraction_claim_second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This claim came from an extraction.",
+            claim_type="fixture_claim",
+            workspace_id="alpha_subject",
+            capture_event_id=capture_first.row_id,
+            extraction_id=extraction_second.row_id,
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        conn.commit()
+        capture_claim_rows = conn.execute(
+            """
+            SELECT capture_event_id, extraction_id
+            FROM source_claim
+            WHERE claim_text=?
+            ORDER BY source_claim_id
+            """,
+            ("This claim came from a captured source.",),
+        ).fetchall()
+        extraction_claim_rows = conn.execute(
+            """
+            SELECT capture_event_id, extraction_id
+            FROM source_claim
+            WHERE claim_text=?
+            ORDER BY source_claim_id
+            """,
+            ("This claim came from an extraction.",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert capture_claim_first.created is True
+    assert capture_claim_second.created is True
+    assert capture_claim_first.row_id != capture_claim_second.row_id
+    assert [(row["capture_event_id"], row["extraction_id"]) for row in capture_claim_rows] == [
+        (capture_first.row_id, None),
+        (capture_second.row_id, None),
+    ]
+    assert extraction_claim_first.created is True
+    assert extraction_claim_second.created is True
+    assert extraction_claim_first.row_id != extraction_claim_second.row_id
+    assert [(row["capture_event_id"], row["extraction_id"]) for row in extraction_claim_rows] == [
+        (capture_first.row_id, extraction_first.row_id),
+        (capture_first.row_id, extraction_second.row_id),
+    ]
+
+
+def test_source_claim_default_identity_is_scoped_to_workspace(tmp_path: Path) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-workspace-alpha",
+            event_type="fixture_ingest",
+            run_id="claim-workspace-alpha",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-workspace-alpha",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-workspace-beta",
+            event_type="fixture_ingest",
+            run_id="claim-workspace-beta",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-workspace-beta",
+        )
+        second = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text="This work was authored in 2026.",
+            claim_type="candidate_work",
+            workspace_id="beta_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE claim_text=?",
+            ("This work was authored in 2026.",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert second.created is True
+    assert first.row_id != second.row_id
+    assert count == 2
+
+
+def test_source_claim_default_identity_replays_legacy_key_with_matching_workspace(
+    tmp_path: Path,
+) -> None:
+    db_path = bootstrap_db(tmp_path)
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        claim_text = "This work was authored in 2026."
+        legacy_key = canonical_store.stable_write_key(
+            "claim",
+            "work:fixture-alpha",
+            "candidate_work",
+            claim_text,
+        )
+        first_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-legacy-key",
+            event_type="fixture_ingest",
+            run_id="claim-legacy-key",
+            event_timestamp=FIXED_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-legacy-key",
+        )
+        first = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=first_provenance.event_key,
+            source_claim_key_v1=legacy_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text=claim_text,
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=FIXED_TIMESTAMP,
+            record_last_updated=FIXED_TIMESTAMP,
+        )
+        second_provenance = canonical_store.record_provenance_event(
+            conn,
+            object_namespace="fixture_ingest",
+            object_id="claim-legacy-replay",
+            event_type="fixture_ingest",
+            run_id="claim-legacy-replay",
+            event_timestamp=NEWER_TIMESTAMP,
+            provenance_event_key_v1="prov:claim-legacy-replay",
+        )
+        replay = canonical_store.record_source_claim(
+            conn,
+            provenance_event_ref=second_provenance.event_key,
+            about_object_ref="work:fixture-alpha",
+            claim_text=claim_text,
+            claim_type="candidate_work",
+            workspace_id="alpha_subject",
+            created_at=NEWER_TIMESTAMP,
+            record_last_updated=NEWER_TIMESTAMP,
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM source_claim WHERE source_claim_key_v1=?",
+            (legacy_key,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.row_id == first.row_id
+    assert replay.key == legacy_key
     assert count == 1
 
 

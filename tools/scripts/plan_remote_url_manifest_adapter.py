@@ -27,6 +27,9 @@ import validate_source_adapter  # noqa: E402
 
 
 ALLOWED_MANIFEST_ENTRY_KEYS = {"url", "title", "notes", "source_id"}
+MAX_MANIFEST_FILE_BYTES = 10 * 1024 * 1024
+MAX_MANIFEST_LINE_BYTES = 1024 * 1024
+MAX_MANIFEST_ACCEPTED_ENTRIES = 10_000
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -139,28 +142,76 @@ def load_manifest_entries(manifest_path: Path) -> tuple[list[dict[str, Any]], li
     if not manifest_path.is_file():
         return accepted, rejected, [f"manifest JSONL path is not a file: {manifest_path}"]
 
-    for line_number, raw_line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        try:
-            entry = parse_manifest_entry(raw_line)
-        except json.JSONDecodeError:
-            rejected.append({"line_number": line_number, "reason": "invalid_json"})
-            continue
-        except DuplicateJsonKeyError as exc:
-            rejected.append({"line_number": line_number, "reason": str(exc)})
-            continue
-        except NonStandardJsonConstantError as exc:
-            rejected.append({"line_number": line_number, "reason": str(exc)})
-            continue
-        if entry is None:
-            rejected.append({"line_number": line_number, "reason": "invalid JSON object"})
-            continue
-        errors = validate_manifest_entry(entry, line_number=line_number)
-        if errors:
-            rejected.append({"line_number": line_number, "reason": errors[0]})
-            continue
-        accepted.append({"line_number": line_number, "entry": entry})
+    try:
+        manifest_size = manifest_path.stat().st_size
+    except OSError:
+        return accepted, rejected, [f"manifest JSONL path could not be inspected: {manifest_path}"]
+    if manifest_size > MAX_MANIFEST_FILE_BYTES:
+        return accepted, rejected, [
+            f"manifest JSONL exceeds maximum size of {MAX_MANIFEST_FILE_BYTES} bytes"
+        ]
+
+    bytes_read = 0
+    line_number = 0
+    read_limit = min(MAX_MANIFEST_LINE_BYTES + 2, MAX_MANIFEST_FILE_BYTES + 1)
+    try:
+        with manifest_path.open("rb") as manifest_file:
+            while True:
+                raw_line = manifest_file.readline(read_limit)
+                if not raw_line:
+                    break
+                line_number += 1
+                bytes_read += len(raw_line)
+                if bytes_read > MAX_MANIFEST_FILE_BYTES:
+                    blockers.append(
+                        f"manifest JSONL exceeds maximum size of {MAX_MANIFEST_FILE_BYTES} bytes"
+                    )
+                    return accepted, rejected, blockers
+
+                line_content = raw_line[:-1] if raw_line.endswith(b"\n") else raw_line
+                if raw_line.endswith(b"\n") and line_content.endswith(b"\r"):
+                    line_content = line_content[:-1]
+                if len(line_content) > MAX_MANIFEST_LINE_BYTES:
+                    blockers.append(
+                        f"manifest JSONL line exceeds maximum size of {MAX_MANIFEST_LINE_BYTES} bytes"
+                    )
+                    return accepted, rejected, blockers
+
+                try:
+                    raw_line_text = raw_line.decode("utf-8")
+                except UnicodeDecodeError:
+                    rejected.append({"line_number": line_number, "reason": "invalid_utf8"})
+                    continue
+                if not raw_line_text.strip():
+                    continue
+                try:
+                    entry = parse_manifest_entry(raw_line_text)
+                except json.JSONDecodeError:
+                    rejected.append({"line_number": line_number, "reason": "invalid_json"})
+                    continue
+                except DuplicateJsonKeyError as exc:
+                    rejected.append({"line_number": line_number, "reason": str(exc)})
+                    continue
+                except NonStandardJsonConstantError as exc:
+                    rejected.append({"line_number": line_number, "reason": str(exc)})
+                    continue
+                if entry is None:
+                    rejected.append({"line_number": line_number, "reason": "invalid JSON object"})
+                    continue
+                errors = validate_manifest_entry(entry, line_number=line_number)
+                if errors:
+                    rejected.append({"line_number": line_number, "reason": errors[0]})
+                    continue
+                if len(accepted) >= MAX_MANIFEST_ACCEPTED_ENTRIES:
+                    blockers.append(
+                        "manifest JSONL contains more than "
+                        f"{MAX_MANIFEST_ACCEPTED_ENTRIES} accepted entries"
+                    )
+                    return accepted, rejected, blockers
+                accepted.append({"line_number": line_number, "entry": entry})
+    except OSError:
+        blockers.append(f"manifest JSONL path could not be read: {manifest_path}")
+        return accepted, rejected, blockers
 
     if not accepted:
         blockers.append("no valid URL manifest entries were accepted")
@@ -261,7 +312,11 @@ def main() -> int:
     try:
         adapter_payload = load_adapter(adapter_path)
         payload = build_plan(adapter_path, manifest_path, adapter_payload)
-        if args.handoff_jsonl is not None:
+        if (
+            args.handoff_jsonl is not None
+            and payload["blocker_count"] == 0
+            and payload["handoff_validation"]["ok"]
+        ):
             atomic_write_jsonl(args.handoff_jsonl, payload["handoff_records"])
     except RemoteUrlManifestAdapterError as exc:
         print(f"Error: {exc}", file=sys.stderr)

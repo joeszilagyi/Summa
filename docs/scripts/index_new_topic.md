@@ -22,6 +22,9 @@ Important safety rules:
 - registry writes are validated before commit
 - tracked `config/` registry paths are refused unless the caller explicitly
   opts in with `--allow-tracked-registry`
+- environment-based registry overrides are accepted only beneath the repository's
+  trusted `config/` or `runtime/config/` registry roots; use `--registry` for an
+  explicit path
 - the tool is local-first and only touches repo-local files and the selected
   workspace root
 - the tool does not take a cross-process registry lock, so run one bootstrap

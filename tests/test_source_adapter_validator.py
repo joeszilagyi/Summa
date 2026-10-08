@@ -651,6 +651,77 @@ def test_source_adapter_validator_rejects_invalid_remote_manifest_url_hostnames(
     assert "INVALID_REMOTE_URL" in proc.stdout
 
 
+def test_source_adapter_validator_rejects_unsafe_remote_manifest_urls(tmp_path: Path) -> None:
+    unsafe_urls = [
+        "http://localhost/manifest.jsonl",
+        "http://127.0.0.1/manifest.jsonl",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://user:secret@archives.example.gov/manifest.jsonl",
+        "https://archives.example.gov:8443/manifest.jsonl",
+        "https://archives.example.gov/manifest.jsonl#fragment",
+        "https://archives.example.gov/a/%2e%2e/manifest.jsonl",
+    ]
+
+    for index, manifest_url in enumerate(unsafe_urls):
+        target = tmp_path / f"unsafe-{index}.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "schema_version": "source-adapter.v1",
+                    "adapter_id": f"unsafe_manifest_url_{index}",
+                    "display_name": "Unsafe manifest URL fixture",
+                    "workspace_id": "alpha_subject",
+                    "description": "Reject unsafe remote URL shapes.",
+                    "input_family": "remote_url_manifest",
+                    "locator": {"manifest_url": manifest_url},
+                    "content_profile": {"content_kinds": ["url_observation"], "hazard_flags": []},
+                    "provenance": {
+                        "discovery_provenance": "validator test",
+                        "acquisition_method": "manual_list",
+                        "source_description": "Unsafe remote URL fixture.",
+                    },
+                    "rights_and_storage": {
+                        "payload_storage_policy_class": "external_later",
+                        "metadata_storage_policy_class": "tracked_derived",
+                        "rights_posture": "quote_limited",
+                    },
+                    "automation_posture": "operator_review_required",
+                    "normalized_handoff": {
+                        "record_family": "url_observation",
+                        "batch_unit": "per_reference",
+                        "preserve_fields": ["original_locator"],
+                        "source_specific_fields": ["manifest_url"],
+                    },
+                    "transform_lineage": [
+                        {
+                            "step_id": "handoff",
+                            "step_kind": "emit_handoff",
+                            "description": "Emit URL observations.",
+                            "deterministic": True,
+                            "review_required": True,
+                        }
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        proc = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(target)],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            check=False,
+        )
+
+        assert proc.returncode == EXIT_VALIDATION_FAILED, manifest_url
+        assert "INVALID_REMOTE_URL" in proc.stdout, manifest_url
+
+
 def test_source_adapter_validator_accepts_structured_locator_hints(tmp_path: Path) -> None:
     target = tmp_path / "source_adapter.json"
     target.write_text(

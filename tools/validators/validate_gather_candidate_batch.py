@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.common.candidate_feedback_contract import (  # noqa: E402
     compact_next_action_prompt_payload,
     compact_prior_state_prompt_payload,
+    validate_typed_candidate_record,
 )
 from tools.common.llm_source_text_wrapper import load_template, parse_wrapped_blocks  # noqa: E402
 from tools.common.source_text_profile import (  # noqa: E402
@@ -114,17 +115,71 @@ def no_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return payload
 
 
-def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
-    candidate_path = Path(raw_path)
-    batch_dir = batch_path.parent.resolve()
+def resolve_path_within_root(
+    raw_path: str,
+    *,
+    relative_to: Path,
+    allowed_root: Path,
+    field: str,
+) -> Path:
+    """Resolve a payload path without allowing it to escape its trusted root."""
+
+    candidate_path = Path(raw_path).expanduser()
+    base_path = relative_to.resolve()
+    root_path = allowed_root.resolve()
     if not candidate_path.is_absolute():
-        candidate_path = batch_dir / candidate_path
-    candidate_path = candidate_path.expanduser().resolve()
+        candidate_path = base_path / candidate_path
+    candidate_path = candidate_path.resolve()
     try:
-        candidate_path.relative_to(batch_dir)
+        candidate_path.relative_to(root_path)
     except ValueError as exc:
-        raise ValueError("rendered_prompt_path must remain inside the batch directory") from exc
+        raise ValueError(f"{field} must remain inside {root_path}") from exc
     return candidate_path
+
+
+def resolve_prompt_path(raw_path: str, *, batch_path: Path) -> Path:
+    batch_dir = batch_path.parent.resolve()
+    return resolve_path_within_root(
+        raw_path,
+        relative_to=batch_dir,
+        allowed_root=batch_dir,
+        field="rendered_prompt_path",
+    )
+
+
+def resolve_subject_manifest_path(
+    raw_path: str, *, workspace_root: Path, repository_root: Path
+) -> Path:
+    """Resolve manifests using the run workspace for absolute paths.
+
+    Legacy fixtures record repository-relative paths, so those remain valid while
+    still being confined to the checked-in repository.
+    """
+
+    candidate_path = Path(raw_path).expanduser()
+    if candidate_path.is_absolute():
+        return resolve_path_within_root(
+            raw_path,
+            relative_to=workspace_root,
+            allowed_root=workspace_root,
+            field="subject.manifest_path",
+        )
+    return resolve_path_within_root(
+        raw_path,
+        relative_to=repository_root,
+        allowed_root=repository_root,
+        field="subject.manifest_path",
+    )
+
+
+def workspace_root_for_batch(target: Path) -> Path:
+    """Return the run workspace root implied by a candidate batch location."""
+
+    target_path = target.expanduser().resolve()
+    run_dir = target_path.parent
+    if run_dir.parent.name == "gather" and run_dir.parent.parent.name == "runs":
+        return run_dir.parent.parent.parent
+    return run_dir
 
 
 def load_json_object(
@@ -533,6 +588,9 @@ def parse_stamp_footer(text: str) -> dict[str, str] | None:
 def validate_invariants(
     payload: dict[str, Any], target: Path, errors: list[dict[str, Any]]
 ) -> None:
+    batch_dir = target.expanduser().resolve().parent
+    workspace_root = workspace_root_for_batch(target)
+    repository_root = REPO_ROOT.resolve()
     created_at = payload.get("created_at")
     if isinstance(created_at, str) and not is_rfc3339_datetime(created_at):
         add_error(
@@ -1095,17 +1153,29 @@ def validate_invariants(
                 )
             wrapper_template_path = wrapping.get("wrapper_template_path")
             if isinstance(wrapper_template_path, str):
-                template_path = Path(wrapper_template_path)
-                if not template_path.is_absolute():
-                    template_path = (REPO_ROOT / template_path).resolve()
-                if not template_path.is_file():
+                try:
+                    template_path = resolve_path_within_root(
+                        wrapper_template_path,
+                        relative_to=repository_root,
+                        allowed_root=repository_root,
+                        field="source_text_wrapping.wrapper_template_path",
+                    )
+                except ValueError as exc:
+                    add_error(
+                        errors,
+                        code="WRAPPER_TEMPLATE_PATH_OUTSIDE_REPO",
+                        message=str(exc),
+                        path="$.source_text_wrapping.wrapper_template_path",
+                    )
+                    template_path = None
+                if template_path is not None and not template_path.is_file():
                     add_error(
                         errors,
                         code="WRAPPER_TEMPLATE_PATH_MISSING",
                         message="source_text_wrapping.wrapper_template_path does not point to a readable file",
                         path="$.source_text_wrapping.wrapper_template_path",
                     )
-                else:
+                elif template_path is not None:
                     actual_wrapper_hash = sha256_file(template_path)
                     if wrapping.get("wrapper_template_hash") != actual_wrapper_hash:
                         add_error(
@@ -1279,17 +1349,28 @@ def validate_invariants(
             if isinstance(subject_payload, dict):
                 manifest_path = subject_payload.get("manifest_path")
                 if isinstance(manifest_path, str):
-                    subject_path = Path(manifest_path)
-                    if not subject_path.is_absolute():
-                        subject_path = (REPO_ROOT / subject_path).resolve()
-                    if not subject_path.is_file():
+                    try:
+                        subject_path = resolve_subject_manifest_path(
+                            manifest_path,
+                            workspace_root=workspace_root,
+                            repository_root=repository_root,
+                        )
+                    except ValueError as exc:
+                        add_error(
+                            errors,
+                            code="SUBJECT_MANIFEST_PATH_OUTSIDE_WORKSPACE",
+                            message=str(exc),
+                            path="$.subject.manifest_path",
+                        )
+                        subject_path = None
+                    if subject_path is not None and not subject_path.is_file():
                         add_error(
                             errors,
                             code="SUBJECT_MANIFEST_PATH_MISSING",
                             message="subject.manifest_path does not point to a readable file",
                             path="$.subject.manifest_path",
                         )
-                    else:
+                    elif subject_path is not None:
                         manifest_hash = subject_payload.get("manifest_hash")
                         actual_manifest_hash = sha256_file(subject_path)
                         if manifest_hash != actual_manifest_hash:
@@ -1358,17 +1439,29 @@ def validate_invariants(
             if isinstance(domain_pack_payload, dict):
                 domain_pack_path = domain_pack_payload.get("path")
                 if isinstance(domain_pack_path, str):
-                    pack_path = Path(domain_pack_path)
-                    if not pack_path.is_absolute():
-                        pack_path = (REPO_ROOT / pack_path).resolve()
-                    if not pack_path.is_file():
+                    try:
+                        pack_path = resolve_path_within_root(
+                            domain_pack_path,
+                            relative_to=repository_root,
+                            allowed_root=repository_root,
+                            field="domain_pack.path",
+                        )
+                    except ValueError as exc:
+                        add_error(
+                            errors,
+                            code="DOMAIN_PACK_PATH_OUTSIDE_REPO",
+                            message=str(exc),
+                            path="$.domain_pack.path",
+                        )
+                        pack_path = None
+                    if pack_path is not None and not pack_path.is_file():
                         add_error(
                             errors,
                             code="DOMAIN_PACK_PATH_MISSING",
                             message="domain_pack.path does not point to a readable file",
                             path="$.domain_pack.path",
                         )
-                    else:
+                    elif pack_path is not None:
                         actual_hash = sha256_file(pack_path)
                         if domain_pack_payload.get("sha256") != actual_hash:
                             add_error(
@@ -1397,17 +1490,29 @@ def validate_invariants(
             if isinstance(prompt_bundle, dict):
                 selected_template_file = prompt_bundle.get("selected_template_file")
                 if isinstance(selected_template_file, str):
-                    template_path = Path(selected_template_file)
-                    if not template_path.is_absolute():
-                        template_path = (REPO_ROOT / template_path).resolve()
-                    if not template_path.is_file():
+                    try:
+                        template_path = resolve_path_within_root(
+                            selected_template_file,
+                            relative_to=repository_root,
+                            allowed_root=repository_root,
+                            field="prompt_bundle.selected_template_file",
+                        )
+                    except ValueError as exc:
+                        add_error(
+                            errors,
+                            code="PROMPT_BUNDLE_TEMPLATE_PATH_OUTSIDE_REPO",
+                            message=str(exc),
+                            path="$.prompt_bundle.selected_template_file",
+                        )
+                        template_path = None
+                    if template_path is not None and not template_path.is_file():
                         add_error(
                             errors,
                             code="PROMPT_BUNDLE_TEMPLATE_PATH_MISSING",
                             message="prompt_bundle.selected_template_file does not point to a readable file",
                             path="$.prompt_bundle.selected_template_file",
                         )
-                    else:
+                    elif template_path is not None:
                         actual_template_hash = sha256_file(template_path)
                         if prompt_bundle.get("selected_template_hash") != actual_template_hash:
                             add_error(
@@ -1548,14 +1653,90 @@ def validate_invariants(
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, dict):
                 continue
-            if candidate.get("candidate_type") == "raw_candidate_text" and isinstance(facet, dict):
+            candidate_path = f"$.candidates[{index}]"
+            if mode == "live" and candidate.get("candidate_type") == "raw_candidate_text":
+                add_error(
+                    errors,
+                    code="LIVE_RAW_CANDIDATE_TEXT_FORBIDDEN",
+                    message=(
+                        "mode=live candidates must use a typed candidate_type, "
+                        "not raw_candidate_text"
+                    ),
+                    path=f"{candidate_path}.candidate_type",
+                )
+            elif mode == "live":
+                candidate_text = candidate.get("text")
+                parsed_candidate: Any = None
+                parsed_candidate_loaded = False
+                if not isinstance(candidate_text, str):
+                    add_error(
+                        errors,
+                        code="LIVE_TYPED_CANDIDATE_JSON_REQUIRED",
+                        message="mode=live candidate text must be a JSON object",
+                        path=f"{candidate_path}.text",
+                    )
+                else:
+                    try:
+                        parsed_candidate = json.loads(
+                            candidate_text,
+                            object_pairs_hook=no_duplicate_object_pairs,
+                            parse_constant=reject_json_constant,
+                        )
+                        parsed_candidate_loaded = True
+                    except (DuplicateJsonKeyError, NonStandardJsonConstantError) as exc:
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_JSON_INVALID",
+                            message=str(exc),
+                            path=f"{candidate_path}.text",
+                        )
+                    except json.JSONDecodeError:
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_JSON_INVALID",
+                            message="mode=live candidate text must be valid JSON",
+                            path=f"{candidate_path}.text",
+                        )
+                if parsed_candidate_loaded:
+                    expected_candidate_type = (
+                        facet.get("candidate_type_hint")
+                        if isinstance(facet, dict)
+                        and isinstance(facet.get("candidate_type_hint"), str)
+                        else None
+                    )
+                    for validation_error in validate_typed_candidate_record(
+                        parsed_candidate,
+                        expected_candidate_type=expected_candidate_type,
+                    ):
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_INVALID",
+                            message=validation_error,
+                            path=f"{candidate_path}.text",
+                        )
+                    if isinstance(parsed_candidate, dict) and parsed_candidate.get(
+                        "candidate_type"
+                    ) != candidate.get("candidate_type"):
+                        add_error(
+                            errors,
+                            code="LIVE_TYPED_CANDIDATE_TYPE_MISMATCH",
+                            message=(
+                                "candidate text candidate_type must match the outer "
+                                "candidate_type"
+                            ),
+                            path=f"{candidate_path}.text.candidate_type",
+                        )
+            elif (
+                candidate.get("candidate_type") == "raw_candidate_text"
+                and isinstance(facet, dict)
+            ):
                 validate_candidate_extraction_record(
                     candidate,
                     expected_candidate_type=facet.get("candidate_type_hint")
                     if isinstance(facet.get("candidate_type_hint"), str)
                     else None,
                     errors=errors,
-                    path=f"$.candidates[{index}]",
+                    path=candidate_path,
                 )
             for key in ("review_status", "persistence_status", "origin"):
                 value = candidate.get(key)
@@ -1569,8 +1750,22 @@ def validate_invariants(
 
     if isinstance(mode, str) and mode == "live":
         if isinstance(engine_output_ref, str):
-            engine_output_path = Path(engine_output_ref)
-            if not engine_output_path.is_file():
+            try:
+                engine_output_path = resolve_path_within_root(
+                    engine_output_ref,
+                    relative_to=batch_dir,
+                    allowed_root=batch_dir,
+                    field="engine_output_ref",
+                )
+            except ValueError as exc:
+                add_error(
+                    errors,
+                    code="ENGINE_OUTPUT_PATH_OUTSIDE_BATCH",
+                    message=str(exc),
+                    path="$.engine_output_ref",
+                )
+                engine_output_path = None
+            if engine_output_path is not None and not engine_output_path.is_file():
                 add_error(
                     errors,
                     code="ENGINE_OUTPUT_PATH_MISSING",
@@ -1581,8 +1776,22 @@ def validate_invariants(
             stamped_output_path = provenance.get("stamped_output_path")
             stamped_output_footer = provenance.get("stamped_output_footer")
             if isinstance(stamped_output_path, str):
-                stamped_path = Path(stamped_output_path)
-                if not stamped_path.is_file():
+                try:
+                    stamped_path = resolve_path_within_root(
+                        stamped_output_path,
+                        relative_to=batch_dir,
+                        allowed_root=batch_dir,
+                        field="provenance.stamped_output_path",
+                    )
+                except ValueError as exc:
+                    add_error(
+                        errors,
+                        code="STAMPED_OUTPUT_PATH_OUTSIDE_BATCH",
+                        message=str(exc),
+                        path="$.provenance.stamped_output_path",
+                    )
+                    stamped_path = None
+                if stamped_path is not None and not stamped_path.is_file():
                     add_error(
                         errors,
                         code="STAMPED_OUTPUT_PATH_MISSING",
@@ -1625,7 +1834,25 @@ def validate_invariants(
         if isinstance(payload.get("engine"), dict)
         else None
     )
-    if isinstance(runner_path, str) and not Path(runner_path).is_file():
+    if isinstance(runner_path, str):
+        try:
+            resolved_runner_path = resolve_path_within_root(
+                runner_path,
+                relative_to=repository_root,
+                allowed_root=repository_root,
+                field="engine.runner_path",
+            )
+        except ValueError as exc:
+            add_error(
+                errors,
+                code="RUNNER_PATH_OUTSIDE_REPO",
+                message=str(exc),
+                path="$.engine.runner_path",
+            )
+            resolved_runner_path = None
+    else:
+        resolved_runner_path = None
+    if resolved_runner_path is not None and not resolved_runner_path.is_file():
         add_error(
             errors,
             code="RUNNER_PATH_MISSING",
@@ -1637,7 +1864,25 @@ def validate_invariants(
         if isinstance(payload.get("engine"), dict)
         else None
     )
-    if isinstance(bridge_path, str) and not Path(bridge_path).is_file():
+    if isinstance(bridge_path, str):
+        try:
+            resolved_bridge_path = resolve_path_within_root(
+                bridge_path,
+                relative_to=repository_root,
+                allowed_root=repository_root,
+                field="engine.bridge_path",
+            )
+        except ValueError as exc:
+            add_error(
+                errors,
+                code="BRIDGE_PATH_OUTSIDE_REPO",
+                message=str(exc),
+                path="$.engine.bridge_path",
+            )
+            resolved_bridge_path = None
+    else:
+        resolved_bridge_path = None
+    if resolved_bridge_path is not None and not resolved_bridge_path.is_file():
         add_error(
             errors,
             code="BRIDGE_PATH_MISSING",

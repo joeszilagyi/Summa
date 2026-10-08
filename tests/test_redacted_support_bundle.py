@@ -18,13 +18,28 @@ assert support_builder_spec.loader is not None
 support_builder_spec.loader.exec_module(support_builder)
 
 
+def build_test_bundle(
+    output_dir: Path,
+    *,
+    doctor_report: Path | None = None,
+    overwrite: bool = False,
+) -> dict[str, object]:
+    return support_builder.build_bundle(
+        REPO_ROOT,
+        output_dir,
+        export_root=output_dir.parent,
+        doctor_report=doctor_report,
+        overwrite=overwrite,
+    )
+
+
 def test_redacted_support_bundle_rejects_unrecognized_output_on_overwrite(tmp_path: Path) -> None:
     output_dir = tmp_path / "support-bundle"
     output_dir.mkdir()
     (output_dir / "notes.txt").write_text("do-not-overwrite", encoding="utf-8")
 
     try:
-        support_builder.build_bundle(REPO_ROOT, output_dir, overwrite=True)
+        build_test_bundle(output_dir, overwrite=True)
     except support_builder.SupportBundleError as exc:
         assert "not a recognized support bundle" in str(exc)
     else:
@@ -33,13 +48,33 @@ def test_redacted_support_bundle_rejects_unrecognized_output_on_overwrite(tmp_pa
 
 def test_redacted_support_bundle_overwrites_valid_output_directory(tmp_path: Path) -> None:
     output_dir = tmp_path / "support-bundle"
-    first_report = support_builder.build_bundle(REPO_ROOT, output_dir)
+    first_report = build_test_bundle(output_dir)
 
-    second_report = support_builder.build_bundle(REPO_ROOT, output_dir, overwrite=True)
+    second_report = build_test_bundle(output_dir, overwrite=True)
 
     assert second_report["status"] == "pass"
     assert first_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
     assert second_report["manifest_path"] == str((output_dir / "manifest.json").resolve())
+
+
+def test_redacted_support_bundle_rejects_output_outside_default_export_root(tmp_path: Path) -> None:
+    output_dir = tmp_path / "outside-support-root"
+    output_dir.mkdir()
+    (output_dir / "manifest.json").write_text(
+        json.dumps({"schema_version": support_builder.MANIFEST_SCHEMA_VERSION}) + "\n",
+        encoding="utf-8",
+    )
+    sentinel = output_dir / "do-not-replace.txt"
+    sentinel.write_text("preserve me\n", encoding="utf-8")
+
+    try:
+        support_builder.build_bundle(REPO_ROOT, output_dir, overwrite=True)
+    except support_builder.SupportBundleError as exc:
+        assert "trusted support bundle export root" in str(exc)
+    else:
+        raise AssertionError("expected output outside the default export root to be rejected")
+
+    assert sentinel.read_text(encoding="utf-8") == "preserve me\n"
 
 
 def test_redacted_support_bundle_redacts_private_fields_from_doctor_report(tmp_path: Path) -> None:
@@ -83,7 +118,7 @@ def test_redacted_support_bundle_redacts_private_fields_from_doctor_report(tmp_p
         encoding="utf-8",
     )
 
-    report = support_builder.build_bundle(REPO_ROOT, output_dir, doctor_report=doctor_report)
+    report = build_test_bundle(output_dir, doctor_report=doctor_report)
 
     assert report["status"] == "pass"
     bundle_text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(output_dir.rglob("*")))
@@ -102,7 +137,7 @@ def test_redacted_support_bundle_scans_manifest_after_writing_it(tmp_path: Path,
 
     monkeypatch.setattr(support_builder, "scan_bundle_for_leaks", fake_scan)
 
-    report = support_builder.build_bundle(REPO_ROOT, output_dir)
+    report = build_test_bundle(output_dir)
 
     assert report["status"] == "pass"
     assert scan_calls == [False, True]

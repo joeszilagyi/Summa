@@ -29,8 +29,11 @@ from tools.common.scheduler_failure_reconciliation import (  # noqa: E402
     summarize_run_outcomes,
 )
 from tools.common.subprocess_capture import (  # noqa: E402
-    command_output_excerpt,
     run_streaming_command,
+)
+from tools.common.topic_workspace_registry import (  # noqa: E402
+    TopicWorkspaceRegistryError,
+    resolve_workspace,
 )
 from tools.common.workspace_lock import (  # noqa: E402
     DEFAULT_LOCK_ROOT,
@@ -40,6 +43,7 @@ from tools.common.workspace_lock import (  # noqa: E402
 
 SCHEMA_VERSION = "scheduled-topic-cycles-run.v1"
 PLANNED_RUN_SCHEMA_VERSION = "planned-run.v1"
+DEFAULT_SCHEDULED_RUN_ROOT = Path("runtime") / "scheduled-topic-cycles"
 WORKSPACE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 EXIT_SUCCESS = 0
 EXIT_USAGE_ERROR = 2
@@ -50,7 +54,6 @@ EXIT_TRANSIENT_ACQUISITION_FAILURE = EXIT_TRANSIENT_ACQUISITION_FAILED
 EXIT_INTEGRITY_FAILURE = 6
 EXIT_PARTIAL_OUTPUT = 7
 EXIT_INTERNAL_CRASH = 8
-MAX_FAILURE_REASON_LENGTH = 2048
 KNOWN_CHILD_STATUSES = {"completed", "degraded", "dry_run", "failed", "partial"}
 SUCCESS_CHILD_STATUSES = {"completed", "degraded", "dry_run"}
 FAILURE_CHILD_STATUSES = {"failed", "partial"}
@@ -137,16 +140,6 @@ def _format_failure_result(
         result["affected_record_id"] = affected_record_id
 
 
-def _bounded_failure_message(raw_message: str, *, limit: int = MAX_FAILURE_REASON_LENGTH) -> str:
-    message = (raw_message or "").strip()
-    if len(message) <= limit:
-        return message
-    return (
-        message[: max(limit - 64, 0)].rstrip()
-        + f"... (truncated, {len(message) - limit} chars omitted)"
-    )
-
-
 def _set_failure(
     result: dict[str, Any],
     *,
@@ -170,6 +163,55 @@ def resolve_path(raw_path: str | Path, *, base: Path | None = None) -> Path:
     if path.is_absolute():
         return path.resolve()
     return ((base or Path.cwd()) / path).resolve()
+
+
+def resolve_scheduled_run_root(raw_path: Path | None) -> Path:
+    configured_root = (
+        resolve_path(raw_path)
+        if raw_path is not None
+        else (REPO_ROOT / DEFAULT_SCHEDULED_RUN_ROOT).resolve()
+    )
+    if raw_path is None:
+        try:
+            configured_root.relative_to(REPO_ROOT.resolve())
+        except ValueError as exc:
+            raise ScheduledCycleError(
+                f"default scheduled run root escapes repository root: {configured_root}"
+            ) from exc
+    if configured_root.exists() and not configured_root.is_dir():
+        raise ScheduledCycleError(f"scheduled run root is not a directory: {configured_root}")
+    return configured_root
+
+
+def resolve_scheduled_run_dir(raw_path: str | Path, *, run_root: Path) -> Path:
+    run_dir = resolve_path(raw_path)
+    try:
+        relative_run_dir = run_dir.relative_to(run_root)
+    except ValueError as exc:
+        raise ScheduledCycleError(
+            f"scheduled run directory must be within trusted run root {run_root}: {run_dir}"
+        ) from exc
+    if not relative_run_dir.parts:
+        raise ScheduledCycleError(
+            f"scheduled run directory must be a child of trusted run root: {run_root}"
+        )
+    return run_dir
+
+
+def resolve_cycle_runner(raw_path: str | None) -> Path:
+    """Resolve a cycle runner from the trusted repository tree only."""
+    runner = (
+        REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
+        if raw_path is None
+        else resolve_path(raw_path)
+    )
+    try:
+        runner.relative_to(REPO_ROOT)
+    except ValueError as exc:
+        raise ScheduledCycleError("cycle runner must resolve within the repository root") from exc
+    if not runner.is_file():
+        raise ScheduledCycleError(f"cycle runner is not a regular file: {runner}")
+    return runner
 
 
 def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
@@ -250,6 +292,47 @@ def validate_planned_run_record(record: dict[str, Any]) -> list[str]:
             errors.append(f"planned-run record {field} must be a non-blank string")
 
     return errors
+
+
+def bind_planned_run_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Bind execution paths to the registry entry named by a planned record."""
+    registry_path = Path(record["registry_path"]).expanduser().resolve()
+    workspace_id = record["workspace_id"]
+    try:
+        trusted_workspace = resolve_workspace(
+            registry_path=registry_path,
+            workspace_id=workspace_id,
+        )
+    except TopicWorkspaceRegistryError as exc:
+        raise ScheduledCycleError(
+            f"planned-run record could not be bound to workspace registry: {workspace_id}"
+        ) from exc
+
+    trusted_root = trusted_workspace.get("resolved_workspace_root")
+    trusted_manifest = trusted_workspace.get("resolved_default_subject_manifest")
+    if not isinstance(trusted_root, Path) or not isinstance(trusted_manifest, Path):
+        raise ScheduledCycleError(
+            f"planned-run record has no resolved workspace paths in registry: {workspace_id}"
+        )
+
+    try:
+        recorded_root = Path(record["resolved_workspace_root"]).expanduser().resolve()
+        recorded_manifest = Path(record["resolved_default_subject_manifest"]).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ScheduledCycleError(
+            f"planned-run record has invalid resolved workspace paths: {workspace_id}"
+        ) from exc
+
+    if recorded_root != trusted_root or recorded_manifest != trusted_manifest:
+        raise ScheduledCycleError(
+            "planned-run record execution paths do not match the trusted workspace registry: "
+            f"{workspace_id}"
+        )
+
+    bound_record = dict(record)
+    bound_record["resolved_workspace_root"] = str(trusted_root)
+    bound_record["resolved_default_subject_manifest"] = str(trusted_manifest)
+    return bound_record
 
 
 def hash_file(path: Path) -> str:
@@ -347,11 +430,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Output directory for the scheduled run manifest and child cycles.",
     )
+    parser.add_argument(
+        "--run-root",
+        type=Path,
+        help=(
+            "Trusted root for --run-dir (defaults to <repo-root>/runtime/scheduled-topic-cycles)."
+        ),
+    )
     parser.add_argument("--run-id", help="Stable scheduled run id. Defaults to run directory name.")
     parser.add_argument("--timestamp", help="RFC3339 timestamp override.")
     parser.add_argument("--mode", choices=("dry-run", "local"), default="dry-run")
     parser.add_argument(
-        "--cycle-runner", help="Optional alternate cycle runner script for deterministic tests."
+        "--cycle-runner",
+        help=(
+            "Optional alternate cycle runner script for deterministic tests; it must resolve "
+            "within the repository root."
+        ),
     )
     parser.add_argument(
         "--candidate-batch-fixture", help="Optional fixture passed through to each child cycle."
@@ -400,11 +494,13 @@ def load_selection_records(selection_path: Path) -> list[dict[str, Any]]:
             if not isinstance(value, dict):
                 raise ScheduledCycleError(f"selection JSONL line {line_number} must be an object")
             records.append(value)
+    bound_records: list[dict[str, Any]] = []
     for record in records:
         errors = validate_planned_run_record(record)
         if errors:
             raise ScheduledCycleError(errors[0])
-    return records
+        bound_records.append(bind_planned_run_record(record))
+    return bound_records
 
 
 def terminal_attempt_count(ledger_path: Path, *, workspace_id: str) -> int:
@@ -484,11 +580,13 @@ def run_scheduled_cycles(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[dict[str, Any], int]:
     started_at = normalize_timestamp(args.timestamp)
-    run_dir = resolve_path(args.run_dir)
+    run_root = resolve_scheduled_run_root(args.run_root)
+    run_dir = resolve_scheduled_run_dir(args.run_dir, run_root=run_root)
     run_id = args.run_id or run_dir.name
     db_path = resolve_path(args.db)
     selection_path = resolve_path(args.selection)
     records = load_selection_records(selection_path)
+    runner = resolve_cycle_runner(args.cycle_runner)
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -517,11 +615,6 @@ def run_scheduled_cycles(
         "errors": [],
         "remote_fetch_enabled": False,
     }
-    runner = (
-        resolve_path(args.cycle_runner)
-        if args.cycle_runner
-        else REPO_ROOT / "tools" / "scripts" / "run_topic_cycle.py"
-    )
     exit_code = EXIT_SUCCESS
 
     def _update_global_exit_code(code: int) -> None:
@@ -778,9 +871,7 @@ def run_scheduled_cycles(
                     _set_failure(
                         result=result,
                         reason_code="topic_cycle_failed",
-                        reason=_bounded_failure_message(
-                            command_output_excerpt(proc) or "topic cycle failed"
-                        ),
+                        reason="topic cycle failed; child output omitted from failure record",
                         stage="child_cycle_exec",
                         recoverability="non_retryable",
                     )
@@ -805,9 +896,7 @@ def run_scheduled_cycles(
                     reason_code="topic_cycle_partial_output"
                     if is_partial
                     else "topic_cycle_failed",
-                    reason=_bounded_failure_message(
-                        command_output_excerpt(proc) or "topic cycle failed"
-                    ),
+                    reason="topic cycle failed; child output omitted from failure record",
                     stage="child_cycle_exec",
                     recoverability="retryable" if is_partial else "non_retryable",
                 )
@@ -842,9 +931,7 @@ def run_scheduled_cycles(
                 _set_failure(
                     result=result,
                     reason_code="topic_cycle_failed",
-                    reason=_bounded_failure_message(
-                        command_output_excerpt(proc) or "topic cycle failed"
-                    ),
+                    reason="topic cycle failed; child output omitted from failure record",
                     stage="child_cycle_exec",
                     recoverability="non_retryable",
                 )
