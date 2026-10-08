@@ -774,6 +774,64 @@ def test_builder_detects_tampered_projection_rows(tmp_path: Path) -> None:
         builder.validate_projection_index_file(index_db, payload)
 
 
+def test_write_index_validates_final_path_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "local_projection.sqlite"
+    payload = builder.build_projection_payload(
+        SimpleNamespace(
+            db=str(db),
+            profile="local",
+            correction_ledger=None,
+            generated_at="2026-06-02T00:00:00Z",
+        )
+    )
+    validated_paths: list[Path] = []
+    original_validate = builder.validate_projection_index_file
+
+    def record_validation(path: Path, index_payload: dict[str, object]) -> None:
+        validated_paths.append(path)
+        original_validate(path, index_payload)
+
+    monkeypatch.setattr(builder, "validate_projection_index_file", record_validation)
+    builder.write_index(index_db, payload, validate_index_file=True)
+
+    assert len(validated_paths) == 2
+    assert validated_paths[0] != index_db
+    assert validated_paths[1] == index_db
+
+
+def test_streaming_builder_validates_final_path_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = create_search_db(tmp_path)
+    index_db = tmp_path / "streamed_projection.sqlite"
+    args = SimpleNamespace(
+        db=str(db),
+        profile="local",
+        index_db=str(index_db),
+        output_json=None,
+        correction_ledger=None,
+        generated_at="2026-06-02T00:00:00Z",
+        format="json",
+        validate_index_file=True,
+    )
+    validated_paths: list[Path] = []
+    original_validate = builder.validate_projection_index_file
+
+    def record_validation(path: Path, index_payload: dict[str, object]) -> None:
+        validated_paths.append(path)
+        original_validate(path, index_payload)
+
+    monkeypatch.setattr(builder, "validate_projection_index_file", record_validation)
+    builder.build_projection_payload(args, index_path=index_db)
+
+    assert len(validated_paths) == 2
+    assert validated_paths[0] != index_db
+    assert validated_paths[1] == index_db
+
+
 def test_builder_keeps_previous_projection_index_if_validation_fails(tmp_path: Path, monkeypatch) -> None:
     db = create_search_db(tmp_path)
     index_db = tmp_path / "local_projection.sqlite"
