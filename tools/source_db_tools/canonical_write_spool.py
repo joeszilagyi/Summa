@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from tools.common.atomic_write import atomic_write_text
 from tools.source_db_tools import (
     canonical_ingest,
     canonical_store,
@@ -207,13 +207,7 @@ def write_spool_record(spool_path: Path, record: Mapping[str, Any]) -> Path:
     payload["spool_path"] = str(path)
     payload["spool_record_checksum"] = record_checksum(payload)
     validate_spool_record(payload)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return path
 
 

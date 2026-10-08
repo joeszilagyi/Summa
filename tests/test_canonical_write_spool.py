@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.common import atomic_write
 from tools.scripts import ingest_gather_candidate_batch as ingest_batch_script
 from tools.scripts import replay_canonical_write_spool as replay_script
 from tools.source_db_tools import canonical_store, canonical_write_spool
@@ -135,6 +136,31 @@ def test_spool_record_validation() -> None:
         canonical_write_spool.CanonicalWriteSpoolError, match="invalid replay status"
     ):
         canonical_write_spool.validate_spool_record(invalid_status)
+
+
+def test_spool_write_fsyncs_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool_dir = tmp_path / "spool"
+    record = canonical_write_spool.build_spool_record(
+        operation_kind="candidate_batch_ingest",
+        operation_input={"artifact_refs": []},
+        replay_recipe={},
+        failure="database is locked",
+        canonical_db_path=tmp_path / "canonical.sqlite",
+        spool_dir=spool_dir,
+        originating_tool="pytest",
+        created_at=FIXED_TIMESTAMP,
+    )
+    fsynced: list[Path] = []
+    monkeypatch.setattr(atomic_write, "_fsync_directory", fsynced.append)
+
+    path = canonical_write_spool.write_spool_record(spool_dir, record)
+
+    assert fsynced == [path.parent]
+    assert canonical_write_spool.load_spool_record(path)["spool_record_id"] == record[
+        "spool_record_id"
+    ]
 
 
 def test_candidate_batch_ingest_spools_on_db_unavailable(tmp_path: Path) -> None:
