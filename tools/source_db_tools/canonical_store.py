@@ -1590,32 +1590,30 @@ def upsert_work(
             accepted_for_citation,
         )
     )
+
+    # Keep reviewed identity/content attached to its original authority envelope.
+    def merged_work_content(field: str, proposed: str | None) -> str | None:
+        if preserve_established_envelope:
+            return existing[field]
+        return _first_present(_optional_nonblank(proposed, field), existing[field])
+
     _update_row(
         conn,
         "work",
         "work_id",
         int(existing["work_id"]),
         {
-            "work_type": _first_present(
-                _optional_nonblank(work_type, "work_type"), existing["work_type"]
-            ),
-            "title": _first_present(_optional_nonblank(title, "title"), existing["title"]),
-            "rights_posture": _first_present(
-                _optional_nonblank(rights_posture, "rights_posture"), existing["rights_posture"]
-            ),
-            "refetchability_status": _first_present(
-                _optional_nonblank(refetchability_status, "refetchability_status"),
-                existing["refetchability_status"],
+            "work_type": merged_work_content("work_type", work_type),
+            "title": merged_work_content("title", title),
+            "rights_posture": merged_work_content("rights_posture", rights_posture),
+            "refetchability_status": merged_work_content(
+                "refetchability_status", refetchability_status
             ),
             "review_state": merged_review_state,
             "publication_state": publication_state_value,
             "confidence_score": confidence_value,
-            "raw_cite_text": _first_present(
-                _optional_nonblank(raw_cite_text, "raw_cite_text"), existing["raw_cite_text"]
-            ),
-            "workspace_id": _first_present(
-                _optional_nonblank(workspace_id, "workspace_id"), existing["workspace_id"]
-            ),
+            "raw_cite_text": merged_work_content("raw_cite_text", raw_cite_text),
+            "workspace_id": merged_work_content("workspace_id", workspace_id),
             "authority_level": authority_level_value,
             "public_blocker": public_blocker_value,
             "accepted_for_citation": accepted_for_citation_value,
