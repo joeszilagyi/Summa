@@ -1588,6 +1588,7 @@ def _record_candidate_batch_payload(
     stage_event_id: str | None,
     batch: Mapping[str, Any],
     source_artifact_path: str | None = None,
+    selected_for_ingest: bool = False,
 ) -> None:
     candidates = batch.get("candidates")
     if not isinstance(candidates, list):
@@ -1617,7 +1618,7 @@ def _record_candidate_batch_payload(
                 "facet": batch.get("facet"),
                 "source_artifact": source_artifact_path,
             },
-            selected=False,
+            selected=selected_for_ingest,
         )
 
 
@@ -1859,6 +1860,8 @@ def record_topic_cycle_manifest(
                 stage_event_id=stage_id,
                 batch=candidate_batch_payload,
                 source_artifact_path=_optional_text(candidate_batch_payload.get("artifact_path")),
+                selected_for_ingest=name == "ingest_candidate_batch"
+                and raw_stage.get("status") in {"passed", "completed"},
             )
         feedback_plan_payload = _stage_evidence_payload(raw_stage, "feedback_plan")
         if feedback_plan_payload is not None:
