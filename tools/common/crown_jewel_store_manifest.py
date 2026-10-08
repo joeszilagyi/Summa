@@ -23,10 +23,27 @@ class CrownJewelStoreManifestError(RuntimeError):
     """Raised when crown-jewel store manifest validation fails."""
 
 
+def _unique_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_object_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, ValueError) as exc:
         raise CrownJewelStoreManifestError(f"could not read crown-jewel store manifest: {path}") from exc
     validate_manifest(payload)
     return payload
