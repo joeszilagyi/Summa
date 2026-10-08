@@ -683,6 +683,37 @@ def test_duplicate_trusted_authority_identifier_requires_ambiguous_review() -> N
     assert all(not match.automatic_merge for match in matches)
 
 
+def test_authority_label_match_normalizes_stored_and_incoming_types(tmp_path: Path) -> None:
+    conn = canonical_store.connect_canonical_store(bootstrap_db(tmp_path))
+    try:
+        authority_id = authority_reconciliation.create_local_authority(
+            conn,
+            authority_type="Person",
+            preferred_label="Jane Smith",
+            source_namespace="pytest",
+            source_id="authority:jane-smith-mixed-type",
+            created_at=FIXED_TIMESTAMP,
+        )
+        matches = canonical_reconciliation.find_existing_authority_match(
+            conn,
+            entity_label=" jane   smith ",
+            entity_type="person",
+        )
+        wrong_type = canonical_reconciliation.find_existing_authority_match(
+            conn,
+            entity_label="Jane Smith",
+            entity_type="organization",
+        )
+    finally:
+        conn.close()
+
+    assert len(matches) == 1
+    assert matches[0].authority_record_id == authority_id
+    assert matches[0].method == "normalized_label_and_type"
+    assert matches[0].automatic_merge is False
+    assert wrong_type == []
+
+
 def test_candidate_identifiers_collapses_equivalent_identifier_forms() -> None:
     identifiers = canonical_reconciliation.candidate_identifiers(
         {
