@@ -394,11 +394,11 @@ def scheduler_policy_ineligibility_reasons(
         status == "retryable"
         and isinstance(max_retryable_failures, int)
         and isinstance(attempt_count, int)
-        and attempt_count > max_retryable_failures
+        and attempt_count >= max_retryable_failures
     ):
         reasons.append(
             "retryable failure count "
-            f"{attempt_count} exceeded retry_policy.max_retryable_failures {max_retryable_failures}"
+            f"{attempt_count} reached retry_policy.max_retryable_failures {max_retryable_failures}"
         )
 
     if status == "retryable":

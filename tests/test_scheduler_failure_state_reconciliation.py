@@ -345,7 +345,7 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
         "last_failure_reason": "network budget exceeded",
         "blocked_reason": (
             "attempt_count 3 reached run_budget.max_attempts 3; "
-            "retryable failure count 3 exceeded retry_policy.max_retryable_failures 2"
+            "retryable failure count 3 reached retry_policy.max_retryable_failures 2"
         ),
     }
 
@@ -376,9 +376,39 @@ def test_reconciliation_derives_retryable_recovered_and_blocked_states(tmp_path:
         "retry backoff active until 2026-06-01T02:15:00Z"
     ]
     assert skipped["blocked_workspace"]["reasons"] == [
-        "failure_state is blocked: attempt_count 3 reached run_budget.max_attempts 3; retryable failure count 3 exceeded retry_policy.max_retryable_failures 2",
+        "failure_state is blocked: attempt_count 3 reached run_budget.max_attempts 3; retryable failure count 3 reached retry_policy.max_retryable_failures 2",
         "attempt_count 3 reached run_budget.max_attempts 3",
     ]
+
+
+@pytest.mark.parametrize("failure_count, expected_status", [(1, "retryable"), (2, "blocked")])
+def test_retryable_failure_limit_blocks_at_exact_threshold(
+    failure_count: int, expected_status: str
+) -> None:
+    events = [
+        build_failure_event(
+            workspace_id="threshold_workspace",
+            run_id=f"run-{index}",
+            occurred_at=f"2026-06-01T00:0{index}:00Z",
+            message="fixture failure",
+        )
+        for index in range(1, failure_count + 1)
+    ]
+    derived, reasons, _ = scheduler_reconciliation.derive_failure_state(
+        current_failure_state=None,
+        run_budget={"max_attempts": 4},
+        retry_policy={"max_retryable_failures": 2},
+        events=events,
+    )
+
+    assert derived is not None
+    assert derived["status"] == expected_status
+    assert derived["attempt_count"] == failure_count
+    if expected_status == "blocked":
+        assert derived["blocked_reason"] == (
+            "retryable failure count 2 reached retry_policy.max_retryable_failures 2"
+        )
+        assert reasons[-1] == derived["blocked_reason"]
 
 
 def test_read_runtime_ledger_rejects_malformed_nonterminal_json_after_real_failures(
