@@ -373,7 +373,7 @@ def update_review_state(
             target_namespace=target_namespace,
             target_id=str(target_id),
             previous_state=previous_state,
-            new_state=previous_state,
+            new_state=previous_state_value,
             changed_by=changed_by,
             changed_at=changed_at,
             reason="blocked_established_state",
