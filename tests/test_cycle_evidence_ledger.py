@@ -1095,6 +1095,45 @@ def test_manifest_relative_stage_artifact_uses_manifest_directory(
     assert row["byte_count"] == len(artifact_content)
 
 
+def test_manifest_deliberate_stage_skips_are_not_retryable(tmp_path: Path) -> None:
+    db_path = init_db(tmp_path)
+    reasons = [
+        "not requested",
+        "disabled_by_operator_flag",
+        "dry-run does not mutate canonical DB",
+        "execution fixture supplied",
+        "temporary dependency unavailable",
+    ]
+    conn = canonical_store.connect_canonical_store(db_path)
+    try:
+        with conn:
+            cycle_evidence_ledger.record_topic_cycle_manifest(
+                conn,
+                manifest_path=tmp_path / "topic-cycle-run.json",
+                manifest={
+                    "run_id": "stage-skip-retryability",
+                    "status": "completed",
+                    "stages": [
+                        {
+                            "name": f"stage_{index}",
+                            "status": "skipped",
+                            "skipped_reason": reason,
+                        }
+                        for index, reason in enumerate(reasons)
+                    ],
+                },
+            )
+        rows = conn.execute(
+            "SELECT candidate_ref_id, exclusion_reason, retryable "
+            "FROM cycle_candidate_excluded ORDER BY candidate_ref_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert [row["exclusion_reason"] for row in rows] == reasons
+    assert [bool(row["retryable"]) for row in rows] == [False, False, False, False, True]
+
+
 def test_record_stage_artifacts_hashes_embedded_dicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     embedded_report = {
         "schema_version": "canonical-ingest-report.v1",
